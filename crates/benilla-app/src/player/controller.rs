@@ -11,6 +11,10 @@ use bevy::prelude::Resource;
 #[cfg(test)]
 mod tests;
 
+/// The Souls lock-on camera's ease toward the target's bearing, per second (`1 - e^(-rate·dt)` of
+/// the gap each frame).
+const SOULS_LOCK_CAMERA_RATE: f32 = 10.0;
+
 /// Free-flies until the server places us, then drives the avatar and streams its movement as the
 /// mover; the dev chord with `F` toggles free fly.
 #[allow(clippy::type_complexity)]
@@ -135,14 +139,23 @@ pub(super) fn control(
     let self_guid = speed_capsule.7 .0;
     let scoped = &speed_capsule.8;
     let covered = speed_capsule.9.covering();
+    // The Souls free camera (`crate::souls`): the mouse orbits, the body faces where it moves.
+    let free_camera = player.souls.free_camera;
+    // The Souls orbit's held look: left orbits the free camera, right turns the body with it.
+    let hold_orbit = player.souls.orbit.then_some(if free_camera {
+        LookButton::Left
+    } else {
+        LookButton::Right
+    });
     // Far sight turns the auto-follow off: our facing is not "behind" for a body we only watch.
+    // The free camera too: the camera stays where the mouse left it.
     let follow_cfg = camera::FollowConfig {
-        style: if view_subject.remote.is_some() {
+        style: if view_subject.remote.is_some() || free_camera {
             camera::FollowStyle::Never
         } else {
             pointer.3.style
         },
-        tracking_style: if view_subject.remote.is_some() {
+        tracking_style: if view_subject.remote.is_some() || free_camera {
             camera::FollowStyle::Never
         } else {
             pointer.3.tracking_style
@@ -284,7 +297,14 @@ pub(super) fn control(
         &dynamics,
         time.elapsed_secs(),
         focused,
+        hold_orbit,
     );
+    // The lock-on camera: ease the view round to the locked target's bearing, the shortest way.
+    if let Some(bearing) = player.souls.cam_yaw {
+        let delta = (bearing - cam.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
+            - std::f32::consts::PI;
+        cam.yaw += delta * (1.0 - (-SOULS_LOCK_CAMERA_RATE * dt).exp());
+    }
     // The mouse turns the view, but the body hand-off (`0x514474`) skips a body that is stunned,
     // dead or seated (`0x5145e0`) or not ours to drive (`control_lost`, `reseat`), while the
     // camera rotate (`0x514444`) still runs. The reference never writes the facing; writing and
@@ -934,7 +954,8 @@ pub(super) fn control(
         };
         camera::seat_on_subject(
             dt,
-            turn_delta,
+            // The Souls free camera is the mouse's alone: the body's turns do not carry it.
+            if free_camera { 0.0 } else { turn_delta },
             player.pos,
             head,
             cam_pivot_target,

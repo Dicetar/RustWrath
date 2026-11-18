@@ -329,6 +329,14 @@ pub(crate) struct SoulsDrive {
     /// Cap the frame's whole turn (mouse hand-off, turn keys and [`Self::face`]) at this many
     /// radians a second: the running action's turn-rate window.
     pub(crate) turn_rate: Option<f32>,
+    /// The ER free camera: movement is camera-relative and the body faces where it moves, the
+    /// body's turns do not carry the camera, and the auto-follow is off.
+    pub(crate) free_camera: bool,
+    /// Hold the free camera's orbit: the cursor is hidden and the mouse turns the camera. False
+    /// while the Souls cursor key has the cursor up for the UI.
+    pub(crate) orbit: bool,
+    /// Ease the camera's yaw toward this bearing (Bevy radians): the lock-on camera.
+    pub(crate) cam_yaw: Option<f32>,
 }
 
 /// Our avatar: until `active` the camera free-flies, then we drive the body the server placed.

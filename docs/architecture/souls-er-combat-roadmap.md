@@ -39,18 +39,53 @@ left_hand = true
 parry = true
 server = true
 enemy_strikes = true
+retarget = true
+retarget_locomotion = true
+er_controls = true   # the Elden Ring layout below overrides the WoW bindings it names
+free_camera = true   # the camera orbits freely, movement is camera-relative
 
-[binds]  # A-Z, 0-9, F1-F12 (not F10), Space, Tab, Backquote, LeftShift, LeftCtrl, LeftAlt,
-         # CapsLock, MouseLeft, MouseRight, MouseMiddle, Mouse4, Mouse5
-light = "F9"
-heavy = "F8"
-dodge = "V"
-guard = "F7"
-lock_on = "MouseMiddle"
-crouch = "F6"
-left = "F11"
-parry = "F12"
+[binds]  # A-Z, 0-9, F1-F12 (not F10), Space, Tab, Backquote, Escape, Enter, LeftShift,
+         # LeftCtrl, LeftAlt, CapsLock, MouseLeft, MouseRight, MouseMiddle, Mouse4, Mouse5;
+         # the combat binds (light to parry) take a "Shift+" prefix
+light = "MouseLeft"
+heavy = "Shift+MouseLeft"
+guard = "MouseRight"
+parry = "Shift+MouseRight"
+left = "Mouse5"
+dodge = "Space"
+lock_on = "Q"
+lock_on_alt = "MouseMiddle"
+crouch = "X"
+jump = "F"           # runs JUMP
+interact = "E"       # the selection in reach, else the nearest usable thing in front
+use_item = "R"       # runs [controls] quick_item
+walk = "LeftAlt"     # hold to walk
+cursor = "LeftCtrl"  # tap: cursor up for the action bars and panels; tap again: back
+
+[controls]
+quick_item = "ACTIONBUTTON12"
+cursor_keys = ["Escape", "B", "C", "P", "M", "L", "N", "O", "I", "K", "U", "H", "J"]
 ```
+
+## The Elden Ring layout (`er_controls`)
+
+- **Orbit.** With the mode on the cursor is hidden and the mouse orbits the camera. Left click is
+  the light attack, Shift+left the heavy, right click the guard, Shift+right the parry. The world
+  neither selects nor turns with those buttons while the camera orbits.
+- **Cursor.** A tap of `LeftCtrl` alone brings the cursor up: both buttons are the stock ones
+  again, so the action bars, the panels and world clicks work as ever. Another tap puts it away.
+  A panel key (`cursor_keys`) or an interaction that opens a window brings it up too, and the
+  next movement key puts it away.
+- **Keys.** A key the layout names runs no WoW binding of its own (Space no longer jumps, Q and E
+  no longer strafe). `F`, `R` and `LeftAlt` run `JUMP`, the quick item and `TOGGLERUN` instead.
+  Every other key keeps its binding, so `1`-`=` cast from the hotbar without the cursor.
+- **Free camera** (`free_camera`). Movement is camera-relative: W/A/S/D and the turn keys name a
+  bearing off the camera, the body turns toward it at 720°/s and runs. An action's first 3 kit
+  frames snap to the held bearing (a roll or a swing goes where the stick points). Lock-on picks
+  what the camera looks at and swings the camera behind the body toward the target. Off, the
+  orbit turns the body as right-button mouselook does.
+- **F10 off**, or `er_controls = false`: nothing is claimed, and the cursor, the buttons and every
+  binding are stock.
 
 ## Features
 
@@ -87,6 +122,9 @@ parry = "F12"
 | Parry: the `Parry` row's `iframes` window deflects a hit | done; needs a `Parry` row; with the server script a parried strike opens a ×3 riposte on that creature for 1.5 s | `souls/input.rs` | `parry` |
 | Clip retarget: each kit action plays the ER clip it was read from on our own rig (spine, head, arms, legs by role; pelvis height) | done (local player only); needs `benilla-config/combat/player_anims.bin` | `souls/retarget.rs` | `retarget` |
 | ER locomotion: idle, guard, walk/run/sprint by direction, crouch idle/walk/run, airborne | done (local player only; clip rates are estimates) | `souls/retarget.rs` | `retarget_locomotion` |
+| ER control layout: hidden-cursor orbit, mouse attacks and guard, `LeftCtrl` cursor toggle, claimed keys override their WoW bindings, jump/use item/walk remaps | done | `souls/controls.rs`, `bindings.rs`, `player/camera.rs`, `ui_script/input.rs` | `er_controls` |
+| Interact key: the selection in reach, else the nearest usable thing in front (corpse loot, chest, door, mailbox, friendly NPC) | done | `souls/controls.rs` | `er_controls` |
+| Free camera: camera-relative movement, the body faces where it runs, actions snap to the held bearing, camera-picked lock-on | done | `souls/drive.rs`, `player/controller.rs` | `free_camera` |
 
 ## The server half (ALE Lua, no rebuild)
 

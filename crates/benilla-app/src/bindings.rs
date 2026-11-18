@@ -471,7 +471,11 @@ fn latch_and_dispatch(
     cover: Option<Res<crate::loading_screen::LoadingScreen>>,
     // Lent to the VM around each binding body, so the calls it makes apply in the call.
     mut host: Option<crate::script_calls::ScriptCallHost>,
+    // The Souls control layer ([`crate::souls::ErControls`]): the keys and buttons its layout
+    // takes from the stock bindings, and the bindings some of them run instead.
+    er: Option<Res<crate::souls::ErControls>>,
 ) {
+    let er = er.as_deref().filter(|er| er.active());
     state.just.clear();
     state.fired.clear();
     state.amounts.clear();
@@ -506,7 +510,10 @@ fn latch_and_dispatch(
 
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
-    let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
+    // A Souls key held as a key of its own (walk on Alt) is no modifier: walking does not turn W
+    // into ALT-W.
+    let modifier = |key: KeyCode| keys.pressed(key) && !er.is_some_and(|er| er.claims_key(key));
+    let alt = modifier(KeyCode::AltLeft) || modifier(KeyCode::AltRight);
     let sup = keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
     // The dev overlays' plane, Ctrl+Shift without Alt (`modkeys::dev_chord`, which Super blocks
     // too, as the `sup` gate below keeps any Super-held press from dispatching), which costs the
@@ -561,6 +568,19 @@ fn latch_and_dispatch(
                 if state.latched.iter().any(|(k, _)| *k == Held::Key(key)) {
                     continue; // already latched (missed release would double-latch)
                 }
+                // A Souls key: its stock binding does not run; a remapped one runs the binding
+                // the layout names instead (F jumps, R uses the quick item, Alt walks).
+                if let Some(er) = er.filter(|er| er.claims_key(ev.key_code)) {
+                    if let Some(s) = script.as_mut() {
+                        if let Some(name) = chord::key_token(ev.key_code, &layout) {
+                            s.note_world_key(&name.to_string());
+                        }
+                    }
+                    if let Some((command, _)) = er.remap(ev.key_code) {
+                        press(&mut state, &mut script, &mut host, command, Held::Key(key));
+                    }
+                    continue;
+                }
                 // Named under the layout this press was typed in; a key 1.12 cannot name binds
                 // nothing.
                 let Some(name) = chord::key_token(ev.key_code, &layout) else {
@@ -583,7 +603,24 @@ fn latch_and_dispatch(
             }
             ButtonState::Released => {
                 state.down.release(key);
+                // A Souls remap that also runs on the release (hold Alt to walk): the release
+                // runs its binding's press again, unlatched, so the toggle goes back.
+                let claimed = er.is_some_and(|er| er.claims_key(ev.key_code));
+                let again = er
+                    .and_then(|er| er.remap(ev.key_code))
+                    .filter(|&(command, on_up)| {
+                        on_up
+                            && state
+                                .latched
+                                .iter()
+                                .any(|(k, c)| *k == Held::Key(key) && c == command)
+                    })
+                    .map(|(command, _)| command);
                 release(&mut state, &mut script, &mut host, Held::Key(key));
+                if let Some(command) = again {
+                    press(&mut state, &mut script, &mut host, command, Held::Key(key));
+                    state.latched.retain(|(k, _)| *k != Held::Key(key));
+                }
                 // The release, to the frame that took the press (`0x765fd0`), here and not in the
                 // key feed so it follows this key's press in event order: a binding's press has
                 // just made the world frame its consumer. PRINTSCREEN arrives as an up alone on
@@ -598,7 +635,7 @@ fn latch_and_dispatch(
                     continue;
                 };
                 let up = crate::script_calls::lent(s, host.as_mut(), |s| s.key_up(&name));
-                if up == KeyUp::Walked(KeyWalk::Declined) && !sup {
+                if up == KeyUp::Walked(KeyWalk::Declined) && !sup && !claimed {
                     if let Some(token) = chord::key_token(ev.key_code, &layout) {
                         let chord = Chord {
                             alt,
@@ -628,6 +665,8 @@ fn latch_and_dispatch(
         if buttons.just_pressed(b)
             && !sup
             && hover.0.is_none()
+            // A Souls attack button (or any primary while the camera orbits) is the layout's.
+            && !er.is_some_and(|er| er.claims_mouse(b))
             && !state.latched.iter().any(|(k, _)| *k == Held::Mouse(b))
         {
             let chord = Chord {

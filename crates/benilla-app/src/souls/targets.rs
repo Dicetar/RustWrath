@@ -21,7 +21,8 @@ use super::drive::yaw_toward;
 use super::input::KeyRead;
 use super::server::SoulsLink;
 use super::{
-    current_kit, running_action, souls_on, Instance, SoulsConfig, SoulsState, YARDS_PER_METRE,
+    current_kit, running_action, souls_on, ErControls, Instance, SoulsConfig, SoulsState,
+    YARDS_PER_METRE,
 };
 use crate::aura_visual::AnimRateFreeze;
 use crate::camera_shake::CameraShakes;
@@ -30,6 +31,7 @@ use crate::combat_mode::CombatModeView;
 use crate::combat_playback::CombatPlaybackState;
 use crate::combat_profiles::CombatProfiles;
 use crate::net::{Guid, NetCommands, ObjectStore, SelfPlayer};
+use crate::player::camera::FlyCam;
 use crate::player::Player;
 use crate::target::{RelationWorld, Selection};
 use crate::ui_script::UiKeyboardCapture;
@@ -69,7 +71,7 @@ type Units<'w, 's> = Query<
 >;
 
 /// Whether `store` is a living unit `relations` lets us attack.
-fn attackable(relations: &RelationWorld, guid: u64, store: &ObjectStore) -> bool {
+pub(super) fn attackable(relations: &RelationWorld, guid: u64, store: &ObjectStore) -> bool {
     if !store.is_unit() || store.0.unit_health().is_some_and(|health| health == 0) {
         return false;
     }
@@ -92,6 +94,8 @@ pub(super) fn toggle_lock(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     capture: Res<UiKeyboardCapture>,
+    er: Res<ErControls>,
+    cams: Query<&FlyCam>,
     view: Res<CombatModeView>,
     config: Res<SoulsConfig>,
     selection: Res<Selection>,
@@ -121,10 +125,15 @@ pub(super) fn toggle_lock(
             info!("souls: lock-on broken");
         }
     }
-    let input = KeyRead::new(&keys, &mouse, &capture);
-    if !input.just_pressed(config.binds.lock_on) {
+    let input = KeyRead::new(&keys, &mouse, &capture, &er);
+    if !input.just_pressed(config.binds.lock_on) && !input.just_pressed(config.binds.lock_on_alt) {
         return;
     }
+    // Under the free camera the lock takes what the camera looks at, as ER's does.
+    let facing = match cams.single() {
+        Ok(cam) if er.free_camera => cam.yaw(),
+        _ => player.facing(),
+    };
     if souls.lock.take().is_some() {
         info!("souls: lock-on released");
         return;
@@ -142,7 +151,7 @@ pub(super) fn toggle_lock(
             .filter(|(_, guid, store, at)| {
                 let to = at.translation() - player.pos;
                 horizontal(at.translation()) <= LOCK_NEAREST_YARDS
-                    && off_facing(player.facing(), to).abs() <= front
+                    && off_facing(facing, to).abs() <= front
                     && attackable(&relations, guid.0, store)
             })
             .min_by(|a, b| horizontal(a.3.translation()).total_cmp(&horizontal(b.3.translation())))

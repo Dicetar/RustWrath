@@ -30,21 +30,41 @@
 //!                     # read from (benilla-config/combat/player_anims.bin)
 //! retarget_locomotion = true # idle, guard, walk, run, sprint, crouch and airborne play the
 //!                     # Elden Ring locomotion clips too
+//! er_controls = true  # the Elden Ring layout below takes its keys and buttons from the WoW
+//!                     # bindings; the mouse orbits with the cursor hidden, the cursor key
+//!                     # (LeftCtrl) brings the cursor up for the action bars and panels
+//! free_camera = true  # the camera orbits freely, movement is camera-relative and the body
+//!                     # faces where it runs (off: the orbit turns the body, as mouselook does)
 //!
-//! [binds]             # key names: A-Z, 0-9, F1-F12, Space, Tab, Backquote, LeftShift,
-//! light = "F9"        # LeftCtrl, LeftAlt, CapsLock, MouseLeft, MouseRight, MouseMiddle,
-//! heavy = "F8"        # Mouse4, Mouse5 (BUTTON4/BUTTON5)
-//! dodge = "V"
-//! guard = "F7"
-//! lock_on = "MouseMiddle"
-//! crouch = "F6"
-//! left = "F11"
-//! parry = "F12"
+//! [binds]             # key names: A-Z, 0-9, F1-F12, Space, Tab, Backquote, Escape, Enter,
+//! light = "MouseLeft" # LeftShift, LeftCtrl, LeftAlt, CapsLock, MouseLeft, MouseRight,
+//! heavy = "Shift+MouseLeft" # MouseMiddle, Mouse4, Mouse5 (BUTTON4/BUTTON5); the combat binds
+//! guard = "MouseRight" # take a "Shift+" prefix
+//! parry = "Shift+MouseRight"
+//! left = "Mouse5"
+//! dodge = "Space"     # tap rolls, hold sprints
+//! lock_on = "Q"
+//! lock_on_alt = "MouseMiddle"
+//! crouch = "X"
+//! jump = "F"          # runs the JUMP binding
+//! interact = "E"      # opens, loots or talks to what is in front
+//! use_item = "R"      # runs the `quick_item` binding
+//! walk = "LeftAlt"    # hold to walk (TOGGLERUN on press and release)
+//! cursor = "LeftCtrl" # tap: the cursor up for the UI, tap again: back to the orbit
+//!
+//! [controls]
+//! quick_item = "ACTIONBUTTON12" # the WoW binding the use-item key runs
+//! cursor_keys = ["Escape", "B", "C", "P", "M", "L", "N", "O", "I", "K", "U", "H", "J"]
+//!                     # keys that open a panel: the cursor comes up with it, and a movement key
+//!                     # puts it away again
 //! ```
 //!
-//! The raw keys run through the binding dispatch's typing gate (a focused EditBox eats them), but
-//! not its binding table: a Souls key that also has a WoW binding does both. The defaults are keys
-//! the stock bindings leave free, except `V` (the nameplate toggle), kept from the first slice.
+//! The raw keys run through the binding dispatch's typing gate (a focused EditBox eats them).
+//! With `er_controls` on, a Souls key's own WoW binding does not run (Space no longer jumps, Q
+//! and E no longer strafe: A and D move left and right against the camera), and the mouse's
+//! primary buttons are the attacks while the camera orbits. With the cursor up they are the
+//! stock buttons again, so the action bars and every panel work as ever. With `er_controls` off
+//! a Souls key also runs its WoW binding, and mouse binds act beside the stock clicks.
 
 use bevy::prelude::*;
 use serde::Deserialize;
@@ -78,6 +98,8 @@ pub(crate) struct SoulsFeatures {
     pub(crate) enemy_strikes: bool,
     pub(crate) retarget: bool,
     pub(crate) retarget_locomotion: bool,
+    pub(crate) er_controls: bool,
+    pub(crate) free_camera: bool,
 }
 
 impl Default for SoulsFeatures {
@@ -107,6 +129,8 @@ impl Default for SoulsFeatures {
             enemy_strikes: true,
             retarget: true,
             retarget_locomotion: true,
+            er_controls: true,
+            free_camera: true,
         }
     }
 }
@@ -120,22 +144,56 @@ struct BindNames {
     dodge: String,
     guard: String,
     lock_on: String,
+    lock_on_alt: String,
     crouch: String,
     left: String,
     parry: String,
+    jump: String,
+    interact: String,
+    use_item: String,
+    walk: String,
+    cursor: String,
 }
 
 impl Default for BindNames {
     fn default() -> Self {
         Self {
-            light: "F9".into(),
-            heavy: "F8".into(),
-            dodge: "V".into(),
-            guard: "F7".into(),
-            lock_on: "MouseMiddle".into(),
-            crouch: "F6".into(),
-            left: "F11".into(),
-            parry: "F12".into(),
+            light: "MouseLeft".into(),
+            heavy: "Shift+MouseLeft".into(),
+            dodge: "Space".into(),
+            guard: "MouseRight".into(),
+            lock_on: "Q".into(),
+            lock_on_alt: "MouseMiddle".into(),
+            crouch: "X".into(),
+            left: "Mouse5".into(),
+            parry: "Shift+MouseRight".into(),
+            jump: "F".into(),
+            interact: "E".into(),
+            use_item: "R".into(),
+            walk: "LeftAlt".into(),
+            cursor: "LeftCtrl".into(),
+        }
+    }
+}
+
+/// The `[controls]` section as written.
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+struct ControlNames {
+    quick_item: String,
+    cursor_keys: Vec<String>,
+}
+
+impl Default for ControlNames {
+    fn default() -> Self {
+        Self {
+            quick_item: "ACTIONBUTTON12".into(),
+            cursor_keys: [
+                "Escape", "B", "C", "P", "M", "L", "N", "O", "I", "K", "U", "H", "J",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
         }
     }
 }
@@ -145,6 +203,7 @@ impl Default for BindNames {
 struct SoulsFile {
     features: SoulsFeatures,
     binds: BindNames,
+    controls: ControlNames,
 }
 
 /// A key or mouse button a Souls bind names.
@@ -154,39 +213,107 @@ pub(crate) enum SoulsKey {
     Mouse(MouseButton),
 }
 
-/// The resolved binds.
+/// A combat bind: a key or button, with Shift held or not. A plain bind whose key also has a
+/// Shift bind waits for Shift up ([`super::input::KeyRead`]), so `MouseLeft` and
+/// `Shift+MouseLeft` are two presses.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct SoulsBind {
+    pub(crate) key: SoulsKey,
+    pub(crate) shift: bool,
+}
+
+impl SoulsBind {
+    pub(crate) const fn plain(key: SoulsKey) -> Self {
+        Self { key, shift: false }
+    }
+
+    pub(crate) const fn shifted(key: SoulsKey) -> Self {
+        Self { key, shift: true }
+    }
+}
+
+/// The resolved binds. The combat binds may carry Shift; the rest are bare keys.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct SoulsBinds {
-    pub(crate) light: SoulsKey,
-    pub(crate) heavy: SoulsKey,
-    pub(crate) dodge: SoulsKey,
-    pub(crate) guard: SoulsKey,
-    pub(crate) lock_on: SoulsKey,
-    pub(crate) crouch: SoulsKey,
-    pub(crate) left: SoulsKey,
-    pub(crate) parry: SoulsKey,
+    pub(crate) light: SoulsBind,
+    pub(crate) heavy: SoulsBind,
+    pub(crate) dodge: SoulsBind,
+    pub(crate) guard: SoulsBind,
+    pub(crate) lock_on: SoulsBind,
+    pub(crate) lock_on_alt: SoulsBind,
+    pub(crate) crouch: SoulsBind,
+    pub(crate) left: SoulsBind,
+    pub(crate) parry: SoulsBind,
+    /// Runs the `JUMP` binding while the layout is on.
+    pub(crate) jump: SoulsKey,
+    /// Interacts with what is in front ([`super::controls`]).
+    pub(crate) interact: SoulsKey,
+    /// Runs [`SoulsControls::quick_item`].
+    pub(crate) use_item: SoulsKey,
+    /// Hold to walk: `TOGGLERUN` on its press and on its release.
+    pub(crate) walk: SoulsKey,
+    /// Tap to bring the cursor up for the UI, tap again to orbit.
+    pub(crate) cursor: SoulsKey,
+}
+
+impl SoulsBinds {
+    /// The combat binds, for the Shift pairing and the claims.
+    pub(crate) fn combat(&self) -> [SoulsBind; 9] {
+        [
+            self.light,
+            self.heavy,
+            self.dodge,
+            self.guard,
+            self.lock_on,
+            self.lock_on_alt,
+            self.crouch,
+            self.left,
+            self.parry,
+        ]
+    }
+}
+
+/// The `[controls]` section, resolved.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) struct SoulsControls {
+    /// The WoW binding the use-item key runs (by default the twelfth action button's).
+    pub(crate) quick_item: String,
+    /// Keys that open a panel: the cursor comes up with them.
+    pub(crate) cursor_keys: Vec<KeyCode>,
 }
 
 /// The live Souls configuration.
-#[derive(Resource, Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Resource, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct SoulsConfig {
     pub(crate) features: SoulsFeatures,
     pub(crate) binds: SoulsBinds,
+    pub(crate) controls: SoulsControls,
 }
 
 impl Default for SoulsConfig {
     fn default() -> Self {
+        use SoulsKey::{Key, Mouse};
         resolve(SoulsFile::default()).unwrap_or(Self {
             features: SoulsFeatures::default(),
             binds: SoulsBinds {
-                light: SoulsKey::Key(KeyCode::F9),
-                heavy: SoulsKey::Key(KeyCode::F8),
-                dodge: SoulsKey::Key(KeyCode::KeyV),
-                guard: SoulsKey::Key(KeyCode::F7),
-                lock_on: SoulsKey::Mouse(MouseButton::Middle),
-                crouch: SoulsKey::Key(KeyCode::F6),
-                left: SoulsKey::Key(KeyCode::F11),
-                parry: SoulsKey::Key(KeyCode::F12),
+                light: SoulsBind::plain(Mouse(MouseButton::Left)),
+                heavy: SoulsBind::shifted(Mouse(MouseButton::Left)),
+                dodge: SoulsBind::plain(Key(KeyCode::Space)),
+                guard: SoulsBind::plain(Mouse(MouseButton::Right)),
+                lock_on: SoulsBind::plain(Key(KeyCode::KeyQ)),
+                lock_on_alt: SoulsBind::plain(Mouse(MouseButton::Middle)),
+                crouch: SoulsBind::plain(Key(KeyCode::KeyX)),
+                left: SoulsBind::plain(Mouse(MouseButton::Back)),
+                parry: SoulsBind::shifted(Mouse(MouseButton::Right)),
+                jump: Key(KeyCode::KeyF),
+                interact: Key(KeyCode::KeyE),
+                use_item: Key(KeyCode::KeyR),
+                walk: Key(KeyCode::AltLeft),
+                cursor: Key(KeyCode::ControlLeft),
+            },
+            controls: SoulsControls {
+                quick_item: "ACTIONBUTTON12".into(),
+                cursor_keys: vec![KeyCode::Escape],
             },
         })
     }
@@ -242,19 +369,67 @@ fn resolve(file: SoulsFile) -> Result<SoulsConfig, String> {
     let key = |what: &str, name: &str| {
         parse_key(name).ok_or_else(|| format!("binds.{what}: unknown key `{name}`"))
     };
+    let bind = |what: &str, name: &str| {
+        parse_bind(name).ok_or_else(|| format!("binds.{what}: unknown key `{name}`"))
+    };
+    // The keys the layout hands to a WoW binding go through the keyboard dispatch.
+    let keyboard = |what: &str, name: &str| match key(what, name)? {
+        SoulsKey::Key(code) => Ok(SoulsKey::Key(code)),
+        SoulsKey::Mouse(_) => Err(format!("binds.{what}: `{name}` must be a keyboard key")),
+    };
+    let names = &file.binds;
+    let cursor_keys = file
+        .controls
+        .cursor_keys
+        .iter()
+        .map(|name| match parse_key(name) {
+            Some(SoulsKey::Key(code)) => Ok(code),
+            _ => Err(format!("controls.cursor_keys: unknown keyboard key `{name}`")),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let quick_item = file.controls.quick_item.trim().to_ascii_uppercase();
+    if quick_item.is_empty() {
+        return Err("controls.quick_item: empty binding name".into());
+    }
     Ok(SoulsConfig {
         features: file.features,
         binds: SoulsBinds {
-            light: key("light", &file.binds.light)?,
-            heavy: key("heavy", &file.binds.heavy)?,
-            dodge: key("dodge", &file.binds.dodge)?,
-            guard: key("guard", &file.binds.guard)?,
-            lock_on: key("lock_on", &file.binds.lock_on)?,
-            crouch: key("crouch", &file.binds.crouch)?,
-            left: key("left", &file.binds.left)?,
-            parry: key("parry", &file.binds.parry)?,
+            light: bind("light", &names.light)?,
+            heavy: bind("heavy", &names.heavy)?,
+            dodge: bind("dodge", &names.dodge)?,
+            guard: bind("guard", &names.guard)?,
+            lock_on: bind("lock_on", &names.lock_on)?,
+            lock_on_alt: bind("lock_on_alt", &names.lock_on_alt)?,
+            crouch: bind("crouch", &names.crouch)?,
+            left: bind("left", &names.left)?,
+            parry: bind("parry", &names.parry)?,
+            jump: keyboard("jump", &names.jump)?,
+            interact: key("interact", &names.interact)?,
+            use_item: keyboard("use_item", &names.use_item)?,
+            walk: keyboard("walk", &names.walk)?,
+            cursor: keyboard("cursor", &names.cursor)?,
+        },
+        controls: SoulsControls {
+            quick_item,
+            cursor_keys,
         },
     })
+}
+
+/// A combat bind's name: a key name, optionally after `Shift+`.
+pub(crate) fn parse_bind(name: &str) -> Option<SoulsBind> {
+    let trimmed = name.trim();
+    let (shift, rest) = match trimmed.split_once('+') {
+        Some((modifier, rest)) if modifier.trim().eq_ignore_ascii_case("shift") => (true, rest),
+        Some(_) => return None,
+        None => (false, trimmed),
+    };
+    let key = parse_key(rest)?;
+    // Shift is no chord with itself.
+    if shift && matches!(key, SoulsKey::Key(KeyCode::ShiftLeft | KeyCode::ShiftRight)) {
+        return None;
+    }
+    Some(SoulsBind { key, shift })
 }
 
 /// A bind's key name, case-insensitive.
@@ -317,6 +492,11 @@ pub(crate) fn parse_key(name: &str) -> Option<SoulsKey> {
         "LEFTCTRL" | "CTRL" => K::ControlLeft,
         "LEFTALT" | "ALT" => K::AltLeft,
         "CAPSLOCK" => K::CapsLock,
+        "ESCAPE" | "ESC" => K::Escape,
+        "ENTER" | "RETURN" => K::Enter,
+        "RIGHTSHIFT" => K::ShiftRight,
+        "RIGHTCTRL" => K::ControlRight,
+        "RIGHTALT" => K::AltRight,
         "MOUSELEFT" | "BUTTON1" => return Some(SoulsKey::Mouse(MouseButton::Left)),
         "MOUSERIGHT" | "BUTTON2" => return Some(SoulsKey::Mouse(MouseButton::Right)),
         "MOUSEMIDDLE" | "BUTTON3" => return Some(SoulsKey::Mouse(MouseButton::Middle)),
@@ -342,13 +522,18 @@ mod tests {
         .expect("a valid file");
         assert!(!config.features.root_motion);
         assert!(config.features.lock_on);
-        assert_eq!(config.binds.heavy, SoulsKey::Key(KeyCode::KeyG));
-        assert_eq!(config.binds.guard, SoulsKey::Mouse(MouseButton::Back));
-        assert_eq!(config.binds.light, SoulsKey::Key(KeyCode::F9));
+        assert_eq!(config.binds.heavy, SoulsBind::plain(SoulsKey::Key(KeyCode::KeyG)));
+        assert_eq!(config.binds.guard, SoulsBind::plain(SoulsKey::Mouse(MouseButton::Back)));
+        assert_eq!(config.binds.light, SoulsBind::plain(SoulsKey::Mouse(MouseButton::Left)));
+        assert_eq!(config.binds.parry, SoulsBind::shifted(SoulsKey::Mouse(MouseButton::Right)));
+        assert_eq!(config.controls.cursor_keys.first(), Some(&KeyCode::Escape));
         assert_eq!(SoulsConfig::from_text("").expect("empty"), SoulsConfig::default());
 
         let bad_key = SoulsConfig::from_text("[binds]\nlight = \"F10\"\n").unwrap_err();
         assert!(bad_key.contains("F10"), "{bad_key}");
         assert!(SoulsConfig::from_text("[features]\nfly = true\n").is_err());
+        assert!(SoulsConfig::from_text("[binds]\nlight = \"Ctrl+E\"\n").is_err());
+        let mouse_jump = SoulsConfig::from_text("[binds]\njump = \"MouseLeft\"\n").unwrap_err();
+        assert!(mouse_jump.contains("keyboard"), "{mouse_jump}");
     }
 }

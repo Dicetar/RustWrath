@@ -10,9 +10,10 @@
 use bevy::prelude::*;
 use benilla_combat_core::{ActionId, ActionKind, ActionRefusal, EngineEvent, Kit};
 
-use super::config::{SoulsFeatures, SoulsKey};
+use super::config::{SoulsBind, SoulsFeatures, SoulsKey};
 use super::{
-    current_kit, in_window, running_action, souls_on, ChargeHold, SoulsConfig, SoulsState,
+    current_kit, in_window, running_action, souls_on, ChargeHold, ErControls, SoulsConfig,
+    SoulsState,
 };
 use crate::bindings::{BindingsState, Input};
 use crate::combat_kit::{resolve_press, PlayerKit, Press, STAMINA_SCALE};
@@ -52,11 +53,18 @@ const POISE_RESET_SECONDS: f32 = 30.0;
 /// `ShieldBlock`, the stand-in clip for raising the guard and taking a guarded hit.
 const ANIM_SHIELD_BLOCK: u16 = 24;
 
-/// The raw key state behind the typing gate.
+/// The raw key state behind the typing gate, read as the Souls binds read it.
+///
+/// - With the ER layout on, a mouse bind counts only while the layout claims its button: the
+///   primary buttons while the camera orbits (with the cursor up they are the UI's again).
+/// - A `Shift+` bind's press needs Shift down; a plain bind whose key also has a `Shift+` bind
+///   needs Shift up, for its press and its hold. A `Shift+` bind's hold ignores Shift, so letting
+///   go of Shift mid-charge keeps the charge.
 pub(super) struct KeyRead<'a> {
     keys: &'a ButtonInput<KeyCode>,
     mouse: &'a ButtonInput<MouseButton>,
     capture: &'a UiKeyboardCapture,
+    er: &'a ErControls,
 }
 
 impl<'a> KeyRead<'a> {
@@ -64,11 +72,13 @@ impl<'a> KeyRead<'a> {
         keys: &'a ButtonInput<KeyCode>,
         mouse: &'a ButtonInput<MouseButton>,
         capture: &'a UiKeyboardCapture,
+        er: &'a ErControls,
     ) -> Self {
         Self {
             keys,
             mouse,
             capture,
+            er,
         }
     }
 
@@ -77,10 +87,26 @@ impl<'a> KeyRead<'a> {
             self.keys.pressed(KeyCode::SuperLeft) || self.keys.pressed(KeyCode::SuperRight);
         super_down
             || self.capture.typing
-            || matches!(key, SoulsKey::Key(code) if self.capture.consumed.contains(&code))
+            || match key {
+                SoulsKey::Key(code) => self.capture.consumed.contains(&code),
+                SoulsKey::Mouse(button) => self.er.active() && !self.er.claims_mouse(button),
+            }
     }
 
-    pub(super) fn down(&self, key: SoulsKey) -> bool {
+    fn shift(&self) -> bool {
+        self.keys.pressed(KeyCode::ShiftLeft) || self.keys.pressed(KeyCode::ShiftRight)
+    }
+
+    /// Whether Shift is as the bind wants it.
+    fn shift_fits(&self, bind: SoulsBind, press: bool) -> bool {
+        if bind.shift {
+            !press || self.shift()
+        } else {
+            !self.er.shifted.contains(&bind.key) || !self.shift()
+        }
+    }
+
+    fn raw_down(&self, key: SoulsKey) -> bool {
         !self.eaten(key)
             && match key {
                 SoulsKey::Key(code) => self.keys.pressed(code),
@@ -88,17 +114,22 @@ impl<'a> KeyRead<'a> {
             }
     }
 
-    pub(super) fn just_pressed(&self, key: SoulsKey) -> bool {
-        !self.eaten(key)
-            && match key {
+    pub(super) fn down(&self, bind: SoulsBind) -> bool {
+        self.shift_fits(bind, false) && self.raw_down(bind.key)
+    }
+
+    pub(super) fn just_pressed(&self, bind: SoulsBind) -> bool {
+        self.shift_fits(bind, true)
+            && !self.eaten(bind.key)
+            && match bind.key {
                 SoulsKey::Key(code) => self.keys.just_pressed(code),
                 SoulsKey::Mouse(button) => self.mouse.just_pressed(button),
             }
     }
 
-    fn just_released(&self, key: SoulsKey) -> bool {
-        !self.eaten(key)
-            && match key {
+    fn just_released(&self, bind: SoulsBind) -> bool {
+        !self.eaten(bind.key)
+            && match bind.key {
                 SoulsKey::Key(code) => self.keys.just_released(code),
                 SoulsKey::Mouse(button) => self.mouse.just_released(button),
             }
@@ -106,8 +137,22 @@ impl<'a> KeyRead<'a> {
 }
 
 /// The held movement keys as `MOVEMENTFLAGS` bits, the turn keys counting as strafes while they
-/// strafe (lock-on).
-fn held_flags(bindings: &BindingsState, turn_keys_strafe: bool) -> u32 {
+/// strafe (lock-on). Under the free camera without a lock the body runs where it faces, so any
+/// held key is forward.
+fn held_flags(bindings: &BindingsState, turn_keys_strafe: bool, free_run: bool) -> u32 {
+    if free_run {
+        let any = [
+            Input::MoveForward,
+            Input::MoveBackward,
+            Input::StrafeLeft,
+            Input::StrafeRight,
+            Input::TurnLeft,
+            Input::TurnRight,
+        ]
+        .into_iter()
+        .any(|input| bindings.pressed(input));
+        return if any { move_flags::FORWARD } else { 0 };
+    }
     let mut flags = 0;
     if bindings.pressed(Input::MoveForward) {
         flags |= move_flags::FORWARD;
@@ -242,6 +287,7 @@ pub(super) fn souls_input(
         Res<ButtonInput<MouseButton>>,
         Res<UiKeyboardCapture>,
         Res<BindingsState>,
+        Res<ErControls>,
     ),
     time: Res<Time>,
     view: Res<CombatModeView>,
@@ -269,11 +315,11 @@ pub(super) fn souls_input(
         }
         return;
     }
-    let (keys, mouse, capture, bindings) = raw;
+    let (keys, mouse, capture, bindings, er) = raw;
     let Ok(entity) = me.single() else {
         return;
     };
-    let input = KeyRead::new(&keys, &mouse, &capture);
+    let input = KeyRead::new(&keys, &mouse, &capture, &er);
     let t = time.elapsed_secs();
     let dt = time.delta_secs();
     let features = config.features;
@@ -285,7 +331,8 @@ pub(super) fn souls_input(
     } else {
         1
     };
-    let flags = held_flags(&bindings, features.lock_on && souls.lock.is_some());
+    let locked = features.lock_on && souls.lock.is_some();
+    let flags = held_flags(&bindings, locked, er.free_camera && !locked);
     let moving = flags != 0;
     let now = playback.ticks_at();
 

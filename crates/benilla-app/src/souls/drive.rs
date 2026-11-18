@@ -10,7 +10,13 @@
 //! - **Turn lock.** Inside the kit's no-turn windows the facing is held where it was.
 //! - **Turn rate.** Inside the kit's turn-rate windows the controller caps the frame's turn at the
 //!   window's degrees a second, so an attack tracks a target only so fast.
-//! - **Lock-on.** With a lock, the facing follows the target's bearing and the turn keys strafe.
+//! - **Lock-on.** With a lock, the facing follows the target's bearing and the turn keys strafe;
+//!   under the free camera the camera swings round behind the body toward the target too.
+//! - **Free camera** ([`super::ErControls`]). The camera orbits on its own and movement is
+//!   camera-relative: the held keys name a bearing off the camera, the body turns toward it (fast,
+//!   not instantly) and runs forward. An action's first frames snap the facing to that bearing, so
+//!   a roll or a swing goes where the stick points; after them the kit's turn-rate windows (else
+//!   [`FREE_TRACK_DEGREES`]) let it track.
 //!
 //! Off (or with no kit table), the drive is the default: the controller runs its stock path.
 
@@ -18,20 +24,27 @@ use bevy::prelude::*;
 use benilla_combat_core::{KitAction, Milli};
 
 use super::{
-    current_kit, in_window, running_action, souls_on, Instance, SoulsConfig, SoulsState,
-    YARDS_PER_METRE,
+    current_kit, in_window, running_action, souls_on, ErControls, Instance, SoulsConfig,
+    SoulsState, YARDS_PER_METRE,
 };
 use crate::bindings::{BindingsState, Input};
 use crate::combat_kit::PlayerKit;
 use crate::combat_mode::CombatModeView;
 use crate::combat_playback::CombatPlaybackState;
 use crate::combat_profiles::CombatProfiles;
+use crate::player::camera::FlyCam;
 use crate::player::{Player, SoulsDrive};
 
 /// Debt below this many yards on an axis is not chased (the controller would overshoot it).
 const DEADBAND_YARDS: f32 = 0.25;
 /// A frame's displacement above this is a teleport or a correction, not movement to count.
 const TELEPORT_YARDS: f32 = 5.0;
+/// Under the free camera the body turns toward the run's bearing this fast, degrees a second.
+const FREE_TURN_DEGREES: f32 = 720.0;
+/// An action's facing snaps to the held bearing through its first frames (kit milli-frames).
+const FREE_SNAP_FRAMES: Milli = Milli(3000);
+/// An action with no turn-rate window of its own tracks the held bearing this fast.
+const FREE_TRACK_DEGREES: f32 = 240.0;
 
 /// Root-motion and turn-lock tracking of one running action.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
@@ -78,6 +91,8 @@ pub(super) fn drive_controller(
     profiles: Res<CombatProfiles>,
     playback: Res<CombatPlaybackState>,
     bindings: Res<BindingsState>,
+    er: Res<ErControls>,
+    cams: Query<&FlyCam>,
     targets: Query<&GlobalTransform>,
     mut souls: ResMut<SoulsState>,
     mut player: ResMut<Player>,
@@ -89,22 +104,43 @@ pub(super) fn drive_controller(
         return;
     }
     let features = config.features;
-    let mut drive = SoulsDrive::default();
+    let mut drive = SoulsDrive {
+        free_camera: er.active() && er.free_camera,
+        orbit: er.hides_cursor(),
+        ..SoulsDrive::default()
+    };
 
     // Lock-on: face the target, the turn keys strafe.
+    let mut locked_on = false;
     if features.lock_on {
         if let Some(target) = souls.lock.and_then(|entity| targets.get(entity).ok()) {
             let to = target.translation() - player.pos;
             if to.x * to.x + to.z * to.z > 0.01 {
-                drive.face = Some(yaw_toward(to));
+                let bearing = yaw_toward(to);
+                drive.face = Some(bearing);
+                if drive.free_camera {
+                    drive.cam_yaw = Some(bearing);
+                }
             }
             drive.turn_keys_strafe = true;
+            locked_on = true;
         }
     }
+
+    // The free camera's run: the bearing the held keys name off the camera, without a lock.
+    let free_bearing = cams
+        .single()
+        .ok()
+        .filter(|_| drive.free_camera && !locked_on)
+        .and_then(|cam| run_bearing(&bindings, cam.yaw()));
+    let free_turn = FREE_TURN_DEGREES.to_radians();
 
     let running = current_kit(&kit, &profiles).and_then(|kit| running_action(kit, &playback));
     let Some((instance, action, frame)) = running else {
         souls.drive = DriveTrack::default();
+        if let Some(bearing) = free_bearing {
+            free_run(&mut drive, bearing, free_turn);
+        }
         write_drive(&mut player, drive);
         return;
     };
@@ -118,6 +154,7 @@ pub(super) fn drive_controller(
             held_yaw: None,
         };
     }
+    // Under the free camera the turn keys move as well.
     let movement_held = [
         Input::MoveForward,
         Input::MoveBackward,
@@ -125,7 +162,8 @@ pub(super) fn drive_controller(
         Input::StrafeRight,
     ]
     .into_iter()
-    .any(|input| bindings.pressed(input));
+    .any(|input| bindings.pressed(input))
+        || free_bearing.is_some();
     let released = movement_held && action.cancel.movement.is_some_and(|from| frame >= from);
 
     // Root motion: owed displacement minus what the body moved along the facing.
@@ -160,8 +198,49 @@ pub(super) fn drive_controller(
     if features.turn_rate && !released {
         drive.turn_rate = turn_rate_at(action, frame);
     }
+    // The free camera: released, the body runs off the camera again; inside the action its
+    // first frames snap to the held bearing and the rest track it (never through a no-turn
+    // window, which the turn lock above already holds).
+    if let Some(bearing) = free_bearing {
+        if released {
+            free_run(&mut drive, bearing, free_turn);
+        } else if !(features.turn_lock && locked) {
+            drive.face = Some(bearing);
+            drive.turn_rate = if frame < FREE_SNAP_FRAMES {
+                None
+            } else {
+                drive.turn_rate.or(Some(FREE_TRACK_DEGREES.to_radians()))
+            };
+        }
+    }
     souls.drive = track;
     write_drive(&mut player, drive);
+}
+
+/// The bearing the held movement keys name off the camera's yaw `cam_yaw`, or `None` with none
+/// held (or a cancelled pair). The turn keys count as strafes.
+fn run_bearing(bindings: &BindingsState, cam_yaw: f32) -> Option<f32> {
+    let held = |input: Input| i32::from(bindings.pressed(input));
+    let forward = held(Input::MoveForward) - held(Input::MoveBackward);
+    let right = (held(Input::StrafeRight) | held(Input::TurnRight))
+        - (held(Input::StrafeLeft) | held(Input::TurnLeft));
+    stick_bearing(forward, right, cam_yaw)
+}
+
+/// The yaw a `forward`/`right` stick names off `cam_yaw` (left-positive, as the facing).
+fn stick_bearing(forward: i32, right: i32, cam_yaw: f32) -> Option<f32> {
+    if forward == 0 && right == 0 {
+        return None;
+    }
+    Some(cam_yaw + f32::atan2(-(right as f32), forward as f32))
+}
+
+/// Run forward toward `bearing`, turning at `rate` radians a second; the turn keys move, not turn.
+fn free_run(drive: &mut SoulsDrive, bearing: f32, rate: f32) {
+    drive.face = Some(bearing);
+    drive.axes = Some((1, 0));
+    drive.turn_rate = Some(rate);
+    drive.turn_keys_strafe = true;
 }
 
 /// The turn-rate cap at `frame`, radians a second: the first `turn` window holding it.
@@ -201,5 +280,22 @@ mod tests {
         assert_eq!(chase(0.3), 1);
         assert_eq!(chase(-0.3), -1);
         assert_eq!(chase(0.1), 0);
+    }
+
+    /// The free camera's stick: forward is the camera's yaw, right turns the bearing clockwise
+    /// (negative), back faces the camera.
+    #[test]
+    fn stick_bearing_is_camera_relative() {
+        let cam = 0.5_f32;
+        assert_eq!(stick_bearing(0, 0, cam), None);
+        assert!((stick_bearing(1, 0, cam).unwrap() - cam).abs() < 1e-6);
+        let right = stick_bearing(0, 1, cam).unwrap();
+        assert!((right - (cam - std::f32::consts::FRAC_PI_2)).abs() < 1e-6);
+        let back = stick_bearing(-1, 0, cam).unwrap();
+        assert!(((back - cam).abs() - std::f32::consts::PI).abs() < 1e-6);
+        // Moving right along the bearing is moving along the camera's right.
+        let (forward, _) = basis(right);
+        let (_, cam_left) = basis(cam);
+        assert!((forward + cam_left).length() < 1e-5);
     }
 }

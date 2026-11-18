@@ -567,6 +567,9 @@ pub(crate) struct CameraControl {
     /// `ToggleMouseMove` entered mouselook with no mouse bit (`0x50f910` → `0x50f930`): the
     /// session lasts with no channel held, until a toggle or a button's release leaves it.
     pub(super) toggled: bool,
+    /// The Souls free camera holds this left-look session ([`run_look_session`]'s `hold_orbit`):
+    /// the cursor stays hidden and the mouse orbits until the Souls cursor key summons it.
+    pub(super) souls_orbit: bool,
     /// The keyboard axes the `MoveView*` pairs drive ([`super::camera_axes`]).
     pub(super) view_axes: super::camera_axes::ViewAxes,
     /// Logical cursor position captured when look began, to restore on release.
@@ -724,6 +727,18 @@ impl WorldMouse {
         }
     }
 
+    /// Give this frame's down edges of the buttons `claimed` names to someone else (the Souls
+    /// attacks, [`crate::souls::ErControls`]): the world neither looks nor clicks with them.
+    fn drop_presses(&mut self, claimed: impl Fn(MouseButton) -> bool) {
+        for b in [LookButton::Right, LookButton::Left] {
+            let i = b as usize;
+            if self.down[i] && claimed(b.button()) {
+                self.down[i] = false;
+                self.held[i] = false;
+            }
+        }
+    }
+
     /// `MouselookStart` (`on`) or `MouselookStop`: one bit, whoever set it, so a stop also ends
     /// a right drag in flight, whose release then clears nothing.
     fn mouselook(&mut self, on: bool) {
@@ -772,6 +787,8 @@ pub(super) fn latch_world_mouse(
     window: Single<&Window, With<PrimaryWindow>>,
     mut hosted_vm: crate::script_calls::HostedVm,
     cover: Option<Res<crate::loading_screen::LoadingScreen>>,
+    // The Souls control layer's claim on the mouse buttons (the attacks while the camera orbits).
+    er: Option<Res<crate::souls::ErControls>>,
 ) {
     hosted_vm.run(|mut script| {
         let calls = script
@@ -785,6 +802,9 @@ pub(super) fn latch_world_mouse(
         let world_press = rig.look.is_some() || (cursor_in_viewport(&window, camera) && !over_ui);
         let wm = &mut rig.world_mouse;
         wm.update(&buttons, world_press);
+        if let Some(er) = er.as_deref() {
+            wm.drop_presses(|b| er.claims_mouse(b));
+        }
         // The script's calls, made since the last latch, before this frame's release.
         for call in calls {
             wm.call(call);
@@ -885,6 +905,10 @@ pub(super) fn run_look_session(
     now: f32,
     // The primary window has the OS focus.
     focused: bool,
+    // The Souls orbit ([`crate::player::SoulsDrive::orbit`]): hold this button's look session with
+    // no mouse bit, so the hidden cursor turns the camera with no button down. Left orbits alone
+    // (the free camera); right turns the body with it, as a held mouselook does.
+    hold_orbit: Option<LookButton>,
 ) -> bool {
     // The mouse moves the view only through a held cursor: motion while unfocused, or on the frame
     // that takes the cursor back, is the pointer travelling in another app.
@@ -927,6 +951,25 @@ pub(super) fn run_look_session(
             engage_look(rig, LookButton::Left, focused, window, cursor_opts);
             rig.toggled = true;
         }
+    }
+
+    // The Souls orbit: a toggled look with no channel, held while it is asked for. Its mouse
+    // buttons are the attacks ([`crate::souls::ErControls`]), so no channel converts it; a
+    // scripted `MouselookStart` may, and the session comes back once that ends. Let go (the cursor
+    // key), the cursor reappears at the window's centre.
+    if let Some(button) = hold_orbit {
+        if rig.look.is_none() {
+            engage_look(rig, button, focused, window, cursor_opts);
+            rig.toggled = true;
+        } else if rig.toggled && rig.look != Some(button) {
+            // The free camera switched on or off under a held orbit.
+            rig.look = Some(button);
+        }
+        rig.souls_orbit = true;
+    } else if std::mem::take(&mut rig.souls_orbit) && rig.look.is_some() && rig.toggled {
+        rig.toggled = false;
+        rig.cursor_stash = Some(Vec2::new(window.width(), window.height()) * 0.5);
+        disengage_look(rig, window, cursor_opts);
     }
 
     // Both buttons engage their session on the down edge, with no threshold (`0x51491f`); the click

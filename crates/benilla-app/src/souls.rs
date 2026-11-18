@@ -18,12 +18,15 @@
 //!
 //! - [`input`]: dodge on release (hold to sprint), light, heavy (charge on hold, release early for
 //!   the uncharged swing), running attacks, guard and the guard counter, poise and hyperarmor,
-//!   crouch (`F6`) and the crouch attack, jump attacks, the left-hand chain (`F11`) and the parry
-//!   (`F12`). The last three need rows the kit names (`JumpLightLand`/`JumpHeavyLand`, played on
-//!   landing; `LeftLight1…` or `PairedLight1…`; `Parry`); without them the press does nothing.
+//!   crouch (`X`) and the crouch attack, jump attacks, the left-hand chain (`Mouse5`) and the parry
+//!   (`Shift+MouseRight`). The last three need rows the kit names (`JumpLightLand`/
+//!   `JumpHeavyLand`, played on landing; `LeftLight1…` or `PairedLight1…`; `Parry`); without them the press does nothing.
 //! - [`drive`]: the kit's root motion, no-turn windows and turn-rate caps, and the lock-on
 //!   facing, written to
 //!   [`crate::player::SoulsDrive`] for the controller.
+//! - [`controls`]: the Elden Ring layout: the mouse orbits with the cursor hidden and the buttons
+//!   attack, the cursor key (`LeftCtrl`) brings the cursor up for the hotbars and panels, the
+//!   layout's keys override their WoW bindings, and `E` interacts with what is in front.
 //! - [`targets`]: lock-on, and the hit test of the kit's blade against attackable units.
 //! - [`server`]: the link to the server script: mode, hit reports, sprint, enemy strikes.
 //! - [`hud`]: the stamina bar, the mode chip, the lock-on marker and the strike bars.
@@ -32,6 +35,7 @@
 //!   crouch and airborne loops.
 
 mod config;
+mod controls;
 mod drive;
 mod hud;
 mod input;
@@ -51,6 +55,7 @@ use crate::combat_playback::{
 use crate::combat_profiles::CombatProfiles;
 
 pub(crate) use config::SoulsConfig;
+pub(crate) use controls::ErControls;
 pub(crate) use server::{tap_addon, SwingMute};
 
 /// Metres (the kit's unit) to yards (the world's).
@@ -64,7 +69,15 @@ impl Plugin for SoulsPlugin {
             .init_resource::<SoulsState>()
             .init_resource::<server::SoulsLink>()
             .init_resource::<SwingMute>()
+            .init_resource::<ErControls>()
             .add_systems(Startup, (config::load_souls_config, hud::spawn_hud))
+            .add_systems(Update, controls::claim_inputs.before(crate::ui_script::UiInput))
+            .add_systems(
+                Update,
+                controls::interact_key
+                    .in_set(WorldStage::Input)
+                    .in_set(crate::client_state::InWorldGated),
+            )
             .add_systems(
                 Update,
                 drive::drive_controller

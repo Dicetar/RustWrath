@@ -93,9 +93,36 @@ choices made are below. Status table: [the roadmap](../../../docs/architecture/s
 - New switches `retarget` and `retarget_locomotion`; new accessors `RigPose::binds`,
   `BodyTwist::key_bones`/`last_written`; `apply_body_twist` is `pub(crate)` for the ordering.
 
+## Sixth slice: the Elden Ring control layout (same day)
+
+- `souls/controls.rs` (`ErControls`, switch `er_controls`): with the mode on, the cursor hides
+  and the mouse orbits the camera; left click is light, Shift+left heavy, right click guard,
+  Shift+right parry, `Mouse5` the left hand, `Space` dodge, `Q`/middle lock-on, `X` crouch.
+  A tap of `LeftCtrl` alone brings the cursor up (stock buttons, action bars, panels); another
+  tap puts it away. Panel keys (`[controls] cursor_keys`) and an interaction that opens a window
+  bring it up; the next movement key puts it away.
+- Claimed keys run no WoW binding (`bindings.rs`): `F` runs `JUMP`, `R` the quick-item binding
+  (`ACTIONBUTTON12`), `LeftAlt` `TOGGLERUN` on its press and release (hold to walk; Alt held
+  for it is no ALT- modifier). The number keys and every unnamed key keep their bindings.
+- `E` interacts: the selection in reach, else the cheapest usable thing within 5 yd and 100° of
+  the facing (distance plus 2 yd per radian), as `Interact` (a right-click's dispatch).
+- Free camera (switch `free_camera`, `souls/drive.rs`, `player/controller.rs`): movement is
+  camera-relative, the body turns toward the held bearing at 720°/s; an action's first 3 kit
+  frames snap to it, then the kit's turn rate (else 240°/s). Lock-on picks off the camera's yaw
+  and eases the camera behind the body toward the target.
+- `SoulsBind` (key + Shift) for the combat binds; a plain bind whose key also has a `Shift+` bind
+  waits for Shift up. The world mouse drops claimed presses (`player/camera.rs`), the UI cursor
+  feed hides the cursor while orbiting (`ui_script/input.rs`).
+- An existing `souls.toml` with the old `[binds]` keeps its values: delete the `[binds]` section
+  to take the new layout.
+
 ## Choices made without the owner
 
-- Default binds: light `F9`, heavy `F8`, dodge `V`, guard `F7`, lock-on middle mouse.
+- Default binds (first slice, replaced by the sixth): light `F9`, heavy `F8`, dodge `V`, guard
+  `F7`, lock-on middle mouse.
+- ER layout (sixth slice): Elden Ring's PC defaults where WoW allows them (`LeftCtrl` is the
+  cursor key, not ER's lock-on, which is `Q` and middle mouse); quick item is the twelfth action
+  button; panel keys are the stock panel bindings.
 - Sprint after 0.35 s held, 8 kit points/s drain; guarded hit 25 kit points; guard break 1 s;
   guard counter window 1 s. All authored, all in `input.rs` constants.
 - Lock-on: selection within 30 yd, else the nearest attackable within 20 yd and 70° of the facing;
@@ -109,9 +136,11 @@ choices made are below. Status table: [the roadmap](../../../docs/architecture/s
 
 ## To see it (owner)
 
-Build and launch as usual, enter the world, press `F10`: a gold chip and a stamina bar appear.
-Then `V` (tap and hold while moving), `F9`, `F8` (tap and hold), `F7`, middle mouse on a mob,
-`F6` then `F9` (crouch attack).
+Build and launch as usual, enter the world, press `F10`: a gold chip and a stamina bar appear,
+and the cursor hides. Move the mouse to orbit, W/A/S/D to run relative to the camera. Then left
+click (light), Shift+left (tap and hold: heavy), right click (guard), `Space` (tap and hold
+while moving), `Q` on a mob, `X` then left click (crouch attack), `E` at a chest or corpse.
+Tap `LeftCtrl` for the cursor and the action bars, tap again to orbit.
 Press `F10` again: the HUD goes and stock combat is back. To turn a feature off, write
 `souls.toml` and press `F10` twice:
 
@@ -122,7 +151,11 @@ Set-Content D:\Projects\wow\client\benilla-config\combat\souls.toml "[features]`
 ## Not done, not proven
 
 - Not compiled, not run. New unit cases: `souls/config.rs` (1), `souls/input.rs` (1),
-  `souls/drive.rs` (1), `souls/targets.rs` (3), `souls.rs` (1). CI result: see the branch's run.
+  `souls/drive.rs` (2), `souls/targets.rs` (3), `souls/controls.rs` (1), `souls.rs` (1). CI
+  result: see the branch's run.
+- The ER layout is not seen in game: the orbit hand-off with a scripted `MouselookStart`, the
+  `TOGGLERUN` walk on Alt and the interact pick's reach are untested; the cursor key is
+  `LeftCtrl`, so stock Ctrl-chord bindings still work (a Ctrl chord cancels the tap).
 - The server script is not installed or run. Until the owner copies it into `run\lua_scripts`,
   damage is the stock auto-attack the hit engages. New unit cases in `souls/server.rs` (3).
 - The retarget is not seen in game: the bone roles are found geometrically, not checked against
