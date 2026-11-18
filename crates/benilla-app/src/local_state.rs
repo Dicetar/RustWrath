@@ -134,6 +134,13 @@ pub(crate) fn bindings_character_path(realm: &str, character: &str) -> Option<Pa
     character_path(CharacterFile::Bindings, realm, character)
 }
 
+/// `benilla-config/combat/player.kit`: the local player's Souls kit (`rustwrath-kit 1`), made on
+/// this machine by `import_kit` from data the owner generated from their own copy of the game.
+/// Read only ([`crate::combat_kit`]); nothing in the client writes it.
+pub(crate) fn player_kit_path() -> Option<PathBuf> {
+    home().map(|h| h.join("combat/player.kit"))
+}
+
 /// `benilla-config/saved-variables.lua`: the flat channel our FrameXML saves through
 /// `RegisterForSave` (the `SavedVariables.lua` analog), written whole at logout, read at UI load.
 pub(crate) fn saved_variables_path() -> Option<PathBuf> {
