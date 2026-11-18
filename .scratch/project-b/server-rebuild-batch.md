@@ -39,13 +39,29 @@ started 01:48. Previous worldserver kept as `run\bin\worldserver.20261007.exe.ba
 
 ## Planned (not ready yet)
 
-### 2. Souls combat server slice
+### 2. Souls combat server slice — no rebuild needed (ALE Lua)
 
-Handoff `2026-11-14-souls-client-authority-direction.md` §6 H: a new module beside
-`mod-multiclass` (swing/hit/verdict messages), the core edit in `UnitAI::DoMeleeAttackIfReady`
-(strike cast while the mode is on), gating player auto-attack and the player-swing damage maths.
-It changes the same melee path as item 1, so the two belong in one rebuild. The build order is
-still an open owner decision; the client slices come first.
+Handoff `2026-11-14-souls-client-authority-direction.md` §6 H planned a C++ module and a core
+edit in `UnitAI::DoMeleeAttackIfReady`. **Superseded 2026-11-18:** the whole slice is ALE Lua
+(item 4), `integrations/ale/rustwrath_souls.lua` in the RustWrath repo. No core edit, no
+rebuild, no restart.
+
+- **Install:** copy `integrations/ale/rustwrath_souls.lua` into `run\lua_scripts`. ALE reloads
+  it within a second. Deleting the file turns the whole slice off; `.reload ALE` reloads by hand.
+- **What it does** (only for players whose client sent `MODE 1`, i.e. F10 on):
+  - swallows the client's `RWSOULS` addon self-whispers and answers the same way;
+  - blocks the player's `CMSG_ATTACKSWING` (their swings are the kit's);
+  - deals the client's reported hits as stock physical damage (weapon roll × motion value,
+    cleave falloff and blob share per owner decisions 6-10, riposte ×3 after a parry);
+  - raises the run speed ×1.4 while the client sprints, restored on stop/F10 off/logout/reload;
+  - takes over creatures fighting a Souls player: sets `UNIT_FLAG_PACIFIED` so stock melee stops,
+    and drives telegraphed strikes (windup 40 % of the attack time, 0.6-1.5 s, creature stops and
+    faces the victim), resolved by the client's verdict or the server's own reach/cone check.
+- **Known side effect:** `UNIT_FLAG_PACIFIED` also blocks the creature's pacify-prevented
+  (physical) spells while it is managed. Casters still cast.
+- **Hand-back:** F10 off, logout, the creature leaving combat, or a script reload/shutdown clears
+  the flag and resumes `MoveChase`.
+- Item 1 (deployed) stays: it fixed stock melee, which every non-Souls player still uses.
 
 ### 3. Spellmaking submit shim (live rules)
 

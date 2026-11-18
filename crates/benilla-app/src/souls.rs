@@ -7,10 +7,12 @@
 //! movement, facing, targeting and combat return untouched. Each feature also has its own switch
 //! in `benilla-config/combat/souls.toml` ([`config`]), re-read every time `F10` turns the mode on.
 //!
-//! **Presentation-only until the server slice.** The prediction runs the same engine the server
-//! will; nothing here claims damage. A landed hit is logged and, with `engage_on_hit`, starts the
-//! stock melee swing on the target (`CMSG_ATTACKSWING`), so the server's own auto-attack deals
-//! damage in the interim. Sprint drains the predicted bar but cannot raise the server's run speed.
+//! **The server half** is an ALE Lua script, `integrations/ale/rustwrath_souls.lua`, which the owner
+//! copies into the server's `lua_scripts`. While it answers ([`server`]), landed hits are reported
+//! to it for Souls damage (cleave and riposte included), sprint raises the run speed, and enemy
+//! melee becomes telegraphed strikes the client judges (dodge, guard, parry or hit). Without it a
+//! landed hit falls back to `engage_on_hit`: the stock melee swing starts on the target
+//! (`CMSG_ATTACKSWING`), so the server's own auto-attack deals damage.
 //!
 //! The pieces:
 //!
@@ -23,12 +25,14 @@
 //!   facing, written to
 //!   [`crate::player::SoulsDrive`] for the controller.
 //! - [`targets`]: lock-on, and the hit test of the kit's blade against attackable units.
-//! - [`hud`]: the stamina bar, the mode chip and the lock-on marker.
+//! - [`server`]: the link to the server script: mode, hit reports, sprint, enemy strikes.
+//! - [`hud`]: the stamina bar, the mode chip, the lock-on marker and the strike bars.
 
 mod config;
 mod drive;
 mod hud;
 mod input;
+mod server;
 mod targets;
 
 use bevy::prelude::*;
@@ -43,6 +47,7 @@ use crate::combat_playback::{
 use crate::combat_profiles::CombatProfiles;
 
 pub(crate) use config::SoulsConfig;
+pub(crate) use server::{tap_addon, SwingMute};
 
 /// Metres (the kit's unit) to yards (the world's).
 const YARDS_PER_METRE: f32 = 1.093_61;
@@ -53,6 +58,8 @@ impl Plugin for SoulsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SoulsConfig>()
             .init_resource::<SoulsState>()
+            .init_resource::<server::SoulsLink>()
+            .init_resource::<SwingMute>()
             .add_systems(Startup, (config::load_souls_config, hud::spawn_hud))
             .add_systems(
                 Update,
@@ -67,6 +74,7 @@ impl Plugin for SoulsPlugin {
                     input::souls_input,
                     targets::toggle_lock,
                     targets::resolve_hits,
+                    server::drive_link,
                     targets::hold_clip,
                     hud::drive_hud,
                 )

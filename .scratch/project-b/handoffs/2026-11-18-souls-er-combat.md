@@ -37,6 +37,30 @@ choices made are below. Status table: [the roadmap](../../../docs/architecture/s
 - Wrapped the souls files' over-long lines. CI's `fmt` step fails on main repo-wide (2,559 diffs
   in 422 files since at least `cd5afee5`), so clippy and tests are skipped there; not this task's.
 
+## Third slice: the server half (same day)
+
+- `integrations/ale/rustwrath_souls.lua`: the server slice as ALE Lua, no core edit and no
+  rebuild. Install and side effects: `.scratch/project-b/server-rebuild-batch.md` item 2.
+- `souls/server.rs`: the client half. Addon self-whispers with the prefix `RWSOULS`
+  (`ui_chat/net.rs` hands them over before the chat log sees them). Sends `HELLO`, `MODE 1|0`
+  (keepalive every 10 s), `SPRINT`, `SWING`, `HIT` and `VERDICT`; reads `STRIKE`, `RESOLVE`,
+  `PARRIED` and `SWING`.
+- Hits: with the script up, `targets.rs` reports each window's struck guids (nearest first) and
+  the motion value instead of starting stock melee; the server deals the damage.
+- Enemy strikes: the client judges its own strikes at the deadline (reach + 0.5 yd, 120° cone from
+  the creature's facing, then parry > dodge i-frames > guard > hit) and answers the verdict;
+  `hud.rs` draws a windup bar over each striking enemy (orange, red in the last fifth; grey when
+  on someone else). A parry turns the lock marker gold for the riposte window.
+- `creature_anim/net.rs`: while the script reports, the server's damage report for the player's
+  hit (and another Souls player's) does not replay a stock swing; its impact fires at once so
+  floats and blood still show. Other Souls players' kit actions arrive as `SWING` and play a
+  generic attack, parry or dodge anim.
+- New switches: `server` (off = the stock-melee fallback even with the script installed) and
+  `enemy_strikes` (off = strikes are shown but the client sends no verdict; the server judges).
+- Known: the creature swings twice per strike (the emote 350 ms before resolve, then the
+  damage report's swing); the verdict must arrive within 500 ms of the deadline or the server
+  judges by itself; pacified creatures also lose their physical spells while managed.
+
 ## Choices made without the owner
 
 - Default binds: light `F9`, heavy `F8`, dodge `V`, guard `F7`, lock-on middle mouse.
@@ -67,8 +91,8 @@ Set-Content D:\Projects\wow\client\benilla-config\combat\souls.toml "[features]`
 
 - Not compiled, not run. New unit cases: `souls/config.rs` (1), `souls/input.rs` (1),
   `souls/drive.rs` (1), `souls/targets.rs` (3), `souls.rs` (1). CI result: see the branch's run.
-- Damage is the stock auto-attack the hit engages; Souls hit damage, authoritative i-frames and
-  guard, sprint speed and gating stock auto-attack need the server slice (roadmap).
+- The server script is not installed or run. Until the owner copies it into `run\lua_scripts`,
+  damage is the stock auto-attack the hit engages. New unit cases in `souls/server.rs` (3).
 - WoW stand-in clips still play (no retarget); the crouch has no pose.
 - Jump, left-hand and parry presses wait for kit rows; poise numbers are authored stand-ins
   until the server sends poise damage.

@@ -37,6 +37,8 @@ crouch = true
 jump_attacks = true
 left_hand = true
 parry = true
+server = true
+enemy_strikes = true
 
 [binds]  # A-Z, 0-9, F1-F12 (not F10), Space, Tab, Backquote, LeftShift, LeftCtrl, LeftAlt,
          # CapsLock, MouseLeft, MouseRight, MouseMiddle, Mouse4, Mouse5
@@ -56,7 +58,7 @@ parry = "F12"
 |---|---|---|---|
 | Light chain (Light1–5), roll/backstep follow-ups | done (kit slice) | `combat_kit::resolve_press` | — |
 | Dodge on release, direction from held keys, backstep standing | done | `souls/input.rs` | — |
-| Sprint (hold dodge while moving), stamina drain | done; speed is stock run speed (server) | `souls/input.rs` | `sprint` |
+| Sprint (hold dodge while moving), stamina drain | done; ×1.4 run speed from the server script | `souls/input.rs` | `sprint` |
 | Running light/heavy (RunLight/RunHeavy) | done | `souls/input.rs` | `running_attacks` |
 | Heavy chain (Heavy1→Heavy2) | done | `souls/input.rs` | `heavy` |
 | Charged heavy: hold charges, release in the window swaps to the uncharged swing (refunded) | done | `souls/input.rs` | `charge` |
@@ -64,36 +66,39 @@ parry = "F12"
 | Movement cancel of recovery | done | `souls/drive.rs` | `root_motion` |
 | Turn lock in no-turn windows | done | `souls/drive.rs` | `turn_lock` |
 | Lock-on (toggle, auto-pick, break at range/death), A/D circle | done | `souls/targets.rs`, `souls/drive.rs` | `lock_on` |
-| I-frames: an incoming hit in a dodge's i-frames does not stagger | done (prediction only) | `combat_playback.rs` | `iframes` |
+| I-frames: an incoming hit in a dodge's i-frames does not stagger | done; with the server script a strike in them is a dodge (no damage) | `combat_playback.rs` | `iframes` |
 | Stagger: an incoming hit interrupts until the attack's first hit | done (kit slice) | `combat_playback.rs` | — |
-| Guard: hold to block, stamina per guarded hit, guard break at zero | done (prediction only) | `souls/input.rs` | `guard` |
+| Guard: hold to block, stamina per guarded hit, guard break at zero | done; with the server script a guarded strike deals 30 % | `souls/input.rs` | `guard` |
 | Guard counter: heavy right after a guarded hit | done | `souls/input.rs` | `guard_counter` |
 | Hit detection from the kit's blade (reach, arc, per-hit windows) | done (client test) | `souls/targets.rs` | `hits` |
 | Hit-stop and camera jolt; the player's clips pause for the stop | done | `souls/targets.rs`, `camera_shake.rs` | `hit_stop` |
-| Damage | interim: a landed hit starts stock melee on the target | `souls/targets.rs` | `engage_on_hit` |
-| Stamina bar, mode chip, lock-on marker | done | `souls/hud.rs` | `hud` |
+| Damage: weapon roll × motion value, cleave falloff, blob share | done by the server script; without it a landed hit starts stock melee | `souls/targets.rs`, `souls/server.rs`, `integrations/ale/rustwrath_souls.lua` | `server` (`engage_on_hit` without it) |
+| Stock auto-attack off while the mode is on | done by the server script (blocks `CMSG_ATTACKSWING`) | `rustwrath_souls.lua` | `server` |
+| Enemy telegraphs: creatures stop melee and wind up strikes (40 % of attack time, 0.6–1.5 s), a windup bar over them, the client judges reach/cone/i-frames/parry/guard | done (server script + client) | `souls/server.rs`, `souls/hud.rs`, `rustwrath_souls.lua` | `enemy_strikes`, `server` |
+| Other Souls players' swings shown (generic attack/parry/dodge anims) | done | `souls/server.rs` | `server` |
+| Stamina bar, mode chip (teal while the server answers), lock-on marker (gold while a riposte is open) | done | `souls/hud.rs` | `hud` |
 | Turn-rate caps (`turn` windows, degrees a second) | done | `souls/drive.rs`, `player/controller.rs` | `turn_rate` |
 | Poise: each hit taken costs poise and does not interrupt; at zero it breaks and staggers; refills 30 s after the last hit | done (prediction only, authored numbers) | `souls/input.rs`, `combat_playback.rs` | `poise` |
 | Hyperarmor: inside a heavy's windup and swing a hit costs half the poise | done (prediction only) | `souls/input.rs` | `poise` |
 | Crouch (toggle) and the crouch attack (light from a crouch) | done; no crouch pose or speed (clip and server) | `souls/input.rs` | `crouch` |
 | Jump attacks (light/heavy in the air) | done; needs `JumpLight`/`JumpHeavy` rows, which the owner's kit lacks | `souls/input.rs` | `jump_attacks` |
 | Left-hand chain | done; needs `LeftLight1…` or `PairedLight1…` rows (the importer's opt-in) | `souls/input.rs` | `left_hand` |
-| Parry: the `Parry` row's `iframes` window deflects a hit | done (prediction only); needs a `Parry` row; riposte and attacker stagger need the server | `souls/input.rs` | `parry` |
+| Parry: the `Parry` row's `iframes` window deflects a hit | done; needs a `Parry` row; with the server script a parried strike opens a ×3 riposte on that creature for 1.5 s | `souls/input.rs` | `parry` |
 | Clip retarget (ER motion on the WoW rig) | not done (step F) | — | — |
 
-## Needs the server slice (queued, not rebuilt)
+## The server half (ALE Lua, no rebuild)
 
-- Souls hits as damage: an opcode carrying the hit (action, hit index, target), resolved by the
-  server engine with motion values and guard damage, and `effective` mode confirmation.
-- Incoming i-frames and guard as authority: today they only shield the client's prediction; the
-  server still lands the stock melee hit and its damage.
-- Sprint speed, and stopping stock auto-attack while the mode is on (right-click `StartAttack`
-  still swings).
-- Enemy telegraphs (cast-time strikes) for the enemy brain.
-- Poise and poise damage per attack, the parry's riposte and the attacker's parry stagger.
+`integrations/ale/rustwrath_souls.lua`, copied into the server's `run\lua_scripts` (ALE reloads it
+by itself; deleting it turns it off). The client talks to it over addon self-whispers with the
+prefix `RWSOULS` (`souls/server.rs`): `HELLO`, `MODE 1|0` every 10 s while F10 is on, `SPRINT`,
+`HIT <mv%> <guids>`, `SWING <action>`, `VERDICT <id> <outcome>`; the server answers `STRIKE`,
+`RESOLVE`, `PARRIED`, `SWING`. F10 off sends `MODE 0` and the server hands every creature back to
+stock AI. Without the script the client stays on the stock-melee fallback (`engage_on_hit`).
+Install and side effects: `.scratch/project-b/server-rebuild-batch.md` item 2.
 
-## Order of the next slices
+## Still open
 
-1. Server mode channel and the hit opcode (rebuild batch).
-2. Clip retarget (ER motion on the WoW rig), and a crouch pose.
-3. Kit rows for jumps, the left hand and the parry (`kit_import` options), then tuning.
+- Clip retarget (ER motion on the WoW rig), and a crouch pose (step F).
+- Kit rows for jumps, the left hand and the parry (`kit_import` options), then tuning.
+- Poise damage on enemies (enemy stagger from the player's hits), and creature-specific strike
+  animations (the server plays the generic attack emote).

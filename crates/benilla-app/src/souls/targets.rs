@@ -8,17 +8,18 @@
 //!   and the arc (the widest blade bearing, clamped). An attackable, living unit within the reach
 //!   (plus its own combat reach), inside the arc and roughly level is hit, once per hit per unit.
 //!   A hit is logged; with `hit_stop` the playback clock and the player's clips freeze for the
-//!   kit's hit-stop and the camera jolts; with `engage_on_hit` the stock melee swing starts on
-//!   the target, so the server's auto-attack deals damage until the server slice resolves Souls
-//!   hits.
+//!   kit's hit-stop and the camera jolts. With the server script answering
+//!   ([`super::server`]), each window's struck units go to it, nearest first, for Souls damage;
+//!   without it, `engage_on_hit` starts the stock melee swing on the target instead.
 
 use std::time::Duration;
 
 use bevy::prelude::*;
 use benilla_combat_core::{KitHit, Milli};
 
-use super::input::KeyRead;
 use super::drive::yaw_toward;
+use super::input::KeyRead;
+use super::server::SoulsLink;
 use super::{
     current_kit, running_action, souls_on, Instance, SoulsConfig, SoulsState, YARDS_PER_METRE,
 };
@@ -80,7 +81,7 @@ fn attackable(relations: &RelationWorld, guid: u64, store: &ObjectStore) -> bool
 }
 
 /// The angle between the facing `yaw` and the bearing to `to`, radians in `[0, PI]`.
-fn off_facing(yaw: f32, to: Vec3) -> f32 {
+pub(super) fn off_facing(yaw: f32, to: Vec3) -> f32 {
     let delta = yaw_toward(to) - yaw;
     (delta + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
 }
@@ -199,6 +200,7 @@ pub(super) fn resolve_hits(
     mut shakes: ResMut<CameraShakes>,
     mut playback: ResMut<CombatPlaybackState>,
     mut souls: ResMut<SoulsState>,
+    mut link: ResMut<SoulsLink>,
 ) {
     let features = config.features;
     if !souls_on(&view) || !features.hits {
@@ -231,6 +233,8 @@ pub(super) fn resolve_hits(
             continue;
         }
         let (reach, arc) = hit_shape(hit);
+        // This window's struck units, for the server: (distance, guid).
+        let mut struck: Vec<(f32, u64)> = Vec::new();
         for (entity, guid, store, at) in &units {
             if track.struck.contains(&(index, entity)) {
                 continue;
@@ -246,6 +250,7 @@ pub(super) fn resolve_hits(
                 continue;
             }
             track.struck.push((index, entity));
+            struck.push((distance, guid.0));
             info!(
                 "souls: {} hit {} lands on {:#x} (motion value {}, {:.1} yd)",
                 action.name,
@@ -258,12 +263,17 @@ pub(super) fn resolve_hits(
                 let millis = u64::from(hit.hit_stop.0.max(0).unsigned_abs());
                 stop = stop.max(Duration::from_millis(millis));
             }
-            if features.engage_on_hit && souls.engaged != Some(guid.0) {
+            if !link.reporting() && features.engage_on_hit && souls.engaged != Some(guid.0) {
                 if let Some(net) = net.as_deref() {
                     let _ = net.0.send(crate::net::ClientCommand::AttackSwing { guid: guid.0 });
                     souls.engaged = Some(guid.0);
                 }
             }
+        }
+        if link.reporting() && !struck.is_empty() {
+            struck.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let guids: Vec<u64> = struck.iter().map(|(_, guid)| *guid).collect();
+            link.report_hit(hit.motion_value.0, &guids);
         }
     }
     if stop > Duration::ZERO {

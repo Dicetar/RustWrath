@@ -15,7 +15,7 @@
 //! iframes = true      # a hit inside a dodge's i-frames does not stagger
 //! hits = true         # the kit's hit windows test the blade's reach against attackable units
 //! hit_stop = true     # a landed hit freezes the action briefly and jolts the camera
-//! engage_on_hit = true # a landed hit starts stock melee on the target (until the server slice)
+//! engage_on_hit = true # a landed hit starts stock melee on the target (without the server script)
 //! hud = true          # stamina bar, mode chip and lock-on marker
 //! turn_rate = true    # the kit's turn-rate windows cap how fast an attack turns
 //! poise = true        # hits take poise before they stagger; heavy windups halve it (hyperarmor)
@@ -23,6 +23,9 @@
 //! jump_attacks = true # light/heavy in the air are the kit's jump attacks, when it has them
 //! left_hand = true    # the left key runs the kit's left-hand chain, when it has one
 //! parry = true        # the parry key runs the kit's Parry, when it has one
+//! server = true       # talk to the server script (integrations/ale/rustwrath_souls.lua): hits
+//!                     # are reported for Souls damage, sprint raises the run speed
+//! enemy_strikes = true # judge the server's telegraphed enemy strikes (dodge, guard, parry)
 //!
 //! [binds]             # key names: A-Z, 0-9, F1-F12, Space, Tab, Backquote, LeftShift,
 //! light = "F9"        # LeftCtrl, LeftAlt, CapsLock, MouseLeft, MouseRight, MouseMiddle,
@@ -67,6 +70,8 @@ pub(crate) struct SoulsFeatures {
     pub(crate) jump_attacks: bool,
     pub(crate) left_hand: bool,
     pub(crate) parry: bool,
+    pub(crate) server: bool,
+    pub(crate) enemy_strikes: bool,
 }
 
 impl Default for SoulsFeatures {
@@ -92,6 +97,8 @@ impl Default for SoulsFeatures {
             jump_attacks: true,
             left_hand: true,
             parry: true,
+            server: true,
+            enemy_strikes: true,
         }
     }
 }

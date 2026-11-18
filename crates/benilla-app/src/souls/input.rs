@@ -215,7 +215,7 @@ fn left_action(kit: &Kit, running: Option<ActionId>) -> Option<ActionId> {
 }
 
 /// Whether the running action is a dodge inside its i-frames.
-fn in_iframes(playback: &CombatPlaybackState, profiles: &CombatProfiles) -> bool {
+pub(super) fn in_iframes(playback: &CombatPlaybackState, profiles: &CombatProfiles) -> bool {
     let dodge = playback
         .engine
         .as_ref()
@@ -226,8 +226,8 @@ fn in_iframes(playback: &CombatPlaybackState, profiles: &CombatProfiles) -> bool
 }
 
 /// Whether the running action is the kit's `Parry` inside its window (its `iframes` row): a hit
-/// there is deflected. The riposte and the attacker's stagger wait for the server slice.
-fn in_parry_window(kit: &Kit, playback: &CombatPlaybackState) -> bool {
+/// there is deflected, and an enemy strike judged there is a parry ([`super::server`]).
+pub(super) fn in_parry_window(kit: &Kit, playback: &CombatPlaybackState) -> bool {
     running_action(kit, playback).is_some_and(|(_, action, frame)| {
         action.name == "Parry" && action.iframes.is_some_and(|window| in_window(frame, window))
     })

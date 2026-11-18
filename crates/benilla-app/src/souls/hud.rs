@@ -1,13 +1,18 @@
-//! The Souls HUD: the predicted stamina bar (bottom centre), a mode chip at its left end, and a
-//! marker on the locked-on unit. Plain coloured quads above the world (no text yet). Hidden when
-//! Souls combat is off, the `hud` switch is off, or there is no local player.
+//! The Souls HUD: the predicted stamina bar (bottom centre), a mode chip at its left end, a
+//! marker on the locked-on unit, and a windup bar over each enemy telegraphing a strike
+//! ([`super::server`]). Plain coloured quads above the world (no text yet). Hidden when Souls
+//! combat is off, the `hud` switch is off, or there is no local player.
 //!
 //! The bar is green; red for a moment after a press refused for stamina, blue while guarding,
-//! yellow while sprinting. The chip is gold with the kit's table, grey on the stock fallback.
+//! yellow while sprinting. The chip is gold with the kit's table, grey on the stock fallback; it
+//! turns teal while the server script answers. The marker is red, gold while a riposte is open. A
+//! strike bar fills over its windup: orange for a strike on us (red in its last fifth), grey for
+//! one on someone else.
 
 use bevy::prelude::*;
 use benilla_world::view::WorldCamera;
 
+use super::server::SoulsLink;
 use super::{current_kit, souls_on, SoulsConfig, SoulsState};
 use crate::combat_kit::PlayerKit;
 use crate::combat_mode::CombatModeView;
@@ -22,6 +27,11 @@ const CHIP: f32 = 14.0;
 const MARKER: f32 = 10.0;
 /// The marker sits this far above the locked unit's feet, yards.
 const MARKER_HEIGHT_YARDS: f32 = 1.6;
+/// Strike bars: how many can show at once, their full size, and their height over the feet.
+const STRIKE_BARS: u8 = 4;
+const STRIKE_WIDTH: f32 = 56.0;
+const STRIKE_HEIGHT: f32 = 6.0;
+const STRIKE_HEIGHT_YARDS: f32 = 2.6;
 
 /// One HUD quad.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
@@ -30,6 +40,8 @@ pub(super) enum HudPart {
     Fill,
     Chip,
     Lock,
+    /// The n-th strike bar.
+    Strike(u8),
 }
 
 /// Spawn the quads once, parked hidden.
@@ -96,6 +108,29 @@ pub(super) fn spawn_hud(mut commands: Commands) {
         GlobalZIndex(900),
         Visibility::Hidden,
     ));
+    for index in 0..STRIKE_BARS {
+        commands.spawn((
+            HudPart::Strike(index),
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Px(0.0),
+                height: Val::Px(STRIKE_HEIGHT),
+                ..default()
+            },
+            BackgroundColor(Color::srgb(0.95, 0.5, 0.1)),
+            GlobalZIndex(900),
+            Visibility::Hidden,
+        ));
+    }
+}
+
+/// A strike bar's colour.
+fn strike_color(mine: bool, progress: f32) -> Color {
+    match (mine, progress >= 0.8) {
+        (true, true) => Color::srgb(0.95, 0.12, 0.08),
+        (true, false) => Color::srgb(0.95, 0.5, 0.1),
+        (false, _) => Color::srgb(0.6, 0.6, 0.6),
+    }
 }
 
 fn shown(visible: bool) -> Visibility {
@@ -116,6 +151,7 @@ pub(super) fn drive_hud(
     profiles: Res<CombatProfiles>,
     playback: Res<CombatPlaybackState>,
     souls: Res<SoulsState>,
+    link: Res<SoulsLink>,
     me: Query<(), With<SelfPlayer>>,
     camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
     targets: Query<&GlobalTransform, Without<HudPart>>,
@@ -138,29 +174,53 @@ pub(super) fn drive_hud(
     } else {
         Color::srgb(0.2, 0.75, 0.25)
     };
-    let chip = if current_kit(&kit, &profiles).is_some() {
+    let chip = if link.up {
+        Color::srgb(0.2, 0.75, 0.75)
+    } else if current_kit(&kit, &profiles).is_some() {
         Color::srgb(0.85, 0.7, 0.2)
     } else {
         Color::srgb(0.5, 0.5, 0.5)
+    };
+    let project = |at: Vec3| {
+        let (camera, view_at) = camera.single().ok()?;
+        camera.world_to_viewport(view_at, at).ok()
+    };
+    // The strike bars: each telegraphed strike over its unit.
+    let strikes: Vec<(Vec2, f32, bool)> = link
+        .shown
+        .iter()
+        .filter(|_| on)
+        .filter_map(|strike| {
+            let at = project(strike.at + Vec3::Y * STRIKE_HEIGHT_YARDS)?;
+            Some((at, strike.progress, strike.mine))
+        })
+        .take(usize::from(STRIKE_BARS))
+        .collect();
+    let lock_color = if link.riposte.is_some() {
+        Color::srgb(0.95, 0.8, 0.2)
+    } else {
+        Color::srgb(0.9, 0.15, 0.1)
     };
     // The marker: the locked unit projected through the world camera.
     let marker = souls
         .lock
         .filter(|_| on)
         .and_then(|entity| targets.get(entity).ok())
-        .and_then(|at| {
-            let (camera, view_at) = camera.single().ok()?;
-            camera
-                .world_to_viewport(view_at, at.translation() + Vec3::Y * MARKER_HEIGHT_YARDS)
-                .ok()
-        });
+        .and_then(|at| project(at.translation() + Vec3::Y * MARKER_HEIGHT_YARDS));
 
     for (part, mut node, mut color, mut visibility) in &mut parts {
         let (visible, wanted) = match part {
             HudPart::Bar => (on && engine.is_some(), None),
             HudPart::Fill => (true, Some(fill)),
             HudPart::Chip => (on, Some(chip)),
-            HudPart::Lock => (marker.is_some(), None),
+            HudPart::Lock => (marker.is_some(), Some(lock_color)),
+            HudPart::Strike(index) => {
+                let strike = strikes.get(usize::from(*index));
+                (
+                    strike.is_some(),
+                    strike.map(|&(_, progress, mine)| strike_color(mine, progress)),
+                )
+            }
         };
         let visible = if *part == HudPart::Fill {
             Visibility::Inherited
@@ -188,6 +248,18 @@ pub(super) fn drive_hud(
                     if node.left != left || node.top != top {
                         node.left = left;
                         node.top = top;
+                    }
+                }
+            }
+            HudPart::Strike(index) => {
+                if let Some(&(at, progress, _)) = strikes.get(usize::from(*index)) {
+                    let left = Val::Px(at.x - STRIKE_WIDTH / 2.0);
+                    let top = Val::Px(at.y - STRIKE_HEIGHT / 2.0);
+                    let width = Val::Px(STRIKE_WIDTH * progress.max(0.05));
+                    if node.left != left || node.top != top || node.width != width {
+                        node.left = left;
+                        node.top = top;
+                        node.width = width;
                     }
                 }
             }

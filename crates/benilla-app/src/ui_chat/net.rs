@@ -137,6 +137,10 @@ fn chat(
     // (`0x49d72d`), and needs no `CMSG_CHAT_IGNORED`: vmangos refuses addon whispers
     // (`ChatHandler.cpp:84-103`).
     if m.is_addon() {
+        // The Souls server script's channel (`souls::server`): never shown, never an addon event.
+        if crate::souls::tap_addon(&m.text) {
+            return;
+        }
         if !social.is_ignored(m.sender_guid) {
             debug!(
                 "net: addon chat [{:#04x}] from {:#x}: {:?} (suppressed — not a chat line)",
