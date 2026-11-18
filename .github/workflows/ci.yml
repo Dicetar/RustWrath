@@ -66,8 +66,19 @@ jobs:
         uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - name: fmt
         run: cargo fmt --all -- --check
+      # Warnings, not `-D warnings`: a crate's findings do not stop the build, so every crate is
+      # linted and the whole list shows in one run. The replay (Cargo keeps each crate's
+      # diagnostics) in the short format fails the step on any finding in crates/.
       - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: |
+          set -o pipefail
+          cargo clippy --workspace --all-targets
+          cargo clippy --workspace --all-targets --message-format=short --color never 2>&1 \
+            | tee clippy.txt
+          if grep -qE '^crates/[^ ]+:[0-9]+:[0-9]+: (warning|error)' clippy.txt; then
+            echo "::error::$(grep -cE '^crates/[^ ]+:[0-9]+:[0-9]+: (warning|error)' clippy.txt) clippy findings"
+            exit 1
+          fi
       # The crates this push changed, whose tests run (scripts/ci-changed-packages.py): a dependent
       # crate's tests and a root-only change run none. A dispatch with `all` tests the workspace.
       - name: changed

@@ -138,7 +138,7 @@ fn load_wrath(bytes: &[u8]) -> Result<HashMap<u32, ChainEffect>> {
         .get(records_end..strings_end)
         .context("SpellChainEffects.dbc truncated string block")?;
     let mut rows = HashMap::with_capacity(header.record_count as usize);
-    for row in records.chunks_exact(177) {
+    for row in records.as_chunks::<177>().0 {
         let id = row.u32_at(0).context("SpellChainEffects.dbc missing id")?;
         let offset = row
             .u32_at(28)

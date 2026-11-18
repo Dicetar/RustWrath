@@ -383,10 +383,10 @@ impl CharCreateCatalog {
                     bail!("customization ranges: race {race} sex {sex} is missing");
                 }
             }
-            if self.race_file(race).map_or(true, str::is_empty) {
+            if self.race_file(race).is_none_or(str::is_empty) {
                 bail!("ChrRaces: playable race {race} has no fileString");
             }
-            if self.race_name(race).map_or(true, str::is_empty) {
+            if self.race_name(race).is_none_or(str::is_empty) {
                 bail!("ChrRaces: playable race {race} has no name");
             }
             if self.class_list(race).is_empty() {

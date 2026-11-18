@@ -1163,10 +1163,8 @@ impl Heap {
                         gray.push(Value::Table(m));
                     }
                 }
-                V::Thread(thread) => {
-                    if self.threads.mark(thread.0) {
-                        self.thread(thread).roots(&mut gray, &mut gray_upvals);
-                    }
+                V::Thread(thread) if self.threads.mark(thread.0) => {
+                    self.thread(thread).roots(&mut gray, &mut gray_upvals);
                 }
                 _ => {}
             }

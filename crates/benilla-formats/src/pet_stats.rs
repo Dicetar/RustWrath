@@ -94,13 +94,8 @@ impl PetPersonalities {
 }
 
 /// `PetLoyalty.dbc`: loyalty level to its localized name.
+#[derive(Default)]
 pub struct PetLoyaltyNames(HashMap<u32, String>);
-
-impl Default for PetLoyaltyNames {
-    fn default() -> Self {
-        Self(HashMap::new())
-    }
-}
 
 impl PetLoyaltyNames {
     /// The name for a loyalty level. `None` is `GetPetLoyalty`'s nil, for level `0` and past the

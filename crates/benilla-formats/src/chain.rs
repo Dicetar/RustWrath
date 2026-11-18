@@ -99,8 +99,8 @@ impl Chain {
                 .collect();
             let mut names: Vec<String> = entries
                 .iter()
-                .filter_map(|e| e.path().is_file().then(|| e.file_name().into_string().ok()))
-                .flatten()
+                .filter(|e| e.path().is_file())
+                .filter_map(|e| e.file_name().into_string().ok())
                 .collect();
             names.sort();
 
@@ -166,7 +166,7 @@ impl Chain {
                     }
                 }
                 locale_dirs.sort_by_key(|(name, _)| name.to_ascii_lowercase());
-                let configured = configured_locale(&path);
+                let configured = configured_locale(path);
                 let chosen = configured
                     .as_deref()
                     .and_then(|want| {

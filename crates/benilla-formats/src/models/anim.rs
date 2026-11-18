@@ -944,16 +944,18 @@ fn parse_m2_animations_wrath(
     }
 
     let constant = |keys: &[(u32, [f32; 3])]| -> Vec<(f32, [f32; 3])> {
-        keys.len()
-            .eq(&1)
-            .then(|| vec![(0.0, keys[0].1)])
-            .unwrap_or_default()
+        if keys.len() == 1 {
+            vec![(0.0, keys[0].1)]
+        } else {
+            Vec::new()
+        }
     };
     let constant_q = |keys: &[(u32, [f32; 4])]| -> Vec<(f32, [f32; 4])> {
-        keys.len()
-            .eq(&1)
-            .then(|| vec![(0.0, keys[0].1)])
-            .unwrap_or_default()
+        if keys.len() == 1 {
+            vec![(0.0, keys[0].1)]
+        } else {
+            Vec::new()
+        }
     };
     let seq_keys = |keys: &[(u32, [f32; 3])]| -> Vec<(f32, [f32; 3])> {
         keys.iter().map(|&(t, v)| (t as f32 / 1000.0, v)).collect()
@@ -978,9 +980,9 @@ fn parse_m2_animations_wrath(
         .collect();
 
     let mut out = Vec::new();
-    for s in 0..seq_count {
+    for (s, &slot) in source_slots.iter().enumerate() {
         let rec = seq_ofs + s * 0x40;
-        let Some(source) = source_slots[s] else {
+        let Some(source) = slot else {
             continue;
         };
         if sequence_data[source].is_none() {

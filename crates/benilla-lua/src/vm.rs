@@ -931,10 +931,10 @@ impl Vm {
                 }
                 Ok(())
             },
-            &capture,
+            capture,
         );
         let called = set.and_then(|()| {
-            self.protected_map(|vm| vm.call_value(f, args, 0).map(|_| ()), &capture)
+            self.protected_map(|vm| vm.call_value(f, args, 0).map(|_| ()), capture)
         });
         let mut failed = called.err();
         if let Some((value, _)) = &failed {
@@ -948,7 +948,7 @@ impl Vm {
                 let _ = self.heap.table_mut(self.globals).set(Value::Str(k), old);
                 continue;
             }
-            let r = self.protected_map(|vm| vm.setindex(g, Value::Str(k), old, None), &capture);
+            let r = self.protected_map(|vm| vm.setindex(g, Value::Str(k), old, None), capture);
             if let (None, Err((value, error))) = (&failed, r) {
                 self.push(value);
                 failed = Some((value, error));
