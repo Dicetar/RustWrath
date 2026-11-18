@@ -266,7 +266,8 @@ pub(crate) fn apply_aura_anim_rate(
                     }
                 }
                 (false, true) => {
-                    // Resume every clip: nothing else pauses an animation on a unit rig.
+                    // Resume every clip: nothing else pauses an animation on a unit rig but the
+                    // Souls hit-stop, which lasts a few frames and leaves a frozen rig alone.
                     for (_, anim) in player.playing_animations_mut() {
                         anim.resume();
                     }

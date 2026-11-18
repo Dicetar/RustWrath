@@ -521,6 +521,25 @@ pub(super) fn control(
             player.face_yaw += delta;
             turn_delta += delta;
         }
+        // A Souls turn-rate window caps the frame's whole turn, the mouse hand-off included,
+        // measured from the facing before the look session. The camera is carried back only by
+        // the part of the excess that came through `turn_delta`; a mouse turn left the camera
+        // where the mouse put it, and the body follows it at the capped rate.
+        if let Some(rate) = player
+            .souls
+            .turn_rate
+            .filter(|_| may_turn && !player.control_lost)
+        {
+            let turned = (player.face_yaw - yaw_before_look + std::f32::consts::PI)
+                .rem_euclid(std::f32::consts::TAU)
+                - std::f32::consts::PI;
+            let cap = rate.max(0.0) * dt;
+            let excess = turned - turned.clamp(-cap, cap);
+            if excess != 0.0 {
+                player.face_yaw -= excess;
+                turn_delta -= excess.clamp(turn_delta.min(0.0), turn_delta.max(0.0));
+            }
+        }
         let face_rot = Quat::from_rotation_y(player.face_yaw);
         let move_fwd = flat(face_rot * Vec3::NEG_Z);
         let move_right = flat(face_rot * Vec3::X);

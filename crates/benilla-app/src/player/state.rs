@@ -326,6 +326,9 @@ pub(crate) struct SoulsDrive {
     /// The turn keys strafe, as they do under right-mouse look: locked on, the facing is the
     /// target's, so A and D circle it.
     pub(crate) turn_keys_strafe: bool,
+    /// Cap the frame's whole turn (mouse hand-off, turn keys and [`Self::face`]) at this many
+    /// radians a second: the running action's turn-rate window.
+    pub(crate) turn_rate: Option<f32>,
 }
 
 /// Our avatar: until `active` the camera free-flies, then we drive the body the server placed.
@@ -613,6 +616,11 @@ impl Player {
     /// listener faces it, not the camera (`0x483430`).
     pub(crate) fn facing(&self) -> f32 {
         self.face_yaw
+    }
+
+    /// Whether the body is in the air (a jump or a fall), which the Souls jump attacks read.
+    pub(crate) fn airborne(&self) -> bool {
+        self.airborne_since.is_some()
     }
 
     /// The body's velocity in Bevy axes, which the movement hotpatch frame reports.

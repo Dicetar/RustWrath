@@ -15,8 +15,12 @@
 //! The pieces:
 //!
 //! - [`input`]: dodge on release (hold to sprint), light, heavy (charge on hold, release early for
-//!   the uncharged swing), running attacks, guard and the guard counter.
-//! - [`drive`]: the kit's root motion and no-turn windows, and the lock-on facing, written to
+//!   the uncharged swing), running attacks, guard and the guard counter, poise and hyperarmor,
+//!   crouch (`F6`) and the crouch attack, jump attacks, the left-hand chain (`F11`) and the parry
+//!   (`F12`). The last three need rows the kit names (`JumpLight`/`JumpHeavy`, `LeftLight1…` or
+//!   `PairedLight1…`, `Parry`); without them the press does nothing.
+//! - [`drive`]: the kit's root motion, no-turn windows and turn-rate caps, and the lock-on
+//!   facing, written to
 //!   [`crate::player::SoulsDrive`] for the controller.
 //! - [`targets`]: lock-on, and the hit test of the kit's blade against attackable units.
 //! - [`hud`]: the stamina bar, the mode chip and the lock-on marker.
@@ -33,7 +37,9 @@ use benilla_world::schedule::WorldStage;
 
 use crate::combat_kit::PlayerKit;
 use crate::combat_mode::{CombatMode, CombatModeView};
-use crate::combat_playback::{kit_table_current, CombatPlaybackState, PlaybackSet, PROFILE_TICK_RATE_HZ};
+use crate::combat_playback::{
+    kit_table_current, CombatPlaybackState, PlaybackSet, PROFILE_TICK_RATE_HZ,
+};
 use crate::combat_profiles::CombatProfiles;
 
 pub(crate) use config::SoulsConfig;
@@ -57,7 +63,13 @@ impl Plugin for SoulsPlugin {
             )
             .add_systems(
                 Update,
-                (input::souls_input, targets::toggle_lock, targets::resolve_hits, hud::drive_hud)
+                (
+                    input::souls_input,
+                    targets::toggle_lock,
+                    targets::resolve_hits,
+                    targets::hold_clip,
+                    hud::drive_hud,
+                )
                     .chain()
                     .after(PlaybackSet),
             );
@@ -94,6 +106,12 @@ pub(crate) struct SoulsState {
     engaged: Option<u64>,
     /// The bar flashes red until then (app seconds): a press refused for stamina.
     refused_until: f32,
+    /// Current poise, authored points; `None` is full.
+    poise: Option<f32>,
+    /// Poise refills to full this long after the last hit that took it (app seconds).
+    poise_reset_at: f32,
+    /// Crouched: a light press is the crouch attack.
+    crouched: bool,
 }
 
 impl SoulsState {
@@ -107,6 +125,8 @@ impl SoulsState {
             && self.drive == drive::DriveTrack::default()
             && self.swing == targets::SwingTrack::default()
             && self.engaged.is_none()
+            && self.poise.is_none()
+            && !self.crouched
     }
 }
 

@@ -23,6 +23,20 @@ choices made are below. Status table: [the roadmap](../../../docs/architecture/s
 - `combat_playback.rs`: hit-stop on the playback clock, the `Defense` read in the interrupt rule,
   `PlaybackSet`, `submit_and_play`; `F10` only toggles now (the presses moved to `souls`).
 
+## Second slice (same day)
+
+- Turn-rate caps from the kit's `turn` windows (`drive.rs` writes `SoulsDrive::turn_rate`; the
+  controller clamps the frame's turn and takes the excess out of the camera's share only).
+- Hit-stop also pauses the player's clips (`targets::hold_clip`; it leaves an aura freeze alone).
+- Poise and hyperarmor: playback counts poised hits (they do not interrupt); `input.rs` charges
+  them, half inside a heavy's windup, breaks and staggers at zero, refills 30 s after a hit.
+- Crouch toggle (`F6`) and the crouch attack; jump attacks in the air; the left-hand chain (`F11`);
+  the parry (`F12`), whose `Parry` row's `iframes` window deflects a hit. Jump, left-hand and parry
+  need kit rows the owner's kit does not have; the presses do nothing until it does.
+- New switches: `turn_rate`, `poise`, `crouch`, `jump_attacks`, `left_hand`, `parry`.
+- Wrapped the souls files' over-long lines. CI's `fmt` step fails on main repo-wide (2,559 diffs
+  in 422 files since at least `cd5afee5`), so clippy and tests are skipped there; not this task's.
+
 ## Choices made without the owner
 
 - Default binds: light `F9`, heavy `F8`, dodge `V`, guard `F7`, lock-on middle mouse.
@@ -34,11 +48,14 @@ choices made are below. Status table: [the roadmap](../../../docs/architecture/s
   arc from the widest blade bearing clamped to 30–100°; ±3 yd height.
 - Root motion chases the kit's motion at stock run/strafe speed (no speed control without the
   server), 0.25 yd deadband.
+- Poise 51, 20 a hit, hyperarmor halves it, 30 s refill. Crouch, left and parry on `F6`, `F11`,
+  `F12`. Mid-air light/heavy with no jump row does nothing (ER has no ground swing mid-jump).
 
 ## To see it (owner)
 
 Build and launch as usual, enter the world, press `F10`: a gold chip and a stamina bar appear.
-Then `V` (tap and hold while moving), `F9`, `F8` (tap and hold), `F7`, middle mouse on a mob.
+Then `V` (tap and hold while moving), `F9`, `F8` (tap and hold), `F7`, middle mouse on a mob,
+`F6` then `F9` (crouch attack).
 Press `F10` again: the HUD goes and stock combat is back. To turn a feature off, write
 `souls.toml` and press `F10` twice:
 
@@ -52,5 +69,6 @@ Set-Content D:\Projects\wow\client\benilla-config\combat\souls.toml "[features]`
   `souls/drive.rs` (1), `souls/targets.rs` (3), `souls.rs` (1). CI result: see the branch's run.
 - Damage is the stock auto-attack the hit engages; Souls hit damage, authoritative i-frames and
   guard, sprint speed and gating stock auto-attack need the server slice (roadmap).
-- The clip does not pause during hit-stop; WoW stand-in clips still play (no retarget).
-- Turn-rate windows, parry, crouch/jump/left-hand attacks, poise: not done.
+- WoW stand-in clips still play (no retarget); the crouch has no pose.
+- Jump, left-hand and parry presses wait for kit rows; poise numbers are authored stand-ins
+  until the server sends poise damage.

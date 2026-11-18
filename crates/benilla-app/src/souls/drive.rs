@@ -8,14 +8,19 @@
 //!   movement. Until the action's movement cancel, with no debt, the axes are held at zero: the
 //!   body does not walk out of an attack. Held movement past the cancel releases the action.
 //! - **Turn lock.** Inside the kit's no-turn windows the facing is held where it was.
+//! - **Turn rate.** Inside the kit's turn-rate windows the controller caps the frame's turn at the
+//!   window's degrees a second, so an attack tracks a target only so fast.
 //! - **Lock-on.** With a lock, the facing follows the target's bearing and the turn keys strafe.
 //!
 //! Off (or with no kit table), the drive is the default: the controller runs its stock path.
 
 use bevy::prelude::*;
-use benilla_combat_core::Milli;
+use benilla_combat_core::{KitAction, Milli};
 
-use super::{current_kit, in_window, running_action, souls_on, Instance, SoulsConfig, SoulsState, YARDS_PER_METRE};
+use super::{
+    current_kit, in_window, running_action, souls_on, Instance, SoulsConfig, SoulsState,
+    YARDS_PER_METRE,
+};
 use crate::bindings::{BindingsState, Input};
 use crate::combat_kit::PlayerKit;
 use crate::combat_mode::CombatModeView;
@@ -130,7 +135,9 @@ pub(super) fn drive_controller(
         track.debt -= Vec2::new(moved.dot(left), moved.dot(forward));
     }
     let motion = action.motion_at(frame);
-    let step = |axis: usize| (motion[axis].0 - track.last_motion[axis].0) as f32 / 1000.0 * YARDS_PER_METRE;
+    let step = |axis: usize| {
+        (motion[axis].0 - track.last_motion[axis].0) as f32 / 1000.0 * YARDS_PER_METRE
+    };
     track.debt += Vec2::new(step(0), step(2));
     track.last_motion = motion;
     track.last_pos = player.pos;
@@ -149,8 +156,21 @@ pub(super) fn drive_controller(
     } else {
         track.held_yaw = None;
     }
+    // Turn rate: inside a turn-rate window the whole turn (lock-on tracking included) is capped.
+    if features.turn_rate && !released {
+        drive.turn_rate = turn_rate_at(action, frame);
+    }
     souls.drive = track;
     write_drive(&mut player, drive);
+}
+
+/// The turn-rate cap at `frame`, radians a second: the first `turn` window holding it.
+fn turn_rate_at(action: &KitAction, frame: Milli) -> Option<f32> {
+    action
+        .turn
+        .iter()
+        .find(|&&(from, to, _)| in_window(frame, (from, to)))
+        .map(|&(_, _, degrees)| (degrees.0 as f32 / 1000.0).to_radians())
 }
 
 fn write_drive(player: &mut Player, drive: SoulsDrive) {

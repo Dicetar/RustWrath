@@ -1,6 +1,7 @@
 //! The Souls presses: dodge (on release; a hold while moving sprints), light, heavy (charged on
 //! hold, the uncharged swing when released inside the charge window), the running attacks, the
-//! guard and the guard counter. Every request goes through the engine
+//! guard and the guard counter, poise and hyperarmor, the crouch and crouch attack, the jump
+//! attacks, the left-hand chain and the parry. Every request goes through the engine
 //! ([`submit_and_play`]), so buffering, cancel windows, stamina and refusals are its rules.
 //!
 //! The raw keys run through the binding dispatch's typing gate ([`UiKeyboardCapture`]): a focused
@@ -17,11 +18,13 @@ use crate::bindings::{BindingsState, Input};
 use crate::combat_kit::{resolve_press, PlayerKit, Press, STAMINA_SCALE};
 use crate::combat_mode::CombatModeView;
 use crate::combat_playback::{
-    play_clip, stock_press, submit_and_play, ActionPhase, CombatPlaybackState, Defense,
+    play_clip, play_starts, stock_press, submit_and_play, ActionPhase, CombatPlaybackState,
+    Defense,
 };
 use crate::combat_profiles::CombatProfiles;
 use crate::creature_anim::{move_flags, ActionAnim, PlaySeq};
 use crate::net::SelfPlayer;
+use crate::player::Player;
 use crate::ui_script::UiKeyboardCapture;
 
 /// Holding dodge this long while moving is a sprint, not a roll (ER's tap/hold split).
@@ -37,6 +40,15 @@ const GUARD_BREAK_SECONDS: f32 = 1.0;
 const GUARD_COUNTER_SECONDS: f32 = 1.0;
 /// The bar flashes red this long after a press refused for stamina.
 const REFUSAL_FLASH_SECONDS: f32 = 0.4;
+/// Full poise, authored points (ER's medium-armour range).
+const POISE_MAX: f32 = 51.0;
+/// What one landed hit takes off poise until the server sends the attacker's poise damage
+/// (authored).
+const POISE_DAMAGE_PER_HIT: f32 = 20.0;
+/// Inside a heavy's windup and swing a hit takes this share of that (hyperarmor).
+const HYPERARMOR_POISE_FACTOR: f32 = 0.5;
+/// Poise refills this long after the last hit that took it, as ER's does.
+const POISE_RESET_SECONDS: f32 = 30.0;
 /// `ShieldBlock`, the stand-in clip for raising the guard and taking a guarded hit.
 const ANIM_SHIELD_BLOCK: u16 = 24;
 
@@ -180,6 +192,28 @@ fn light_action(
     resolve_press(kit, running, Press::Light, 0)
 }
 
+/// The kit row `name`, for the presses that need a row of their own (jump attacks, the crouch
+/// attack, the parry). A kit without it leaves the press doing nothing, said at debug level.
+fn kit_row(kit: &Kit, name: &str) -> Option<ActionId> {
+    let row = kit.action_named(name).map(|action| action.id);
+    if row.is_none() {
+        debug!("souls: the kit has no {name} row");
+    }
+    row
+}
+
+/// The left-hand press: the running left-hand chain's next swing, else the chain's first
+/// (`LeftLight1`, else `PairedLight1`, as the kit importer names them).
+fn left_action(kit: &Kit, running: Option<ActionId>) -> Option<ActionId> {
+    let left_chain = |name: &str| name.starts_with("LeftLight") || name.starts_with("PairedLight");
+    running
+        .and_then(|id| kit.action(id))
+        .filter(|action| left_chain(action.name.as_str()))
+        .and_then(|action| action.next_light)
+        .or_else(|| kit.action_named("LeftLight1").map(|action| action.id))
+        .or_else(|| kit_row(kit, "PairedLight1"))
+}
+
 /// Whether the running action is a dodge inside its i-frames.
 fn in_iframes(playback: &CombatPlaybackState, profiles: &CombatProfiles) -> bool {
     let dodge = playback
@@ -189,6 +223,14 @@ fn in_iframes(playback: &CombatPlaybackState, profiles: &CombatProfiles) -> bool
         .and_then(|id| profiles.table.as_ref()?.get(id))
         .is_some_and(|spec| spec.kind == ActionKind::Dodge);
     dodge && playback.phase(profiles) == Some(ActionPhase::Active)
+}
+
+/// Whether the running action is the kit's `Parry` inside its window (its `iframes` row): a hit
+/// there is deflected. The riposte and the attacker's stagger wait for the server slice.
+fn in_parry_window(kit: &Kit, playback: &CombatPlaybackState) -> bool {
+    running_action(kit, playback).is_some_and(|(_, action, frame)| {
+        action.name == "Parry" && action.iframes.is_some_and(|window| in_window(frame, window))
+    })
 }
 
 /// The Souls presses, the guard, the sprint and the charge release. Off, the state resets and the
@@ -206,6 +248,7 @@ pub(super) fn souls_input(
     config: Res<SoulsConfig>,
     kit: Res<PlayerKit>,
     profiles: Res<CombatProfiles>,
+    player: Res<Player>,
     me: Query<Entity, With<SelfPlayer>>,
     mut playback: ResMut<CombatPlaybackState>,
     mut souls: ResMut<SoulsState>,
@@ -216,9 +259,13 @@ pub(super) fn souls_input(
         if !souls.is_reset() {
             *souls = SoulsState::default();
         }
-        if playback.defense != Defense::default() || playback.guarded_hits != 0 {
+        if playback.defense != Defense::default()
+            || playback.guarded_hits != 0
+            || playback.poised_hits != 0
+        {
             playback.defense = Defense::default();
             playback.guarded_hits = 0;
+            playback.poised_hits = 0;
         }
         return;
     }
@@ -260,6 +307,27 @@ pub(super) fn souls_input(
                 }
                 play_clip(ANIM_SHIELD_BLOCK, entity, &mut play_seq, &mut actions);
             }
+        }
+    }
+
+    // Poise: a hit poise held costs poise (half inside a heavy's windup, the hyperarmor); at zero
+    // it breaks, the hit staggers and the poise refills. It also refills a while after the last
+    // hit, as ER's does.
+    let poised = std::mem::take(&mut playback.poised_hits);
+    if !features.poise || (souls.poise.is_some() && t >= souls.poise_reset_at) {
+        souls.poise = None;
+    }
+    if poised > 0 && features.poise {
+        let armoured = kit_now.is_some_and(|kit| hyperarmor(kit, &playback));
+        let factor = if armoured { HYPERARMOR_POISE_FACTOR } else { 1.0 };
+        let left = souls.poise.unwrap_or(POISE_MAX) - POISE_DAMAGE_PER_HIT * factor * poised as f32;
+        souls.poise_reset_at = t + POISE_RESET_SECONDS;
+        if left <= 0.0 {
+            souls.poise = None;
+            info!("souls: poise broken");
+            stagger(&mut playback, entity, &profiles, &mut play_seq, &mut actions);
+        } else {
+            souls.poise = Some(left);
         }
     }
 
@@ -369,9 +437,19 @@ pub(super) fn souls_input(
         }
     }
 
-    // The presses.
+    // The crouch: its key toggles it; a dodge, a sprint or any accepted action stands back up.
+    if !features.crouch || dodge_press || souls.sprinting {
+        souls.crouched = false;
+    } else if input.just_pressed(binds.crouch) {
+        souls.crouched = !souls.crouched;
+        info!("souls: {}", if souls.crouched { "crouched" } else { "stood" });
+    }
+
+    // The presses. In the air (with jump attacks on) light and heavy are the kit's jump attacks,
+    // or nothing: ER has no ground swing mid-jump.
     let active = playback.engine.as_ref().and_then(|engine| engine.active());
     let counter = t < souls.counter_until;
+    let jumping = features.jump_attacks && player.airborne();
     let mut heavy_pressed = None;
     let request = if dodge_press {
         match kit_now {
@@ -380,13 +458,27 @@ pub(super) fn souls_input(
         }
     } else if input.just_pressed(binds.light) {
         match kit_now {
+            Some(kit) if jumping => kit_row(kit, "JumpLight"),
+            Some(kit) if souls.crouched => {
+                kit_row(kit, "CrouchAttack").or_else(|| light_action(kit, active, false, &features))
+            }
             Some(kit) => light_action(kit, active, souls.sprinting, &features),
             None => Some(stock_press(Press::Light)),
         }
     } else if features.heavy && input.just_pressed(binds.heavy) {
-        let id = kit_now.and_then(|kit| heavy_action(kit, active, souls.sprinting, counter, &features));
+        let id = kit_now.and_then(|kit| {
+            if jumping {
+                kit_row(kit, "JumpHeavy")
+            } else {
+                heavy_action(kit, active, souls.sprinting, counter, &features)
+            }
+        });
         heavy_pressed = id;
         id
+    } else if features.left_hand && input.just_pressed(binds.left) {
+        kit_now.and_then(|kit| left_action(kit, active))
+    } else if features.parry && input.just_pressed(binds.parry) {
+        kit_now.and_then(|kit| kit_row(kit, "Parry"))
     } else {
         None
     };
@@ -406,10 +498,14 @@ pub(super) fn souls_input(
             souls.refused_until = t + REFUSAL_FLASH_SECONDS;
         }
         let accepted = events.iter().any(|event| {
-            matches!(event, EngineEvent::Started { id, .. } | EngineEvent::Buffered { id, .. } if *id == action)
+            matches!(
+                event,
+                EngineEvent::Started { id, .. } | EngineEvent::Buffered { id, .. } if *id == action
+            )
         });
         if accepted {
             souls.sprinting = false;
+            souls.crouched = false;
             if counter && heavy_pressed.is_some() {
                 souls.counter_until = 0.0;
             }
@@ -428,11 +524,44 @@ pub(super) fn souls_input(
 
     // What shields the prediction from the next landed hit.
     let defense = Defense {
-        iframes: features.iframes && in_iframes(&playback, &profiles),
+        iframes: (features.iframes && in_iframes(&playback, &profiles))
+            || (features.parry && kit_now.is_some_and(|kit| in_parry_window(kit, &playback))),
         guarding: souls.guarding,
+        poised: features.poise,
     };
     if playback.defense != defense {
         playback.defense = defense;
+    }
+}
+
+/// Whether the running action is a heavy before its last hit ends: its windup and swing carry
+/// hyperarmor.
+fn hyperarmor(kit: &Kit, playback: &CombatPlaybackState) -> bool {
+    running_action(kit, playback).is_some_and(|(_, action, frame)| {
+        action.kind == ActionKind::MeleeHeavy
+            && action.hits.last().is_some_and(|hit| frame < hit.to)
+    })
+}
+
+/// A broken poise staggers: the running action is interrupted where the engine lets it be (an
+/// attack until its first hit, a dodge throughout); past that the action plays out.
+fn stagger(
+    playback: &mut CombatPlaybackState,
+    entity: Entity,
+    profiles: &CombatProfiles,
+    play_seq: &mut PlaySeq,
+    actions: &mut MessageWriter<ActionAnim>,
+) {
+    let now = playback.ticks_at();
+    let Some(engine) = playback.engine.as_mut() else {
+        return;
+    };
+    if engine.active().is_none() {
+        return;
+    }
+    match engine.interrupt(now) {
+        Ok(events) => play_starts(&events, entity, profiles, play_seq, actions),
+        Err(error) => debug!("souls: poise break did not interrupt: {error}"),
     }
 }
 

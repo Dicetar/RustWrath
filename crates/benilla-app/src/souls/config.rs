@@ -17,6 +17,12 @@
 //! hit_stop = true     # a landed hit freezes the action briefly and jolts the camera
 //! engage_on_hit = true # a landed hit starts stock melee on the target (until the server slice)
 //! hud = true          # stamina bar, mode chip and lock-on marker
+//! turn_rate = true    # the kit's turn-rate windows cap how fast an attack turns
+//! poise = true        # hits take poise before they stagger; heavy windups halve it (hyperarmor)
+//! crouch = true       # the crouch key crouches; light from a crouch is the crouch attack
+//! jump_attacks = true # light/heavy in the air are the kit's jump attacks, when it has them
+//! left_hand = true    # the left key runs the kit's left-hand chain, when it has one
+//! parry = true        # the parry key runs the kit's Parry, when it has one
 //!
 //! [binds]             # key names: A-Z, 0-9, F1-F12, Space, Tab, Backquote, LeftShift,
 //! light = "F9"        # LeftCtrl, LeftAlt, CapsLock, MouseLeft, MouseRight, MouseMiddle,
@@ -24,6 +30,9 @@
 //! dodge = "V"
 //! guard = "F7"
 //! lock_on = "MouseMiddle"
+//! crouch = "F6"
+//! left = "F11"
+//! parry = "F12"
 //! ```
 //!
 //! The raw keys run through the binding dispatch's typing gate (a focused EditBox eats them), but
@@ -52,6 +61,12 @@ pub(crate) struct SoulsFeatures {
     pub(crate) hit_stop: bool,
     pub(crate) engage_on_hit: bool,
     pub(crate) hud: bool,
+    pub(crate) turn_rate: bool,
+    pub(crate) poise: bool,
+    pub(crate) crouch: bool,
+    pub(crate) jump_attacks: bool,
+    pub(crate) left_hand: bool,
+    pub(crate) parry: bool,
 }
 
 impl Default for SoulsFeatures {
@@ -71,6 +86,12 @@ impl Default for SoulsFeatures {
             hit_stop: true,
             engage_on_hit: true,
             hud: true,
+            turn_rate: true,
+            poise: true,
+            crouch: true,
+            jump_attacks: true,
+            left_hand: true,
+            parry: true,
         }
     }
 }
@@ -84,6 +105,9 @@ struct BindNames {
     dodge: String,
     guard: String,
     lock_on: String,
+    crouch: String,
+    left: String,
+    parry: String,
 }
 
 impl Default for BindNames {
@@ -94,6 +118,9 @@ impl Default for BindNames {
             dodge: "V".into(),
             guard: "F7".into(),
             lock_on: "MouseMiddle".into(),
+            crouch: "F6".into(),
+            left: "F11".into(),
+            parry: "F12".into(),
         }
     }
 }
@@ -120,6 +147,9 @@ pub(crate) struct SoulsBinds {
     pub(crate) dodge: SoulsKey,
     pub(crate) guard: SoulsKey,
     pub(crate) lock_on: SoulsKey,
+    pub(crate) crouch: SoulsKey,
+    pub(crate) left: SoulsKey,
+    pub(crate) parry: SoulsKey,
 }
 
 /// The live Souls configuration.
@@ -139,6 +169,9 @@ impl Default for SoulsConfig {
                 dodge: SoulsKey::Key(KeyCode::KeyV),
                 guard: SoulsKey::Key(KeyCode::F7),
                 lock_on: SoulsKey::Mouse(MouseButton::Middle),
+                crouch: SoulsKey::Key(KeyCode::F6),
+                left: SoulsKey::Key(KeyCode::F11),
+                parry: SoulsKey::Key(KeyCode::F12),
             },
         })
     }
@@ -202,6 +235,9 @@ fn resolve(file: SoulsFile) -> Result<SoulsConfig, String> {
             dodge: key("dodge", &file.binds.dodge)?,
             guard: key("guard", &file.binds.guard)?,
             lock_on: key("lock_on", &file.binds.lock_on)?,
+            crouch: key("crouch", &file.binds.crouch)?,
+            left: key("left", &file.binds.left)?,
+            parry: key("parry", &file.binds.parry)?,
         },
     })
 }

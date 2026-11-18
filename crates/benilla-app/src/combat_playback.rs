@@ -129,6 +129,8 @@ pub(crate) struct CombatPlaybackState {
     pub(crate) defense: Defense,
     /// Landed hits the guard absorbed since the Souls systems last read them.
     pub(crate) guarded_hits: u32,
+    /// Landed hits poise absorbed since the Souls systems last read them.
+    pub(crate) poised_hits: u32,
 }
 
 /// What stands between an incoming landed hit and the running action.
@@ -139,6 +141,9 @@ pub(crate) struct Defense {
     /// The guard is up: the hit costs stamina instead of interrupting ([`Self`] counts it in
     /// `guarded_hits` for the Souls systems to charge).
     pub(crate) guarding: bool,
+    /// Poise holds: the hit takes poise instead of interrupting ([`Self`] counts it in
+    /// `poised_hits`; the Souls systems interrupt when the poise breaks).
+    pub(crate) poised: bool,
 }
 
 /// The playback chain (profile fill, engine advance, the mode toggle). The Souls input and hit
@@ -473,13 +478,15 @@ fn advance_playback(
         .filter(|swing| swing.attacker != entity && swing.victim == Some(entity) && swing.victim_state == 1)
         .count();
     // The Souls defenses (written last frame, reset whenever Souls combat is off): a dodge's
-    // i-frames ignore the hit, a raised guard absorbs it for stamina, charged by the Souls input.
+    // i-frames ignore the hit, a raised guard absorbs it for stamina and holding poise for poise,
+    // both charged by the Souls input.
     let defense = state.defense;
-    let interrupted = landed > 0 && !defense.iframes && !defense.guarding;
+    let landed_count = u32::try_from(landed).unwrap_or(u32::MAX);
+    let interrupted = landed > 0 && !defense.iframes && !defense.guarding && !defense.poised;
     if landed > 0 && defense.guarding && !defense.iframes {
-        state.guarded_hits = state
-            .guarded_hits
-            .saturating_add(u32::try_from(landed).unwrap_or(u32::MAX));
+        state.guarded_hits = state.guarded_hits.saturating_add(landed_count);
+    } else if landed > 0 && defense.poised && !defense.iframes {
+        state.poised_hits = state.poised_hits.saturating_add(landed_count);
     }
     let Some(engine) = state.engine.as_mut() else {
         return;

@@ -31,6 +31,12 @@ hits = true
 hit_stop = true
 engage_on_hit = true
 hud = true
+turn_rate = true
+poise = true
+crouch = true
+jump_attacks = true
+left_hand = true
+parry = true
 
 [binds]  # A-Z, 0-9, F1-F12 (not F10), Space, Tab, Backquote, LeftShift, LeftCtrl, LeftAlt,
          # CapsLock, MouseLeft, MouseRight, MouseMiddle, Mouse4, Mouse5
@@ -39,6 +45,9 @@ heavy = "F8"
 dodge = "V"
 guard = "F7"
 lock_on = "MouseMiddle"
+crouch = "F6"
+left = "F11"
+parry = "F12"
 ```
 
 ## Features
@@ -60,12 +69,16 @@ lock_on = "MouseMiddle"
 | Guard: hold to block, stamina per guarded hit, guard break at zero | done (prediction only) | `souls/input.rs` | `guard` |
 | Guard counter: heavy right after a guarded hit | done | `souls/input.rs` | `guard_counter` |
 | Hit detection from the kit's blade (reach, arc, per-hit windows) | done (client test) | `souls/targets.rs` | `hits` |
-| Hit-stop and camera jolt | done; the clip does not pause yet | `souls/targets.rs`, `camera_shake.rs` | `hit_stop` |
+| Hit-stop and camera jolt; the player's clips pause for the stop | done | `souls/targets.rs`, `camera_shake.rs` | `hit_stop` |
 | Damage | interim: a landed hit starts stock melee on the target | `souls/targets.rs` | `engage_on_hit` |
 | Stamina bar, mode chip, lock-on marker | done | `souls/hud.rs` | `hud` |
-| Turn-rate overrides (`turn` windows) | not done | — | — |
-| Parry, crouch attack, jump attacks, left-hand attacks | not done (no kit rows / binds yet) | — | — |
-| Poise and hyperarmor beyond the first hit | not done (engine policy) | — | — |
+| Turn-rate caps (`turn` windows, degrees a second) | done | `souls/drive.rs`, `player/controller.rs` | `turn_rate` |
+| Poise: each hit taken costs poise and does not interrupt; at zero it breaks and staggers; refills 30 s after the last hit | done (prediction only, authored numbers) | `souls/input.rs`, `combat_playback.rs` | `poise` |
+| Hyperarmor: inside a heavy's windup and swing a hit costs half the poise | done (prediction only) | `souls/input.rs` | `poise` |
+| Crouch (toggle) and the crouch attack (light from a crouch) | done; no crouch pose or speed (clip and server) | `souls/input.rs` | `crouch` |
+| Jump attacks (light/heavy in the air) | done; needs `JumpLight`/`JumpHeavy` rows, which the owner's kit lacks | `souls/input.rs` | `jump_attacks` |
+| Left-hand chain | done; needs `LeftLight1…` or `PairedLight1…` rows (the importer's opt-in) | `souls/input.rs` | `left_hand` |
+| Parry: the `Parry` row's `iframes` window deflects a hit | done (prediction only); needs a `Parry` row; riposte and attacker stagger need the server | `souls/input.rs` | `parry` |
 | Clip retarget (ER motion on the WoW rig) | not done (step F) | — | — |
 
 ## Needs the server slice (queued, not rebuilt)
@@ -77,10 +90,10 @@ lock_on = "MouseMiddle"
 - Sprint speed, and stopping stock auto-attack while the mode is on (right-click `StartAttack`
   still swings).
 - Enemy telegraphs (cast-time strikes) for the enemy brain.
+- Poise and poise damage per attack, the parry's riposte and the attacker's parry stagger.
 
 ## Order of the next slices
 
 1. Server mode channel and the hit opcode (rebuild batch).
-2. Clip retarget and pausing the clip during hit-stop.
-3. Turn-rate windows, parry, crouch/jump attacks, left hand.
-4. Poise.
+2. Clip retarget (ER motion on the WoW rig), and a crouch pose.
+3. Kit rows for jumps, the left hand and the parry (`kit_import` options), then tuning.

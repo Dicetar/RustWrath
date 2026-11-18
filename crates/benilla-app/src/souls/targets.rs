@@ -7,9 +7,10 @@
 //!   kit's blade gives the reach (the farthest blade end from the body, plus the capsule radius)
 //!   and the arc (the widest blade bearing, clamped). An attackable, living unit within the reach
 //!   (plus its own combat reach), inside the arc and roughly level is hit, once per hit per unit.
-//!   A hit is logged; with `hit_stop` the playback clock freezes for the kit's hit-stop and the
-//!   camera jolts; with `engage_on_hit` the stock melee swing starts on the target, so the
-//!   server's auto-attack deals damage until the server slice resolves Souls hits.
+//!   A hit is logged; with `hit_stop` the playback clock and the player's clips freeze for the
+//!   kit's hit-stop and the camera jolts; with `engage_on_hit` the stock melee swing starts on
+//!   the target, so the server's auto-attack deals damage until the server slice resolves Souls
+//!   hits.
 
 use std::time::Duration;
 
@@ -18,7 +19,10 @@ use benilla_combat_core::{KitHit, Milli};
 
 use super::input::KeyRead;
 use super::drive::yaw_toward;
-use super::{current_kit, running_action, souls_on, Instance, SoulsConfig, SoulsState, YARDS_PER_METRE};
+use super::{
+    current_kit, running_action, souls_on, Instance, SoulsConfig, SoulsState, YARDS_PER_METRE,
+};
+use crate::aura_visual::AnimRateFreeze;
 use crate::camera_shake::CameraShakes;
 use crate::combat_kit::PlayerKit;
 use crate::combat_mode::CombatModeView;
@@ -56,8 +60,12 @@ pub(super) struct SwingTrack {
 }
 
 /// The units the lock and the hit test consider.
-type Units<'w, 's> =
-    Query<'w, 's, (Entity, &'static Guid, &'static ObjectStore, &'static GlobalTransform), Without<SelfPlayer>>;
+type Units<'w, 's> = Query<
+    'w,
+    's,
+    (Entity, &'static Guid, &'static ObjectStore, &'static GlobalTransform),
+    Without<SelfPlayer>,
+>;
 
 /// Whether `store` is a living unit `relations` lets us attack.
 fn attackable(relations: &RelationWorld, guid: u64, store: &ObjectStore) -> bool {
@@ -104,7 +112,8 @@ pub(super) fn toggle_lock(
     // Keep: the locked unit is still in the world, alive, attackable and in range.
     if let Some(locked) = souls.lock {
         let keep = units.get(locked).is_ok_and(|(_, guid, store, at)| {
-            attackable(&relations, guid.0, store) && horizontal(at.translation()) <= LOCK_BREAK_YARDS
+            attackable(&relations, guid.0, store)
+                && horizontal(at.translation()) <= LOCK_BREAK_YARDS
         });
         if !keep {
             souls.lock = None;
@@ -121,7 +130,8 @@ pub(super) fn toggle_lock(
     }
     let selected = selection.target.and_then(|entity| units.get(entity).ok()).filter(
         |(_, guid, store, at)| {
-            attackable(&relations, guid.0, store) && horizontal(at.translation()) <= LOCK_ACQUIRE_YARDS
+            attackable(&relations, guid.0, store)
+                && horizontal(at.translation()) <= LOCK_ACQUIRE_YARDS
         },
     );
     let pick = selected.map(|(entity, ..)| entity).or_else(|| {
@@ -201,7 +211,9 @@ pub(super) fn resolve_hits(
         return;
     }
     let running = current_kit(&kit, &profiles).and_then(|kit| running_action(kit, &playback));
-    let Some((instance, action, frame)) = running.filter(|(_, action, _)| !action.hits.is_empty()) else {
+    let Some((instance, action, frame)) =
+        running.filter(|(_, action, _)| !action.hits.is_empty())
+    else {
         souls.swing = SwingTrack::default();
         return;
     };
@@ -224,7 +236,8 @@ pub(super) fn resolve_hits(
                 continue;
             }
             let to = at.translation() - player.pos;
-            let distance = Vec2::new(to.x, to.z).length() - store.0.unit_combat_reach().clamp(0.0, 3.0) * 0.5;
+            let distance = Vec2::new(to.x, to.z).length()
+                - store.0.unit_combat_reach().clamp(0.0, 3.0) * 0.5;
             if distance > reach
                 || to.y.abs() > HIT_HEIGHT_YARDS
                 || off_facing(yaw, to).abs() > arc
@@ -242,7 +255,8 @@ pub(super) fn resolve_hits(
                 distance.max(0.0)
             );
             if features.hit_stop {
-                stop = stop.max(Duration::from_millis(u64::from(hit.hit_stop.0.max(0).unsigned_abs())));
+                let millis = u64::from(hit.hit_stop.0.max(0).unsigned_abs());
+                stop = stop.max(Duration::from_millis(millis));
             }
             if features.engage_on_hit && souls.engaged != Some(guid.0) {
                 if let Some(net) = net.as_deref() {
@@ -258,6 +272,34 @@ pub(super) fn resolve_hits(
     }
     track.last_frame = Some(frame);
     souls.swing = track;
+}
+
+/// Hold the local player's clips still while hit-stop is owed, so the swing visibly bites, and
+/// resume them when it is paid (or the mode or the switch goes off). A rig an aura freeze holds
+/// ([`AnimRateFreeze`]) is left for the aura to thaw.
+pub(super) fn hold_clip(
+    view: Res<CombatModeView>,
+    config: Res<SoulsConfig>,
+    playback: Res<CombatPlaybackState>,
+    mut rigs: Query<(&mut AnimationPlayer, Has<AnimRateFreeze>), With<SelfPlayer>>,
+    // Its own flag, not `SoulsState`'s: the mode-off reset must not forget a paused clip.
+    mut held: Local<bool>,
+) {
+    let hold = souls_on(&view) && config.features.hit_stop && playback.hit_stop > Duration::ZERO;
+    if hold == *held {
+        return;
+    }
+    *held = hold;
+    let Ok((mut player, aura_frozen)) = rigs.single_mut() else {
+        return;
+    };
+    for (_, anim) in player.playing_animations_mut() {
+        if hold {
+            anim.pause();
+        } else if !aura_frozen {
+            anim.resume();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -309,7 +351,9 @@ mod tests {
     fn off_facing_wraps() {
         // Facing -Z (yaw 0): a unit at -Z is dead ahead, one at +X a quarter turn off.
         assert!(off_facing(0.0, Vec3::new(0.0, 0.0, -1.0)).abs() < 1e-6);
-        assert!((off_facing(0.0, Vec3::new(1.0, 0.0, 0.0)).abs() - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
-        assert!((off_facing(3.0, Vec3::new(0.0, 0.0, 1.0)).abs() - (std::f32::consts::PI - 3.0)).abs() < 1e-5);
+        let quarter = off_facing(0.0, Vec3::new(1.0, 0.0, 0.0)).abs();
+        assert!((quarter - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+        let behind = off_facing(3.0, Vec3::new(0.0, 0.0, 1.0)).abs();
+        assert!((behind - (std::f32::consts::PI - 3.0)).abs() < 1e-5);
     }
 }
