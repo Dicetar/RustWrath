@@ -141,6 +141,12 @@ pub(crate) fn player_kit_path() -> Option<PathBuf> {
     home().map(|h| h.join("combat/player.kit"))
 }
 
+/// `benilla-config/combat/souls.toml`: the Souls combat feature switches and binds, hand-edited by
+/// the owner and re-read each time `F10` turns Souls combat on. Read only ([`crate::souls`]).
+pub(crate) fn souls_config_path() -> Option<PathBuf> {
+    home().map(|h| h.join("combat/souls.toml"))
+}
+
 /// `benilla-config/saved-variables.lua`: the flat channel our FrameXML saves through
 /// `RegisterForSave` (the `SavedVariables.lua` analog), written whole at logout, read at UI load.
 pub(crate) fn saved_variables_path() -> Option<PathBuf> {

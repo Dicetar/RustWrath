@@ -309,6 +309,25 @@ impl StandPending {
     }
 }
 
+/// What Souls combat ([`crate::souls`]) asks of the controller this frame. Every field's default
+/// is "no say": with Souls combat off the controller runs exactly as stock.
+///
+/// The drive works through the controller's own inputs, so the wire stays the stock one: root
+/// motion is a held movement axis (`MSG_MOVE_START_*` at the mover's own speed), a turn lock or
+/// lock-on is the facing the controller streams.
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SoulsDrive {
+    /// Replace the movement keys' forward and strafe axes (each `-1`, `0` or `1`; strafe right is
+    /// positive): root motion, or `(0, 0)` while an action holds the body still.
+    pub(crate) axes: Option<(i32, i32)>,
+    /// Hold the facing at this yaw (Bevy radians) over the keyboard and mouse turns: a turn-lock
+    /// window, or the bearing to the lock-on target.
+    pub(crate) face: Option<f32>,
+    /// The turn keys strafe, as they do under right-mouse look: locked on, the facing is the
+    /// target's, so A and D circle it.
+    pub(crate) turn_keys_strafe: bool,
+}
+
 /// Our avatar: until `active` the camera free-flies, then we drive the body the server placed.
 /// `PartialEq` serves the test that the session end resets the whole of it to `Player::default()`.
 #[derive(Resource, Default, PartialEq)]
@@ -445,6 +464,9 @@ pub(crate) struct Player {
     /// The facing (Bevy yaw, radians): the aim sent as orientation and the basis WASD move in.
     /// Right-drag and movement sync it to the camera, left-drag does not; the body is `model_yaw`.
     pub(super) face_yaw: f32,
+    /// The Souls combat drive ([`crate::souls`]), rewritten every frame before `control` reads
+    /// it; the default leaves the stock controller untouched.
+    pub(crate) souls: SoulsDrive,
     /// Swimming (`MOVEFLAG_SWIMMING`): the water over the feet crossed the swim-enter depth,
     /// latched with hysteresis ([`super::swim::update_swimming`]).
     pub(crate) swimming: bool,

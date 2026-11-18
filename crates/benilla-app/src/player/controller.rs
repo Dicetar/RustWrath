@@ -509,6 +509,18 @@ pub(super) fn control(
             player.face_yaw += drunk_wobble;
             turn_delta = drunk_wobble;
         }
+        // A Souls turn lock or lock-on holds the facing over the mouse-look hand-off and the
+        // keyboard turn above, ahead of the move basis and the facing stream. A stun or death
+        // (`may_turn` down) keeps the stock facing.
+        // The shortest way round, so the facing stays continuous and the camera, carried by
+        // `turn_delta`, swings with it.
+        if let Some(face) = player.souls.face.filter(|_| may_turn) {
+            let delta = (face - player.face_yaw + std::f32::consts::PI)
+                .rem_euclid(std::f32::consts::TAU)
+                - std::f32::consts::PI;
+            player.face_yaw += delta;
+            turn_delta += delta;
+        }
         let face_rot = Quat::from_rotation_y(player.face_yaw);
         let move_fwd = flat(face_rot * Vec3::NEG_Z);
         let move_right = flat(face_rot * Vec3::X);

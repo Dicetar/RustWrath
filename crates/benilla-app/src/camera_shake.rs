@@ -75,6 +75,24 @@ impl CameraShakes {
         });
     }
 
+    /// Enqueue a Souls hit's impact at `pos` (`now` on the app clock, `Time::elapsed_secs`): a
+    /// short decaying vertical jolt lasting the hit-stop. Project policy, not a `CameraShakes.dbc`
+    /// row: the reference has no melee impact shake.
+    pub(crate) fn add_impact(&mut self, pos: Vec3, now: f32, seconds: f32) {
+        let row = CameraShake {
+            id: 0,
+            shake_type: 1,
+            direction: 2,
+            // Inches, as the DBC column is: a tenth of a yard at the eye.
+            amplitude: 3.6,
+            frequency: 18.0,
+            duration: seconds.clamp(0.06, 0.4),
+            phase: 0.0,
+            coefficient: 12.0,
+        };
+        self.add(row, pos, now);
+    }
+
     /// Enqueue a `SpellEffectCameraShakes` group (`0x6ecb40`): its three slots in order, zeros
     /// skipped, a preset the table lacks dropped (`0x511d40`'s bounds check). A slot repeated
     /// (group 4 is `15 · 14 · 15`) enqueues twice and the copy loses the tie-break.

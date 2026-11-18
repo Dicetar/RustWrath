@@ -116,6 +116,8 @@ mod opaque2d;
 /// way out registers through it.
 mod shutdown;
 mod smart_rect;
+/// Souls (Elden Ring–style) combat, hot-toggled with `F10`.
+mod souls;
 mod sound;
 /// The two talent spell-modifier tables (`SMSG_SET_FLAT_/PCT_SPELL_MODIFIER`) and the read that
 /// puts them on a number.

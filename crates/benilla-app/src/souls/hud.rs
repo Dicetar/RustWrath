@@ -1,0 +1,197 @@
+//! The Souls HUD: the predicted stamina bar (bottom centre), a mode chip at its left end, and a
+//! marker on the locked-on unit. Plain coloured quads above the world (no text yet). Hidden when
+//! Souls combat is off, the `hud` switch is off, or there is no local player.
+//!
+//! The bar is green; red for a moment after a press refused for stamina, blue while guarding,
+//! yellow while sprinting. The chip is gold with the kit's table, grey on the stock fallback.
+
+use bevy::prelude::*;
+use benilla_world::view::WorldCamera;
+
+use super::{current_kit, souls_on, SoulsConfig, SoulsState};
+use crate::combat_kit::PlayerKit;
+use crate::combat_mode::CombatModeView;
+use crate::combat_playback::CombatPlaybackState;
+use crate::combat_profiles::CombatProfiles;
+use crate::net::SelfPlayer;
+
+const BAR_WIDTH: f32 = 320.0;
+const BAR_HEIGHT: f32 = 10.0;
+const BAR_BOTTOM: f32 = 96.0;
+const CHIP: f32 = 14.0;
+const MARKER: f32 = 10.0;
+/// The marker sits this far above the locked unit's feet, yards.
+const MARKER_HEIGHT_YARDS: f32 = 1.6;
+
+/// One HUD quad.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum HudPart {
+    Bar,
+    Fill,
+    Chip,
+    Lock,
+}
+
+/// Spawn the quads once, parked hidden.
+pub(super) fn spawn_hud(mut commands: Commands) {
+    commands
+        .spawn((
+            HudPart::Bar,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(50.0),
+                bottom: Val::Px(BAR_BOTTOM),
+                width: Val::Px(BAR_WIDTH),
+                height: Val::Px(BAR_HEIGHT),
+                margin: UiRect {
+                    left: Val::Px(-BAR_WIDTH / 2.0),
+                    ..default()
+                },
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+            // Above the world and the UI quads, below the loading cover (1000), like the letterbox.
+            GlobalZIndex(900),
+            Visibility::Hidden,
+        ))
+        .with_children(|bar| {
+            bar.spawn((
+                HudPart::Fill,
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.2, 0.75, 0.25)),
+                Visibility::Inherited,
+            ));
+        });
+    commands.spawn((
+        HudPart::Chip,
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Percent(50.0),
+            bottom: Val::Px(BAR_BOTTOM - (CHIP - BAR_HEIGHT) / 2.0),
+            width: Val::Px(CHIP),
+            height: Val::Px(CHIP),
+            margin: UiRect {
+                left: Val::Px(-BAR_WIDTH / 2.0 - CHIP - 6.0),
+                ..default()
+            },
+            ..default()
+        },
+        BackgroundColor(Color::srgb(0.85, 0.7, 0.2)),
+        GlobalZIndex(900),
+        Visibility::Hidden,
+    ));
+    commands.spawn((
+        HudPart::Lock,
+        Node {
+            position_type: PositionType::Absolute,
+            width: Val::Px(MARKER),
+            height: Val::Px(MARKER),
+            ..default()
+        },
+        BackgroundColor(Color::srgb(0.9, 0.15, 0.1)),
+        GlobalZIndex(900),
+        Visibility::Hidden,
+    ));
+}
+
+fn shown(visible: bool) -> Visibility {
+    if visible {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    }
+}
+
+/// Update the quads from the prediction and the Souls state.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn drive_hud(
+    time: Res<Time>,
+    view: Res<CombatModeView>,
+    config: Res<SoulsConfig>,
+    kit: Res<PlayerKit>,
+    profiles: Res<CombatProfiles>,
+    playback: Res<CombatPlaybackState>,
+    souls: Res<SoulsState>,
+    me: Query<(), With<SelfPlayer>>,
+    camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
+    targets: Query<&GlobalTransform, Without<HudPart>>,
+    mut parts: Query<(&HudPart, &mut Node, &mut BackgroundColor, &mut Visibility)>,
+) {
+    let on = souls_on(&view) && config.features.hud && me.single().is_ok();
+    let engine = playback.engine.as_ref().filter(|_| on);
+    let max = profiles.stamina.map_or(0, |stamina| stamina.max);
+    let fraction = match (engine, max) {
+        (Some(engine), max) if max > 0 => (engine.stamina() as f32 / max as f32).clamp(0.0, 1.0),
+        _ => 0.0,
+    };
+    let t = time.elapsed_secs();
+    let fill = if t < souls.refused_until {
+        Color::srgb(0.85, 0.15, 0.1)
+    } else if souls.guarding {
+        Color::srgb(0.25, 0.5, 0.95)
+    } else if souls.sprinting {
+        Color::srgb(0.95, 0.8, 0.2)
+    } else {
+        Color::srgb(0.2, 0.75, 0.25)
+    };
+    let chip = if current_kit(&kit, &profiles).is_some() {
+        Color::srgb(0.85, 0.7, 0.2)
+    } else {
+        Color::srgb(0.5, 0.5, 0.5)
+    };
+    // The marker: the locked unit projected through the world camera.
+    let marker = souls
+        .lock
+        .filter(|_| on)
+        .and_then(|entity| targets.get(entity).ok())
+        .and_then(|at| {
+            let (camera, view_at) = camera.single().ok()?;
+            camera
+                .world_to_viewport(view_at, at.translation() + Vec3::Y * MARKER_HEIGHT_YARDS)
+                .ok()
+        });
+
+    for (part, mut node, mut color, mut visibility) in &mut parts {
+        let (visible, wanted) = match part {
+            HudPart::Bar => (on && engine.is_some(), None),
+            HudPart::Fill => (true, Some(fill)),
+            HudPart::Chip => (on, Some(chip)),
+            HudPart::Lock => (marker.is_some(), None),
+        };
+        let visible = if *part == HudPart::Fill {
+            Visibility::Inherited
+        } else {
+            shown(visible)
+        };
+        if *visibility != visible {
+            *visibility = visible;
+        }
+        if let Some(wanted) = wanted {
+            if color.0 != wanted {
+                color.0 = wanted;
+            }
+        }
+        match part {
+            HudPart::Fill => {
+                let width = Val::Percent(fraction * 100.0);
+                if node.width != width {
+                    node.width = width;
+                }
+            }
+            HudPart::Lock => {
+                if let Some(at) = marker {
+                    let (left, top) = (Val::Px(at.x - MARKER / 2.0), Val::Px(at.y - MARKER / 2.0));
+                    if node.left != left || node.top != top {
+                        node.left = left;
+                        node.top = top;
+                    }
+                }
+            }
+            HudPart::Bar | HudPart::Chip => {}
+        }
+    }
+}

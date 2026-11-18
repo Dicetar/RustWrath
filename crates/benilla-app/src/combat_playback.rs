@@ -2,9 +2,9 @@
 //! local player, feeds requests through the core [`ActionEngine`], and plays each started
 //! action's clip through the existing one-shot driver path.
 //!
-//! **Presentation-only prediction.** Nothing here sends traffic, grants i-frames or resolves a
-//! hit. The engine is the same pure rules surface the authoritative server will run; the client
-//! runs it as a prediction and the authoritative seam (`combat_mode.rs`) keeps refusing with
+//! **Presentation-only prediction.** Nothing here sends traffic or resolves a hit; the i-frames
+//! and guard only shield the *prediction* from interruption. The engine is the same pure rules
+//! surface the authoritative server will run; the client runs it as a prediction and the authoritative seam (`combat_mode.rs`) keeps refusing with
 //! `NotSent` until a server mode channel exists. `CombatModeView::effective` is never written
 //! here.
 //!
@@ -31,17 +31,14 @@
 //! after the install delay; a new config and a respawn start with a full bar.
 //!
 //! **The Souls kit.** With `benilla-config/combat/player.kit` present ([`crate::combat_kit`]),
-//! the table is the kit's Elden Ring moveset at its own timings: `V` rolls in the held direction
-//! or backsteps, `F9` runs the light chain. The clips are stand-ins from the WoW rig until the
-//! retarget. Without a kit the stock dodge and main-hand swing play as before.
+//! the table is the kit's Elden Ring moveset at its own timings. The clips are stand-ins from the
+//! WoW rig until the retarget. Without a kit the stock dodge and main-hand swing play.
 //!
-//! Provisional binds (until the RFC's rebindable experimental controls land): `F10` toggles the
-//! client's *requested* mode (and re-reads the kit on the way in), `V` requests a dodge, `F9`
-//! requests a light attack (`F9` is unbound in the stock bindings). All three run
-//! through the same gate the binding dispatch uses ([`UiKeyboardCapture`]: a focused EditBox eats
-//! every key and a shown keyboard frame eats the key it consumed), so typing in chat never stages
-//! an action. All are inert with no local player (glue screens); actions only play once
-//! Experimental is requested.
+//! `F10` toggles the client's *requested* mode and, on the way in, re-reads the kit and
+//! `souls.toml`. The presses, root motion, lock-on, guard and hits are [`crate::souls`], which
+//! submits through [`submit_and_play`] and writes the [`Defense`] this module's interrupt rule
+//! reads (a dodge's i-frames and a raised guard keep a landed hit from interrupting). Off, the
+//! defense is reset and every landed hit interrupts as before.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -55,14 +52,14 @@ use benilla_combat_core::{
 use benilla_world::schedule::WorldStage;
 
 use crate::combat_kit::{
-    clip_bindings, compile_kit, engine_stamina, load_player_kit, resolve_press, PlayerKit, Press,
+    clip_bindings, compile_kit, engine_stamina, load_player_kit, PlayerKit, Press,
 };
 use crate::combat_mode::{CombatMode, CombatModeView};
 use crate::combat_profiles::{
     player_dodge_spec, player_melee_action, rig_dodge_clip, rig_swing_clip, CombatProfiles,
     HOST_DODGE, PLAYER_MELEE_MAIN,
 };
-use crate::creature_anim::{ActionAnim, AnimData, MovementState, PlaySeq, SwingMessage, Wielded};
+use crate::creature_anim::{ActionAnim, AnimData, PlaySeq, SwingMessage, Wielded};
 use crate::net::SelfPlayer;
 use crate::ui_script::{UiInput, UiKeyboardCapture};
 use crate::wrath::WrathWorldView;
@@ -124,12 +121,38 @@ pub(crate) struct CombatPlaybackState {
     /// truncates every frame (about 4 % slow at 60 fps), so the full precision is carried here
     /// and only the tick conversion truncates.
     clock: Duration,
+    /// Hit-stop still owed: the playback clock stands still for this much frame time, so the
+    /// running action (and its windows) freeze when a Souls hit lands ([`crate::souls`]).
+    pub(crate) hit_stop: Duration,
+    /// What protects the local player from an incoming hit this frame, written by the Souls
+    /// systems; the default (nothing) is the stock rule, every landed hit interrupts.
+    pub(crate) defense: Defense,
+    /// Landed hits the guard absorbed since the Souls systems last read them.
+    pub(crate) guarded_hits: u32,
 }
+
+/// What stands between an incoming landed hit and the running action.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) struct Defense {
+    /// The running dodge is inside its i-frame window: the hit does not interrupt.
+    pub(crate) iframes: bool,
+    /// The guard is up: the hit costs stamina instead of interrupting ([`Self`] counts it in
+    /// `guarded_hits` for the Souls systems to charge).
+    pub(crate) guarding: bool,
+}
+
+/// The playback chain (profile fill, engine advance, the mode toggle). The Souls input and hit
+/// systems run after it, so they read this frame's engine.
+#[derive(SystemSet, Clone, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct PlaybackSet;
 
 impl CombatPlaybackState {
     /// Advance the playback clock by one frame's delta, keeping the sub-millisecond remainder.
+    /// Owed hit-stop is paid first: that part of the frame does not advance the clock.
     fn advance_clock(&mut self, delta: Duration) {
-        self.clock = self.clock.saturating_add(delta);
+        let frozen = delta.min(self.hit_stop);
+        self.hit_stop -= frozen;
+        self.clock = self.clock.saturating_add(delta - frozen);
     }
 
     /// The playback clock in whole milliseconds.
@@ -138,7 +161,7 @@ impl CombatPlaybackState {
     }
 
     /// Whole ticks at `now_ms` on the compile clock.
-    fn ticks_at(&self) -> Ticks {
+    pub(crate) fn ticks_at(&self) -> Ticks {
         Ticks::new(self.now_ms() * u64::from(PROFILE_TICK_RATE_HZ) / 1000)
     }
 
@@ -168,6 +191,7 @@ impl Plugin for CombatPlaybackPlugin {
                     toggle_and_stage_action,
                 )
                     .chain()
+                    .in_set(PlaybackSet)
                     // The local player is tagged in the Net stage, and the typing gate below
                     // must read this frame's `UiKeyboardCapture`, written by the UI input pass.
                     .after(WorldStage::Net)
@@ -324,7 +348,7 @@ fn self_is_dead(world: Option<&WrathWorldView>) -> bool {
 /// Advance the engine to an absolute tick in bounded chunks, so a long gap (a load, a hitch, or
 /// a freshly anchored engine after a respawn) never trips the engine's span bound. Errors other
 /// than the bound are logged once per failure rather than silently dropped.
-fn advance_bounded(engine: &mut ActionEngine, target: Ticks) -> Vec<EngineEvent> {
+pub(crate) fn advance_bounded(engine: &mut ActionEngine, target: Ticks) -> Vec<EngineEvent> {
     let mut events = Vec::new();
     loop {
         match engine.advance_to(target) {
@@ -351,7 +375,7 @@ fn advance_bounded(engine: &mut ActionEngine, target: Ticks) -> Vec<EngineEvent>
 }
 
 /// Play the clip of every action the engine started in `events`.
-fn play_starts(
+pub(crate) fn play_starts(
     events: &[EngineEvent],
     entity: Entity,
     profiles: &CombatProfiles,
@@ -444,9 +468,19 @@ fn advance_playback(
     // parry, block or evade leaves the player's action untouched. Drain every message so no
     // stale swing can interrupt a later action.
     let hits: Vec<SwingMessage> = swings.read().copied().collect();
-    let interrupted = hits
+    let landed = hits
         .iter()
-        .any(|swing| swing.attacker != entity && swing.victim == Some(entity) && swing.victim_state == 1);
+        .filter(|swing| swing.attacker != entity && swing.victim == Some(entity) && swing.victim_state == 1)
+        .count();
+    // The Souls defenses (written last frame, reset whenever Souls combat is off): a dodge's
+    // i-frames ignore the hit, a raised guard absorbs it for stamina, charged by the Souls input.
+    let defense = state.defense;
+    let interrupted = landed > 0 && !defense.iframes && !defense.guarding;
+    if landed > 0 && defense.guarding && !defense.iframes {
+        state.guarded_hits = state
+            .guarded_hits
+            .saturating_add(u32::try_from(landed).unwrap_or(u32::MAX));
+    }
     let Some(engine) = state.engine.as_mut() else {
         return;
     };
@@ -465,97 +499,111 @@ fn advance_playback(
     play_starts(&events, entity, &profiles, &mut play_seq, &mut actions);
 }
 
-/// The provisional binds: `F10` toggles the client's requested mode (never the effective one);
-/// `V` requests a dodge and `F9` a light attack while Experimental is requested (`F9` is unbound
-/// in the stock bindings; `C` would also open the character pane). Requests go through the
-/// engine, so buffering, cancel windows, stamina and refusals are the same rules the server will
-/// run.
+/// The mode toggle: `F10` flips the client's *requested* mode (never the effective one). Entering
+/// Souls combat re-reads the kit file and `souls.toml`, so an imported kit or a changed feature
+/// switch takes effect without a restart; the next frame's profile build compiles the kit.
+/// Leaving it hands everything back to the stock path: every Souls system resets its own state
+/// when the requested mode is not Experimental.
 ///
-/// The three raw keys run through the binding dispatch's own gate ([`UiKeyboardCapture`]): a
-/// focused EditBox eats every key and a shown keyboard frame eats the key it consumed, so typing
-/// `v` in chat never stages a dodge. A Super chord is not this path's concern either. The arrows'
-/// exemption and PRINTSCREEN's pre-focus pass do not apply to these keys.
+/// `F10` runs through the binding dispatch's own gate ([`UiKeyboardCapture`]: a focused EditBox
+/// eats every key and a shown keyboard frame eats the key it consumed). The action presses live in
+/// [`crate::souls`].
 fn toggle_and_stage_action(
     keys: Res<ButtonInput<KeyCode>>,
     capture: Res<UiKeyboardCapture>,
-    me: Query<(Entity, Option<&MovementState>), With<SelfPlayer>>,
+    me: Query<(), With<SelfPlayer>>,
     mut view: ResMut<CombatModeView>,
     mut kit: ResMut<PlayerKit>,
-    profiles: Res<CombatProfiles>,
-    mut state: ResMut<CombatPlaybackState>,
-    mut play_seq: ResMut<PlaySeq>,
-    mut actions: MessageWriter<ActionAnim>,
+    mut souls_config: ResMut<crate::souls::SoulsConfig>,
 ) {
     let super_down = keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
-    let eaten = |key: KeyCode| super_down || capture.typing || capture.consumed.contains(&key);
-    let Ok((entity, movement)) = me.single() else {
+    if me.single().is_err()
+        || !keys.just_pressed(KeyCode::F10)
+        || super_down
+        || capture.typing
+        || capture.consumed.contains(&KeyCode::F10)
+    {
         return;
-    };
-    if keys.just_pressed(KeyCode::F10) && !eaten(KeyCode::F10) {
-        match view.requested {
-            Some(CombatMode::Experimental) => {
-                view.request_baseline();
-            }
-            _ => {
-                view.request_experimental();
-                // Entering Experimental re-reads the kit file, so an imported kit takes effect
-                // without a restart; the next frame's profile build compiles it.
-                kit.reload();
-            }
+    }
+    match view.requested {
+        Some(CombatMode::Experimental) => {
+            view.request_baseline();
+            bevy::log::info!("souls combat: off, stock combat restored");
+        }
+        _ => {
+            view.request_experimental();
+            kit.reload();
+            souls_config.reload();
+            bevy::log::info!("souls combat: on");
         }
     }
-    if view.requested != Some(CombatMode::Experimental) {
-        return;
-    }
-    let press = if keys.just_pressed(KeyCode::KeyV) && !eaten(KeyCode::KeyV) {
-        Some(Press::Dodge)
-    } else if keys.just_pressed(KeyCode::F9) && !eaten(KeyCode::F9) {
-        Some(Press::Light)
-    } else {
-        None
-    };
-    let Some(press) = press else {
-        return;
-    };
-    let now = state.ticks_at();
-    let Some(engine) = state.engine.as_mut() else {
-        return;
-    };
-    // The kit names the action only once the table was compiled from this very kit; until then
-    // (the frame after a reload) the press is the stock one.
-    let kit_table = profiles.from_kit
+}
+
+/// Whether the profile table was compiled from the kit `kit` holds now. Until it is (the frame
+/// after a reload) the presses are the stock ones.
+pub(crate) fn kit_table_current(kit: &PlayerKit, profiles: &CombatProfiles) -> bool {
+    kit.kit.is_some()
+        && profiles.from_kit
         && profiles
             .built_for
-            .is_some_and(|(_, _, generation)| generation == kit.generation);
-    let action = match (kit.kit.as_ref(), kit_table) {
-        (Some(player_kit), true) => {
-            let flags = movement.map_or(0, |movement| movement.flags);
-            let Some(action) = resolve_press(player_kit, engine.active(), press, flags) else {
-                return;
-            };
-            action
-        }
-        _ => match press {
-            Press::Dodge => HOST_DODGE,
-            Press::Light => PLAYER_MELEE_MAIN,
-        },
+            .is_some_and(|(_, _, generation)| generation == kit.generation)
+}
+
+/// The stock action a press stands for when no kit table is compiled.
+pub(crate) fn stock_press(press: Press) -> ActionId {
+    match press {
+        Press::Dodge => HOST_DODGE,
+        Press::Light => PLAYER_MELEE_MAIN,
+    }
+}
+
+/// Submit `action` to the engine at the playback clock and play the clip of whatever it starts.
+/// A refusal is kept as `last_refusal`; the engine's events are returned for the caller.
+/// Requests go through the engine, so buffering, cancel windows, stamina and refusals are the
+/// same rules the server will run.
+pub(crate) fn submit_and_play(
+    state: &mut CombatPlaybackState,
+    action: ActionId,
+    entity: Entity,
+    profiles: &CombatProfiles,
+    play_seq: &mut PlaySeq,
+    actions: &mut MessageWriter<ActionAnim>,
+) -> Vec<EngineEvent> {
+    let now = state.ticks_at();
+    let Some(engine) = state.engine.as_mut() else {
+        return Vec::new();
     };
     // Keep the span bounded before submit's own advance (normally a no-op: the frame already
     // advanced this tick).
-    advance_bounded(engine, now);
-    let events = match engine.submit(action, now) {
-        Ok(events) => events,
+    let mut events = advance_bounded(engine, now);
+    match engine.submit(action, now) {
+        Ok(mut submitted) => events.append(&mut submitted),
         Err(error) => {
             bevy::log::warn!("souls playback: submit failed: {error}");
-            return;
-        }
-    };
-    play_starts(&events, entity, &profiles, &mut play_seq, &mut actions);
-    for event in events {
-        if let EngineEvent::Refused { reason, .. } = event {
-            state.last_refusal = Some(reason);
+            return events;
         }
     }
+    play_starts(&events, entity, profiles, play_seq, actions);
+    for event in &events {
+        if let EngineEvent::Refused { reason, .. } = event {
+            state.last_refusal = Some(*reason);
+        }
+    }
+    events
+}
+
+/// Play one clip on `entity` outside the engine (the guard's raise, a guarded hit).
+pub(crate) fn play_clip(
+    anim_id: u16,
+    entity: Entity,
+    play_seq: &mut PlaySeq,
+    actions: &mut MessageWriter<ActionAnim>,
+) {
+    actions.write(ActionAnim {
+        entity,
+        anim_id,
+        seq: play_seq.next(),
+    });
 }
 
 #[cfg(test)]

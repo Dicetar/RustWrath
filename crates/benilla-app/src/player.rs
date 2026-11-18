@@ -112,9 +112,9 @@ use state::{
     WALK_RATIO, WATER_WALK_PITCH_FLOOR, WEDGE_MIN_FALL, WEDGE_STALL_RATIO, WEDGE_STILL_FRAMES,
 };
 pub(crate) use state::{
-    MoveSpeed, OwnControlLost, Player, PlayerCapsule, StandPending, CAPSULE_HEIGHT, CAPSULE_RADIUS,
-    CREATURE_STEP_UP_HEIGHT, DEFAULT_COLLISION_HEIGHT, FEATHER_TERMINAL_VELOCITY, GRAVITY,
-    HOVER_CLIMB_RATE, HOVER_HEIGHT, SETTLE_TIMEOUT, STEP_UP_HEIGHT, TERMINAL_VELOCITY,
+    MoveSpeed, OwnControlLost, Player, PlayerCapsule, SoulsDrive, StandPending, CAPSULE_HEIGHT,
+    CAPSULE_RADIUS, CREATURE_STEP_UP_HEIGHT, DEFAULT_COLLISION_HEIGHT, FEATHER_TERMINAL_VELOCITY,
+    GRAVITY, HOVER_CLIMB_RATE, HOVER_HEIGHT, SETTLE_TIMEOUT, STEP_UP_HEIGHT, TERMINAL_VELOCITY,
 };
 /// The swim boundary `0.75·h`, also the wade ceiling, for the creature swim marker and the
 /// footstep splash, which have no `Player`.

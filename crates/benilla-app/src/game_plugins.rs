@@ -140,6 +140,8 @@ impl PluginGroup for GamePlugins {
             // mode request or invents stamina/dodge, and is the UI host's state contract.
             .add(crate::combat_mode::CombatModePlugin)
             .add(crate::combat_playback::CombatPlaybackPlugin)
+            // Souls combat on the playback: presses, root motion, lock-on, guard, hits, HUD.
+            .add(crate::souls::SoulsPlugin)
             .add(crate::death::DeathPlugin)
             .add(crate::client_state::ClientStatePlugin { start: self.start })
             .add(crate::glue_session::GlueSessionPlugin)
