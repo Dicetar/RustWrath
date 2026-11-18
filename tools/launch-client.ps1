@@ -323,7 +323,9 @@ if ($LiveCode) {
         Set-Content -LiteralPath (Join-Path $run 'launch.txt')
     Write-Host 'Live code: dx builds the dev client and starts it here. Save a source file to patch the running client.'
     Write-Host 'A changed struct layout, static, or system/plugin registration still needs a restart (ADR-0002, "Live code").'
-    & $dx.Source serve --hot-patch --package benilla --bin benilla --features 'hotpatch,live_code'
+    # dx.log keeps dx's own trace (which files and crates each patch saw), unlike the TUI.
+    & $dx.Source serve --hot-patch --package benilla --bin benilla --features 'hotpatch,live_code' `
+        --log-to-file (Join-Path $run 'dx.log')
     exit $LASTEXITCODE
 }
 $client = Start-Process -FilePath $binary -WorkingDirectory $workingDirectory -PassThru `

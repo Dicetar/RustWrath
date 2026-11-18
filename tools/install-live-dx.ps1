@@ -43,9 +43,16 @@ if ($actual -ne $crateSha256) {
     throw "dioxus-cli-$version.crate has SHA-256 $actual, expected $crateSha256. Not building it."
 }
 
-# A fresh tree every time, so a half-applied earlier run cannot leak in.
+# A fresh tree every time, so a half-applied earlier run cannot leak in. The build output lives
+# beside it, so a reinstall recompiles dx itself and not its ~800 dependencies.
 $source = Join-Path $WorkRoot "dioxus-cli-$version"
+$targetDir = Join-Path $WorkRoot "target-$version"
 $resolvedRoot = [IO.Path]::GetFullPath($WorkRoot).TrimEnd('\') + '\'
+# Earlier installs built inside the source tree; keep that output instead of deleting it.
+$oldTarget = Join-Path $source 'target'
+if ((Test-Path -LiteralPath $oldTarget -PathType Container) -and !(Test-Path -LiteralPath $targetDir)) {
+    Move-Item -LiteralPath $oldTarget -Destination $targetDir
+}
 if (Test-Path -LiteralPath $source) {
     $resolved = [IO.Path]::GetFullPath($source)
     if (!$resolved.StartsWith($resolvedRoot, [StringComparison]::OrdinalIgnoreCase)) {
@@ -68,11 +75,11 @@ try {
 
 # The published lockfile keeps dx's own dependencies as released. sccache is bypassed, as for any
 # tool install (AGENTS.md).
-Write-Host "Building patched dx $version. This takes several minutes."
+Write-Host "Building patched dx $version. The first build takes several minutes; later ones reuse $targetDir."
 $wrapper = $env:RUSTC_WRAPPER
 try {
     $env:RUSTC_WRAPPER = ''
-    & cargo install --path $source --locked --force
+    & cargo install --path $source --locked --force --target-dir $targetDir
     if ($LASTEXITCODE -ne 0) { throw "cargo install failed for the patched dx (exit $LASTEXITCODE)." }
 } finally {
     $env:RUSTC_WRAPPER = $wrapper

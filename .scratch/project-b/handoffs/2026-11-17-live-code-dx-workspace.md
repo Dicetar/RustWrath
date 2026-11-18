@@ -1,12 +1,15 @@
 # Live code: patch every workspace crate the client links
 
-Status: landed on `main`; the dx patch is not compiled, not run
+Status: landed on `main`. With the sixth dx commit (Windows TLS and exe-static reach), a
+nine-crate patch landed in the running client and the client kept running.
 Owner: Claude Code (Opus 5.5)
-Branch: fix/live-code-dx-workspace (landed `fa707857`), then fix/live-code-dx-chkstk
+Branch: fix/live-code-dx-workspace (landed `fa707857`), fix/live-code-dx-chkstk (landed
+`84ef7600`), then live-dx3, live-dx4, live-dx5, fix/live-code-dx-windows-tls
 Issue: none. Owner session 2026-11-17: the trainer/game-object fix did not patch into the
 running client, and the first patch that did land crashed it.
-Next: the owner stops dx, runs `tools/install-live-dx.ps1` and relaunches `-LiveCode`. Then
-the trainer/game-object fix is applied in the live worktree as the acceptance patch.
+Next: the owner presses `r` in dx (or relaunches) and checks the trainer, a chest and an ore
+vein; then a later Wrath decoder edit should patch into the session thread. Commit the
+`-LiveCode` `Cargo.lock` change on a branch.
 
 Date 2026-11-17. Worktree `D:/Projects/wow/worktrees/live-dx`, cut from `origin/main` `7114694f`.
 
@@ -44,6 +47,123 @@ the fix is in PR #5967, which was open when checked. The second commit adds that
 dx patch (`jmp [rip+0]` plus the 64-bit address, the stub dx already uses on other x86_64
 targets). The stub is 14 bytes instead of 12; its size is taken from the byte length.
 
+## The patched dx still built benilla-app alone
+
+The owner installed the patched dx (marker matched) and relaunched. Applying `eb410dd7` at
+22:36 failed again at 22:37:05 with the same `unresolved import benilla_formats::LOCK_KEY_SPELL`.
+The captured arguments for `benilla_formats` existed. Its rlib was still the 22:31 fat build's,
+so it was never replayed.
+
+dx 0.7.10 has no debounce. `serve/runner.rs` `wait` hands the first watcher event to
+`handle_file_change`, which starts a patch at once. The cherry-pick writes files one at a time:
+`crates/benilla-app/src/target/lock.rs` came first, and the formats and protocol files arrived
+during that build. Changes that arrive during a build are queued. `serve/mod.rs` processes the
+queue only after `BuildReady`, never after `BuildFailed`. So the app-only patch failed, and the
+formats half of the change was dropped. The stock-dx attempt failed the same way, on top of the
+watch scope.
+
+The third commit adds two hunks to the dx patch:
+
+- After the first event, `wait` keeps collecting events until the watcher has been quiet for
+  300 ms, with a 2 s cap.
+- The `BuildFailed` arm processes the queued changes like `BuildReady` does. A failed patch
+  followed by its missing half then patches again. `modified_crates` is cumulative, so the
+  retry replays both crates, in dependency order.
+
+`launch-client.ps1` now passes `--log-to-file <run>\dx.log`. dx traces its own modules for
+`serve`, so the log shows each patch's `changed_crates` and `modified_crates`.
+
+## The replay put benilla_app before its optional dependency
+
+With the settle and failed-build hunks installed, the owner relaunched and the fix was
+applied. dx.log showed one patch with all three changed crates, so the batching worked. The
+replay then compiled `benilla_app` before `benilla_hotpatch_bevy` and failed with `E0463 can't
+find crate for benilla_hotpatch_bevy` (`crates/benilla-app/src/hotpatch.rs:3`).
+
+`benilla-app` reaches that crate only through its own feature, `hotpatch =
+["dep:benilla-hotpatch-bevy"]`. In the krates graph that is the edge
+`Feature(benilla-app, hotpatch)` → `benilla-hotpatch-bevy`. krates 0.17.5 `direct_dependents`
+follows feature nodes only when they belong to the target crate, so it never reports
+`benilla-app`. dx builds both the cascade and the replay order from that call, and with no
+edge the lexicographic tie-break put `benilla_app` first.
+
+The fifth commit changes two things in the dx patch:
+
+- `workspace_dependents_of` (`build/request.rs`) walks the incoming graph edges itself. A
+  crate node, or a feature node of another crate, counts as a dependent; the target's own
+  feature nodes are followed further.
+- `compile_workspace_hotpatch` (`build/link.rs`) re-sorts the replay by each crate's captured
+  `--extern` arguments, which are what the fat build actually linked. Ties keep the earlier
+  order.
+
+## Thread-locals in the patch DLL crash the client
+
+The relaunch at 23:15 used the patched dx with the replay-order fix (marker `44C145B4…`). The fix
+was applied at 23:19:23. dx replayed nine crates in dependency order: formats, assets, lua,
+mlua, protocol_wrath, ui, world, hotpatch_bevy, app. The replay took 288 s, and the client
+logged "live code: patch 1 landed" at 23:24:27. Eleven seconds later it died: WER reports
+`c0000005` in `libbenilla-patch-1794954251251.dll` at RVA `0x2163e50`, then exit `0xc000041d`.
+
+`dumpbin /disasm` on the patch DLL puts that RVA at the first instruction of
+`benilla_mlua::RUNNING`'s thread-local accessor, `mov eax, dword ptr [_tls_index]`. Three
+things break here:
+
+- The patch objects leave `_tls_index` undefined. `create_undefined_symbol_stub` defines it as
+  an absolute symbol at the exe's runtime address. The access is a 32-bit RIP-relative load,
+  and the exe is mapped far more than 2 GB from the DLL, so the displacement wraps (the
+  disassembly shows the target as `0x17B35A2B8`) and the load faults.
+- Even with a valid index, the SECREL offsets (`[block+0xE8]`) come from the patch DLL's own
+  `.tls` layout. They would read the wrong variables in the exe's TLS block.
+- The patch DLL has no TLS directory, so the loader never allocates its `.tls` section.
+
+dx 0.7.10's TLS stub path is for ELF and Mach-O. Upstream added a `tls_fixups` jump-table field
+for "future runtime TLS sharing" (DioxusLabs/dioxus#5291), but Windows TLS sharing is not
+implemented.
+
+`benilla_mlua` was in the patch only because the cascade replays every dependent of
+`benilla_formats`; its source did not change. `benilla-app` also has `thread_local!` (sound
+mixer, lanes, quest trace, loot UI), so a patch can reach this crash through the app too.
+
+The trainer/game-object fix stays applied in the live worktree. A full rebuild (`r` in dx, or a
+relaunch) includes it without a live patch.
+
+## Patch DLLs get their own TLS and a base near the exe
+
+The wrapped `_tls_index` load is one case of a wider fault. `dumpbin /disasm` of the crashed DLL
+(image `0x180000000`–`0x18564C000`) finds 71 RIP-relative loads whose target is outside the
+image and below the exe: 29 are `_tls_index` and 42 are other exe statics. Every exe data symbol
+the stub resolves is an absolute address. link.exe computes the 32-bit displacement against the
+DLL's preferred base, the DLL is linked with ASLR, and the loader never relocates a
+RIP-relative displacement. Upstream's comment on `/HIGHENTROPYVA:NO` ("prevent aslr from
+overflowing 32 bits") assumes the exe stays low. This exe ran at `0x7FF7…`.
+
+The sixth commit changes two things in the dx patch:
+
+- `create_undefined_symbol_stub` (`build/patch.rs`) no longer resolves `_tls_index`, `_tls_used`,
+  `_tls_start`, `_tls_end`, `__xl_a` and `__xl_z` from the exe. link.exe takes them from
+  `tlssup.obj` in `msvcrt.lib`; `dumpbin /linkermember` shows the MSVC 14.36 `msvcrt.lib`
+  defines all six. The link adds `/INCLUDE:_tls_used`, so the DLL has a TLS directory. Windows
+  allocates a `LoadLibrary`'d DLL's TLS for threads that already exist. The patch's
+  thread-locals start from their initial values and are separate from the exe's copies. This
+  is how dx already treats TLS on Linux and macOS ("each patch gets its own TLS copy").
+- `compile_workspace_hotpatch` (`build/link.rs`) links each Windows patch with
+  `/BASE:<addr> /DYNAMICBASE:NO`.
+  - `windows_patch_image_base` puts the first patch 16 MiB past the exe image. It reads
+    `SizeOfImage` from the exe's PE header and finds the runtime base from the ASLR reference
+    minus `main`'s RVA.
+  - Each later patch goes past the one before, because subsecond keeps them loaded.
+  - A patch whose image would end more than 2 GiB past the exe base fails with a message to
+    restart. At this patch's size (86 MiB) and this exe's (194 MiB), that leaves about 20 patches
+    per client run.
+  - The placement resets when the exe's base or modification time changes.
+
+Not covered:
+
+- If something else occupies the chosen base, the loader relocates the DLL and the exe-static
+  loads fault again. dx cannot see the client's address space to check.
+- A `thread_local!` that patched and unpatched code must share (for example `benilla_mlua`'s
+  `RUNNING` flag) has two copies while a patch is loaded. That gives wrong values, not a crash.
+
 ## What changed
 
 - `tools/live-code/dx-0.7.10-workspace-crates.patch` (the Windows stub fix is above):
@@ -54,7 +174,10 @@ targets). The stub is 14 bytes instead of 12; its size is taken from the byte le
 - `tools/install-live-dx.ps1`:
   - takes the `.crate` from Cargo's cache, or from crates.io, and checks its SHA-256;
   - unpacks it under `%LOCALAPPDATA%\RustWrath\dx-src` and applies the patch;
-  - runs `cargo install --path … --locked --force` with the wrapper bypassed;
+  - runs `cargo install --path … --locked --force` with the wrapper bypassed, into
+    `dx-src\target-0.7.10` beside the source tree, so a reinstall rebuilds dx and not its
+    ~800 dependencies (the first install built inside the tree it then deletes; the script
+    moves that output over once);
   - writes `dx.rustwrath-patch` (the patch hash) beside `dx.exe`.
 - `tools/launch-client.ps1 -LiveCode`:
   - points a missing or mismatched dx at the install script (stock install for other versions);
@@ -64,7 +187,52 @@ targets). The stub is 14 bytes instead of 12; its size is taken from the byte le
 
 ## Unverified
 
-- The patched dx has not been compiled. krates 0.17.5 API use was read from source.
-- No patch has yet landed in a running client.
-- `benilla-app`'s hotpatched build pulls in optional dependencies (`bevy/hotpatching`). If the
-  krates graph from `cargo metadata` lacks an edge the build uses, that crate stays unwatched.
+- A cross-crate patch landed (23:24:27) but crashed 11 s later on Windows TLS. No patch has
+  yet run to completion.
+- The trainer, chest and ore-vein behaviour after the live patch is not yet checked in game.
+
+## The sixth commit ran (2026-11-18)
+
+The owner installed it (marker `D7E9D3B4…`) and relaunched at 02:20:56. The client connected,
+and `eb410dd7` was applied in the live worktree at 02:23:29. dx replayed the same nine crates
+(201 s) and linked the patch at `patch image base: 0x7ff67b460000`. The client logged "live
+code: patch 1 landed" at 02:27:07, re-derived the spell catalog and kept running and logging:
+item enchants at 02:27:34, and the process still responding at 02:28:05. The previous patch
+died 11 s after landing.
+- The trainer, chest and ore-vein behaviour of `eb410dd7` has not been checked in game.
+
+## The patched client still could not open a chest (2026-11-18)
+
+The owner reported that a chest still did not open in the patched client. Two things kept
+`eb410dd7` out of it although the patch landed:
+
+- **The Wrath session thread had no live-code boundary.** `wrath.rs` `run_session_with_cancel`
+  is entered once, before any patch, and called `session.reduce`, `gameplay::parse` and
+  `translate_gameplay` directly. The 1.12 stream wraps its read in `live_code::call`
+  (`net::io`); the Wrath loop did not. So the session kept the old `read_gameobject`, which
+  zeroed the data block, and every new template still came out with `lock_id` 0, which
+  `resolve_go_action` turns into a plain use.
+- **The Wrath answers' bytes were not kept.** Only `net::io::inbound` emits
+  `SessionEvent::SavedAnswer`, so the Wrath session's template stores had no bodies and
+  `wdb` `redecode` had nothing to re-derive. Templates cached before the patch kept `lock_id` 0.
+
+Branch `fix/live-code-wrath-session` changes:
+
+- The session loop calls the reducer, the 3.3.5 decoder, the shared 1.12 fallback decode and
+  each translation through `crate::live_code::call` (`translate_live`; under `live_code` it
+  clones each event, since the boundary may re-run its closure).
+- The loop emits `SavedAnswer` ahead of the record for the saved-store opcodes, gated on a
+  player like the record.
+- `wdb` decodes a Wrath session's bodies with `wrath::decode_saved_answer` (the 3.3.5 decoder
+  and translation, or the 1.12 one for shared opcodes), at load and at re-derive. Wrath store
+  files carry header build 12340, so neither target loads the other's files. Wrath template
+  stores now also persist across runs.
+
+Risks: `session.reduce` is stateful; if a patch unwinds it mid-call, the boundary runs it again
+on the same packet. Without `live_code` every boundary is a direct call and nothing is cloned.
+
+The running client cannot get this change by patch: its session loop is the old code. A full
+rebuild (`r` in dx) or a relaunch includes `eb410dd7` and this change.
+
+Unverified: not compiled, not run. The trainer, chest and ore vein are not checked in game, nor
+is a later Wrath decoder patch reaching the session thread.
