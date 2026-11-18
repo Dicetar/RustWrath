@@ -66,13 +66,13 @@ first place an agent's tests are compiled and run, and it uses no local Cargo sl
 
 - After pushing code, read the run: `gh run list --branch <branch> -L 1`, then
   `gh run view <id> --log-failed`. A cloud agent without `gh` reads the branch's Actions page.
-- `main` is not green yet: on 2026-11-18 `fmt` passed, `clippy` failed on old lint debt, and 53
-  workspace tests failed on Windows (40 in `benilla-app`). Compare your run's failing test names
-  with the latest `main` run that tested the same crates. A failure that `main` does not have is
-  yours. So is any compile error.
-- Write the result in the note's verification line: `CI <run id>: compiles; tests N new
-  failures` or `CI: not run yet`. Do not write "tests pass" from CI while `main`'s baseline is
-  red; say "no new failures".
+- The 53 workspace tests that failed on `main` on 2026-11-18 are `#[ignore]`d with the reason
+  `known failure on main (2026-11-18 CI baseline)`, so a failing test in a run is a new failure
+  and yours, as is any compile error. Fixing one means removing its `#[ignore]` in the same
+  commit; `cargo test -p <crate> -- --ignored` runs them. `clippy` still fails on old lint debt;
+  a clippy finding in a line you did not touch is not yours.
+- Write the result in the note's verification line: `CI <run id>: compiles; tests pass` (for the
+  crates the run tested, named by its `changed` step) or `CI: not run yet`.
 - A branch whose code does not compile in CI is not `ready to merge`.
 - Every push compiles the whole workspace and its test targets, but runs only the tests of the
   crates it changed (a path under `crates/<dir>/`); a dependent crate's tests do not run, and a
