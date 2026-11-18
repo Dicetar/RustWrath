@@ -8,6 +8,7 @@
 //!
 //! - every Bevy system and observer, each run;
 //! - the network threads' read and encode ([`call`] in `net::io`), each packet and each command;
+//! - the Wrath session thread's reducer, decoder and translation (`crate::wrath`), each packet;
 //! - whatever those call, since a patched function calls the patched versions of its callees.
 //!
 //! What a patch cannot reach needs a restart, and the launcher says so: a changed struct or enum

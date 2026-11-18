@@ -289,22 +289,43 @@ if ($LiveCode) {
         $dxBin = Join-Path $env:USERPROFILE '.cargo\bin\dx.exe'
         if (Test-Path -LiteralPath $dxBin -PathType Leaf) { $dx = Get-Command $dxBin -ErrorAction SilentlyContinue }
     }
-    $install = if ($wanted) { "cargo install dioxus-cli --version $wanted --locked" } else { 'cargo install dioxus-cli --locked' }
+    # The patched dx (tools/install-live-dx.ps1) exists for one version; stock dx patches only
+    # `benilla` and `benilla-app`, so another version falls back to a stock install.
+    $patchedVersion = '0.7.10'
+    $dxPatch = Join-Path $PSScriptRoot "live-code\dx-${patchedVersion}-workspace-crates.patch"
+    $install = if (!$wanted -or $wanted -eq $patchedVersion) {
+        "& '$(Join-Path $PSScriptRoot 'install-live-dx.ps1')'"
+    } else {
+        "`$env:RUSTC_WRAPPER=''; cargo install dioxus-cli --version $wanted --locked"
+    }
     if (!$dx) {
-        throw "Live code needs the dioxus CLI (dx). Install it by running:`n  `$env:RUSTC_WRAPPER=''; $install"
+        throw "Live code needs the dioxus CLI (dx). Install it by running:`n  $install"
     }
     $dxVersion = [regex]::Match((& $dx.Source --version | Out-String), '\d+\.\d+\.\d+[^\s)]*').Value
     if ($wanted -and $dxVersion -ne $wanted) {
-        throw "dx $dxVersion cannot patch a client built with subsecond $wanted. Install the matching CLI:`n  `$env:RUSTC_WRAPPER=''; $install"
+        throw "dx $dxVersion cannot patch a client built with subsecond $wanted. Install the matching CLI:`n  $install"
     }
     if (!$wanted) {
         Write-Warning 'Cargo.lock has no subsecond yet: the first live-code build adds it. If dx then refuses to patch, install the CLI the lock names and launch again.'
     }
-    @('mode=live_code', "dx=$($dx.Source)", "dx_version=$dxVersion", "subsecond=$wanted") |
+    # install-live-dx.ps1 leaves the patch's hash beside dx.exe; stock dx has none.
+    $dxPatched = 'stock'
+    if ($dxVersion -eq $patchedVersion) {
+        $marker = Join-Path (Split-Path -Parent $dx.Source) 'dx.rustwrath-patch'
+        $expected = (Get-FileHash -LiteralPath $dxPatch -Algorithm SHA256).Hash
+        if ((Test-Path -LiteralPath $marker -PathType Leaf) -and ((Get-Content -LiteralPath $marker -Raw).Trim() -eq $expected)) {
+            $dxPatched = $expected
+        } else {
+            Write-Warning "This dx is stock or an older patch: edits outside benilla and benilla-app will not patch the running client. Stop here and run:`n  $install"
+        }
+    }
+    @('mode=live_code', "dx=$($dx.Source)", "dx_version=$dxVersion", "dx_patch=$dxPatched", "subsecond=$wanted") |
         Set-Content -LiteralPath (Join-Path $run 'launch.txt')
     Write-Host 'Live code: dx builds the dev client and starts it here. Save a source file to patch the running client.'
     Write-Host 'A changed struct layout, static, or system/plugin registration still needs a restart (ADR-0002, "Live code").'
-    & $dx.Source serve --hot-patch --package benilla --bin benilla --features 'hotpatch,live_code'
+    # dx.log keeps dx's own trace (which files and crates each patch saw), unlike the TUI.
+    & $dx.Source serve --hot-patch --package benilla --bin benilla --features 'hotpatch,live_code' `
+        --log-to-file (Join-Path $run 'dx.log')
     exit $LASTEXITCODE
 }
 $client = Start-Process -FilePath $binary -WorkingDirectory $workingDirectory -PassThru `

@@ -96,19 +96,40 @@ pub(crate) fn player_melee_action(
     policy: &ProfilePolicy,
     rate: TickRate,
 ) -> CombatResult<Option<(ActionSpec, u16)>> {
-    let requested = crate::creature_anim::swing_anim_main(main);
-    let resolved = anims.resolve(requested, anim_data);
-    if !crate::creature_anim::is_swing_id(resolved.id) {
-        return Ok(None);
-    }
-    let Some(clip) = anims.clips.iter().find(|clip| clip.anim_id == resolved.id) else {
+    let Some(clip) = rig_swing_clip(main, anims, anim_data) else {
         return Ok(None);
     };
     let Some(summary) = clip_summary(clip) else {
         return Ok(None);
     };
     let spec = melee_action(id, melee_kind(main), summary, policy, rate)?;
-    Ok(Some((spec, resolved.id)))
+    Ok(Some((spec, clip.anim_id)))
+}
+
+/// The rig's main-hand swing clip, through the driver's weapon LUT and the fallback chain; `None`
+/// when the chain lands on a non-swing clip or the rig lacks the clip it names.
+pub(crate) fn rig_swing_clip<'a>(
+    main: Option<(u8, u8)>,
+    anims: &'a ModelAnimations,
+    anim_data: &AnimDataCatalog,
+) -> Option<&'a AnimClip> {
+    let resolved = anims.resolve(crate::creature_anim::swing_anim_main(main), anim_data);
+    if !crate::creature_anim::is_swing_id(resolved.id) {
+        return None;
+    }
+    anims.clips.iter().find(|clip| clip.anim_id == resolved.id)
+}
+
+/// The rig's own Dodge clip (`AnimationData` id 30); `None` when the rig ships none.
+pub(crate) fn rig_dodge_clip<'a>(
+    anims: &'a ModelAnimations,
+    anim_data: &AnimDataCatalog,
+) -> Option<&'a AnimClip> {
+    let resolved = anims.resolve(DODGE_ANIM, anim_data);
+    if resolved.id != DODGE_ANIM {
+        return None;
+    }
+    anims.clips.iter().find(|clip| clip.anim_id == resolved.id)
 }
 
 /// Extract one spell's timing facts from `Spell.dbc` through the tables the app loads.
@@ -155,18 +176,14 @@ pub(crate) fn player_dodge_spec(
     rate: TickRate,
     revision: benilla_combat_core::ActionRevision,
 ) -> CombatResult<Option<(DodgeSpec, u16)>> {
-    let resolved = anims.resolve(DODGE_ANIM, anim_data);
-    if resolved.id != DODGE_ANIM {
-        return Ok(None);
-    }
-    let Some(clip) = anims.clips.iter().find(|clip| clip.anim_id == resolved.id) else {
+    let Some(clip) = rig_dodge_clip(anims, anim_data) else {
         return Ok(None);
     };
     let Some(summary) = clip_summary(clip) else {
         return Ok(None);
     };
     let spec = dodge_from_clip(summary, policy, rate, revision)?;
-    Ok(Some((spec, resolved.id)))
+    Ok(Some((spec, clip.anim_id)))
 }
 
 /// Compile a creature rig's melee move list: every attack clip the rig actually resolves
@@ -216,9 +233,14 @@ pub(crate) struct CombatProfiles {
     pub(crate) table: Option<ActionTable>,
     /// Action id → the `AnimationData.dbc` id the local rig plays for that action.
     pub(crate) anims: HashMap<ActionId, u16>,
-    /// The `(entity, main-hand weapon)` pair the current table was compiled for; a change here
-    /// (rig load, weapon swap) recompiles.
-    pub(crate) built_for: Option<(bevy::prelude::Entity, Option<(u8, u8)>)>,
+    /// The `(entity, main-hand weapon, kit generation)` the current table was compiled for; a
+    /// change here (rig load, weapon swap, a new kit file) recompiles.
+    pub(crate) built_for: Option<(bevy::prelude::Entity, Option<(u8, u8)>, u32)>,
+    /// The table was compiled from the local Souls kit ([`crate::combat_kit`]) rather than the
+    /// stock clips, so presses resolve through the kit.
+    pub(crate) from_kit: bool,
+    /// The engine stamina the table was built with; `None` is the stock prediction config.
+    pub(crate) stamina: Option<benilla_combat_core::StaminaConfig>,
 }
 
 #[cfg(test)]
