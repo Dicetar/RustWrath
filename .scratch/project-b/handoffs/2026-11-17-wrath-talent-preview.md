@@ -4,7 +4,7 @@ Status: ready to merge
 Owner: OpenCode / DeepSeek V4.1 Flash
 Branch: fix/wrath-talent-preview
 Issue: none
-Next: owner batch build; then preview/unspent checks below. Source review is complete; the branch merged `origin/main` at `ec30b083`, and no Cargo, test or client run was made.
+Next: owner batch build; then preview/unspent checks below. Source review is complete; the branch merged `origin/main` `ce34ef95` and is 0 behind at push time, and no Cargo, test or client run was made.
 
 The stock 3.3.5a `previewTalents` CVar was wired to constants in `script/talent.rs`:
 `AddPreviewTalentPoints`, `GetGroupPreviewTalentPointsSpent`, the reset verbs and
