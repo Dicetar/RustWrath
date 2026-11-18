@@ -51,7 +51,11 @@ pub fn load_item_bag_families(chain: &mut Chain) -> Result<ItemBagFamilyCatalog>
     let bytes = chain
         .read_file(ITEM_BAG_FAMILY)
         .with_context(|| format!("reading {ITEM_BAG_FAMILY}"))?;
-    let locales = if field_count(&bytes) == Some(18) { 16 } else { 8 };
+    let locales = if field_count(&bytes) == Some(18) {
+        16
+    } else {
+        8
+    };
     let rs = parse(&bytes, item_bag_family_schema(locales), "ItemBagFamily")?;
     let locale = chain.locale();
     let mut names = HashMap::with_capacity(rs.records().len());

@@ -306,7 +306,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             };
             let Some(tab) = i.checked_sub(1).and_then(|n| tabs.get(n)) else {
                 if wrath {
-                    return Ok(super::binding_abi::tuple(&[None, None, Some(0), None, Some(0)]));
+                    return Ok(super::binding_abi::tuple(&[
+                        None,
+                        None,
+                        Some(0),
+                        None,
+                        Some(0),
+                    ]));
                 }
                 return Ok(super::binding_abi::tuple(&[None, None, Some(0), None]));
             };
@@ -439,8 +445,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let i =
                 binding_abi::index_arg(lua, i, "Usage: GetTalentPrereqs(tabIndex, talentIndex)")?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let is_pet =
-                model.target == super::UiTarget::Wrath335 && is_truthy_arg(args.get(3));
+            let is_pet = model.target == super::UiTarget::Wrath335 && is_truthy_arg(args.get(3));
             let mut out = Vec::new();
             if let Some(t) = talent_at_scope(&model, tab, i, is_pet, args.get(4)) {
                 for p in &t.prereqs {
@@ -528,8 +533,10 @@ fn install_wrath(lua: &Lua, g: &Table) -> mlua::Result<()> {
     g.set(
         "GetNumTalentGroups",
         lua.create_function(|lua, args: MultiValue| {
-            let is_pet =
-                matches!(args.get(1), Some(Value::Boolean(true)) | Some(Value::Integer(1..)));
+            let is_pet = matches!(
+                args.get(1),
+                Some(Value::Boolean(true)) | Some(Value::Integer(1..))
+            );
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             if is_pet {
                 let has_pet = model.wrath_talents.pet_unspent_points > 0
@@ -543,8 +550,10 @@ fn install_wrath(lua: &Lua, g: &Table) -> mlua::Result<()> {
     g.set(
         "GetActiveTalentGroup",
         lua.create_function(|lua, args: MultiValue| {
-            let is_pet =
-                matches!(args.get(1), Some(Value::Boolean(true)) | Some(Value::Integer(1..)));
+            let is_pet = matches!(
+                args.get(1),
+                Some(Value::Boolean(true)) | Some(Value::Integer(1..))
+            );
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             if is_pet {
                 let has_pet = model.wrath_talents.pet_unspent_points > 0
@@ -562,10 +571,14 @@ fn install_wrath(lua: &Lua, g: &Table) -> mlua::Result<()> {
     g.set(
         "GetUnspentTalentPoints",
         lua.create_function(|lua, args: MultiValue| {
-            let is_inspect =
-                matches!(args.front(), Some(Value::Boolean(true)) | Some(Value::Integer(1..)));
-            let is_pet =
-                matches!(args.get(1), Some(Value::Boolean(true)) | Some(Value::Integer(1..)));
+            let is_inspect = matches!(
+                args.front(),
+                Some(Value::Boolean(true)) | Some(Value::Integer(1..))
+            );
+            let is_pet = matches!(
+                args.get(1),
+                Some(Value::Boolean(true)) | Some(Value::Integer(1..))
+            );
             if is_inspect {
                 return Ok(0i64);
             }
@@ -609,10 +622,14 @@ fn install_wrath(lua: &Lua, g: &Table) -> mlua::Result<()> {
         lua.create_function(|lua, args: MultiValue| {
             let tab = args.front().cloned().unwrap_or(Value::Nil);
             let i = args.get(1).cloned().unwrap_or(Value::Nil);
-            let Ok(tab) = binding_abi::index_arg(lua, tab, "Usage: GetTalentLink(tabIndex, talentIndex)") else {
+            let Ok(tab) =
+                binding_abi::index_arg(lua, tab, "Usage: GetTalentLink(tabIndex, talentIndex)")
+            else {
                 return Ok(Value::Nil);
             };
-            let Ok(i) = binding_abi::index_arg(lua, i, "Usage: GetTalentLink(tabIndex, talentIndex)") else {
+            let Ok(i) =
+                binding_abi::index_arg(lua, i, "Usage: GetTalentLink(tabIndex, talentIndex)")
+            else {
                 return Ok(Value::Nil);
             };
             let model = lua.app_data_ref::<Model>().expect("model app_data");
@@ -621,7 +638,10 @@ fn install_wrath(lua: &Lua, g: &Table) -> mlua::Result<()> {
                 return Ok(Value::Nil);
             };
             let rank = i64::from(t.rank).saturating_sub(1);
-            let link = format!("|cff4e96f7|Htalent:{}:{rank}|h[{}]|h|r", t.talent_id, t.name);
+            let link = format!(
+                "|cff4e96f7|Htalent:{}:{rank}|h[{}]|h|r",
+                t.talent_id, t.name
+            );
             Ok(Value::String(lua.create_string(&link)?))
         })?,
     )?;

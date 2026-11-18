@@ -135,7 +135,9 @@ fn finish(r: &Reader<'_>) -> Result<()> {
 /// Reject a declared count outside the layout's fixed bound.
 fn bounded(count: usize, max: usize, detail: &'static str) -> Result<usize> {
     if count > max {
-        Err(DecodeError::invalid_count(detail).with_value(count as u32).into())
+        Err(DecodeError::invalid_count(detail)
+            .with_value(count as u32)
+            .into())
     } else {
         Ok(count)
     }
@@ -282,7 +284,11 @@ pub fn read_lfg_join_result(body: &[u8]) -> Result<LfgJoinResult> {
         if result != LFG_JOIN_PARTY_NOT_MEET_REQS {
             return Err(DecodeError::trailing(r.remaining()).into());
         }
-        let members = bounded(usize::from(r.u8()?), MAX_LFG_PARTY_MEMBERS, "LFG party lock count")?;
+        let members = bounded(
+            usize::from(r.u8()?),
+            MAX_LFG_PARTY_MEMBERS,
+            "LFG party lock count",
+        )?;
         if members == 0 {
             // The writer only emits the block when the lock map is non-empty.
             return Err(DecodeError::invalid_value("empty LFG party lock block").into());
@@ -387,18 +393,22 @@ pub fn read_lfg_update_player(body: &[u8]) -> Result<LfgUpdatePlayer> {
         let queued = r.u8()? != 0;
         let no_partial_clear = r.u8()? != 0;
         let achievements = r.u8()? != 0;
-        let count = bounded(usize::from(r.u8()?), MAX_LFG_DUNGEONS, "LFG update dungeon count")?;
+        let count = bounded(
+            usize::from(r.u8()?),
+            MAX_LFG_DUNGEONS,
+            "LFG update dungeon count",
+        )?;
         let mut dungeons = Vec::with_capacity(count);
         for _ in 0..count {
             dungeons.push(r.u32()?);
         }
         let comment = r.cstring()?;
         if comment.len() > MAX_LFG_COMMENT {
-            return Err(
-                DecodeError::invalid_value("LFG comment exceeds the client's 256-byte buffer")
-                    .with_value(comment.len() as u32)
-                    .into(),
-            );
+            return Err(DecodeError::invalid_value(
+                "LFG comment exceeds the client's 256-byte buffer",
+            )
+            .with_value(comment.len() as u32)
+            .into());
         }
         update.queued = Some(queued);
         update.no_partial_clear = Some(no_partial_clear);
@@ -455,18 +465,22 @@ pub fn read_lfg_update_party(body: &[u8]) -> Result<LfgUpdateParty> {
         let no_partial_clear = r.u8()? != 0;
         let achievements = r.u8()? != 0;
         let roles = [r.u8()?, r.u8()?, r.u8()?];
-        let count = bounded(usize::from(r.u8()?), MAX_LFG_DUNGEONS, "LFG update dungeon count")?;
+        let count = bounded(
+            usize::from(r.u8()?),
+            MAX_LFG_DUNGEONS,
+            "LFG update dungeon count",
+        )?;
         let mut dungeons = Vec::with_capacity(count);
         for _ in 0..count {
             dungeons.push(r.u32()?);
         }
         let comment = r.cstring()?;
         if comment.len() > MAX_LFG_COMMENT {
-            return Err(
-                DecodeError::invalid_value("LFG comment exceeds the client's 256-byte buffer")
-                    .with_value(comment.len() as u32)
-                    .into(),
-            );
+            return Err(DecodeError::invalid_value(
+                "LFG comment exceeds the client's 256-byte buffer",
+            )
+            .with_value(comment.len() as u32)
+            .into());
         }
         update.lfg_joined = Some(lfg_joined);
         update.queued = Some(queued);
@@ -723,9 +737,11 @@ pub fn read_battlefield_status(body: &[u8]) -> Result<BattlefieldStatus> {
         },
         4 => BattlefieldStatusArm::Inactive,
         _ => {
-            return Err(DecodeError::invalid_value("unknown battlefield status word")
-                .with_value(status)
-                .into());
+            return Err(
+                DecodeError::invalid_value("unknown battlefield status word")
+                    .with_value(status)
+                    .into(),
+            );
         }
     };
     finish(&r)?;
@@ -1024,17 +1040,21 @@ pub fn read_calendar_send_calendar(body: &[u8]) -> Result<CalendarSendCalendar> 
         });
     }
 
-    let event_count = bounded(r.u32()? as usize, MAX_CALENDAR_EVENTS, "calendar event count")?;
+    let event_count = bounded(
+        r.u32()? as usize,
+        MAX_CALENDAR_EVENTS,
+        "calendar event count",
+    )?;
     let mut events = Vec::with_capacity(event_count);
     for _ in 0..event_count {
         let event_id = r.u64()?;
         let title = r.cstring()?;
         if title.len() > MAX_CALENDAR_TITLE {
-            return Err(
-                DecodeError::invalid_value("calendar title exceeds the client's 128-byte buffer")
-                    .with_value(title.len() as u32)
-                    .into(),
-            );
+            return Err(DecodeError::invalid_value(
+                "calendar title exceeds the client's 128-byte buffer",
+            )
+            .with_value(title.len() as u32)
+            .into());
         }
         events.push(CalendarEvent {
             event_id,
@@ -1310,7 +1330,9 @@ fn write_vehicle_movement(p: &mut Vec<u8>, movement: &VehicleMovementInfo) -> Re
         anyhow::bail!("vehicle movement jump tail does not match MOVEMENTFLAG_FALLING");
     }
     if movement.spline_elevation.is_some() != (flags & MOVEMENT_FLAG_SPLINE_ELEVATION != 0) {
-        anyhow::bail!("vehicle movement spline elevation does not match MOVEMENTFLAG_SPLINE_ELEVATION");
+        anyhow::bail!(
+            "vehicle movement spline elevation does not match MOVEMENTFLAG_SPLINE_ELEVATION"
+        );
     }
 
     p.extend_from_slice(&flags.to_le_bytes());
@@ -1440,11 +1462,7 @@ mod tests {
 
     /// The same, for a packet whose optional tail begins at `head`: the `head`-byte prefix is a
     /// complete packet of its own, so it is the one cut that must decode.
-    fn assert_prefixes_rejected_from(
-        read: impl Fn(&[u8]) -> Result<()>,
-        body: &[u8],
-        head: usize,
-    ) {
+    fn assert_prefixes_rejected_from(read: impl Fn(&[u8]) -> Result<()>, body: &[u8], head: usize) {
         for end in 0..body.len() {
             if head != 0 && end == head {
                 continue;
@@ -1462,7 +1480,10 @@ mod tests {
         let mut longer = body.to_vec();
         longer.push(0);
         let error = read(&longer).unwrap_err();
-        assert_eq!(classify_decode_failure(&error), DecodeFailure::TrailingBytes);
+        assert_eq!(
+            classify_decode_failure(&error),
+            DecodeFailure::TrailingBytes
+        );
     }
 
     // -- LFG encoders -------------------------------------------------------------------------
@@ -1522,7 +1543,10 @@ mod tests {
             encode_lfg_proposal_result(7, false),
             vec![0x07, 0x00, 0x00, 0x00, 0]
         );
-        assert_eq!(encode_set_lfg_comment("tank"), vec![b't', b'a', b'n', b'k', 0]);
+        assert_eq!(
+            encode_set_lfg_comment("tank"),
+            vec![b't', b'a', b'n', b'k', 0]
+        );
         assert_eq!(encode_lfg_set_roles(0x06), vec![0x06]);
     }
 
@@ -2191,7 +2215,11 @@ mod tests {
         assert!(encode_calendar_get_calendar().is_empty());
         assert_eq!(
             encode_calendar_event_signup(0x0102_0304_0506_0708, true),
-            [vec![0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01], vec![1]].concat()
+            [
+                vec![0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01],
+                vec![1]
+            ]
+            .concat()
         );
         assert_eq!(
             encode_calendar_event_rsvp(5, 9, 1),
@@ -2303,22 +2331,22 @@ mod tests {
         };
         let body = encode_dismiss_controlled_vehicle(0x0000_0000_0000_00AA, &movement).unwrap();
         let expected = [
-            vec![0x01, 0xAA], // packed vehicle guid
+            vec![0x01, 0xAA],                 // packed vehicle guid
             u32b(MOVEMENT_FLAG_ON_TRANSPORT), // flags, with ONTRANSPORT set by the encoder
             u16b(0),                          // flags2
             u32b(0x0000_3039),                // time
             f32b(1.0),
             f32b(2.0),
             f32b(3.0),
-            f32b(0.5),                 // world orientation
-            vec![0x01, 0xAA],          // packed transport guid
+            f32b(0.5),        // world orientation
+            vec![0x01, 0xAA], // packed transport guid
             f32b(0.25),
             f32b(0.5),
             f32b(0.75),
-            f32b(1.5),                 // transport orientation
-            u32b(0x0000_3038),         // transport time
-            vec![3],                   // seat
-            u32b(0),                   // fall time
+            f32b(1.5),         // transport orientation
+            u32b(0x0000_3038), // transport time
+            vec![3],           // seat
+            u32b(0),           // fall time
         ]
         .concat();
         assert_eq!(body, expected);

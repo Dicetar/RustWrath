@@ -584,14 +584,16 @@ pub(super) fn seed_ui_fixture(
                             quests: vec![
                                 benilla_protocol::messages::QuestListEntry {
                                     quest_id: 84,
-                                    flags: 0, repeatable: false,
+                                    flags: 0,
+                                    repeatable: false,
                                     icon: 0,
                                     level: 4,
                                     title: "Brotherhood of Thieves".into(),
                                 },
                                 benilla_protocol::messages::QuestListEntry {
                                     quest_id: 40,
-                                    flags: 0, repeatable: false,
+                                    flags: 0,
+                                    repeatable: false,
                                     icon: 0,
                                     level: 3,
                                     title: "Eagan Peltskinner".into(),

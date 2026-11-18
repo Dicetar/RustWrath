@@ -873,4 +873,3 @@ fn wrath_cursor_fallback_fires_once_while_pending_and_resumes_when_measured() {
     assert_eq!(take_log(&s), "14,0,4,14");
     assert!(s.errors().is_empty(), "{:?}", s.errors());
 }
-

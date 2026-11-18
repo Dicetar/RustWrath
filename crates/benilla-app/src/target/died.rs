@@ -1116,7 +1116,10 @@ mod tests {
         assert!(
             matches!(
                 c.sent()[..],
-                [ClientCommand::CancelCast { spell_id: FIREBALL, .. }]
+                [ClientCommand::CancelCast {
+                    spell_id: FIREBALL,
+                    ..
+                }]
             ),
             "the record's unit died"
         );
@@ -1188,10 +1191,13 @@ mod tests {
             }
         )));
         c.dies(mob, MOB, ObjectType::Unit);
-        assert!(c
-            .sent()
-            .iter()
-            .any(|s| matches!(s, ClientCommand::CancelCast { spell_id: FIREBALL, .. })));
+        assert!(c.sent().iter().any(|s| matches!(
+            s,
+            ClientCommand::CancelCast {
+                spell_id: FIREBALL,
+                ..
+            }
+        )));
     }
 
     /// `0x6058e5`-`0x605906`: the selection's death deselects (`0x493540(0, 0)` at `0x605901`)

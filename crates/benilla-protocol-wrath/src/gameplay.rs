@@ -94,11 +94,14 @@ pub(crate) struct DecodeError {
 }
 
 impl DecodeError {
-    pub(crate) fn new(reason: DecodeFailure, remaining: Option<usize>, detail: &'static str) -> Self {
+    pub(crate) fn new(
+        reason: DecodeFailure,
+        remaining: Option<usize>,
+        detail: &'static str,
+    ) -> Self {
         Self {
             reason,
-            remaining: remaining
-                .map(|count| count.min(MAX_REPORTED_REMAINING) as u32),
+            remaining: remaining.map(|count| count.min(MAX_REPORTED_REMAINING) as u32),
             detail,
             value: None,
         }
@@ -110,15 +113,27 @@ impl DecodeError {
     }
 
     pub(crate) fn truncated(remaining: usize) -> Self {
-        Self::new(DecodeFailure::Truncated, Some(remaining), "payload cut short")
+        Self::new(
+            DecodeFailure::Truncated,
+            Some(remaining),
+            "payload cut short",
+        )
     }
 
     pub(crate) fn unterminated(remaining: usize) -> Self {
-        Self::new(DecodeFailure::UnterminatedString, Some(remaining), "unterminated string")
+        Self::new(
+            DecodeFailure::UnterminatedString,
+            Some(remaining),
+            "unterminated string",
+        )
     }
 
     pub(crate) fn trailing(remaining: usize) -> Self {
-        Self::new(DecodeFailure::TrailingBytes, Some(remaining), "trailing bytes after record")
+        Self::new(
+            DecodeFailure::TrailingBytes,
+            Some(remaining),
+            "trailing bytes after record",
+        )
     }
 
     pub(crate) fn invalid_count(detail: &'static str) -> Self {
@@ -297,7 +312,10 @@ fn realm_split_reply_preserves_server_state_and_rejects_truncation() {
     let mut payload = u32::MAX.to_le_bytes().to_vec();
     payload.extend_from_slice(&0u32.to_le_bytes());
     payload.extend_from_slice(b"01/01/01\0");
-    assert_eq!(parse_realm_split(&payload).unwrap(), (u32::MAX, 0, "01/01/01".into()));
+    assert_eq!(
+        parse_realm_split(&payload).unwrap(),
+        (u32::MAX, 0, "01/01/01".into())
+    );
     for end in 0..payload.len() {
         assert!(parse_realm_split(&payload[..end]).is_err());
     }
@@ -362,12 +380,7 @@ pub fn cast_spell_trade_item(cast_count: u8, spell_id: u32, slot: u8) -> Vec<u8>
 }
 
 /// `CMSG_CAST_SPELL` at a corpse (`CastSpellCorpse`): the ally or enemy corpse mask.
-pub fn cast_spell_corpse(
-    cast_count: u8,
-    spell_id: u32,
-    ally: bool,
-    corpse_guid: u64,
-) -> Vec<u8> {
+pub fn cast_spell_corpse(cast_count: u8, spell_id: u32, ally: bool, corpse_guid: u64) -> Vec<u8> {
     let target = if ally {
         CastTarget::CorpseAlly(corpse_guid)
     } else {
@@ -1613,9 +1626,11 @@ pub fn encode_multiclass_request(
 /// enforces the 4096-byte ceiling, `"WMC1"` magic, and version `3`.
 pub fn accept_multiclass_reply(payload: &[u8]) -> Result<MulticlassReply> {
     if payload.len() > MULTICLASS_MAX_REPLY_LEN {
-        return Err(DecodeError::invalid_count("multiclass reply exceeds 4096-byte cap")
-            .with_value(payload.len() as u32)
-            .into());
+        return Err(
+            DecodeError::invalid_count("multiclass reply exceeds 4096-byte cap")
+                .with_value(payload.len() as u32)
+                .into(),
+        );
     }
     let mut r = Reader::new(payload);
     let magic = r.take(4)?;
@@ -1624,9 +1639,11 @@ pub fn accept_multiclass_reply(payload: &[u8]) -> Result<MulticlassReply> {
     }
     let version = r.u16()?;
     if version != MULTICLASS_VERSION {
-        return Err(DecodeError::invalid_value("multiclass reply version mismatch")
-            .with_value(u32::from(version))
-            .into());
+        return Err(
+            DecodeError::invalid_value("multiclass reply version mismatch")
+                .with_value(u32::from(version))
+                .into(),
+        );
     }
     let op = r.u16()?;
     // `MulticlassTransport.cpp::Send`: op, requestId (u32), result (u16), then the body.
@@ -2059,7 +2076,10 @@ pub struct InspectHonor {
 }
 
 fn read_inspect_honor(body: &[u8]) -> Result<InspectHonor> {
-    anyhow::ensure!(body.len() == 25, "inspect honor reply must contain 25 bytes");
+    anyhow::ensure!(
+        body.len() == 25,
+        "inspect honor reply must contain 25 bytes"
+    );
     let mut r = crate::updates::Reader::new(body);
     Ok(InspectHonor {
         guid: r.u64()?,
@@ -2077,8 +2097,14 @@ fn read_inspect_honor(body: &[u8]) -> Result<InspectHonor> {
 pub enum ServerEvent {
     InspectHonor(InspectHonor),
     MonsterMove(MonsterMove),
-    AttackStart { attacker: u64, victim: u64 },
-    AttackStop { attacker: u64, victim: u64 },
+    AttackStart {
+        attacker: u64,
+        victim: u64,
+    },
+    AttackStop {
+        attacker: u64,
+        victim: u64,
+    },
     AttackSwingError(AttackSwingError),
     CastFailed {
         spell_id: u32,
@@ -2131,9 +2157,18 @@ pub enum ServerEvent {
         caster: u64,
         cooldowns: Vec<(u32, u32)>,
     },
-    ItemCooldown { item_guid: u64, spell_id: u32 },
-    CooldownEvent { spell_id: u32, caster: u64 },
-    ClearCooldown { spell_id: u32, caster: u64 },
+    ItemCooldown {
+        item_guid: u64,
+        spell_id: u32,
+    },
+    CooldownEvent {
+        spell_id: u32,
+        caster: u64,
+    },
+    ClearCooldown {
+        spell_id: u32,
+        caster: u64,
+    },
     /// `MSG_CHANNEL_START`: 12340 broadcasts the caster's guid, which the self-only 1.12 event
     /// does not carry.
     ChannelStart {
@@ -2142,9 +2177,15 @@ pub enum ServerEvent {
         duration_ms: u32,
     },
     /// `MSG_CHANNEL_UPDATE`: as above; 0 ms is over.
-    ChannelUpdate { caster: u64, remaining_ms: u32 },
+    ChannelUpdate {
+        caster: u64,
+        remaining_ms: u32,
+    },
     /// `SMSG_SPELL_DELAYED`: pushback on a cast in flight.
-    SpellDelayed { caster: u64, delay_ms: u32 },
+    SpellDelayed {
+        caster: u64,
+        delay_ms: u32,
+    },
     SpellFailure {
         caster: u64,
         spell_id: u32,
@@ -2168,11 +2209,20 @@ pub enum ServerEvent {
     },
     /// `SMSG_PARTYKILLLOG` (`Unit.cpp:14210-14212`): the killing blow credited to the looter.
     /// The writer sends the killer's raw `u64` and then the victim's.
-    PartyKillLog { killer: u64, victim: u64 },
+    PartyKillLog {
+        killer: u64,
+        victim: u64,
+    },
     CancelCombat,
-    AiReaction { unit: u64, reaction: u32 },
+    AiReaction {
+        unit: u64,
+        reaction: u32,
+    },
     CancelAutoRepeat,
-    PlaySpellVisual { unit: u64, kit_id: u32 },
+    PlaySpellVisual {
+        unit: u64,
+        kit_id: u32,
+    },
     /// `SMSG_SPELLNONMELEEDAMAGELOG` without the 12340-only overkill word. `school` is 12340's
     /// mask; the app seam turns it into the 1.12 index.
     SpellDamage {
@@ -2201,7 +2251,9 @@ pub enum ServerEvent {
         position: [f32; 3],
         corpse_map: u32,
     },
-    CorpseReclaimDelay { delay_ms: u32 },
+    CorpseReclaimDelay {
+        delay_ms: u32,
+    },
     ResurrectRequest {
         caster: u64,
         name: String,
@@ -2209,7 +2261,9 @@ pub enum ServerEvent {
         /// False when 12340's instant-res override word was present.
         has_timer: bool,
     },
-    SpiritHealerConfirm { npc: u64 },
+    SpiritHealerConfirm {
+        npc: u64,
+    },
     /// `SMSG_DEATH_RELEASE_LOC`: the graveyard the release teleports to (`Player.cpp:4860-4872`),
     /// and the `-1` map `ResurrectPlayer` clears it with (`Player.cpp:4380-4385`). `position` is
     /// all zeroes on the clear.
@@ -2218,13 +2272,21 @@ pub enum ServerEvent {
         position: [f32; 3],
     },
     /// `SMSG_PRE_RESURRECT`: the packed guid of the body turning ghost (`Player.cpp:4327-4331`).
-    PreResurrect { guid: u64 },
+    PreResurrect {
+        guid: u64,
+    },
     /// `SMSG_AREA_SPIRIT_HEALER_TIME`: the area healer's raw guid and the ms until its next wave
     /// (`BattlegroundMgr.cpp:667-674`).
-    AreaSpiritHealerTime { healer: u64, ms: u32 },
+    AreaSpiritHealerTime {
+        healer: u64,
+        ms: u32,
+    },
     /// `SMSG_AREA_TRIGGER_NO_CORPSE`: the instance entrance refused the ghost (`MapMgr.cpp:207`).
     CorpseNotInInstance,
-    LogoutResponse { reason: u32, instant: bool },
+    LogoutResponse {
+        reason: u32,
+        instant: bool,
+    },
     LoggedOut,
     LogoutCancelled,
     /// `SMSG_TRANSFER_ABORTED` (`Player.cpp:11685-11702`): the refused transfer's map and
@@ -2235,8 +2297,17 @@ pub enum ServerEvent {
         reason: u8,
         argument: Option<u8>,
     },
-    ItemInfo { entry: u32, info: Option<ItemInfo> },
-    PlayerName { guid: u64, name: String, race: u32, gender: u32, class: u32 },
+    ItemInfo {
+        entry: u32,
+        info: Option<ItemInfo>,
+    },
+    PlayerName {
+        guid: u64,
+        name: String,
+        race: u32,
+        gender: u32,
+        class: u32,
+    },
     GameObjectInfo {
         entry: u32,
         type_id: u32,
@@ -2261,7 +2332,9 @@ pub enum ServerEvent {
         state: ActionButtonState,
         buttons: Vec<ActionButton>,
     },
-    SpellLearned { spell_id: u32 },
+    SpellLearned {
+        spell_id: u32,
+    },
     Gossip {
         npc: u64,
         menu_id: u32,
@@ -2271,7 +2344,10 @@ pub enum ServerEvent {
     },
     GossipComplete,
     /// `status` is the raw 3.3.5 `QuestGiverStatus` (0-10), not the 1.12 `dialog_status`.
-    QuestGiverStatus { npc: u64, status: u32 },
+    QuestGiverStatus {
+        npc: u64,
+        status: u32,
+    },
     QuestGiverStatusMultiple(Vec<(u64, u32)>),
     QuestGreeting {
         npc: u64,
@@ -2285,24 +2361,55 @@ pub enum ServerEvent {
     QuestOffer(QuestOfferReward),
     QuestComplete(QuestComplete),
     QuestTemplate(Box<QuestTemplate>),
-    QuestObjectivesComplete { quest_id: u32 },
-    QuestObjectiveKill { quest_id: u32, entry: u32, count: u32, required: u32 },
-    QuestObjectiveItem { item_id: u32, count: u32 },
+    QuestObjectivesComplete {
+        quest_id: u32,
+    },
+    QuestObjectiveKill {
+        quest_id: u32,
+        entry: u32,
+        count: u32,
+        required: u32,
+    },
+    QuestObjectiveItem {
+        item_id: u32,
+        count: u32,
+    },
     QuestLogFull,
-    QuestGiverInvalid { reason: u32 },
-    QuestGiverFailed { quest_id: u32, reason: u32 },
-    QuestFailed { quest_id: u32, timed: bool },
-    NpcText { text_id: u32, blocks: Vec<NpcTextBlock> },
+    QuestGiverInvalid {
+        reason: u32,
+    },
+    QuestGiverFailed {
+        quest_id: u32,
+        reason: u32,
+    },
+    QuestFailed {
+        quest_id: u32,
+        timed: bool,
+    },
+    NpcText {
+        text_id: u32,
+        blocks: Vec<NpcTextBlock>,
+    },
     LootResponse {
         guid: u64,
         loot_type: u8,
         gold: u32,
         items: Vec<LootItem>,
     },
-    LootError { guid: u64, error: u8 },
-    LootReleaseResponse { guid: u64, result: u8 },
-    LootRemoved { slot: u8 },
-    LootMoney { amount: u32 },
+    LootError {
+        guid: u64,
+        error: u8,
+    },
+    LootReleaseResponse {
+        guid: u64,
+        result: u8,
+    },
+    LootRemoved {
+        slot: u8,
+    },
+    LootMoney {
+        amount: u32,
+    },
     LootClearMoney,
     /// `SMSG_LOOT_START_ROLL` (`Group.cpp::SendLootStartRoll`, `:860-881`): the roll's allocated
     /// item guid, 3.3.3's map id, slot, item, suffix factor, property, stack count, countdown and
@@ -2474,34 +2581,56 @@ pub enum ServerEvent {
     /// `SMSG_PET_MODE`: the packed react/command/flags dword alone.
     PetMode(pet_talent::PetMode),
     /// `SMSG_PET_ACTION_FEEDBACK`: one `PET_FEEDBACK_*` reason.
-    PetActionFeedback { reason: u8 },
+    PetActionFeedback {
+        reason: u8,
+    },
     /// `SMSG_PET_ACTION_SOUND`: the pet and its `PetAction` talk selector.
-    PetActionSound { pet_guid: u64, talk: i32 },
+    PetActionSound {
+        pet_guid: u64,
+        talk: i32,
+    },
     /// `SMSG_PET_DISMISS_SOUND`: the model id and world position of a dismissed pet.
-    PetDismissSound { model_id: i32, position: [f32; 3] },
+    PetDismissSound {
+        model_id: i32,
+        position: [f32; 3],
+    },
     /// `SMSG_PET_LEARNED_SPELL`: 12340's 32-bit pet spell id (a full bar follows separately).
-    PetLearnedSpell { spell_id: u32 },
+    PetLearnedSpell {
+        spell_id: u32,
+    },
     /// `SMSG_PET_REMOVED_SPELL`: 12340's 32-bit pet spell id.
-    PetRemovedSpell { spell_id: u32 },
+    PetRemovedSpell {
+        spell_id: u32,
+    },
     /// `SMSG_PET_GUIDS`: the hunter's controlled-pet list (`u32 count` + guids).
-    PetGuids { guids: Vec<u64> },
+    PetGuids {
+        guids: Vec<u64>,
+    },
     /// `SMSG_TALENTS_INFO`: player dual-spec groups or the pet talent group.
     TalentsInfo(pet_talent::TalentsInfo),
     /// `SMSG_TALENTS_INVOLUNTARILY_RESET`: the reset flag; no player choice is attached.
-    TalentsInvoluntarilyReset { flag: u8 },
+    TalentsInvoluntarilyReset {
+        flag: u8,
+    },
     /// `MSG_LIST_STABLED_PETS`: the current pet plus the stabled rows and bought slot count.
     StableList(Box<pet_talent::StableList>),
     /// `SMSG_STABLE_RESULT`: one `STABLE_*` code.
-    StableResult { result: u8 },
+    StableResult {
+        result: u8,
+    },
     /// `SMSG_SUPERCEDED_SPELL`: the old and new rank ids.
     SpellSuperceded {
         old_spell_id: u32,
         new_spell_id: u32,
     },
     /// `SMSG_REMOVED_SPELL`: one player spell id.
-    SpellRemoved { spell_id: u32 },
+    SpellRemoved {
+        spell_id: u32,
+    },
     /// `SMSG_TRADE_STATUS`: the 12340 status enum and its conditional tail.
-    TradeStatus { status: economy::TradeStatus },
+    TradeStatus {
+        status: economy::TradeStatus,
+    },
     /// `SMSG_TRADE_STATUS_EXTENDED`: 7 slots with the 3.3.5 socket-enchant words.
     TradeStatusExtended(Box<economy::TradeExtended>),
     /// `SMSG_SEND_MAIL_RESULT`: the action verdict and its optional tail.
@@ -2509,7 +2638,9 @@ pub enum ServerEvent {
     /// `SMSG_MAIL_LIST_RESULT`: 12340's real/shown counts and up to 12 attachments per mail.
     MailList(Box<economy::MailList>),
     /// `SMSG_RECEIVED_MAIL`: the client's display delay.
-    ReceivedMail { seconds: f32 },
+    ReceivedMail {
+        seconds: f32,
+    },
     /// `MSG_QUERY_NEXT_MAIL_TIME`: the next-delivery time and recent senders.
     NextMailTime {
         seconds: f32,
@@ -2527,11 +2658,15 @@ pub enum ServerEvent {
     /// `SMSG_GROUP_INVITE`: invite state, inviter, LFG dungeon metadata and the final word.
     GroupInvite(social::GroupInvite),
     /// `SMSG_GROUP_DECLINE`: the declining player's name.
-    GroupDecline { name: String },
+    GroupDecline {
+        name: String,
+    },
     /// `SMSG_GROUP_UNINVITE`: empty body.
     GroupUninvited,
     /// `SMSG_GROUP_SET_LEADER`: the new leader's name.
-    GroupLeaderChanged { name: String },
+    GroupLeaderChanged {
+        name: String,
+    },
     /// `SMSG_GROUP_DESTROYED`: empty body.
     GroupDestroyed,
     /// `SMSG_GROUP_LIST`: the 12340 roster with roles, group guid, counter, LFG and difficulty.
@@ -2739,11 +2874,15 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_MONSTER_MOVE_TRANSPORT => movement::read(body, true).map(ServerEvent::MonsterMove),
         SMSG_ATTACKSTART => read_attack_start(body),
         SMSG_ATTACKSTOP => read_attack_stop(body),
-        SMSG_ATTACKSWING_NOTINRANGE => Ok(ServerEvent::AttackSwingError(AttackSwingError::NotInRange)),
-        SMSG_ATTACKSWING_BADFACING => Ok(ServerEvent::AttackSwingError(AttackSwingError::BadFacing)),
-        SMSG_ATTACKSWING_DEADTARGET | SMSG_ATTACKSWING_CANT_ATTACK => {
-            Ok(ServerEvent::AttackSwingError(AttackSwingError::DeadOrUnattackable))
+        SMSG_ATTACKSWING_NOTINRANGE => {
+            Ok(ServerEvent::AttackSwingError(AttackSwingError::NotInRange))
         }
+        SMSG_ATTACKSWING_BADFACING => {
+            Ok(ServerEvent::AttackSwingError(AttackSwingError::BadFacing))
+        }
+        SMSG_ATTACKSWING_DEADTARGET | SMSG_ATTACKSWING_CANT_ATTACK => Ok(
+            ServerEvent::AttackSwingError(AttackSwingError::DeadOrUnattackable),
+        ),
         SMSG_AI_REACTION => read_ai_reaction(body),
         SMSG_ATTACKERSTATEUPDATE => read_attacker_state(body),
         SMSG_PARTYKILLLOG => read_party_kill_log(body),
@@ -2768,12 +2907,10 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_SPELL_FAILED_OTHER => read_spell_failure(body),
         SMSG_SPELL_DELAYED => read_spell_delayed(body),
         SMSG_SPELL_COOLDOWN => read_spell_cooldowns(body),
-        SMSG_COOLDOWN_EVENT => read_cooldown_event(body).map(|(spell_id, caster)| {
-            ServerEvent::CooldownEvent { spell_id, caster }
-        }),
-        SMSG_CLEAR_COOLDOWN => read_cooldown_event(body).map(|(spell_id, caster)| {
-            ServerEvent::ClearCooldown { spell_id, caster }
-        }),
+        SMSG_COOLDOWN_EVENT => read_cooldown_event(body)
+            .map(|(spell_id, caster)| ServerEvent::CooldownEvent { spell_id, caster }),
+        SMSG_CLEAR_COOLDOWN => read_cooldown_event(body)
+            .map(|(spell_id, caster)| ServerEvent::ClearCooldown { spell_id, caster }),
         SMSG_ITEM_COOLDOWN => read_item_cooldown(body),
         MSG_CHANNEL_START => read_channel_start(body),
         MSG_CHANNEL_UPDATE => read_channel_update(body),
@@ -2801,16 +2938,28 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_QUESTGIVER_REQUEST_ITEMS => read_quest_request(body),
         SMSG_QUESTGIVER_OFFER_REWARD => read_quest_offer(body),
         SMSG_QUESTGIVER_QUEST_COMPLETE => read_quest_complete(body),
-        SMSG_QUEST_QUERY_RESPONSE => read_quest_template(body).map(|q| ServerEvent::QuestTemplate(Box::new(q))),
-        SMSG_QUESTUPDATE_COMPLETE => u32_body(body).map(|quest_id| ServerEvent::QuestObjectivesComplete { quest_id }),
+        SMSG_QUEST_QUERY_RESPONSE => {
+            read_quest_template(body).map(|q| ServerEvent::QuestTemplate(Box::new(q)))
+        }
+        SMSG_QUESTUPDATE_COMPLETE => {
+            u32_body(body).map(|quest_id| ServerEvent::QuestObjectivesComplete { quest_id })
+        }
         SMSG_QUESTUPDATE_ADD_KILL => read_quest_kill(body),
         SMSG_QUESTUPDATE_ADD_ITEM if body.is_empty() => return None,
         SMSG_QUESTUPDATE_ADD_ITEM => read_quest_item(body),
         SMSG_QUESTLOG_FULL => Ok(ServerEvent::QuestLogFull),
-        SMSG_QUESTGIVER_QUEST_INVALID => u32_body(body).map(|reason| ServerEvent::QuestGiverInvalid { reason }),
+        SMSG_QUESTGIVER_QUEST_INVALID => {
+            u32_body(body).map(|reason| ServerEvent::QuestGiverInvalid { reason })
+        }
         SMSG_QUESTGIVER_QUEST_FAILED => read_quest_failed(body),
-        SMSG_QUESTUPDATE_FAILED => u32_body(body).map(|quest_id| ServerEvent::QuestFailed { quest_id, timed: false }),
-        SMSG_QUESTUPDATE_FAILEDTIMER => u32_body(body).map(|quest_id| ServerEvent::QuestFailed { quest_id, timed: true }),
+        SMSG_QUESTUPDATE_FAILED => u32_body(body).map(|quest_id| ServerEvent::QuestFailed {
+            quest_id,
+            timed: false,
+        }),
+        SMSG_QUESTUPDATE_FAILEDTIMER => u32_body(body).map(|quest_id| ServerEvent::QuestFailed {
+            quest_id,
+            timed: true,
+        }),
         SMSG_NPC_TEXT_UPDATE => read_npc_text(body),
         SMSG_LOOT_RESPONSE => read_loot_response(body),
         SMSG_LOOT_RELEASE_RESPONSE => read_loot_release(body),
@@ -2835,8 +2984,12 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_TRAINER_BUY_FAILED => read_trainer_buy_failed(body),
         SMSG_MESSAGECHAT => read_message_chat(body, false),
         SMSG_GM_MESSAGECHAT => read_message_chat(body, true),
-        SMSG_CHAT_PLAYER_NOT_FOUND => Reader::new(body).cstring().map(|name| ServerEvent::ChatPlayerNotFound { name }),
-        SMSG_NOTIFICATION => Reader::new(body).cstring().map(|text| ServerEvent::Notification { text }),
+        SMSG_CHAT_PLAYER_NOT_FOUND => Reader::new(body)
+            .cstring()
+            .map(|name| ServerEvent::ChatPlayerNotFound { name }),
+        SMSG_NOTIFICATION => Reader::new(body)
+            .cstring()
+            .map(|text| ServerEvent::Notification { text }),
         SMSG_AREA_TRIGGER_MESSAGE => read_area_trigger_message(body),
         SMSG_QUEST_CONFIRM_ACCEPT => read_quest_confirm_accept(body),
         MSG_QUEST_PUSH_RESULT => read_quest_push_result(body),
@@ -2849,12 +3002,14 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_PAGE_TEXT_QUERY_RESPONSE => read_page_text(body),
         SMSG_INVENTORY_CHANGE_FAILURE => read_inventory_failure(body),
         SMSG_ITEM_TEXT_QUERY_RESPONSE => read_item_text(body),
-        SMSG_SHOW_BANK => economy::read_show_bank(body)
-            .map(|show| ServerEvent::ShowBank { banker: show.banker }),
+        SMSG_SHOW_BANK => economy::read_show_bank(body).map(|show| ServerEvent::ShowBank {
+            banker: show.banker,
+        }),
         SMSG_BUY_BANK_SLOT_RESULT => economy::read_buy_bank_slot_result(body)
             .map(|result| ServerEvent::BuyBankSlotResult { result }),
-        SMSG_PET_SPELLS => pet_talent::read_pet_spells(body)
-            .map(|spells| ServerEvent::PetSpells(Box::new(spells))),
+        SMSG_PET_SPELLS => {
+            pet_talent::read_pet_spells(body).map(|spells| ServerEvent::PetSpells(Box::new(spells)))
+        }
         SMSG_PET_MODE => pet_talent::read_pet_mode(body).map(ServerEvent::PetMode),
         SMSG_PET_ACTION_FEEDBACK => pet_talent::read_pet_action_feedback(body)
             .map(|reason| ServerEvent::PetActionFeedback { reason }),
@@ -2866,80 +3021,98 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
             .map(|spell_id| ServerEvent::PetLearnedSpell { spell_id }),
         SMSG_PET_REMOVED_SPELL => pet_talent::read_pet_removed_spell(body)
             .map(|spell_id| ServerEvent::PetRemovedSpell { spell_id }),
-        SMSG_PET_GUIDS => pet_talent::read_pet_guids(body)
-            .map(|guids| ServerEvent::PetGuids { guids }),
+        SMSG_PET_GUIDS => {
+            pet_talent::read_pet_guids(body).map(|guids| ServerEvent::PetGuids { guids })
+        }
         SMSG_LIST_STABLED_PETS => pet_talent::read_list_stabled_pets(body)
             .map(|list| ServerEvent::StableList(Box::new(list))),
-        SMSG_STABLE_RESULT => pet_talent::read_stable_result(body)
-            .map(|result| ServerEvent::StableResult { result }),
+        SMSG_STABLE_RESULT => {
+            pet_talent::read_stable_result(body).map(|result| ServerEvent::StableResult { result })
+        }
         SMSG_TALENTS_INFO => pet_talent::read_talents_info(body).map(ServerEvent::TalentsInfo),
-        SMSG_TALENTS_INVOLUNTARILY_RESET => u8_body(body)
-            .map(|flag| ServerEvent::TalentsInvoluntarilyReset { flag }),
-        SMSG_LEARNED_SPELL => pet_talent::read_learned_spell(body)
-            .map(|learned| ServerEvent::SpellLearned {
+        SMSG_TALENTS_INVOLUNTARILY_RESET => {
+            u8_body(body).map(|flag| ServerEvent::TalentsInvoluntarilyReset { flag })
+        }
+        SMSG_LEARNED_SPELL => {
+            pet_talent::read_learned_spell(body).map(|learned| ServerEvent::SpellLearned {
                 spell_id: learned.spell_id,
-            }),
-        SMSG_SUPERCEDED_SPELL => pet_talent::read_superceded_spell(body)
-            .map(|(old_spell_id, new_spell_id)| ServerEvent::SpellSuperceded {
-                old_spell_id,
-                new_spell_id,
-            }),
+            })
+        }
+        SMSG_SUPERCEDED_SPELL => {
+            pet_talent::read_superceded_spell(body).map(|(old_spell_id, new_spell_id)| {
+                ServerEvent::SpellSuperceded {
+                    old_spell_id,
+                    new_spell_id,
+                }
+            })
+        }
         SMSG_REMOVED_SPELL => pet_talent::read_removed_spell(body)
             .map(|spell_id| ServerEvent::SpellRemoved { spell_id }),
-        SMSG_TRADE_STATUS => economy::read_trade_status(body)
-            .map(|status| ServerEvent::TradeStatus { status }),
+        SMSG_TRADE_STATUS => {
+            economy::read_trade_status(body).map(|status| ServerEvent::TradeStatus { status })
+        }
         SMSG_TRADE_STATUS_EXTENDED => economy::read_trade_status_extended(body)
             .map(|state| ServerEvent::TradeStatusExtended(Box::new(state))),
         SMSG_SEND_MAIL_RESULT => economy::read_send_mail_result(body)
             .map(|result| ServerEvent::SendMailResult(Box::new(result))),
-        SMSG_MAIL_LIST_RESULT => economy::read_mail_list_result(body)
-            .map(|list| ServerEvent::MailList(Box::new(list))),
-        SMSG_RECEIVED_MAIL => economy::read_received_mail(body)
-            .map(|seconds| ServerEvent::ReceivedMail { seconds }),
+        SMSG_MAIL_LIST_RESULT => {
+            economy::read_mail_list_result(body).map(|list| ServerEvent::MailList(Box::new(list)))
+        }
+        SMSG_RECEIVED_MAIL => {
+            economy::read_received_mail(body).map(|seconds| ServerEvent::ReceivedMail { seconds })
+        }
         MSG_QUERY_NEXT_MAIL_TIME_SERVER => economy::read_next_mail_time(body)
             .map(|(seconds, senders)| ServerEvent::NextMailTime { seconds, senders }),
-        MSG_AUCTION_HELLO_SERVER => economy::read_auction_hello(body)
-            .map(ServerEvent::AuctionHello),
-        SMSG_AUCTION_COMMAND_RESULT => economy::read_auction_command_result(body)
-            .map(ServerEvent::AuctionCommandResult),
-        SMSG_AUCTION_LIST_RESULT => economy::read_auction_list_result(body).map(|list| {
-            ServerEvent::AuctionList {
+        MSG_AUCTION_HELLO_SERVER => {
+            economy::read_auction_hello(body).map(ServerEvent::AuctionHello)
+        }
+        SMSG_AUCTION_COMMAND_RESULT => {
+            economy::read_auction_command_result(body).map(ServerEvent::AuctionCommandResult)
+        }
+        SMSG_AUCTION_LIST_RESULT => {
+            economy::read_auction_list_result(body).map(|list| ServerEvent::AuctionList {
                 kind: AuctionListKind::Browse,
                 list: Box::new(list),
-            }
-        }),
-        SMSG_AUCTION_OWNER_LIST_RESULT => economy::read_auction_owner_list_result(body).map(|list| {
-            ServerEvent::AuctionList {
+            })
+        }
+        SMSG_AUCTION_OWNER_LIST_RESULT => {
+            economy::read_auction_owner_list_result(body).map(|list| ServerEvent::AuctionList {
                 kind: AuctionListKind::Owner,
                 list: Box::new(list),
-            }
-        }),
-        SMSG_AUCTION_BIDDER_LIST_RESULT => economy::read_auction_bidder_list_result(body).map(|list| {
-            ServerEvent::AuctionList {
+            })
+        }
+        SMSG_AUCTION_BIDDER_LIST_RESULT => {
+            economy::read_auction_bidder_list_result(body).map(|list| ServerEvent::AuctionList {
                 kind: AuctionListKind::Bidder,
                 list: Box::new(list),
-            }
-        }),
+            })
+        }
         SMSG_GROUP_INVITE => social::read_group_invite(body).map(ServerEvent::GroupInvite),
-        SMSG_GROUP_DECLINE => social::read_group_decline(body)
-            .map(|name| ServerEvent::GroupDecline { name }),
-        SMSG_GROUP_UNINVITE => social::read_group_uninvite(body).map(|()| ServerEvent::GroupUninvited),
-        SMSG_GROUP_SET_LEADER => social::read_group_set_leader(body)
-            .map(|name| ServerEvent::GroupLeaderChanged { name }),
+        SMSG_GROUP_DECLINE => {
+            social::read_group_decline(body).map(|name| ServerEvent::GroupDecline { name })
+        }
+        SMSG_GROUP_UNINVITE => {
+            social::read_group_uninvite(body).map(|()| ServerEvent::GroupUninvited)
+        }
+        SMSG_GROUP_SET_LEADER => {
+            social::read_group_set_leader(body).map(|name| ServerEvent::GroupLeaderChanged { name })
+        }
         SMSG_GROUP_DESTROYED => {
             social::read_group_destroyed(body).map(|()| ServerEvent::GroupDestroyed)
         }
         SMSG_GROUP_LIST => {
             social::read_group_list(body).map(|list| ServerEvent::GroupList(Box::new(list)))
         }
-        SMSG_PARTY_COMMAND_RESULT => social::read_party_command_result(body).map(
-            |(operation, member, result, value)| ServerEvent::PartyCommandResult {
-                operation,
-                member,
-                result,
-                value,
-            },
-        ),
+        SMSG_PARTY_COMMAND_RESULT => {
+            social::read_party_command_result(body).map(|(operation, member, result, value)| {
+                ServerEvent::PartyCommandResult {
+                    operation,
+                    member,
+                    result,
+                    value,
+                }
+            })
+        }
         SMSG_PARTY_MEMBER_STATS => social::read_party_member_stats(body)
             .map(|stats| ServerEvent::PartyMemberStats(Box::new(stats))),
         SMSG_PARTY_MEMBER_STATS_FULL => social::read_party_member_stats_full(body)
@@ -2952,11 +3125,13 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_FRIEND_STATUS => social::read_friend_status(body).map(ServerEvent::FriendStatus),
         SMSG_CHANNEL_NOTIFY => social::read_channel_notify(body)
             .map(|notice| ServerEvent::ChannelNotify(Box::new(notice))),
-        SMSG_CHANNEL_LIST => social::read_channel_list(body)
-            .map(|list| ServerEvent::ChannelList(Box::new(list))),
+        SMSG_CHANNEL_LIST => {
+            social::read_channel_list(body).map(|list| ServerEvent::ChannelList(Box::new(list)))
+        }
         SMSG_GUILD_INFO => social::read_guild_info(body).map(ServerEvent::GuildInfo),
-        SMSG_GUILD_ROSTER => social::read_guild_roster(body)
-            .map(|roster| ServerEvent::GuildRoster(Box::new(roster))),
+        SMSG_GUILD_ROSTER => {
+            social::read_guild_roster(body).map(|roster| ServerEvent::GuildRoster(Box::new(roster)))
+        }
         SMSG_GUILD_EVENT => social::read_guild_event(body).map(ServerEvent::GuildEvent),
         SMSG_GUILD_COMMAND_RESULT => {
             social::read_guild_command_result(body).map(ServerEvent::GuildCommandResult)
@@ -2983,16 +3158,13 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_BATTLEFIELD_STATUS => {
             wrath_systems::read_battlefield_status(body).map(ServerEvent::BattlefieldStatus)
         }
-        MSG_PVP_LOG_DATA_SERVER => {
-            wrath_systems::read_pvp_log_data(body).map(|data| ServerEvent::PvpLogData(Box::new(data)))
-        }
+        MSG_PVP_LOG_DATA_SERVER => wrath_systems::read_pvp_log_data(body)
+            .map(|data| ServerEvent::PvpLogData(Box::new(data))),
         SMSG_CALENDAR_SEND_CALENDAR => wrath_systems::read_calendar_send_calendar(body)
             .map(|calendar| ServerEvent::CalendarSendCalendar(Box::new(calendar))),
         SMSG_CALENDAR_COMMAND_RESULT => wrath_systems::read_calendar_command_result(body)
             .map(ServerEvent::CalendarCommandResult),
-        SMSG_CONVERT_RUNE => {
-            wrath_systems::read_convert_rune(body).map(ServerEvent::RuneConvert)
-        }
+        SMSG_CONVERT_RUNE => wrath_systems::read_convert_rune(body).map(ServerEvent::RuneConvert),
         SMSG_RESYNC_RUNES => wrath_systems::read_resync_runes(body).map(ServerEvent::RuneState),
         SMSG_ADD_RUNE_POWER => wrath_systems::read_add_rune_power(body).map(ServerEvent::RunePower),
         SMSG_LOG_XPGAIN => read_xp_gain(body),
@@ -3112,9 +3284,11 @@ fn read_set_faction_standing(b: &[u8]) -> Result<ServerEvent> {
     let _show_visual = r.u8()?;
     let count = r.u32()? as usize;
     if count > 512 {
-        return Err(DecodeError::invalid_count("faction standing update count exceeds 512")
-            .with_value(count as u32)
-            .into());
+        return Err(
+            DecodeError::invalid_count("faction standing update count exceeds 512")
+                .with_value(count as u32)
+                .into(),
+        );
     }
     let mut updates = Vec::with_capacity(count);
     for _ in 0..count {
@@ -3187,7 +3361,11 @@ fn read_buy_failed(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let vendor = r.u64()?;
     let item_entry = r.u32()?;
-    let param = if r.remaining() >= 5 { Some(r.u32()?) } else { None };
+    let param = if r.remaining() >= 5 {
+        Some(r.u32()?)
+    } else {
+        None
+    };
     Ok(ServerEvent::VendorBuyFailed {
         vendor,
         item_entry,
@@ -3200,7 +3378,11 @@ fn read_sell_failed(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let vendor = r.u64()?;
     let item_guid = r.u64()?;
-    let param = if r.remaining() >= 5 { Some(r.u32()?) } else { None };
+    let param = if r.remaining() >= 5 {
+        Some(r.u32()?)
+    } else {
+        None
+    };
     Ok(ServerEvent::VendorSellFailed {
         vendor,
         item_guid,
@@ -3297,7 +3479,9 @@ fn read_message_chat(b: &[u8], gm: bool) -> Result<ServerEvent> {
     let _text_len = r.u32()?;
     let text = r.cstring()?;
     let chat_tag = r.u8()?;
-    let achievement_id = matches!(chat_type, 0x30 | 0x31).then(|| r.u32()).transpose()?;
+    let achievement_id = matches!(chat_type, 0x30 | 0x31)
+        .then(|| r.u32())
+        .transpose()?;
     Ok(ServerEvent::Chat(ChatLine {
         chat_type,
         language,
@@ -3345,10 +3529,9 @@ fn read_area_trigger_message(b: &[u8]) -> Result<ServerEvent> {
         return Err(DecodeError::unterminated(length).into());
     }
     if bytes[..length - 1].contains(&0) {
-        return Err(DecodeError::invalid_value(
-            "area trigger message contains an embedded NUL",
-        )
-        .into());
+        return Err(
+            DecodeError::invalid_value("area trigger message contains an embedded NUL").into(),
+        );
     }
     if r.remaining() != 0 {
         return Err(DecodeError::trailing(r.remaining()).into());
@@ -3360,9 +3543,7 @@ fn read_area_trigger_message(b: &[u8]) -> Result<ServerEvent> {
 
 fn read_binder_confirm(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
-    Ok(ServerEvent::BinderConfirm {
-        binder: r.u64()?,
-    })
+    Ok(ServerEvent::BinderConfirm { binder: r.u64()? })
 }
 
 fn read_summon_request(b: &[u8]) -> Result<ServerEvent> {
@@ -3496,13 +3677,20 @@ fn u32_body(b: &[u8]) -> Result<u32> {
 
 fn read_attack_start(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
-    Ok(ServerEvent::AttackStart { attacker: r.u64()?, victim: r.u64()? })
+    Ok(ServerEvent::AttackStart {
+        attacker: r.u64()?,
+        victim: r.u64()?,
+    })
 }
 
 fn read_attack_stop(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let attacker = r.packed_guid()?;
-    let victim = if r.remaining() == 0 { 0 } else { r.packed_guid()? };
+    let victim = if r.remaining() == 0 {
+        0
+    } else {
+        r.packed_guid()?
+    };
     Ok(ServerEvent::AttackStop { attacker, victim })
 }
 
@@ -3680,11 +3868,11 @@ fn read_periodic_aura(b: &[u8]) -> Result<ServerEvent> {
                 multiplier: r.f32()?,
             },
             other => {
-                return Err(DecodeError::invalid_value(
-                    "SMSG_PERIODICAURALOG: unknown aura type",
+                return Err(
+                    DecodeError::invalid_value("SMSG_PERIODICAURALOG: unknown aura type")
+                        .with_value(other)
+                        .into(),
                 )
-                .with_value(other)
-                .into())
             }
         };
         ticks.push(tick);
@@ -3897,14 +4085,26 @@ fn read_name(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let guid = r.packed_guid()?;
     if r.u8()? != 0 {
-        return Ok(ServerEvent::PlayerName { guid, name: String::new(), race: 0, gender: 0, class: 0 });
+        return Ok(ServerEvent::PlayerName {
+            guid,
+            name: String::new(),
+            race: 0,
+            gender: 0,
+            class: 0,
+        });
     }
     let name = r.cstring()?;
     let _realm = r.cstring()?;
     let race = r.u8()? as u32;
     let gender = r.u8()? as u32;
     let class = r.u8()? as u32;
-    Ok(ServerEvent::PlayerName { guid, name, race, gender, class })
+    Ok(ServerEvent::PlayerName {
+        guid,
+        name,
+        race,
+        gender,
+        class,
+    })
 }
 
 fn read_gameobject(b: &[u8]) -> Result<ServerEvent> {
@@ -4002,7 +4202,10 @@ fn read_item_info(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let entry = r.u32()?;
     if entry & 0x8000_0000 != 0 {
-        return Ok(ServerEvent::ItemInfo { entry: entry & 0x7fff_ffff, info: None });
+        return Ok(ServerEvent::ItemInfo {
+            entry: entry & 0x7fff_ffff,
+            info: None,
+        });
     }
     let class = r.u32()?;
     let subclass = r.u32()?;
@@ -4073,14 +4276,7 @@ fn read_item_info(b: &[u8]) -> Result<ServerEvent> {
     }
 
     let armor = r.u32()?;
-    let resistances = [
-        r.i32()?,
-        r.i32()?,
-        r.i32()?,
-        r.i32()?,
-        r.i32()?,
-        r.i32()?,
-    ];
+    let resistances = [r.i32()?, r.i32()?, r.i32()?, r.i32()?, r.i32()?, r.i32()?];
     let delay_ms = r.u32()?;
     let ammo_type = r.u32()?;
     let ranged_mod_range = r.f32()?;
@@ -4158,22 +4354,71 @@ fn read_item_info(b: &[u8]) -> Result<ServerEvent> {
     Ok(ServerEvent::ItemInfo {
         entry,
         info: Some(ItemInfo {
-            class, subclass, name, display_info_id, quality, flags, flags2, buy_price, sell_price,
-            inventory_type, allowable_class, allowable_race, item_level, required_level,
-            required_skill, required_skill_rank, required_spell, required_honor_rank,
-            required_city_rank, required_rep_faction, required_rep_rank, max_count, stackable,
-            container_slots, stats, damages, dmg_min, dmg_max, dmg_type, armor, resistances,
-            delay_ms, ammo_type, ranged_mod_range, spells, spell_charges_0, use_spell, bonding,
-            description, page_text, language_id, page_material, start_quest, lock_id, material,
-            sheath, random_property, block, item_set, max_durability, area, map, bag_family,
-            required_disenchant_skill, item_limit_category,
+            class,
+            subclass,
+            name,
+            display_info_id,
+            quality,
+            flags,
+            flags2,
+            buy_price,
+            sell_price,
+            inventory_type,
+            allowable_class,
+            allowable_race,
+            item_level,
+            required_level,
+            required_skill,
+            required_skill_rank,
+            required_spell,
+            required_honor_rank,
+            required_city_rank,
+            required_rep_faction,
+            required_rep_rank,
+            max_count,
+            stackable,
+            container_slots,
+            stats,
+            damages,
+            dmg_min,
+            dmg_max,
+            dmg_type,
+            armor,
+            resistances,
+            delay_ms,
+            ammo_type,
+            ranged_mod_range,
+            spells,
+            spell_charges_0,
+            use_spell,
+            bonding,
+            description,
+            page_text,
+            language_id,
+            page_material,
+            start_quest,
+            lock_id,
+            material,
+            sheath,
+            random_property,
+            block,
+            item_set,
+            max_durability,
+            area,
+            map,
+            bag_family,
+            required_disenchant_skill,
+            item_limit_category,
         }),
     })
 }
 
 fn read_logout_response(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
-    Ok(ServerEvent::LogoutResponse { reason: r.u32()?, instant: r.u8()? != 0 })
+    Ok(ServerEvent::LogoutResponse {
+        reason: r.u32()?,
+        instant: r.u8()? != 0,
+    })
 }
 
 /// `SMSG_TRANSFER_ABORTED` (`Player.cpp:11685-11702`): u32 map + u8 reason, then the argument
@@ -4190,7 +4435,11 @@ fn read_transfer_aborted(b: &[u8]) -> Result<ServerEvent> {
     if r.remaining() != 0 {
         return Err(DecodeError::trailing(r.remaining()).into());
     }
-    Ok(ServerEvent::TransferAborted { map_id, reason, argument })
+    Ok(ServerEvent::TransferAborted {
+        map_id,
+        reason,
+        argument,
+    })
 }
 
 fn read_spell_failure(b: &[u8]) -> Result<ServerEvent> {
@@ -4237,7 +4486,10 @@ fn read_item_cooldown(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let item_guid = r.u64()?;
     let spell_id = r.u32()?;
-    Ok(ServerEvent::ItemCooldown { item_guid, spell_id })
+    Ok(ServerEvent::ItemCooldown {
+        item_guid,
+        spell_id,
+    })
 }
 
 /// `MSG_CORPSE_QUERY`'s answer (`QueryHandler.cpp:226-266`): a found byte, then map, position
@@ -4482,12 +4734,23 @@ fn read_gossip(b: &[u8]) -> Result<ServerEvent> {
         let icon = r.u8()?;
         let coded = r.u8()? != 0;
         let _box_money = r.u32()?;
-        options.push(GossipOption { index, icon, coded, message: r.cstring()? });
+        options.push(GossipOption {
+            index,
+            icon,
+            coded,
+            message: r.cstring()?,
+        });
         let _box_message = r.cstring()?;
     }
 
     let quests = read_quest_rows(&mut r)?;
-    Ok(ServerEvent::Gossip { npc, menu_id, text_id, options, quests })
+    Ok(ServerEvent::Gossip {
+        npc,
+        menu_id,
+        text_id,
+        options,
+        quests,
+    })
 }
 
 fn read_questgiver_status(b: &[u8]) -> Result<ServerEvent> {
@@ -4542,7 +4805,13 @@ fn read_quest_greeting(b: &[u8]) -> Result<ServerEvent> {
             title: r.cstring()?,
         });
     }
-    Ok(ServerEvent::QuestGreeting { npc, greeting, emote_delay, emote, quests })
+    Ok(ServerEvent::QuestGreeting {
+        npc,
+        greeting,
+        emote_delay,
+        emote,
+        quests,
+    })
 }
 
 fn read_quest_rows(r: &mut Reader<'_>) -> Result<Vec<QuestListEntry>> {
@@ -4565,7 +4834,11 @@ fn read_reward_block(r: &mut Reader<'_>) -> Result<Vec<RewardItem>> {
     let count = r.u32()?;
     let mut items = Vec::with_capacity(count.min(16) as usize);
     for _ in 0..count {
-        items.push(RewardItem { item_id: r.u32()?, count: r.u32()?, display_id: r.u32()? });
+        items.push(RewardItem {
+            item_id: r.u32()?,
+            count: r.u32()?,
+            display_id: r.u32()?,
+        });
     }
     Ok(items)
 }
@@ -4583,7 +4856,9 @@ fn read_quest_details(b: &[u8]) -> Result<ServerEvent> {
     let objectives = r.cstring()?;
     let auto_finish = r.u8()?;
     let mut extra = QuestPanelExtra {
-        flags: r.u32()?, suggested_players: r.u32()?, ..Default::default()
+        flags: r.u32()?,
+        suggested_players: r.u32()?,
+        ..Default::default()
     };
     let _finished = r.u8()?;
     let choices = read_reward_block(&mut r)?;
@@ -4611,8 +4886,17 @@ fn read_quest_details(b: &[u8]) -> Result<ServerEvent> {
         return Err(DecodeError::trailing(b.len() - r.at).into());
     }
     Ok(ServerEvent::QuestDetails(QuestDetails {
-        extra, npc, quest_id, title, details, objectives,
-        auto_finish: auto_finish as u32, choices, rewards, money: money as i32, reward_spell,
+        extra,
+        npc,
+        quest_id,
+        title,
+        details,
+        objectives,
+        auto_finish: auto_finish as u32,
+        choices,
+        rewards,
+        money: money as i32,
+        reward_spell,
     }))
 }
 
@@ -4639,8 +4923,15 @@ fn read_quest_request(b: &[u8]) -> Result<ServerEvent> {
         return Err(DecodeError::trailing(b.len() - r.at).into());
     }
     Ok(ServerEvent::QuestProgress(QuestRequestItems {
-        npc, quest_id, title, request_text, emote, close_on_cancel,
-        required_money, required_items, is_complete: flag_complete != 0,
+        npc,
+        quest_id,
+        title,
+        request_text,
+        emote,
+        close_on_cancel,
+        required_money,
+        required_items,
+        is_complete: flag_complete != 0,
     }))
 }
 
@@ -4653,7 +4944,9 @@ fn read_quest_offer(b: &[u8]) -> Result<ServerEvent> {
     let auto_finish = r.u8()?;
     let quest_flags = r.u32()?;
     let mut extra = QuestPanelExtra {
-        flags: quest_flags, suggested_players: r.u32()?, ..Default::default()
+        flags: quest_flags,
+        suggested_players: r.u32()?,
+        ..Default::default()
     };
     let emote_count = r.u32()?;
     for _ in 0..emote_count {
@@ -4678,16 +4971,31 @@ fn read_quest_offer(b: &[u8]) -> Result<ServerEvent> {
         return Err(DecodeError::trailing(b.len() - r.at).into());
     }
     Ok(ServerEvent::QuestOffer(QuestOfferReward {
-        extra, npc, quest_id, title, offer_text, auto_finish: auto_finish as u32,
-        choices, rewards, money, quest_flags, reward_spell,
+        extra,
+        npc,
+        quest_id,
+        title,
+        offer_text,
+        auto_finish: auto_finish as u32,
+        choices,
+        rewards,
+        money,
+        quest_flags,
+        reward_spell,
     }))
 }
 
 fn read_quest_reputation(r: &mut Reader<'_>) -> Result<[(u32, i32, u32); 5]> {
     let mut rows = [(0, 0, 0); 5];
-    for row in &mut rows { row.0 = r.u32()?; }
-    for row in &mut rows { row.1 = r.i32()?; }
-    for row in &mut rows { row.2 = r.u32()?; }
+    for row in &mut rows {
+        row.0 = r.u32()?;
+    }
+    for row in &mut rows {
+        row.1 = r.i32()?;
+    }
+    for row in &mut rows {
+        row.2 = r.u32()?;
+    }
     Ok(rows)
 }
 
@@ -4742,9 +5050,8 @@ fn read_quest_template(b: &[u8]) -> Result<QuestTemplate> {
     for over in &mut rep_overrides {
         *over = r.u32()?;
     }
-    let rep_rewards = std::array::from_fn(|i| {
-        (rep_factions[i], rep_amounts[i] as i32, rep_overrides[i])
-    });
+    let rep_rewards =
+        std::array::from_fn(|i| (rep_factions[i], rep_amounts[i] as i32, rep_overrides[i]));
     let point_map_id = r.u32()?;
     let point_x = r.f32()?;
     let point_y = r.f32()?;
@@ -4801,12 +5108,40 @@ fn read_quest_template(b: &[u8]) -> Result<QuestTemplate> {
         return Err(DecodeError::trailing(b.len() - r.at).into());
     }
     Ok(QuestTemplate {
-        quest_id, method, level, zone_or_sort, quest_type, suggested_players, xp_difficulty, rep_objective_faction,
-        rep_objective_value, opposite_rep_faction, opposite_rep_value, next_quest_in_chain,
-        money, money_max_level, reward_spell, src_item_id, flags, honor_reward,
-        honor_multiplier, title_reward, bonus_talents, bonus_arena_points, rep_rewards,
-        rewards, choices, point_map_id, point_x, point_y, point_opt, title, objectives_text,
-        details, end_text, objectives,
+        quest_id,
+        method,
+        level,
+        zone_or_sort,
+        quest_type,
+        suggested_players,
+        xp_difficulty,
+        rep_objective_faction,
+        rep_objective_value,
+        opposite_rep_faction,
+        opposite_rep_value,
+        next_quest_in_chain,
+        money,
+        money_max_level,
+        reward_spell,
+        src_item_id,
+        flags,
+        honor_reward,
+        honor_multiplier,
+        title_reward,
+        bonus_talents,
+        bonus_arena_points,
+        rep_rewards,
+        rewards,
+        choices,
+        point_map_id,
+        point_x,
+        point_y,
+        point_opt,
+        title,
+        objectives_text,
+        details,
+        end_text,
+        objectives,
     })
 }
 
@@ -4815,12 +5150,19 @@ fn read_quest_complete(b: &[u8]) -> Result<ServerEvent> {
     let quest_id = r.u32()?;
     let xp = r.u32()?;
     let money = r.u32()?;
-    Ok(ServerEvent::QuestComplete(QuestComplete { quest_id, xp, money }))
+    Ok(ServerEvent::QuestComplete(QuestComplete {
+        quest_id,
+        xp,
+        money,
+    }))
 }
 
 fn read_quest_failed(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
-    Ok(ServerEvent::QuestGiverFailed { quest_id: r.u32()?, reason: r.u32()? })
+    Ok(ServerEvent::QuestGiverFailed {
+        quest_id: r.u32()?,
+        reason: r.u32()?,
+    })
 }
 
 fn read_quest_kill(b: &[u8]) -> Result<ServerEvent> {
@@ -4829,12 +5171,20 @@ fn read_quest_kill(b: &[u8]) -> Result<ServerEvent> {
     let entry = r.u32()?;
     let count = r.u32()?;
     let required = r.u32()?;
-    Ok(ServerEvent::QuestObjectiveKill { quest_id, entry, count, required })
+    Ok(ServerEvent::QuestObjectiveKill {
+        quest_id,
+        entry,
+        count,
+        required,
+    })
 }
 
 fn read_quest_item(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
-    Ok(ServerEvent::QuestObjectiveItem { item_id: r.u32()?, count: r.u32()? })
+    Ok(ServerEvent::QuestObjectiveItem {
+        item_id: r.u32()?,
+        count: r.u32()?,
+    })
 }
 
 fn read_npc_text(b: &[u8]) -> Result<ServerEvent> {
@@ -4850,7 +5200,11 @@ fn read_npc_text(b: &[u8]) -> Result<ServerEvent> {
             let _delay = r.u32()?;
             let _emote = r.u32()?;
         }
-        blocks.push(NpcTextBlock { probability, male, female });
+        blocks.push(NpcTextBlock {
+            probability,
+            male,
+            female,
+        });
     }
     Ok(ServerEvent::NpcText { text_id, blocks })
 }
@@ -4860,7 +5214,10 @@ fn read_loot_response(b: &[u8]) -> Result<ServerEvent> {
     let guid = r.u64()?;
     let loot_type = r.u8()?;
     if loot_type == 0 {
-        return Ok(ServerEvent::LootError { guid, error: r.u8()? });
+        return Ok(ServerEvent::LootError {
+            guid,
+            error: r.u8()?,
+        });
     }
     let gold = r.u32()?;
     let count = r.u8()?;
@@ -4876,12 +5233,20 @@ fn read_loot_response(b: &[u8]) -> Result<ServerEvent> {
             slot_type: r.u8()?,
         });
     }
-    Ok(ServerEvent::LootResponse { guid, loot_type, gold, items })
+    Ok(ServerEvent::LootResponse {
+        guid,
+        loot_type,
+        gold,
+        items,
+    })
 }
 
 fn read_loot_release(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
-    Ok(ServerEvent::LootReleaseResponse { guid: r.u64()?, result: r.u8()? })
+    Ok(ServerEvent::LootReleaseResponse {
+        guid: r.u64()?,
+        result: r.u8()?,
+    })
 }
 
 fn read_loot_start_roll(b: &[u8]) -> Result<ServerEvent> {
@@ -5205,9 +5570,12 @@ mod tests {
         }
         body.extend_from_slice(&123u32.to_le_bytes());
         body.push(1);
-        let event = parse(0x0dd, &body).expect("roaming/stop packets must not be discarded")
+        let event = parse(0x0dd, &body)
+            .expect("roaming/stop packets must not be discarded")
             .expect("the complete stop body is valid");
-        let ServerEvent::MonsterMove(m) = event else { panic!("wrong movement event") };
+        let ServerEvent::MonsterMove(m) = event else {
+            panic!("wrong movement event")
+        };
         assert!(m.stop);
         assert_eq!((m.guid, m.spline_id, m.start), (7, 123, [1.0, 2.0, 3.0]));
     }
@@ -5274,10 +5642,7 @@ mod tests {
             .expect("the 12-byte body is valid");
         assert_eq!(
             event,
-            ServerEvent::AreaSpiritHealerTime {
-                healer,
-                ms: 23_000,
-            }
+            ServerEvent::AreaSpiritHealerTime { healer, ms: 23_000 }
         );
     }
 
@@ -5441,7 +5806,10 @@ mod tests {
         b.extend_from_slice(&0x22u64.to_le_bytes());
         assert_eq!(
             parse(crate::opcode::SMSG_ATTACKSTART, &b).unwrap().unwrap(),
-            ServerEvent::AttackStart { attacker: 0x11, victim: 0x22 }
+            ServerEvent::AttackStart {
+                attacker: 0x11,
+                victim: 0x22
+            }
         );
     }
 
@@ -5452,7 +5820,10 @@ mod tests {
         b.extend_from_slice(&0u32.to_le_bytes());
         assert_eq!(
             parse(crate::opcode::SMSG_ATTACKSTOP, &b).unwrap().unwrap(),
-            ServerEvent::AttackStop { attacker: 0x11, victim: 0x22 }
+            ServerEvent::AttackStop {
+                attacker: 0x11,
+                victim: 0x22
+            }
         );
     }
 
@@ -5521,11 +5892,19 @@ mod tests {
         };
         assert!(matches!(
             swing(0x2002, Some(30)),
-            ServerEvent::AttackerState { blocked: 30, victim_state: 5, .. }
+            ServerEvent::AttackerState {
+                blocked: 30,
+                victim_state: 5,
+                ..
+            }
         ));
         assert!(matches!(
             swing(0x2, None),
-            ServerEvent::AttackerState { blocked: 0, victim_state: 5, .. }
+            ServerEvent::AttackerState {
+                blocked: 0,
+                victim_state: 5,
+                ..
+            }
         ));
     }
 
@@ -5579,8 +5958,14 @@ mod tests {
     #[test]
     fn wrath_attack_swing_refusals_read_as_their_variants() {
         for (opcode, expected) in [
-            (crate::opcode::SMSG_ATTACKSWING_NOTINRANGE, AttackSwingError::NotInRange),
-            (crate::opcode::SMSG_ATTACKSWING_BADFACING, AttackSwingError::BadFacing),
+            (
+                crate::opcode::SMSG_ATTACKSWING_NOTINRANGE,
+                AttackSwingError::NotInRange,
+            ),
+            (
+                crate::opcode::SMSG_ATTACKSWING_BADFACING,
+                AttackSwingError::BadFacing,
+            ),
             (
                 crate::opcode::SMSG_ATTACKSWING_DEADTARGET,
                 AttackSwingError::DeadOrUnattackable,
@@ -5603,7 +5988,15 @@ mod tests {
     #[test]
     fn an_ack_without_a_tail_does_not_announce_one() {
         // 12340 FORWARD | ONTRANSPORT | FALLING.
-        let p = move_mode_ack(0x11, 7, true, 0x1 | 0x200 | 0x1000, 1000, [1.0, 2.0, 3.0], 0.5);
+        let p = move_mode_ack(
+            0x11,
+            7,
+            true,
+            0x1 | 0x200 | 0x1000,
+            1000,
+            [1.0, 2.0, 3.0],
+            0.5,
+        );
         // Packed guid 2, counter 4, then the 30-byte `MovementInfo` with no tail, then `apply`.
         assert_eq!(u32::from_le_bytes(le::<4>(&p[6..10])), 0x1);
         assert_eq!(p.len(), 2 + 4 + 30 + 4);
@@ -5624,7 +6017,9 @@ mod tests {
         b.extend_from_slice(&0u32.to_le_bytes());
         b.extend_from_slice(&0u32.to_le_bytes());
         b.push(0);
-        let ev = parse(crate::opcode::SMSG_LOOT_RESPONSE, &b).unwrap().unwrap();
+        let ev = parse(crate::opcode::SMSG_LOOT_RESPONSE, &b)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             ev,
             ServerEvent::LootResponse {
@@ -5653,7 +6048,9 @@ mod tests {
         b.extend_from_slice(&[1, 0, 4]);
         b.push(0);
         assert_eq!(
-            parse(crate::opcode::SMSG_NAME_QUERY_RESPONSE, &b).unwrap().unwrap(),
+            parse(crate::opcode::SMSG_NAME_QUERY_RESPONSE, &b)
+                .unwrap()
+                .unwrap(),
             ServerEvent::PlayerName {
                 guid: 0x44,
                 name: "Tester".into(),
@@ -5669,7 +6066,9 @@ mod tests {
         body.extend_from_slice(b"hello\0");
         assert_eq!(
             read_area_trigger_message(&body).unwrap(),
-            ServerEvent::AreaTriggerMessage { text: "hello".into() }
+            ServerEvent::AreaTriggerMessage {
+                text: "hello".into()
+            }
         );
         let mut overrun = 10u32.to_le_bytes().to_vec();
         overrun.extend_from_slice(b"hi\0");
@@ -5774,7 +6173,11 @@ mod tests {
 
     #[test]
     fn quest_details_reads_the_12340_tail() {
-        let event = parse(crate::opcode::SMSG_QUESTGIVER_QUEST_DETAILS, &quest_details_bytes()).unwrap();
+        let event = parse(
+            crate::opcode::SMSG_QUESTGIVER_QUEST_DETAILS,
+            &quest_details_bytes(),
+        )
+        .unwrap();
         match event.unwrap() {
             ServerEvent::QuestDetails(d) => {
                 assert_eq!(d.quest_id, 338);
@@ -5821,13 +6224,23 @@ mod tests {
         for _ in 0..15 {
             b.extend_from_slice(&0u32.to_le_bytes()); // reputation arrays
         }
-        let ServerEvent::QuestOffer(offer) = read_quest_offer(&b).unwrap() else { panic!("offer"); };
+        let ServerEvent::QuestOffer(offer) = read_quest_offer(&b).unwrap() else {
+            panic!("offer");
+        };
         assert_eq!(
-            offer.choices.iter().map(|i| (i.item_id, i.count)).collect::<Vec<_>>(),
+            offer
+                .choices
+                .iter()
+                .map(|i| (i.item_id, i.count))
+                .collect::<Vec<_>>(),
             [(2186, 1), (2691, 1), (11192, 1)]
         );
         assert_eq!(
-            offer.rewards.iter().map(|i| (i.item_id, i.count)).collect::<Vec<_>>(),
+            offer
+                .rewards
+                .iter()
+                .map(|i| (i.item_id, i.count))
+                .collect::<Vec<_>>(),
             [(3000, 2)]
         );
         assert_eq!(offer.money, 40);
@@ -5849,14 +6262,26 @@ mod tests {
         for word in [72u32, 0, 0, 0, 0, u32::MAX, 0, 0, 0, 0, 100, 0, 0, 0, 0] {
             b.extend_from_slice(&word.to_le_bytes());
         }
-        let ServerEvent::QuestOffer(offer) = read_quest_offer(&b).unwrap() else { panic!("offer"); };
+        let ServerEvent::QuestOffer(offer) = read_quest_offer(&b).unwrap() else {
+            panic!("offer");
+        };
         assert_eq!(offer.reward_spell, 55);
-        assert_eq!(offer.extra, QuestPanelExtra {
-            flags: 0x2008, suggested_players: 3, xp: 123, honor_tenths: 70,
-            honor_multiplier: 1.5, cast_spell: 66, title_id: 77, talents: 2, arena_points: 33,
-            reputation: [(72, -1, 100), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0)],
-        });
-        assert!(read_quest_offer(&b[..b.len()-1]).is_err());
+        assert_eq!(
+            offer.extra,
+            QuestPanelExtra {
+                flags: 0x2008,
+                suggested_players: 3,
+                xp: 123,
+                honor_tenths: 70,
+                honor_multiplier: 1.5,
+                cast_spell: 66,
+                title_id: 77,
+                talents: 2,
+                arena_points: 33,
+                reputation: [(72, -1, 100), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0)],
+            }
+        );
+        assert!(read_quest_offer(&b[..b.len() - 1]).is_err());
         b.push(0);
         assert!(read_quest_offer(&b).is_err());
     }
@@ -5896,7 +6321,12 @@ mod tests {
         b.extend_from_slice(&0f32.to_le_bytes()); // y
         b.extend_from_slice(&0u32.to_le_bytes()); // point opt
         b.extend_from_slice(b"Title\0Objective\0Details\0End\0Completed\0");
-        for objective in [(7u32, 3u32, 0u32, 0u32), (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0)] {
+        for objective in [
+            (7u32, 3u32, 0u32, 0u32),
+            (0, 0, 0, 0),
+            (0, 0, 0, 0),
+            (0, 0, 0, 0),
+        ] {
             for v in [objective.0, objective.1, objective.2, objective.3] {
                 b.extend_from_slice(&v.to_le_bytes());
             }
@@ -6085,15 +6515,7 @@ mod tests {
 
     #[test]
     fn inspect_honor_decodes_the_25_byte_12340_reply() {
-        let body = build_inspect_honor_body(
-            0x0700_0000_0001_2345,
-            14,
-            7,
-            3,
-            12_345,
-            678,
-            42_000,
-        );
+        let body = build_inspect_honor_body(0x0700_0000_0001_2345, 14, 7, 3, 12_345, 678, 42_000);
         assert_eq!(body.len(), 25);
         match read_inspect_honor(&body).expect("25-byte reply must decode") {
             InspectHonor {
@@ -6164,9 +6586,15 @@ mod tests {
 
         let pet_act = encode_pet_action(0xF140_0000_0000_0010, 0x0700_0002, 0x0000_0000_0000_0099);
         assert_eq!(pet_act.len(), 20);
-        assert_eq!(u64::from_le_bytes(le::<8>(&pet_act[0..8])), 0xF140_0000_0000_0010);
+        assert_eq!(
+            u64::from_le_bytes(le::<8>(&pet_act[0..8])),
+            0xF140_0000_0000_0010
+        );
         assert_eq!(u32::from_le_bytes(le::<4>(&pet_act[8..12])), 0x0700_0002);
-        assert_eq!(u64::from_le_bytes(le::<8>(&pet_act[12..20])), 0x0000_0000_0000_0099);
+        assert_eq!(
+            u64::from_le_bytes(le::<8>(&pet_act[12..20])),
+            0x0000_0000_0000_0099
+        );
 
         let pet_set = encode_pet_set_action(0xF140_0000_0000_0010, &[(2, 0x0100_0011)]);
         assert_eq!(pet_set.len(), 16);
@@ -6326,7 +6754,17 @@ mod tests {
 
     #[test]
     fn mail_auction_guild_and_petition_encoders_match_12340_wire_layouts() {
-        let mail = send_mail(0x4000_0000_0000_0001, "Thrall", "Loot", "Here", 41, 0, 0x1234, 500, 0);
+        let mail = send_mail(
+            0x4000_0000_0000_0001,
+            "Thrall",
+            "Loot",
+            "Here",
+            41,
+            0,
+            0x1234,
+            500,
+            0,
+        );
         // 8 (mailbox) + 7 ("Thrall\0") + 5 ("Loot\0") + 5 ("Here\0") + 8 (stationery+pkg)
         // + 1 (count=1) + 1 (slot=0) + 8 (item_guid) + 8 (money+cod) + 9 (tail) = 60 bytes
         assert_eq!(mail.len(), 60);
@@ -6344,7 +6782,10 @@ mod tests {
 
         let pet_buy = petition_buy(0x1122, "Vanguard");
         assert_eq!(u64::from_le_bytes(le::<8>(&pet_buy[0..8])), 0x1122);
-        assert_eq!(u32::from_le_bytes(le::<4>(&pet_buy[pet_buy.len() - 4..])), 9);
+        assert_eq!(
+            u32::from_le_bytes(le::<4>(&pet_buy[pet_buy.len() - 4..])),
+            9
+        );
     }
 
     /// A packed guid for unit 7 followed by `tail`.
@@ -6369,7 +6810,12 @@ mod tests {
         let run = mover_body(&[&3u32.to_le_bytes(), &[0], &8.5f32.to_le_bytes()]);
         assert_eq!(
             mover_event(SMSG_FORCE_RUN_SPEED_CHANGE, &run),
-            ServerEvent::ForceSpeedChange { kind: SpeedKind::Run, guid: 7, counter: 3, speed: 8.5 }
+            ServerEvent::ForceSpeedChange {
+                kind: SpeedKind::Run,
+                guid: 7,
+                counter: 3,
+                speed: 8.5
+            }
         );
         let plain = mover_body(&[&4u32.to_le_bytes(), &2.5f32.to_le_bytes()]);
         for (opcode, kind) in [
@@ -6380,7 +6826,12 @@ mod tests {
         ] {
             assert_eq!(
                 mover_event(opcode, &plain),
-                ServerEvent::ForceSpeedChange { kind, guid: 7, counter: 4, speed: 2.5 }
+                ServerEvent::ForceSpeedChange {
+                    kind,
+                    guid: 7,
+                    counter: 4,
+                    speed: 2.5
+                }
             );
         }
         // The run byte is not optional, and other kinds carry none.
@@ -6388,7 +6839,11 @@ mod tests {
         let spline = mover_body(&[&1.25f32.to_le_bytes()]);
         assert_eq!(
             mover_event(SMSG_SPLINE_SET_RUN_BACK_SPEED, &spline),
-            ServerEvent::SpeedChanged { kind: SpeedKind::RunBack, guid: 7, speed: 1.25 }
+            ServerEvent::SpeedChanged {
+                kind: SpeedKind::RunBack,
+                guid: 7,
+                speed: 1.25
+            }
         );
     }
 
@@ -6404,7 +6859,12 @@ mod tests {
         ] {
             assert_eq!(
                 mover_event(opcode, &order),
-                ServerEvent::MoveMode { mode, apply, guid: 7, counter: 9 }
+                ServerEvent::MoveMode {
+                    mode,
+                    apply,
+                    guid: 7,
+                    counter: 9
+                }
             );
         }
         let unit = mover_body(&[]);
@@ -6415,7 +6875,11 @@ mod tests {
         ] {
             assert_eq!(
                 mover_event(opcode, &unit),
-                ServerEvent::SplineMoveMode { mode, apply, guid: 7 }
+                ServerEvent::SplineMoveMode {
+                    mode,
+                    apply,
+                    guid: 7
+                }
             );
         }
     }
@@ -6442,7 +6906,10 @@ mod tests {
         );
         assert_eq!(
             mover_event(SMSG_CLIENT_CONTROL_UPDATE, &mover_body(&[&[0]])),
-            ServerEvent::ClientControl { guid: 7, allow_move: false }
+            ServerEvent::ClientControl {
+                guid: 7,
+                allow_move: false
+            }
         );
     }
 }

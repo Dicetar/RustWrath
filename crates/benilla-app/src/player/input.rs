@@ -202,10 +202,8 @@ pub(super) fn move_axes(
     // reference skips its turn emitter `0x514f50`, and stops one in flight, behind `0x514755`. A
     // corpse fails the precondition both predicates share (`0x5144e0`), so it cannot turn either.
     // A Souls facing hold turns nothing either.
-    let turning = !turn_keys_strafe
-        && player.souls.face.is_none()
-        && may_turn
-        && (turn_left || turn_right);
+    let turning =
+        !turn_keys_strafe && player.souls.face.is_none() && may_turn && (turn_left || turn_right);
     let translating = fwd_axis != 0 || side_axis != 0;
 
     MoveAxes {

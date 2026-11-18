@@ -167,7 +167,11 @@ pub(super) fn feed_broadcasts(
                         log.push_event(ChatEvent::text_only(ChatEventKind::System, text));
                     }
                 }
-                Broadcast::TransferAborted { reason, map_id, argument } => {
+                Broadcast::TransferAborted {
+                    reason,
+                    map_id,
+                    argument,
+                } => {
                     let get = |key: &str| {
                         script
                             .lua()
@@ -187,7 +191,13 @@ pub(super) fn feed_broadcasts(
                             let difficulty_message = argument.and_then(|difficulty| {
                                 maps.difficulty_message(map_id, u32::from(difficulty))
                             });
-                            wrath_transfer_abort_line(reason, argument, name, difficulty_message, get)
+                            wrath_transfer_abort_line(
+                                reason,
+                                argument,
+                                name,
+                                difficulty_message,
+                                get,
+                            )
                         }),
                     };
                     if let Some(text) = line {

@@ -29,10 +29,7 @@ impl Loader<'_> {
                 // global lookup finds no function and installs nil.
                 let wrath = self.model().target == crate::script::UiTarget::Wrath335;
                 let cleared = handler.body.is_empty()
-                    && (!wrath
-                        || handler
-                            .attr("function")
-                            .is_none_or(str::is_empty));
+                    && (!wrath || handler.attr("function").is_none_or(str::is_empty));
                 let func = if cleared {
                     None
                 } else {
@@ -103,7 +100,10 @@ impl Loader<'_> {
                 return match result {
                     Ok(function) => Some(function),
                     Err(error) => {
-                        self.report.raise(format!("{dbg}: <{name} function=\"{function}\">: {error}"), &error);
+                        self.report.raise(
+                            format!("{dbg}: <{name} function=\"{function}\">: {error}"),
+                            &error,
+                        );
                         None
                     }
                 };
@@ -114,11 +114,17 @@ impl Loader<'_> {
         }
         let result = if wrath {
             let source = format!("return function({}) {body}\nend", handler_parameters(name));
-            self.lua().load(source).set_name(format!("{owner}:{name}"))
-                .set_mode(mlua::ChunkMode::Text).eval::<Function>()
+            self.lua()
+                .load(source)
+                .set_name(format!("{owner}:{name}"))
+                .set_mode(mlua::ChunkMode::Text)
+                .eval::<Function>()
         } else {
-            self.lua().load(body).set_name(format!("{owner}:{name}"))
-                .set_mode(mlua::ChunkMode::Text).into_function()
+            self.lua()
+                .load(body)
+                .set_name(format!("{owner}:{name}"))
+                .set_mode(mlua::ChunkMode::Text)
+                .into_function()
         };
         match result {
             Ok(f) => {
@@ -213,19 +219,25 @@ impl Loader<'_> {
 fn named_handler(lua: &mlua::Lua, name: &str) -> mlua::Result<Function> {
     let mut value = Value::Table(lua.globals());
     for part in name.split('.') {
-        if part.is_empty() || !part.bytes().enumerate().all(|(index, byte)| {
-            byte == b'_' || byte.is_ascii_alphabetic() || (index > 0 && byte.is_ascii_digit())
-        }) {
+        if part.is_empty()
+            || !part.bytes().enumerate().all(|(index, byte)| {
+                byte == b'_' || byte.is_ascii_alphabetic() || (index > 0 && byte.is_ascii_digit())
+            })
+        {
             return Err(mlua::Error::runtime("invalid named script handler"));
         }
         let Value::Table(table) = value else {
-            return Err(mlua::Error::runtime("named script handler parent is not a table"));
+            return Err(mlua::Error::runtime(
+                "named script handler parent is not a table",
+            ));
         };
         value = table.get(part)?;
     }
     match value {
         Value::Function(function) => Ok(function),
-        _ => Err(mlua::Error::runtime("named script handler is not a function")),
+        _ => Err(mlua::Error::runtime(
+            "named script handler is not a function",
+        )),
     }
 }
 

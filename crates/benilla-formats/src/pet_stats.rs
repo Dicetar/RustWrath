@@ -118,7 +118,11 @@ impl PetLoyaltyNames {
     }
 }
 
-fn personality_schema(fields: usize, damage_field: usize, loyalty_rate_field: Option<usize>) -> Schema {
+fn personality_schema(
+    fields: usize,
+    damage_field: usize,
+    loyalty_rate_field: Option<usize>,
+) -> Schema {
     let mut s = Schema::new("PetPersonality");
     for i in 0..fields {
         let ty = match i {

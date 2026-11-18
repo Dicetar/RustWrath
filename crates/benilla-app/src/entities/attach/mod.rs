@@ -637,12 +637,13 @@ pub(super) fn attach_entity_visuals(
             }
             // The worn geoset selectors, the helm's hide-mask rows included (`0x4799a0`).
             let eye_glow = look.as_ref().is_some_and(|l| {
-                l.class == 6 || match &l.body {
-                    char_skin::BodySkin::Composite { face } => sections.as_deref().is_some_and(|s| {
-                        s.tables.face_eye_glow(l.race, l.sex, *face, l.skin)
-                    }),
-                    char_skin::BodySkin::Baked(_) => false,
-                }
+                l.class == 6
+                    || match &l.body {
+                        char_skin::BodySkin::Composite { face } => sections
+                            .as_deref()
+                            .is_some_and(|s| s.tables.face_eye_glow(l.race, l.sex, *face, l.skin)),
+                        char_skin::BodySkin::Baked(_) => false,
+                    }
             });
             let equip_geosets = equip_geosets(
                 displays.as_deref(),

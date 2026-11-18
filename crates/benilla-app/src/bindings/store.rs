@@ -91,8 +91,12 @@ pub(crate) fn from_diff(text: &str) -> Vec<(String, Vec<String>)> {
 pub(crate) fn clicks_to_diff(overrides: &[(String, String)]) -> String {
     overrides
         .iter()
-        .map(|(action, chord)| format!("modifiedclick {chord} {action}
-"))
+        .map(|(action, chord)| {
+            format!(
+                "modifiedclick {chord} {action}
+"
+            )
+        })
         .collect()
 }
 
@@ -200,8 +204,10 @@ mod tests {
         ];
         let mut text = to_diff(&[("JUMP".to_string(), vec!["F".to_string()])], &defaults());
         text.push_str(&clicks_to_diff(&clicks));
-        assert!(text.contains("modifiedclick CTRL-BUTTON1 CHATLINK
-"));
+        assert!(text.contains(
+            "modifiedclick CTRL-BUTTON1 CHATLINK
+"
+        ));
         assert_eq!(clicks_from_diff(&text), clicks);
         assert_eq!(
             from_diff(&text),
@@ -209,9 +215,12 @@ mod tests {
             "click lines are not commands"
         );
         assert!(
-            clicks_from_diff("modifiedclick SHIFT
+            clicks_from_diff(
+                "modifiedclick SHIFT
 modifiedclick A B C
-").is_empty(),
+"
+            )
+            .is_empty(),
             "a line without exactly a chord and an action is skipped"
         );
     }

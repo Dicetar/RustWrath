@@ -636,46 +636,89 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
         // QuestFrame_Scripts.cpp reads the current packet-backed CGQuestInfo fields.
         for (name, get) in [
-            ("GetRewardXP", (|view: &QuestExtraView| view.xp) as fn(&QuestExtraView) -> u32),
+            (
+                "GetRewardXP",
+                (|view: &QuestExtraView| view.xp) as fn(&QuestExtraView) -> u32,
+            ),
             ("GetRewardHonor", |view| view.honor_tenths / 10),
             ("GetRewardTalents", |view| view.talents),
             ("GetRewardArenaPoints", |view| view.arena_points),
             ("GetSuggestedGroupNum", |view| view.suggested_players),
         ] {
-            g.set(name, lua.create_function(move |lua, ()| {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                Ok(model.quest.as_ref().map_or(0, |quest| get(&quest.extra)))
-            })?)?;
+            g.set(
+                name,
+                lua.create_function(move |lua, ()| {
+                    let model = lua.app_data_ref::<Model>().expect("model app_data");
+                    Ok(model.quest.as_ref().map_or(0, |quest| get(&quest.extra)))
+                })?,
+            )?;
         }
         for (name, bit) in [("QuestFlagsPVP", 0x2000), ("QuestGetAutoAccept", 0x80000)] {
-            g.set(name, lua.create_function(move |lua, ()| {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                Ok(flag(model.quest.as_ref().is_some_and(|quest| quest.extra.flags & bit != 0)))
-            })?)?;
+            g.set(
+                name,
+                lua.create_function(move |lua, ()| {
+                    let model = lua.app_data_ref::<Model>().expect("model app_data");
+                    Ok(flag(
+                        model
+                            .quest
+                            .as_ref()
+                            .is_some_and(|quest| quest.extra.flags & bit != 0),
+                    ))
+                })?,
+            )?;
         }
-        g.set("GetRewardTitle", lua.create_function(|lua, ()| {
-            let title = lua.app_data_ref::<Model>().expect("model app_data").quest.as_ref()
-                .and_then(|quest| quest.extra.title.clone());
-            title.map_or(Ok(Value::Nil), |title| lua.create_string(&title).map(Value::String))
-        })?)?;
+        g.set(
+            "GetRewardTitle",
+            lua.create_function(|lua, ()| {
+                let title = lua
+                    .app_data_ref::<Model>()
+                    .expect("model app_data")
+                    .quest
+                    .as_ref()
+                    .and_then(|quest| quest.extra.title.clone());
+                title.map_or(Ok(Value::Nil), |title| {
+                    lua.create_string(&title).map(Value::String)
+                })
+            })?,
+        )?;
         // Script_GetMaxDailyQuests (0x0058C470) is the literal client cap, not a player tally.
         g.set("GetMaxDailyQuests", lua.create_function(|_, ()| Ok(25))?)?;
-        g.set("GetAvailableQuestInfo", lua.create_function(|lua, index: Value| {
-            let row = binding_abi::number_arg(lua, index, "Usage: GetAvailableQuestInfo(index)")?
-                .wrapping_sub(1) as usize;
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let pool = &model.quest_pool_levels;
-            let level = pool.available.get(row).copied().unwrap_or(0);
-            let (flags, repeatable) = pool.available_metadata.get(row).copied().unwrap_or_default();
-            Ok(MultiValue::from_vec(vec![flag(is_low_level(&model, level)), flag(flags & 0x1000 != 0), flag(repeatable)]))
-        })?)?;
-        g.set("IsActiveQuestTrivial", lua.create_function(|lua, index: Value| {
-            let row = binding_abi::number_arg(lua, index, "Usage: IsActiveQuestTrivial(index)")?
-                .wrapping_sub(1) as usize;
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let level = model.quest_pool_levels.active.get(row).copied().unwrap_or(0);
-            Ok(flag(is_low_level(&model, level)))
-        })?)?;
+        g.set(
+            "GetAvailableQuestInfo",
+            lua.create_function(|lua, index: Value| {
+                let row =
+                    binding_abi::number_arg(lua, index, "Usage: GetAvailableQuestInfo(index)")?
+                        .wrapping_sub(1) as usize;
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let pool = &model.quest_pool_levels;
+                let level = pool.available.get(row).copied().unwrap_or(0);
+                let (flags, repeatable) = pool
+                    .available_metadata
+                    .get(row)
+                    .copied()
+                    .unwrap_or_default();
+                Ok(MultiValue::from_vec(vec![
+                    flag(is_low_level(&model, level)),
+                    flag(flags & 0x1000 != 0),
+                    flag(repeatable),
+                ]))
+            })?,
+        )?;
+        g.set(
+            "IsActiveQuestTrivial",
+            lua.create_function(|lua, index: Value| {
+                let row = binding_abi::number_arg(lua, index, "Usage: IsActiveQuestTrivial(index)")?
+                    .wrapping_sub(1) as usize;
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let level = model
+                    .quest_pool_levels
+                    .active
+                    .get(row)
+                    .copied()
+                    .unwrap_or(0);
+                Ok(flag(is_low_level(&model, level)))
+            })?,
+        )?;
     }
 
     Ok(())
@@ -691,31 +734,57 @@ mod tests {
         let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
         s.set_quest(Some(QuestState {
             extra: super::QuestExtraView {
-                flags: 0x82000, suggested_players: 3, xp: 123, honor_tenths: 73,
-                talents: 2, arena_points: 9, title: Some("Lady Firna".into()),
-            }, ..Default::default()
+                flags: 0x82000,
+                suggested_players: 3,
+                xp: 123,
+                honor_tenths: 73,
+                talents: 2,
+                arena_points: 9,
+                title: Some("Lady Firna".into()),
+            },
+            ..Default::default()
         }));
         assert_eq!(s.eval::<(i64,i64,i64,i64,i64)>(
             "return GetRewardXP(),GetRewardHonor(),GetRewardTalents(),GetRewardArenaPoints(),GetSuggestedGroupNum()"
         ).unwrap(), (123,7,2,9,3));
-        assert_eq!(s.eval::<String>("return GetRewardTitle()").unwrap(), "Lady Firna");
-        assert!(s.eval::<bool>("return QuestFlagsPVP()==1 and QuestGetAutoAccept()==1").unwrap());
+        assert_eq!(
+            s.eval::<String>("return GetRewardTitle()").unwrap(),
+            "Lady Firna"
+        );
+        assert!(s
+            .eval::<bool>("return QuestFlagsPVP()==1 and QuestGetAutoAccept()==1")
+            .unwrap());
         assert_eq!(s.eval::<i64>("return GetMaxDailyQuests()").unwrap(), 25);
         s.set_quest(None);
         assert_eq!(s.eval::<i64>("return GetRewardXP()").unwrap(), 0);
         assert!(s.eval::<bool>("return GetRewardTitle()==nil and QuestFlagsPVP()==nil and QuestGetAutoAccept()==nil").unwrap());
         let vanilla = UiScript::new().unwrap();
-        assert!(vanilla.eval::<bool>("return GetRewardXP==nil and GetSuggestedGroupNum==nil and GetMaxDailyQuests==nil").unwrap());
+        assert!(vanilla
+            .eval::<bool>(
+                "return GetRewardXP==nil and GetSuggestedGroupNum==nil and GetMaxDailyQuests==nil"
+            )
+            .unwrap());
     }
 
     #[test]
     fn wrath_greeting_queries_keep_flags_levels_and_repeatability() {
         use crate::script::{UiTarget, UnitGuids, UnitState};
         let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
-        s.set_unit_guids(&UnitGuids { player: 1, wrath: true, ..Default::default() });
-        s.set_unit("player", Some(UnitState {
-            guid: 1, exists: true, has_object: true, level: 60, ..Default::default()
-        }));
+        s.set_unit_guids(&UnitGuids {
+            player: 1,
+            wrath: true,
+            ..Default::default()
+        });
+        s.set_unit(
+            "player",
+            Some(UnitState {
+                guid: 1,
+                exists: true,
+                has_object: true,
+                level: 60,
+                ..Default::default()
+            }),
+        );
         s.set_quest(Some(QuestState {
             panel: QuestPanel::Greeting,
             active_titles: vec!["Active".into(), "Ready".into()],
@@ -728,11 +797,21 @@ mod tests {
         }));
         assert!(s.eval::<bool>("local low,daily,rep=GetAvailableQuestInfo(1) return low==nil and daily==1 and rep==nil").unwrap());
         assert!(s.eval::<bool>("local low,daily,rep=GetAvailableQuestInfo(2) return low==1 and daily==nil and rep==1").unwrap());
-        assert!(s.eval::<bool>("local title,complete=GetActiveTitle(1) return title=='Active' and complete==nil").unwrap());
-        assert!(s.eval::<bool>("local title,complete=GetActiveTitle(2) return title=='Ready' and complete==1").unwrap());
+        assert!(s
+            .eval::<bool>(
+                "local title,complete=GetActiveTitle(1) return title=='Active' and complete==nil"
+            )
+            .unwrap());
+        assert!(s
+            .eval::<bool>(
+                "local title,complete=GetActiveTitle(2) return title=='Ready' and complete==1"
+            )
+            .unwrap());
         assert_eq!(s.eval::<i64>("return IsActiveQuestTrivial(1)").unwrap(), 1);
         s.set_quest(None);
-        assert!(s.eval::<bool>("local _,daily=GetAvailableQuestInfo(1) return daily==1").unwrap());
+        assert!(s
+            .eval::<bool>("local _,daily=GetAvailableQuestInfo(1) return daily==1")
+            .unwrap());
     }
 
     fn detail() -> QuestState {

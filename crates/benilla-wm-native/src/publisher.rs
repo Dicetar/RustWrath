@@ -3,9 +3,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::action::{ActionRequest, ActionResult};
-use crate::client::{
-    AckReceipt, HealthAckReceipt, LoopbackConfig, LoopbackSink, PeerState,
-};
+use crate::client::{AckReceipt, HealthAckReceipt, LoopbackConfig, LoopbackSink, PeerState};
 use crate::error::{Error, Result};
 use crate::health::SourceHealth;
 use crate::observation::Observation;
@@ -295,10 +293,7 @@ pub enum PublishOutcome {
     /// for a timed retry, or drop it because the producer already retains it.
     Retained(RetainedObservation),
     /// A newer snapshot was already accepted; drop this retained snapshot.
-    Superseded {
-        sequence: u64,
-        latest_sequence: u64,
-    },
+    Superseded { sequence: u64, latest_sequence: u64 },
 }
 
 struct SharedState {
@@ -339,17 +334,11 @@ impl ObservationPublisher {
     /// This call itself returns immediately; the ordering wait runs on the new worker. Keep
     /// `previous` alive until this returns, then it may be dropped (the old worker still completes
     /// and marks itself stopped).
-    pub fn spawn_after(
-        config: PublisherConfig,
-        previous: &PublisherRetirement,
-    ) -> Result<Self> {
+    pub fn spawn_after(config: PublisherConfig, previous: &PublisherRetirement) -> Result<Self> {
         Self::spawn_internal(config, Some(Arc::clone(&previous.shared)))
     }
 
-    fn spawn_internal(
-        config: PublisherConfig,
-        previous: Option<Arc<Shared>>,
-    ) -> Result<Self> {
+    fn spawn_internal(config: PublisherConfig, previous: Option<Arc<Shared>>) -> Result<Self> {
         let shared = Arc::new(Shared {
             state: Mutex::new(SharedState {
                 pending: None,
@@ -393,9 +382,9 @@ impl ObservationPublisher {
         let mut state = match self.shared.state.try_lock() {
             Ok(state) => state,
             Err(TryLockError::WouldBlock) => {
-                return Ok(PublishOutcome::Retained(
-                    RetainedObservation::handoff_busy(observation),
-                ));
+                return Ok(PublishOutcome::Retained(RetainedObservation::handoff_busy(
+                    observation,
+                )));
             }
             Err(TryLockError::Poisoned(_)) => return Err(Error::Disconnected),
         };
@@ -677,7 +666,10 @@ fn restore_pending(shared: &Arc<Shared>, observation: Option<Observation>) {
 fn latest_source_health(shared: &Arc<Shared>, ttl: Duration) -> Option<SourceHealth> {
     let (health, at) = {
         let state = shared.state.lock().ok()?;
-        (state.latest_source_health.clone()?, state.latest_source_health_at?)
+        (
+            state.latest_source_health.clone()?,
+            state.latest_source_health_at?,
+        )
     };
     if at.elapsed() > ttl {
         update_health(shared, |health| {
@@ -827,8 +819,7 @@ fn run_worker(shared: &Arc<Shared>, config: PublisherConfig) {
             let now = Instant::now();
             let due = !health_sent_on_connection
                 || last_health.as_ref() != Some(&source_health)
-                || last_health_at
-                    .is_none_or(|at| at.elapsed() >= DEFAULT_HEALTH_SEND_INTERVAL);
+                || last_health_at.is_none_or(|at| at.elapsed() >= DEFAULT_HEALTH_SEND_INTERVAL);
             if due && health_retry_at.is_none_or(|at| now >= at) {
                 if sink.is_none() {
                     match LoopbackSink::connect(config.loopback.clone()) {
@@ -987,9 +978,7 @@ fn run_worker(shared: &Arc<Shared>, config: PublisherConfig) {
             }
         }
 
-        let ack_result = sink
-            .as_mut()
-            .map(|active| active.wait_ack(&observation));
+        let ack_result = sink.as_mut().map(|active| active.wait_ack(&observation));
         match ack_result {
             Some(Ok(ack)) => {
                 retry_at = None;

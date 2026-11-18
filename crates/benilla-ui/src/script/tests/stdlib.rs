@@ -99,8 +99,7 @@ fn stdlib_aliases_and_helpers() {
 fn debuglocals_answers_no_values_outside_the_error_handler() {
     let s = wrath_script();
     assert_eq!(
-        s.eval::<i64>("return select('#', debuglocals(1))")
-            .unwrap(),
+        s.eval::<i64>("return select('#', debuglocals(1))").unwrap(),
         0,
         "outside the handler the reference returns 0 values"
     );
@@ -119,7 +118,9 @@ fn debuglocals_answers_no_values_outside_the_error_handler() {
         "inside the wrapper debuglocals answers a string, never nil or no value"
     );
     assert!(
-        s.eval::<String>("return Captured").unwrap().contains("m = \"direct\""),
+        s.eval::<String>("return Captured")
+            .unwrap()
+            .contains("m = \"direct\""),
         "the dump names the handler's own local"
     );
 }
@@ -910,6 +911,3 @@ fn a_frame_no_instruction_names_takes_a_globals_name() {
         "no global holds it: {named}"
     );
 }
-
-
-

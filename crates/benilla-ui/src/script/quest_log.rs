@@ -219,12 +219,33 @@ pub(crate) struct QuestLogStore {
 }
 
 /// 12340 CalculateExperience (0x005E0420): difficulty column, level penalty and reward rounding.
-fn quest_experience(rows: &HashMap<u32, [u32; 10]>, quest: &QuestRecordView, player_level: u32) -> u32 {
-    let level = if quest.level as i32 == -1 { player_level } else { quest.level };
-    let Some(&base) = rows.get(&level).and_then(|row| row.get(quest.xp_difficulty as usize)) else { return 0; };
+fn quest_experience(
+    rows: &HashMap<u32, [u32; 10]>,
+    quest: &QuestRecordView,
+    player_level: u32,
+) -> u32 {
+    let level = if quest.level as i32 == -1 {
+        player_level
+    } else {
+        quest.level
+    };
+    let Some(&base) = rows
+        .get(&level)
+        .and_then(|row| row.get(quest.xp_difficulty as usize))
+    else {
+        return 0;
+    };
     let factor = (2 * (i64::from(level) - i64::from(player_level)) + 20).clamp(1, 10) as u64;
     let value = factor * u64::from(base) / 10;
-    let step = if value <= 100 { 5 } else if value <= 500 { 10 } else if value <= 1000 { 25 } else { 50 };
+    let step = if value <= 100 {
+        5
+    } else if value <= 500 {
+        10
+    } else if value <= 1000 {
+        25
+    } else {
+        50
+    };
     (((value + step / 2) / step) * step).min(u64::from(u32::MAX)) as u32
 }
 
@@ -680,8 +701,7 @@ fn lines(record: &QuestRecordView) -> impl Iterator<Item = Line> + '_ {
         .filter(|(_, o)| {
             // `0x4e04fa`: a collect item is a line unless it is the quest's own starting item
             // held for one; a stack of two or more is still a line.
-            (o.item_id as i32) > 0
-                && (o.item_id != record.src_item_id || o.item_count > 1)
+            (o.item_id as i32) > 0 && (o.item_id != record.src_item_id || o.item_count > 1)
         })
         .map(|(i, _)| Line::Item(i));
     let reputation = (record.rep_min.0 != 0).then_some(Line::Reputation);
@@ -1589,11 +1609,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "GetQuestLogRewardMoney",
         lua.create_function(|lua, ()| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let top = model
-                .unit("player")
-                .is_some_and(|p| p.exists && if model.is_wrath() {
-                    model.quest_store.max_level != 0 && p.level >= model.quest_store.max_level
-                } else { p.level as i32 >= 60 });
+            let top = model.unit("player").is_some_and(|p| {
+                p.exists
+                    && if model.is_wrath() {
+                        model.quest_store.max_level != 0 && p.level >= model.quest_store.max_level
+                    } else {
+                        p.level as i32 >= 60
+                    }
+            });
             Ok(model.selected_quest_record().map_or(0, |r| {
                 let bonus = if top { r.reward_money_max_level } else { 0 };
                 i64::from((r.reward_money as i32).wrapping_add(bonus))
@@ -1613,16 +1636,34 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         install_detail_count(lua, "GetQuestLogRewardArenaPoints", |r| {
             i64::from(r.reward_arena_points)
         })?;
-        install_detail_count(lua, "GetQuestLogGroupNum", |r| i64::from(r.suggested_players))?;
-        g.set("GetDailyQuestsCompleted", lua.create_function(|lua, ()| {
-            Ok(lua.app_data_ref::<Model>().expect("model app_data").quest_store.daily_completed)
-        })?)?;
-        g.set("GetQuestLogRewardXP", lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(player) = model.unit("player").filter(|p| p.exists) else { return Ok(0); };
-            if player.level >= model.quest_store.max_level { return Ok(0); }
-            Ok(model.selected_quest_record().map_or(0, |quest| quest_experience(&model.quest_store.xp, quest, player.level)))
-        })?)?;
+        install_detail_count(lua, "GetQuestLogGroupNum", |r| {
+            i64::from(r.suggested_players)
+        })?;
+        g.set(
+            "GetDailyQuestsCompleted",
+            lua.create_function(|lua, ()| {
+                Ok(lua
+                    .app_data_ref::<Model>()
+                    .expect("model app_data")
+                    .quest_store
+                    .daily_completed)
+            })?,
+        )?;
+        g.set(
+            "GetQuestLogRewardXP",
+            lua.create_function(|lua, ()| {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let Some(player) = model.unit("player").filter(|p| p.exists) else {
+                    return Ok(0);
+                };
+                if player.level >= model.quest_store.max_level {
+                    return Ok(0);
+                }
+                Ok(model.selected_quest_record().map_or(0, |quest| {
+                    quest_experience(&model.quest_store.xp, quest, player.level)
+                }))
+            })?,
+        )?;
         g.set(
             "GetQuestLogRewardTitle",
             lua.create_function(|lua, ()| {
@@ -1631,7 +1672,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     .selected_quest_record()
                     .and_then(|r| r.reward_title_name.as_deref())
                     .map(|title| lua.create_string(title).map(Value::String))
-                    .transpose()?.unwrap_or(Value::Nil))
+                    .transpose()?
+                    .unwrap_or(Value::Nil))
             })?,
         )?;
         install_detail_count(lua, "GetNumQuestLogRewardFactions", |r| {
@@ -2110,7 +2152,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let index = i.unwrap_or(model.quest_log_selection) as usize;
             Ok(flag(
-                model.quest_row_parts(index).is_some_and(|(r, _)| r.pushable),
+                model
+                    .quest_row_parts(index)
+                    .is_some_and(|(r, _)| r.pushable),
             ))
         })?,
     )?;
@@ -2354,7 +2398,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         g.set(
             "GetQuestLogSpecialItemInfo",
             lua.create_function(|lua, i: Value| {
-                let i = binding_abi::index_arg32(lua, i, "Usage: GetQuestLogSpecialItemInfo(index)")?;
+                let i =
+                    binding_abi::index_arg32(lua, i, "Usage: GetQuestLogSpecialItemInfo(index)")?;
                 let id = {
                     let model = lua.app_data_ref::<Model>().expect("model app_data");
                     model
@@ -2482,7 +2527,11 @@ mod tests {
     fn wrath_experience_uses_difficulty_level_rounding_and_the_player_cap() {
         use crate::script::{UiTarget, UnitGuids, UnitState};
         let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
-        s.set_unit_guids(&UnitGuids { player: 1, wrath: true, ..Default::default() });
+        s.set_unit_guids(&UnitGuids {
+            player: 1,
+            wrath: true,
+            ..Default::default()
+        });
         s.set_quest_experience([(3, [0, 0, 123, 0, 0, 0, 0, 0, 0, 0])].into());
         s.set_quest_player_metadata(80, 4);
         let mut quest = record("Kobold Camp Cleanup", 3, 12, "Elwynn Forest");
@@ -2491,13 +2540,28 @@ mod tests {
         seat(&mut s, &[(7, quest, slot(7, 0, 0))]);
         s.run("SelectQuestLogEntry(2)").unwrap();
         for (level, xp) in [(3, 120), (10, 75), (25, 10), (80, 0)] {
-            s.set_unit("player", Some(UnitState { guid: 1, exists: true, has_object: true, level, ..Default::default() }));
+            s.set_unit(
+                "player",
+                Some(UnitState {
+                    guid: 1,
+                    exists: true,
+                    has_object: true,
+                    level,
+                    ..Default::default()
+                }),
+            );
             assert_eq!(s.eval::<u32>("return GetQuestLogRewardXP()").unwrap(), xp);
         }
         assert_eq!(s.eval::<u32>("return GetQuestLogGroupNum()").unwrap(), 3);
-        assert_eq!(s.eval::<u32>("return GetDailyQuestsCompleted()").unwrap(), 4);
+        assert_eq!(
+            s.eval::<u32>("return GetDailyQuestsCompleted()").unwrap(),
+            4
+        );
         s.set_quest_player_metadata(80, 0);
-        assert_eq!(s.eval::<u32>("return GetDailyQuestsCompleted()").unwrap(), 0);
+        assert_eq!(
+            s.eval::<u32>("return GetDailyQuestsCompleted()").unwrap(),
+            0
+        );
     }
 
     #[test]

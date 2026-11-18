@@ -25,24 +25,24 @@
 /// the other half).
 pub const GENERATOR_VERSION: &str = "procgen-v2";
 
-pub mod dungeon;
 pub mod artifact;
 pub mod content;
 pub mod content_allocation;
+pub mod dungeon;
+pub mod item;
 pub mod json;
 pub mod planning;
-pub mod wm_draft;
-mod validation;
-pub mod item;
 pub mod rng;
 pub mod spawns;
 pub mod terrain;
+mod validation;
+pub mod wm_draft;
 
+pub use dungeon::ValidationError;
 use dungeon::{Dungeon, DungeonSpec};
 use item::{GeneratedItem, ItemRequest};
 use spawns::{Spawn, SpawnSpec};
 use terrain::{TerrainField, TerrainSpec};
-pub use dungeon::ValidationError;
 
 /// One complete generation request.
 #[derive(Clone, Debug, PartialEq)]
@@ -70,7 +70,11 @@ impl Default for ProcgenSpec {
 impl ProcgenSpec {
     /// Validate every subsystem and its worst-case output budget before allocating artifacts.
     pub fn validate(&self) -> Result<(), ValidationError> {
-        ItemRequest { count: self.items, ..Default::default() }.validate()?;
+        ItemRequest {
+            count: self.items,
+            ..Default::default()
+        }
+        .validate()?;
         self.dungeon.validate()?;
         self.terrain.validate()?;
         self.spawns.validate(
@@ -107,7 +111,13 @@ pub fn generate(spec: &ProcgenSpec) -> Result<ProcgenOutput, ValidationError> {
     // spawns, and vice versa — each subsystem sees only its own fork of the master seed.
     let master = rng::ProcRng::new(spec.seed);
     let items = if spec.items > 0 {
-        item::generate_items(&mut master.fork(item::DOMAIN), &ItemRequest { count: spec.items, ..Default::default() })?
+        item::generate_items(
+            &mut master.fork(item::DOMAIN),
+            &ItemRequest {
+                count: spec.items,
+                ..Default::default()
+            },
+        )?
     } else {
         Vec::new()
     };

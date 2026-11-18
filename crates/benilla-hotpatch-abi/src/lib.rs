@@ -190,8 +190,7 @@ impl MovementOutput {
     }
 }
 
-pub type ProcessMovement =
-    unsafe extern "C" fn(*const MovementFrame, *mut MovementOutput) -> i32;
+pub type ProcessMovement = unsafe extern "C" fn(*const MovementFrame, *mut MovementOutput) -> i32;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -327,13 +326,8 @@ pub struct SpaceRequest {
 /// Zero means success. Writes up to `spawn_capacity` spawns and stores the written count in
 /// `*out_spawn_count`. Optional `out_heightfield_256` (16x16 f32 heights) may be null when the
 /// caller only requests dynamic mob/prop/item spawns.
-pub type GenerateSpaceChunk = unsafe extern "C" fn(
-    *const SpaceRequest,
-    *mut f32,
-    *mut ProceduralSpawn,
-    u32,
-    *mut u32,
-) -> i32;
+pub type GenerateSpaceChunk =
+    unsafe extern "C" fn(*const SpaceRequest, *mut f32, *mut ProceduralSpawn, u32, *mut u32) -> i32;
 
 #[repr(C)]
 #[derive(Clone, Copy)]

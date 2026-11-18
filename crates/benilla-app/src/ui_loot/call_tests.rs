@@ -917,7 +917,8 @@ fn a_row_answered_after_the_response_is_named_at_loot_opened() {
     let (name, link): (String, Option<String>) = eval(&mut l, "return OPENED_NAME, OPENED_LINK");
     assert_eq!(name, "Ruined Pelt");
     assert!(
-        link.as_deref().is_some_and(|link| link.contains("[Ruined Pelt]")),
+        link.as_deref()
+            .is_some_and(|link| link.contains("[Ruined Pelt]")),
         "{link:?}"
     );
 }

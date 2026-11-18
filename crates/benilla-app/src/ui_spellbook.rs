@@ -315,7 +315,10 @@ fn feed_spellbook(
                         .slots
                         .iter()
                         .filter(|s| {
-                            spells.catalog.get(s.spell_id).is_some_and(|d| d.tracking_aura())
+                            spells
+                                .catalog
+                                .get(s.spell_id)
+                                .is_some_and(|d| d.tracking_aura())
                         })
                         .map(|s| s.spell_id)
                         .collect(),
@@ -535,9 +538,7 @@ fn build_spell_list(
     let mut lines: Vec<(u32, Vec<u32>)> = by_line.into_iter().collect();
     // Re-sort with the same comparator as build_book, using a placeholder name for ordering.
     // General (NO_LINE) first; other lines by their SkillLine.dbc name, falling back to "General".
-    let mut ordered: Vec<(u32, Vec<u32>)> = lines
-        .drain(..)
-        .collect();
+    let mut ordered: Vec<(u32, Vec<u32>)> = lines.drain(..).collect();
     // Sort by (is_not_general, name) like build_book.
     ordered.sort_by(|a, b| {
         let name_of = |line_id: u32| -> String {

@@ -133,9 +133,7 @@ impl PluginGroup for GamePlugins {
             })
             // The selected Wrath session owns the replicated world; inert when no config was
             // supplied. It is one worker and one Net-stage feed, never a second stock NetPlugin.
-            .add(crate::wrath::WrathNetPlugin {
-                config: self.wrath,
-            })
+            .add(crate::wrath::WrathNetPlugin { config: self.wrath })
             // The toggleable combat boundary's read model. Baseline only: it never sends a
             // mode request or invents stamina/dodge, and is the UI host's state contract.
             .add(crate::combat_mode::CombatModePlugin)

@@ -269,15 +269,13 @@ mod tests {
         );
 
         // No Hold on the model: the caller's park branch.
-        assert!(
-            hold_pass(
-                &mut player,
-                &test_anims(&[clip(0, 0, false)]),
-                second,
-                Some(&mut rng)
-            )
-            .is_none()
-        );
+        assert!(hold_pass(
+            &mut player,
+            &test_anims(&[clip(0, 0, false)]),
+            second,
+            Some(&mut rng)
+        )
+        .is_none());
     }
 
     /// `0x60ed00` re-arms without reading the clamp bit, so a clamping precast repeats.

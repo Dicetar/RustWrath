@@ -307,12 +307,16 @@ pub fn plural(
 /// wrote `"%d %s"` over the `GOLD`, `SILVER` and `COPPER` words, which the 3.3.5 strings lack.
 pub fn currency_text(copper: u32, separator: &str, get: &dyn Fn(&str) -> String) -> String {
     let (g, s, c) = (copper / 10_000, copper / 100 % 100, copper % 100);
-    [(g, "GOLD_AMOUNT"), (s, "SILVER_AMOUNT"), (c, "COPPER_AMOUNT")]
-        .into_iter()
-        .filter(|&(n, _)| n != 0)
-        .map(|(n, key)| fill(&get(key), &[Arg::D(i64::from(n))]))
-        .collect::<Vec<_>>()
-        .join(separator)
+    [
+        (g, "GOLD_AMOUNT"),
+        (s, "SILVER_AMOUNT"),
+        (c, "COPPER_AMOUNT"),
+    ]
+    .into_iter()
+    .filter(|&(n, _)| n != 0)
+    .map(|(n, key)| fill(&get(key), &[Arg::D(i64::from(n))]))
+    .collect::<Vec<_>>()
+    .join(separator)
 }
 
 /// Fill a reference template, by the rules in the module doc.

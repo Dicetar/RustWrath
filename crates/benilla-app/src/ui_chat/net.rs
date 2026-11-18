@@ -62,9 +62,15 @@ fn on_broadcast(In(ev): In<SessionEvent>, chat_log: Res<ChatLog>) {
             Broadcast::Server { message_type, text }
         }
         SessionEvent::ChatRestricted => Broadcast::ChatRestricted,
-        SessionEvent::TransferAborted { reason, map_id, argument } => {
-            Broadcast::TransferAborted { reason, map_id, argument }
-        }
+        SessionEvent::TransferAborted {
+            reason,
+            map_id,
+            argument,
+        } => Broadcast::TransferAborted {
+            reason,
+            map_id,
+            argument,
+        },
         _ => return,
     };
     broadcast(b, &chat_log);
@@ -153,7 +159,12 @@ fn chat(
                     &format!("<- [{:#04x}] {:?}", m.chat_type, m.text),
                 );
             }
-            chat_log.push_addon_for_client(&m.text, m.chat_type, m.sender_guid, crate::wrath::selected_from_env());
+            chat_log.push_addon_for_client(
+                &m.text,
+                m.chat_type,
+                m.sender_guid,
+                crate::wrath::selected_from_env(),
+            );
         }
         return;
     }
@@ -308,12 +319,20 @@ mod tests {
         world
             .run_system_once_with(
                 on_broadcast,
-                SessionEvent::TransferAborted { reason: 5, map_id: None, argument: None },
+                SessionEvent::TransferAborted {
+                    reason: 5,
+                    map_id: None,
+                    argument: None,
+                },
             )
             .unwrap();
         assert_eq!(
             world.resource_mut::<ChatLog>().take_broadcasts(),
-            [Broadcast::TransferAborted { reason: 5, map_id: None, argument: None }]
+            [Broadcast::TransferAborted {
+                reason: 5,
+                map_id: None,
+                argument: None
+            }]
         );
     }
 

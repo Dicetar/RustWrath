@@ -1874,7 +1874,11 @@ mod tests {
         s.set_entry(C, None, true);
         s.solve();
         let c = s.rect(C).expect("C resolves");
-        assert_eq!((c.left, c.right), (128.0, 222.0), "C stretches between the siblings");
+        assert_eq!(
+            (c.left, c.right),
+            (128.0, 222.0),
+            "C stretches between the siblings"
+        );
     }
 
     /// A target that stores a new rect reaches what anchors to it, which resolves again.

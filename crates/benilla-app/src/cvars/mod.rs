@@ -1758,7 +1758,11 @@ mod tests {
         ] {
             apply(&mut app, "textureFilteringMode", mode);
             let tex = res::<benilla_assets::TexFilterSetting>(&app);
-            assert_eq!((tex.trilinear, tex.aniso), (trilinear, aniso), "mode {mode}");
+            assert_eq!(
+                (tex.trilinear, tex.aniso),
+                (trilinear, aniso),
+                "mode {mode}"
+            );
         }
         apply(&mut app, "mastersoundeffects", "1");
         assert!(res::<SoundConfig>(&app).enabled);
@@ -3552,10 +3556,22 @@ mod tests {
             ("gxRefresh", "OptionsFrame.lua's refresh-rate dropdown"),
             // 3.3.5a's stock panels read these through `OptionsPanelTemplates.lua`'s checkbox and
             // cycle rows; the panel definition names each key. None has a host consumer yet.
-            ("Sound_NumChannels", "AudioOptionsPanels.lua:120's channel-count slider"),
-            ("showKeyring", "MainMenuBar.lua:243 reads it for the keyring button"),
-            ("autoQuestWatch", "InterfaceOptionsPanels.lua:787's quest-watch checkbox"),
-            ("questFadingDisable", "InterfaceOptionsPanels.lua:786's quest-fade checkbox"),
+            (
+                "Sound_NumChannels",
+                "AudioOptionsPanels.lua:120's channel-count slider",
+            ),
+            (
+                "showKeyring",
+                "MainMenuBar.lua:243 reads it for the keyring button",
+            ),
+            (
+                "autoQuestWatch",
+                "InterfaceOptionsPanels.lua:787's quest-watch checkbox",
+            ),
+            (
+                "questFadingDisable",
+                "InterfaceOptionsPanels.lua:786's quest-fade checkbox",
+            ),
             (
                 "playerStatLeftDropdown",
                 "PaperDollFrame.lua:161/164 read the paperdoll stat dropdown",
@@ -3564,17 +3580,26 @@ mod tests {
                 "playerStatRightDropdown",
                 "PaperDollFrame.lua:161/166 read the paperdoll stat dropdown",
             ),
-            ("xpBarText", "InterfaceOptionsPanels.lua:1132's XP-bar text checkbox"),
+            (
+                "xpBarText",
+                "InterfaceOptionsPanels.lua:1132's XP-bar text checkbox",
+            ),
             (
                 "alwaysCompareItems",
                 "GameUI_CVar.cpp:467's stock comparison-tooltip gate",
             ),
-            ("extShadowQuality", "VideoOptionsPanels.lua:388's shadow-quality cycle"),
+            (
+                "extShadowQuality",
+                "VideoOptionsPanels.lua:388's shadow-quality cycle",
+            ),
             (
                 "gxStereoConvergence",
                 "VideoOptionsPanels.lua:558's stereo convergence slider",
             ),
-            ("gxStereoEnabled", "VideoOptionsPanels.lua:557's stereo enable checkbox"),
+            (
+                "gxStereoEnabled",
+                "VideoOptionsPanels.lua:557's stereo enable checkbox",
+            ),
             (
                 "gxStereoSeparation",
                 "VideoOptionsPanels.lua:559's stereo separation slider",
@@ -3587,9 +3612,18 @@ mod tests {
                 "Sound_EnableAmbience",
                 "AudioOptionsPanels.lua:104's ambience checkbox",
             ),
-            ("Sound_EnableSFX", "AudioOptionsPanels.lua:105's sound-effects checkbox"),
-            ("Sound_EnableAllSound", "AudioOptionsPanels.lua:106's master-sound checkbox"),
-            ("windowResizeLock", "VideoOptionsPanels.lua:85's resize-lock checkbox"),
+            (
+                "Sound_EnableSFX",
+                "AudioOptionsPanels.lua:105's sound-effects checkbox",
+            ),
+            (
+                "Sound_EnableAllSound",
+                "AudioOptionsPanels.lua:106's master-sound checkbox",
+            ),
+            (
+                "windowResizeLock",
+                "VideoOptionsPanels.lua:85's resize-lock checkbox",
+            ),
             (
                 "autojoinPartyVoice",
                 "GameUI_CVar.cpp:604's stock voice option; no voice service here",
@@ -3598,7 +3632,10 @@ mod tests {
                 "autojoinBGVoice",
                 "GameUI_CVar.cpp:605's stock voice option; no voice service here",
             ),
-            ("environmentDetail", "VideoOptionsPanels.lua:384's environment-detail cycle"),
+            (
+                "environmentDetail",
+                "VideoOptionsPanels.lua:384's environment-detail cycle",
+            ),
             (
                 "groundEffectDensity",
                 "VideoOptionsPanels.lua:385's ground-effect-density slider",
@@ -3623,10 +3660,7 @@ mod tests {
                 "displayFreeBagSlots",
                 "MainMenuBar.lua's bag bar reads it to number the backpack button",
             ),
-            (
-                "lootUnderMouse",
-                "LootFrame.lua's loot-under-mouse option",
-            ),
+            ("lootUnderMouse", "LootFrame.lua's loot-under-mouse option"),
             (
                 "accountList",
                 "GetSavedAccountList reads it on the login screen",

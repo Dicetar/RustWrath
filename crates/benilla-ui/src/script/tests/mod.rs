@@ -498,7 +498,11 @@ fn debuglocals_dumps_the_handlers_locals_and_upvalues_during_dispatch() {
         "the closing brace must follow its child: {dump:?}"
     );
     assert!(dump.ends_with('\n'), "the packer ends every line: {dump:?}");
-    assert_eq!(s.eval::<i64>("return UpSeen").unwrap(), 7, "the upvalue is live");
+    assert_eq!(
+        s.eval::<i64>("return UpSeen").unwrap(),
+        7,
+        "the upvalue is live"
+    );
     let errors = s.take_errors();
     assert!(
         !errors
@@ -577,5 +581,9 @@ fn the_stock_error_format_gets_a_string_when_the_handler_is_called_directly() {
     let formatted: String = s.eval("return Formatted").unwrap();
     assert!(formatted.contains("direct stock shape"), "{formatted:?}");
     assert!(formatted.ends_with("|stack|"), "{formatted:?}");
-    assert!(s.errors().is_empty(), "no handler failure: {:?}", s.errors());
+    assert!(
+        s.errors().is_empty(),
+        "no handler failure: {:?}",
+        s.errors()
+    );
 }

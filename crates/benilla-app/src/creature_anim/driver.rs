@@ -344,7 +344,9 @@ pub(super) fn drive_animations(
         mut action_anims,
         souls,
     ) = aux;
-    let souls_crouched = souls.as_deref().is_some_and(crate::souls::SoulsState::crouched);
+    let souls_crouched = souls
+        .as_deref()
+        .is_some_and(crate::souls::SoulsState::crouched);
     let classes = class_table.as_deref().map(|t| &t.0);
     let dt = time.delta_secs();
     // This frame's one-shot plays per unit, replayed in the reference's call order (`PlaySeq`
@@ -558,7 +560,8 @@ pub(super) fn drive_animations(
         // The creep vis flag off the unit's own descriptor (`[[unit+0x110]+0x213] & 2`), never
         // predicted: the crouch lands with the server's aura. The Souls crouch is our own and
         // predicted, so it poses our body at once.
-        mv.stealthed = store.is_some_and(|s| s.0.unit_is_stealthed()) || (is_self && souls_crouched);
+        mv.stealthed =
+            store.is_some_and(|s| s.0.unit_is_stealthed()) || (is_self && souls_crouched);
         let moving = mv.flags & move_flags::ANY_MOVE != 0;
         // An arc's launch vertical speed splits a jump (the JumpStart/Jump bracket; jump
         // `0x60e480`, land `0x602c60`) from a step-off fall, which has no bracket and keeps the

@@ -1480,5 +1480,3 @@ fn anchor_bottom_and_anchor_top_center_the_plate_vertically_on_owner() {
     assert!(s.take_warnings().is_empty());
     assert!(s.errors().is_empty());
 }
-
-

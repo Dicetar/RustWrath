@@ -47,7 +47,10 @@ impl std::fmt::Display for LogonAuthError {
                 write!(f, "logon challenge rejected: result code {code:#04x}")
             }
             Self::Proof(code) => {
-                write!(f, "logon proof rejected: error code {code:#04x} (0x04 = wrong password)")
+                write!(
+                    f,
+                    "logon proof rejected: error code {code:#04x} (0x04 = wrong password)"
+                )
             }
             Self::World(code) => {
                 write!(f, "world server refused authentication ({code:#04x})")
@@ -150,14 +153,20 @@ pub fn read_challenge_reply(r: &mut impl Read) -> Result<ChallengeReply> {
     let prime_len = read_u8(r)? as usize;
     let mut prime = vec![0u8; prime_len];
     r.read_exact(&mut prime)?;
-    let large_safe_prime: [u8; 32] =
-        prime.try_into().map_err(|_| anyhow::anyhow!("prime was {prime_len} bytes, expected 32"))?;
+    let large_safe_prime: [u8; 32] = prime
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("prime was {prime_len} bytes, expected 32"))?;
     let mut salt = [0u8; 32];
     r.read_exact(&mut salt)?;
     let mut version_challenge = [0u8; 16];
     r.read_exact(&mut version_challenge)?;
     let _security_flags = read_u8(r)?;
-    Ok(ChallengeReply { server_public_key, generator, large_safe_prime, salt })
+    Ok(ChallengeReply {
+        server_public_key,
+        generator,
+        large_safe_prime,
+        salt,
+    })
 }
 
 /// Send `CMD_AUTH_LOGON_PROOF`: `A[32]`, `M1[20]`, zero `crc_hash[20]` (non-strict lab), no
@@ -229,7 +238,16 @@ pub fn read_realm_list(r: &mut impl Read) -> Result<Vec<RealmInfo>> {
             let _ = read_u8(r)?;
             let _ = read_u16_le(r)?;
         }
-        realms.push(RealmInfo { realm_type, flags, name, address, population, characters, realm_id, category });
+        realms.push(RealmInfo {
+            realm_type,
+            flags,
+            name,
+            address,
+            population,
+            characters,
+            realm_id,
+            category,
+        });
     }
     Ok(realms)
 }
@@ -241,7 +259,9 @@ mod tests {
     #[test]
     fn challenge_reply_preserves_typed_refusal_code() {
         let mut wire = std::io::Cursor::new([0x00u8, 0x00, 0x04]);
-        let err = read_challenge_reply(&mut wire).err().expect("challenge must fail");
+        let err = read_challenge_reply(&mut wire)
+            .err()
+            .expect("challenge must fail");
         assert_eq!(
             err.downcast_ref::<LogonAuthError>(),
             Some(&LogonAuthError::Challenge(0x04))

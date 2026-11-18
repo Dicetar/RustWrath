@@ -9,8 +9,12 @@ use crate::vm::{ResumeError, Vm};
 pub(crate) fn open(vm: &mut Vm) {
     let table = vm.heap.new_table(0, 0);
     let functions: [(&'static str, crate::heap::NativeFn); 6] = [
-        ("create", create), ("resume", resume), ("yield", yield_),
-        ("status", status), ("running", running), ("wrap", wrap),
+        ("create", create),
+        ("resume", resume),
+        ("yield", yield_),
+        ("status", status),
+        ("running", running),
+        ("wrap", wrap),
     ];
     for (name, native) in functions {
         let value = vm.new_native(name, native);
@@ -29,7 +33,8 @@ fn check_thread(vm: &mut Vm, nargs: usize) -> R<ThreadRef> {
 
 fn create(vm: &mut Vm, nargs: usize) -> R<usize> {
     let entry = vm.arg(nargs, 0);
-    if !matches!(entry.unpack(), V::Func(function) if matches!(vm.heap.func(function), FuncObj::Lua(_))) {
+    if !matches!(entry.unpack(), V::Func(function) if matches!(vm.heap.func(function), FuncObj::Lua(_)))
+    {
         return Err(vm.arg_error(1, "Lua function expected"));
     }
     let thread = vm.create_thread(entry);
@@ -46,7 +51,9 @@ fn resume(vm: &mut Vm, nargs: usize) -> R<usize> {
                 return Err(vm.rt_error("too many results to resume"));
             }
             vm.push(Value::Bool(true));
-            for &value in &values { vm.push(value); }
+            for &value in &values {
+                vm.push(value);
+            }
             Ok(values.len() + 1)
         }
         Err(ResumeError::Raised(error)) => Err(error),
@@ -59,7 +66,9 @@ fn resume(vm: &mut Vm, nargs: usize) -> R<usize> {
     }
 }
 
-fn yield_(vm: &mut Vm, nargs: usize) -> R<usize> { vm.yield_thread(nargs) }
+fn yield_(vm: &mut Vm, nargs: usize) -> R<usize> {
+    vm.yield_thread(nargs)
+}
 
 fn status(vm: &mut Vm, nargs: usize) -> R<usize> {
     let thread = check_thread(vm, nargs)?;
@@ -83,14 +92,18 @@ fn wrap(vm: &mut Vm, nargs: usize) -> R<usize> {
 }
 
 fn wrapped_resume(vm: &mut Vm, nargs: usize) -> R<usize> {
-    let V::Thread(thread) = vm.upvalue(0).unpack() else { unreachable!("wrapper owns its thread") };
+    let V::Thread(thread) = vm.upvalue(0).unpack() else {
+        unreachable!("wrapper owns its thread")
+    };
     let args = vm.args(nargs).to_vec();
     match vm.resume_thread(thread, &args) {
         Ok(values) => {
             if !vm.check_stack(values.len() + 1) {
                 return Err(vm.rt_error("too many results to resume"));
             }
-            for &value in &values { vm.push(value); }
+            for &value in &values {
+                vm.push(value);
+            }
             Ok(values.len())
         }
         Err(ResumeError::Raised(error)) => Err(error),
@@ -100,7 +113,9 @@ fn wrapped_resume(vm: &mut Vm, nargs: usize) -> R<usize> {
                 let mut text = vm.where_(1);
                 text.extend_from_slice(vm.heap.str(string));
                 vm.str(&text)
-            } else { error.value };
+            } else {
+                error.value
+            };
             Err(vm.throw(value))
         }
     }

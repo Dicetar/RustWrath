@@ -1776,7 +1776,11 @@ impl UiScript {
                     round + 1,
                     last_moved.len(),
                     shown.join(", "),
-                    if last_moved.len() > shown.len() { ", …" } else { "" }
+                    if last_moved.len() > shown.len() {
+                        ", …"
+                    } else {
+                        ""
+                    }
                 );
                 diagnostics.record(super::diagnostics::DiagnosticKind::Warning, &msg);
                 warnings.push(msg);

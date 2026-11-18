@@ -173,7 +173,11 @@ pub fn load_emote_text_catalog(chain: &mut Chain) -> Result<EmoteTextCatalog> {
     } else {
         LOCALES
     };
-    let rs = parse(&bytes, emotes_text_data_schema(locales), "EmotesTextData.dbc")?;
+    let rs = parse(
+        &bytes,
+        emotes_text_data_schema(locales),
+        "EmotesTextData.dbc",
+    )?;
     let locale = chain.locale();
     let mut data = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {

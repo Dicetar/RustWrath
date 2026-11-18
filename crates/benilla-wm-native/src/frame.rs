@@ -63,9 +63,13 @@ pub(crate) enum ServerFrame {
         world_generation: u64,
     },
     /// One typed player intent from WM; answered by [`ActionResultFrame`] on this connection.
-    ActionRequest { request: ActionRequest },
+    ActionRequest {
+        request: ActionRequest,
+    },
     /// A best-effort admission-level cancellation; the client cannot recall a sent command.
-    ActionCancel { request_id: String },
+    ActionCancel {
+        request_id: String,
+    },
     HealthAck {
         session_epoch: u64,
         world_generation: u64,

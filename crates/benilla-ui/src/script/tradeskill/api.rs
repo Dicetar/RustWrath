@@ -127,10 +127,9 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                 })
                 .filter(|r| r.product_item != 0)
                 .and_then(|r| {
-                    model
-                        .item_templates
-                        .get(&r.product_item)
-                        .map(|t| item_link_for_target(model.target, r.product_item, &t.name, t.quality))
+                    model.item_templates.get(&r.product_item).map(|t| {
+                        item_link_for_target(model.target, r.product_item, &t.name, t.quality)
+                    })
                 });
             Ok(match link {
                 Some(l) => MultiValue::from_vec(vec![Value::String(lua.create_string(&l)?)]),
@@ -173,15 +172,16 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
             };
             let req = model.player_req.clone();
             let player = model.unit("player").map(|u| (u.pvp_team, u.sex == 3));
-            let knows = view.required_spell != 0
-                && {
-                    let player_slots = if model.spell_list.is_empty() {
-                        &model.spellbook.slots
-                    } else {
-                        &model.spell_list
-                    };
-                    player_slots.iter().any(|s| s.spell_id == view.required_spell)
+            let knows = view.required_spell != 0 && {
+                let player_slots = if model.spell_list.is_empty() {
+                    &model.spellbook.slots
+                } else {
+                    &model.spell_list
                 };
+                player_slots
+                    .iter()
+                    .any(|s| s.spell_id == view.required_spell)
+            };
             drop(model);
             let facts = super::itemstats::PlayerFacts {
                 // A player whose level is unpushed declines to judge, as `item_refusal` does.

@@ -330,11 +330,17 @@ mod tests {
     /// still, however long the frame gap.
     #[test]
     fn the_water_scan_waits_half_a_second_and_a_moved_player() {
-        assert!(!query_due(0.0, true), "a scan on the same frame is throttled");
+        assert!(
+            !query_due(0.0, true),
+            "a scan on the same frame is throttled"
+        );
         assert!(!query_due(0.49, true), "still inside the 500 ms window");
         assert!(query_due(0.5, true), "half a second and a step: scan");
         assert!(query_due(9.0, true));
-        assert!(!query_due(9.0, false), "a standing player is never re-scanned");
+        assert!(
+            !query_due(9.0, false),
+            "a standing player is never re-scanned"
+        );
     }
 
     /// `FADEINTIME`/`FADEOUTTIME` are 1.0 s: a 0.25 s frame moves a quarter of the range.

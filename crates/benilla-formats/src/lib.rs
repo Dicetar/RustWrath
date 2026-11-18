@@ -188,7 +188,10 @@ pub use anim_data::{load_anim_data_catalog, AnimDataCatalog, AnimEntry};
 mod quest_headers;
 pub use quest_headers::{load_quest_header_names, QuestHeaderNames};
 mod quest_info;
-pub use quest_info::{load_quest_experience, load_quest_tag_names, load_quest_title_names, QuestTagNames, QuestTitleNames};
+pub use quest_info::{
+    load_quest_experience, load_quest_tag_names, load_quest_title_names, QuestTagNames,
+    QuestTitleNames,
+};
 mod area_trigger;
 pub use area_trigger::{load_area_trigger_catalog, AreaTriggerCatalog, AreaTriggerRow};
 mod area_sound;
@@ -290,23 +293,21 @@ pub use models::{
     accumulate_wmo_group_camera_collision, accumulate_wmo_group_camera_only_collision,
     accumulate_wmo_group_collision, hand_grip_finger_poses, load_m2_animation_summary,
     load_m2_bone_spins, load_m2_bounds, load_m2_collision_hull, load_m2_mesh, load_m2_mesh_skinned,
-    load_object_model, load_wmo, load_wmo_collision_tris, m2_bone_spins, m2_file_name,
-    m2_owner_reach, m2_ribbon_emitter_count, m2_sequence_visible_textures,
+    load_object_model, load_wmo, load_wmo_collision_tris, m2_bone_spins, m2_external_animation_ids,
+    m2_file_name, m2_owner_reach, m2_ribbon_emitter_count, m2_sequence_visible_textures,
     m2_texture_transform_count, non_separable_billboard_bones, owner_last_rung,
     owner_last_rung_bucket, parse_m2_animation_lookup, parse_m2_animation_summary,
-    parse_m2_animations, parse_m2_animations_with_external, m2_external_animation_ids,
-    parse_m2_attachments, parse_m2_bounds, parse_m2_camera,
-    parse_m2_cch_marker, parse_m2_collision_hull, parse_m2_event_markers,
+    parse_m2_animations, parse_m2_animations_with_external, parse_m2_attachments, parse_m2_bounds,
+    parse_m2_camera, parse_m2_cch_marker, parse_m2_collision_hull, parse_m2_event_markers,
     parse_m2_global_sequence_bones, parse_m2_lights, parse_m2_pane_cameras,
     parse_m2_playable_animation_lookup, parse_m2_portrait_camera, parse_m2_render_submeshes,
     parse_m2_render_submeshes_with_skin, parse_m2_skeleton, parse_m2_string_anchors,
-    parse_wmo_fogs, parse_wmo_lights,
-    parse_wmo_portals, parse_wmo_root, point_in_convex_volume, rotation_2x2, uv_transform,
-    wmo_group_doodad_refs, wmo_group_fixed_colors, wmo_group_footprint_tris, wmo_group_header,
-    wmo_group_light_refs, wmo_group_liquid_mesh, wmo_group_liquid_mesh_for_root,
-    wmo_group_raw_colors, wmo_group_submeshes,
-    wmo_root_id, AlphaAnim, AlphaSeq, AnimEvent, Billboard, BillboardKind, BoneKeys, BoneScaleAnim,
-    BoneSpin, CharSkinSlot, CollisionMesh, EmitterBoneLink, EventMarker, FogPolicy, FootprintTris,
+    parse_wmo_fogs, parse_wmo_lights, parse_wmo_portals, parse_wmo_root, point_in_convex_volume,
+    rotation_2x2, uv_transform, wmo_group_doodad_refs, wmo_group_fixed_colors,
+    wmo_group_footprint_tris, wmo_group_header, wmo_group_light_refs, wmo_group_liquid_mesh,
+    wmo_group_liquid_mesh_for_root, wmo_group_raw_colors, wmo_group_submeshes, wmo_root_id,
+    AlphaAnim, AlphaSeq, AnimEvent, Billboard, BillboardKind, BoneKeys, BoneScaleAnim, BoneSpin,
+    CharSkinSlot, CollisionMesh, EmitterBoneLink, EventMarker, FogPolicy, FootprintTris,
     GlobalSeqBone, GlobalSeqChannel, GroundQuad, KeyAnim, M2AnimSummary, M2Attachment, M2Bounds,
     M2CameraTracks, M2Light, M2PaneCamera, M2PortraitCamera, ModelAnimation, ModelBlend, ParentArm,
     ParentBasis, PlayableAnim, RenderSubmesh, RgbAnim, ScalarAnim, SeqLoops, Skeleton,
@@ -520,7 +521,10 @@ pub fn blp_to_rgba(blp_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
 pub fn blp_to_rgba_base(blp_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     let (decoded, _) = benilla_blp::decode_native_with_mip_fallback(blp_bytes)
         .map_err(|e| anyhow::anyhow!("decoding BLP base: {e}"))?;
-    let level = decoded.mips.first().ok_or_else(|| anyhow::anyhow!("BLP has no level 0"))?;
+    let level = decoded
+        .mips
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("BLP has no level 0"))?;
     let rgba = benilla_blp::decode_level(decoded.texels, level.width, level.height, &level.bytes);
     Ok((level.width, level.height, rgba))
 }

@@ -579,15 +579,12 @@ fn render(
         _ => None,
     };
 
-    let format = if wrath { format_wrath_line } else { format_line };
-    Some(format(
-        line,
-        name.as_deref(),
-        is_self,
-        &item,
-        detailed,
-        get,
-    ))
+    let format = if wrath {
+        format_wrath_line
+    } else {
+        format_line
+    };
+    Some(format(line, name.as_deref(), is_self, &item, detailed, get))
 }
 
 /// Post the queued announcements as `CHAT_MSG_LOOT` lines, as the reference does.
@@ -608,8 +605,8 @@ fn drain_lines(
     for mut p in pending {
         // Wrath keeps our auto-pass visible even with normal vote and dice chat disabled.
         if let RollLine::Announce(roll) = &p.line {
-            let own_auto_pass = wrath && self_guid == Some(roll.roller)
-                && roll.auto_pass == Some(true);
+            let own_auto_pass =
+                wrath && self_guid == Some(roll.roller) && roll.auto_pass == Some(true);
             if !detailed && !own_auto_pass {
                 continue;
             }
@@ -814,9 +811,9 @@ impl LootRollSteps<'_> {
         };
         if rolls.active.iter().any(|roll| {
             roll.roll_id == roll_id
-                && roll.wrath_options.is_some_and(|(_, mask)| {
-                    roll_type > 3 || mask & (1 << roll_type) == 0
-                })
+                && roll
+                    .wrath_options
+                    .is_some_and(|(_, mask)| roll_type > 3 || mask & (1 << roll_type) == 0)
         }) {
             return;
         }

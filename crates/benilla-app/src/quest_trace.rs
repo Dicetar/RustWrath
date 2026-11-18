@@ -8,12 +8,12 @@ use std::{
     time::Instant,
 };
 
-use bevy::prelude::*;
 use benilla_protocol_wrath::gameplay::{DecodeFailure, DecoderFamily};
+use bevy::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender};
-use serde::Serialize;
 #[cfg(feature = "dev")]
 use serde::Deserialize;
+use serde::Serialize;
 #[cfg(feature = "dev")]
 use std::sync::Condvar;
 #[cfg(feature = "dev")]
@@ -39,7 +39,9 @@ pub(crate) enum ReducerReason {
 }
 
 impl ReducerReason {
-    pub(crate) fn from_decode_failure(reason: benilla_protocol_wrath::gameplay::DecodeFailure) -> Self {
+    pub(crate) fn from_decode_failure(
+        reason: benilla_protocol_wrath::gameplay::DecodeFailure,
+    ) -> Self {
         use benilla_protocol_wrath::gameplay::DecodeFailure as D;
         match reason {
             D::Truncated => Self::Truncated,
@@ -70,32 +72,85 @@ pub(crate) enum Stage {
     ProgressPanel,
     RewardPanel,
     QuestSlotAdded,
-    QuestSlotProgressed { counters: [u16; 4], state: u32 },
+    QuestSlotProgressed {
+        counters: [u16; 4],
+        state: u32,
+    },
     QuestSlotRemoved,
-    AbandonSlot { slot: u8 },
-    ServerQuestShareResult { msg: u32 },
+    AbandonSlot {
+        slot: u8,
+    },
+    ServerQuestShareResult {
+        msg: u32,
+    },
     JournalProjection,
     JournalRowInModel,
     JournalTemplatePending,
     JournalTemplateRefused,
-    QuestCompletePacket { xp: u32, money: u32, reward_items: u32 },
-    PlayerXpChanged { delta: u32 },
-    PlayerMoneyChanged { delta: i64 },
-    RewardItemPushed { item_id: u32, count: u32 },
-    ServerQuestInvalid { reason: u32 },
+    QuestCompletePacket {
+        xp: u32,
+        money: u32,
+        reward_items: u32,
+    },
+    PlayerXpChanged {
+        delta: u32,
+    },
+    PlayerMoneyChanged {
+        delta: i64,
+    },
+    RewardItemPushed {
+        item_id: u32,
+        count: u32,
+    },
+    ServerQuestInvalid {
+        reason: u32,
+    },
     ServerQuestLogFull,
-    ServerQuestFailed { reason: u32 },
-    ScriptError { vm_session: u64, row_seq: u64, occurrences: u32 },
-    ScriptLoadError { vm_session: u64, row_seq: u64, occurrences: u32 },
-    ScriptWarning { vm_session: u64, row_seq: u64, occurrences: u32 },
-    UiReload { old_vm_session: Option<u64>, old_reload_generation: Option<u64>, new_reload_generation: Option<u64> },
+    ServerQuestFailed {
+        reason: u32,
+    },
+    ScriptError {
+        vm_session: u64,
+        row_seq: u64,
+        occurrences: u32,
+    },
+    ScriptLoadError {
+        vm_session: u64,
+        row_seq: u64,
+        occurrences: u32,
+    },
+    ScriptWarning {
+        vm_session: u64,
+        row_seq: u64,
+        occurrences: u32,
+    },
+    UiReload {
+        old_vm_session: Option<u64>,
+        old_reload_generation: Option<u64>,
+        new_reload_generation: Option<u64>,
+    },
     /// The new VM reported its identity after a reload load attempt. This is separate evidence
     /// from [`Stage::UiReload`]: the reload request may have run while the load itself failed.
-    UiReloadLoaded { vm_session: Option<u64>, reload_generation: Option<u64> },
-    ScriptRowsLost { vm_session: u64, count: u64 },
-    ScriptRowsEvicted { vm_session: u64, count: u64 },
-    SessionPhase { phase: SessionPhase, attempt: Option<u64>, map_id: Option<u32> },
-    SessionEnded { kind: SessionEndKind },
+    UiReloadLoaded {
+        vm_session: Option<u64>,
+        reload_generation: Option<u64>,
+    },
+    ScriptRowsLost {
+        vm_session: u64,
+        count: u64,
+    },
+    ScriptRowsEvicted {
+        vm_session: u64,
+        count: u64,
+    },
+    SessionPhase {
+        phase: SessionPhase,
+        attempt: Option<u64>,
+        map_id: Option<u32>,
+    },
+    SessionEnded {
+        kind: SessionEndKind,
+    },
     WorldTransfer {
         map_id: Option<u32>,
         from: Option<(u64, u64)>,
@@ -103,16 +158,25 @@ pub(crate) enum Stage {
         retired_local: u64,
         retired_written: u64,
     },
-    LoginMilestone { attempt: Option<u64>, milestone: LoginMilestone },
-    ReplicaRevision { revision: u64 },
-    NativeEventsLost { count: u64 },
+    LoginMilestone {
+        attempt: Option<u64>,
+        milestone: LoginMilestone,
+    },
+    ReplicaRevision {
+        revision: u64,
+    },
+    NativeEventsLost {
+        count: u64,
+    },
     Cast {
         spell_id: Option<u32>,
         attempt: Option<u64>,
         wire_cast_count: Option<u32>,
         edge: CastEdge,
     },
-    InventoryFailure { reason: u8 },
+    InventoryFailure {
+        reason: u8,
+    },
     /// A loot slot's authoritative removal (`SMSG_LOOT_REMOVED`). The item id is known only when
     /// the producer still holds the window row; the wire event itself carries the slot alone.
     LootSlotRemoved {
@@ -121,20 +185,30 @@ pub(crate) enum Stage {
         count: Option<u32>,
     },
     /// `SMSG_LOOT_MONEY_NOTIFY`: the amount is server-reported.
-    LootMoneyNotify { amount: u32 },
+    LootMoneyNotify {
+        amount: u32,
+    },
     /// `SMSG_LOOT_CLEAR_MONEY`: the amount is not carried, only the bounded fact.
     LootMoneyCleared,
     /// A loot refusal. `reason` is the protocol's numeric loot error, never its message text.
-    LootErrorObserved { reason: u8 },
+    LootErrorObserved {
+        reason: u8,
+    },
     /// `SMSG_LOOT_RESPONSE` opened a loot window on a source.
     LootResponseOpened,
     /// `SMSG_LOOT_RELEASE_RESPONSE`: the server released the loot interaction.
     LootReleasedObserved,
     /// A non-quest item push (`SMSG_ITEM_PUSH_RESULT`), kept distinct from the quest-only
     /// `RewardItemPushed` semantics.
-    ItemPushResult { item_id: u32, count: u32 },
+    ItemPushResult {
+        item_id: u32,
+        count: u32,
+    },
     /// `SMSG_LIST_INVENTORY`: a vendor alias and the bounded row count, never the rows.
-    VendorInventoryObserved { vendor_alias: Option<u32>, rows: u32 },
+    VendorInventoryObserved {
+        vendor_alias: Option<u32>,
+        rows: u32,
+    },
     /// `SMSG_BUY_ITEM` for a vendor row. The protocol event names the row slot, not the entry.
     VendorBuyResult {
         item_id: Option<u32>,
@@ -142,13 +216,21 @@ pub(crate) enum Stage {
         slot: Option<u32>,
     },
     /// `SMSG_BUY_FAILED` with its numeric `buy_result` reason.
-    VendorBuyFailedObserved { item_id: Option<u32>, reason: u8 },
+    VendorBuyFailedObserved {
+        item_id: Option<u32>,
+        reason: u8,
+    },
     /// `SMSG_SELL_ITEM`'s numeric refusal reason. The item identity is a raw GUID on the wire and
     /// is deliberately not recorded.
-    VendorSellFailedObserved { reason: u8 },
+    VendorSellFailedObserved {
+        reason: u8,
+    },
     /// An observed equipment-slot move. Recorded only where the source exposes a numeric item
     /// entry alongside the slot; the wire update alone carries no item entry.
-    EquipmentSlotChanged { item_id: u32, slot: u32 },
+    EquipmentSlotChanged {
+        item_id: u32,
+        slot: u32,
+    },
     AudioMixer {
         present: bool,
         voices: u32,
@@ -187,15 +269,41 @@ pub(crate) enum Stage {
         queue_depth: u64,
         oldest_age_ms: u64,
     },
-    SceneSummary { world_cameras: u32, animated_rigs: u32 },
-    FrameWindow { frames: u32, mean_us: u64, max_us: u64, window_ms: u64 },
-    AssetFailure { family: AssetFamily, cause: AssetFailure },
-    AssetEventsLost { count: u64 },
-    AssetWindow { failures: u64, missed: u64, window_ms: u64 },
-    PacketReceived { opcode: u16 },
-    ReducerAccepted { opcode: u16 },
-    ReducerRejected { opcode: u16, reason: ReducerReason },
-    GameplayDecoded { opcode: u16 },
+    SceneSummary {
+        world_cameras: u32,
+        animated_rigs: u32,
+    },
+    FrameWindow {
+        frames: u32,
+        mean_us: u64,
+        max_us: u64,
+        window_ms: u64,
+    },
+    AssetFailure {
+        family: AssetFamily,
+        cause: AssetFailure,
+    },
+    AssetEventsLost {
+        count: u64,
+    },
+    AssetWindow {
+        failures: u64,
+        missed: u64,
+        window_ms: u64,
+    },
+    PacketReceived {
+        opcode: u16,
+    },
+    ReducerAccepted {
+        opcode: u16,
+    },
+    ReducerRejected {
+        opcode: u16,
+        reason: ReducerReason,
+    },
+    GameplayDecoded {
+        opcode: u16,
+    },
     /// A gameplay decoder rejected the packet body. `decoder` and `reason` are closed values and
     /// `remaining_bytes` is a length only; no body bytes, server text or decoder message is kept.
     GameplayRejected {
@@ -206,8 +314,15 @@ pub(crate) enum Stage {
     },
     SocketReadFailed,
     SocketWriteFailed,
-    Outbound { opcode: u32, state: OutboundState },
-    UiFrame { frame: UiFrame, visible: Option<bool>, vm_session: u64 },
+    Outbound {
+        opcode: u32,
+        state: OutboundState,
+    },
+    UiFrame {
+        frame: UiFrame,
+        visible: Option<bool>,
+        vm_session: u64,
+    },
     UiPress {
         button: UiButton,
         target: UiTarget,
@@ -229,9 +344,13 @@ pub(crate) enum Stage {
         vm_session: u64,
         ui_dispatch_id: u64,
     },
-    DomainEvent { event: DomainEvent },
+    DomainEvent {
+        event: DomainEvent,
+    },
     #[cfg(feature = "hotpatch")]
-    Hotpatch { event: PatchEvent },
+    Hotpatch {
+        event: PatchEvent,
+    },
     Delivery(CommandDelivery),
 }
 
@@ -405,8 +524,7 @@ pub(crate) fn evidence_class_for_stage(stage: &Stage) -> EvidenceClass {
         | Stage::GameplayDecoded { .. } => EvidenceClass::Protocol,
 
         // High-volume UI pointer traffic, bounded separately from core action evidence.
-        Stage::UiPress { .. }
-        | Stage::UiClick { .. } => EvidenceClass::UiInput,
+        Stage::UiPress { .. } | Stage::UiClick { .. } => EvidenceClass::UiInput,
 
         #[cfg(feature = "hotpatch")]
         Stage::Hotpatch { .. } => EvidenceClass::Action,
@@ -613,7 +731,8 @@ pub(crate) struct UiHitEvidence {
 impl UiHitEvidence {
     /// The legacy `target` projection: the hit's coarse family, else no named frame.
     pub(crate) fn legacy_target(self) -> UiTarget {
-        self.hit.map_or(UiTarget::NoNamedFrame, |frame| frame.family)
+        self.hit
+            .map_or(UiTarget::NoNamedFrame, |frame| frame.family)
     }
 
     /// The legacy `visible` projection: capture-time, so a hit is visible and a miss is unknown.
@@ -868,12 +987,28 @@ pub(crate) enum HotpatchReason {
 #[cfg(feature = "hotpatch")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub(crate) enum PatchEvent {
-    CandidateStaged { attempt: u64 },
-    CandidateWithdrawn { attempt: u64 },
-    PublicationRejected { attempt: Option<u64>, reason: HotpatchReason },
-    CandidateRejected { attempt: Option<u64>, reason: HotpatchReason },
-    Activated { attempt: Option<u64>, digest: Option<[u8; 20]> },
-    FrameFailed { attempt: Option<u64>, reason: HotpatchReason },
+    CandidateStaged {
+        attempt: u64,
+    },
+    CandidateWithdrawn {
+        attempt: u64,
+    },
+    PublicationRejected {
+        attempt: Option<u64>,
+        reason: HotpatchReason,
+    },
+    CandidateRejected {
+        attempt: Option<u64>,
+        reason: HotpatchReason,
+    },
+    Activated {
+        attempt: Option<u64>,
+        digest: Option<[u8; 20]>,
+    },
+    FrameFailed {
+        attempt: Option<u64>,
+        reason: HotpatchReason,
+    },
     /// The failed active module was replaced by a retained predecessor.
     RestoredPrevious {
         failed_attempt: Option<u64>,
@@ -885,7 +1020,10 @@ pub(crate) enum PatchEvent {
         failed_attempt: Option<u64>,
         reason: HotpatchReason,
     },
-    RetentionFailed { attempt: Option<u64>, reason: HotpatchReason },
+    RetentionFailed {
+        attempt: Option<u64>,
+        reason: HotpatchReason,
+    },
 }
 
 /// Both attempt fields a hotpatch event can carry, for bounded correlation indexing.
@@ -916,9 +1054,7 @@ fn patch_event_attempts(event: PatchEvent) -> [Option<u64>; 2] {
 fn patch_event_is_terminal_for(event: PatchEvent, attempt: u64) -> bool {
     match event {
         PatchEvent::CandidateStaged { .. } => false,
-        PatchEvent::CandidateWithdrawn {
-            attempt: withdrawn,
-        } => withdrawn == attempt,
+        PatchEvent::CandidateWithdrawn { attempt: withdrawn } => withdrawn == attempt,
         PatchEvent::PublicationRejected {
             attempt: rejected, ..
         }
@@ -1055,7 +1191,9 @@ pub(crate) enum LoginMilestone {
     /// worker failure whose refusal code was not carried in the event.
     LoginFailed,
     CharacterAction,
-    CharacterLoginFailed { result: u8 },
+    CharacterLoginFailed {
+        result: u8,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1063,7 +1201,9 @@ pub(crate) enum CastEdge {
     /// A client-local spell request entered the cast ladder.
     Requested,
     /// The cast ladder refused the request locally before any packet.
-    LocalRefusal { reason: u8 },
+    LocalRefusal {
+        reason: u8,
+    },
     /// The request passed local guards and reached the Wrath command producer.
     Admitted,
     /// A local cancel (move/esc) requested cancellation of an in-flight cast/channel.
@@ -1071,8 +1211,12 @@ pub(crate) enum CastEdge {
     Started,
     Delayed,
     Launched,
-    Failed { reason: u8 },
-    Interrupted { reason: u8 },
+    Failed {
+        reason: u8,
+    },
+    Interrupted {
+        reason: u8,
+    },
     ChannelStarted,
     ChannelUpdated,
     ChannelEnded,
@@ -1291,8 +1435,7 @@ fn click_edge_can_claim(witness: &UiHitEvidence) -> bool {
 /// Down/Both press with no handler must still appear as the click edge, so the release row does
 /// not present "not registered" as the whole story.
 fn press_edge_fires_click(witness: &UiHitEvidence) -> bool {
-    witness.edge == UiEdge::Press
-        && matches!(witness.clicks, UiClickMask::Down | UiClickMask::Both)
+    witness.edge == UiEdge::Press && matches!(witness.clicks, UiClickMask::Down | UiClickMask::Both)
 }
 
 /// The bounded key two retained pointer edges need to decide whether they are one click.
@@ -1497,7 +1640,9 @@ impl Drop for ExportWriter {
 /// Start the background snapshot's writer thread. The seam exists so a unit test can force the
 /// platform's spawn failure and prove the gate is released without a live thread.
 #[cfg(feature = "dev")]
-fn spawn_export_writer(job: impl FnOnce() + Send + 'static) -> std::io::Result<std::thread::JoinHandle<()>> {
+fn spawn_export_writer(
+    job: impl FnOnce() + Send + 'static,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
     #[cfg(test)]
     if FORCE_EXPORT_SPAWN_FAILURE.with(|flag| flag.replace(false)) {
         drop(job);
@@ -1749,7 +1894,8 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
         | Stage::ReplicaRevision { .. }
         | Stage::NativeEventsLost { .. }
         | Stage::DomainEvent {
-            event: DomainEvent::LoginProgress
+            event:
+                DomainEvent::LoginProgress
                 | DomainEvent::RealmList
                 | DomainEvent::WorldAuthenticated
                 | DomainEvent::Roster
@@ -1788,7 +1934,8 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
         | Stage::VendorBuyFailedObserved { .. }
         | Stage::VendorSellFailedObserved { .. }
         | Stage::DomainEvent {
-            event: DomainEvent::VendorList
+            event:
+                DomainEvent::VendorList
                 | DomainEvent::VendorBuy
                 | DomainEvent::VendorBuyFailed
                 | DomainEvent::VendorSellFailed
@@ -1850,11 +1997,7 @@ impl Source {
     }
 
     pub(crate) fn npc_alias_count(&self) -> u32 {
-        self.0
-            .npc_aliases
-            .lock()
-            .map(|guard| guard.1)
-            .unwrap_or(0)
+        self.0.npc_aliases.lock().map(|guard| guard.1).unwrap_or(0)
     }
 
     pub(crate) fn mint_movement_sequence(&self) -> u64 {
@@ -1875,13 +2018,20 @@ impl Source {
 
     pub(crate) fn note_movement_written(&self, seq: u64) {
         self.0.movement_written.fetch_add(1, Ordering::Relaxed);
-        self.0.movement_last_written_seq.store(seq, Ordering::Relaxed);
-        self.0.movement_writes_since_correction.fetch_add(1, Ordering::Relaxed);
+        self.0
+            .movement_last_written_seq
+            .store(seq, Ordering::Relaxed);
+        self.0
+            .movement_writes_since_correction
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn movement_written_seq_unambiguous(&self) -> (Option<u64>, bool) {
         let seq = self.0.movement_last_written_seq.load(Ordering::Relaxed);
-        let writes = self.0.movement_writes_since_correction.load(Ordering::Relaxed);
+        let writes = self
+            .0
+            .movement_writes_since_correction
+            .load(Ordering::Relaxed);
         if seq == 0 {
             (None, true)
         } else if writes <= 1 {
@@ -1892,7 +2042,9 @@ impl Source {
     }
 
     pub(crate) fn clear_movement_writes_since_correction(&self) {
-        self.0.movement_writes_since_correction.store(0, Ordering::Relaxed);
+        self.0
+            .movement_writes_since_correction
+            .store(0, Ordering::Relaxed);
     }
 
     pub(crate) fn movement_counters(&self) -> (u64, u64, u64, u64) {
@@ -1938,7 +2090,9 @@ impl Source {
         if index & 63 == 0 {
             true
         } else {
-            self.0.update_packets_sampled_out.fetch_add(1, Ordering::Relaxed);
+            self.0
+                .update_packets_sampled_out
+                .fetch_add(1, Ordering::Relaxed);
             false
         }
     }
@@ -1953,15 +2107,23 @@ impl Source {
         use benilla_ui::script::diagnostics::DiagnosticKind;
         let generation = self.0.reload_generation.load(Ordering::Acquire);
         if cursor.generation != generation || cursor.vm_session != vm_session {
-            *cursor = ScriptCursor { generation, vm_session, ..Default::default() };
+            *cursor = ScriptCursor {
+                generation,
+                vm_session,
+                ..Default::default()
+            };
         }
         if let Some((first, _, _)) = rows.first() {
             let next = cursor.highest_seq.saturating_add(1);
             if *first > next {
-                self.observe(scope, None, Stage::ScriptRowsLost {
-                    vm_session,
-                    count: *first - next,
-                });
+                self.observe(
+                    scope,
+                    None,
+                    Stage::ScriptRowsLost {
+                        vm_session,
+                        count: *first - next,
+                    },
+                );
             }
         }
         for &(seq, kind, count) in rows {
@@ -1969,9 +2131,21 @@ impl Source {
             let delta = count.saturating_sub(previous);
             if delta > 0 {
                 let stage = match kind {
-                    DiagnosticKind::Error => Stage::ScriptError { vm_session, row_seq: seq, occurrences: delta },
-                    DiagnosticKind::Load => Stage::ScriptLoadError { vm_session, row_seq: seq, occurrences: delta },
-                    DiagnosticKind::Warning => Stage::ScriptWarning { vm_session, row_seq: seq, occurrences: delta },
+                    DiagnosticKind::Error => Stage::ScriptError {
+                        vm_session,
+                        row_seq: seq,
+                        occurrences: delta,
+                    },
+                    DiagnosticKind::Load => Stage::ScriptLoadError {
+                        vm_session,
+                        row_seq: seq,
+                        occurrences: delta,
+                    },
+                    DiagnosticKind::Warning => Stage::ScriptWarning {
+                        vm_session,
+                        row_seq: seq,
+                        occurrences: delta,
+                    },
                 };
                 self.observe(scope, None, stage);
             }
@@ -1979,13 +2153,19 @@ impl Source {
             cursor.counts.insert(seq, count);
         }
         let before = cursor.counts.len();
-        cursor.counts.retain(|seq, _| rows.iter().any(|row| row.0 == *seq));
+        cursor
+            .counts
+            .retain(|seq, _| rows.iter().any(|row| row.0 == *seq));
         let evicted = before.saturating_sub(cursor.counts.len());
         if evicted > 0 {
-            self.observe(scope, None, Stage::ScriptRowsEvicted {
-                vm_session,
-                count: evicted as u64,
-            });
+            self.observe(
+                scope,
+                None,
+                Stage::ScriptRowsEvicted {
+                    vm_session,
+                    count: evicted as u64,
+                },
+            );
         }
     }
 
@@ -1999,12 +2179,7 @@ impl Source {
         self.0.reload_generation.load(Ordering::Acquire)
     }
 
-    pub(crate) fn observe(
-        &self,
-        scope: Option<(u64, u64)>,
-        quest: Option<u32>,
-        stage: Stage,
-    ) {
+    pub(crate) fn observe(&self, scope: Option<(u64, u64)>, quest: Option<u32>, stage: Stage) {
         self.observe_with_npc(scope, quest, None, stage);
     }
 
@@ -2198,15 +2373,19 @@ impl Source {
             }
             guard.push_back(token);
         }
-        self.observe(scope, None, Stage::UiPress {
-            button,
-            target,
-            consumed,
-            witness,
-            egui_pointer_over_last_sample,
-            vm_session,
-            ui_dispatch_id: id,
-        });
+        self.observe(
+            scope,
+            None,
+            Stage::UiPress {
+                button,
+                target,
+                consumed,
+                witness,
+                egui_pointer_over_last_sample,
+                vm_session,
+                ui_dispatch_id: id,
+            },
+        );
         id
     }
 
@@ -2247,18 +2426,22 @@ impl Source {
             }
             guard.push_back(token);
         }
-        self.observe(scope, None, Stage::UiClick {
-            button,
-            target,
-            consumed,
-            visible,
-            clipped,
-            handler_invoked,
-            witness,
-            egui_pointer_over_last_sample,
-            vm_session,
-            ui_dispatch_id: id,
-        });
+        self.observe(
+            scope,
+            None,
+            Stage::UiClick {
+                button,
+                target,
+                consumed,
+                visible,
+                clipped,
+                handler_invoked,
+                witness,
+                egui_pointer_over_last_sample,
+                vm_session,
+                ui_dispatch_id: id,
+            },
+        );
         id
     }
 
@@ -2303,10 +2486,11 @@ impl Source {
         // release edge. An unmatched press stays its own candidate, so a half-observed click is
         // still reportable rather than silently dropped.
         let mut paired_presses: Vec<u64> = Vec::new();
-        for release in eligible.iter().filter(|t| t.witness.edge == UiEdge::Release) {
-            let mut presses = eligible
-                .iter()
-                .filter(|t| same_physical_click(*t, release));
+        for release in eligible
+            .iter()
+            .filter(|t| t.witness.edge == UiEdge::Release)
+        {
+            let mut presses = eligible.iter().filter(|t| same_physical_click(*t, release));
             if let (Some(press), None) = (presses.next(), presses.next()) {
                 paired_presses.push(press.id);
             }
@@ -2638,12 +2822,28 @@ fn is_native_cast_edge(edge: CastEdge) -> bool {
 fn same_script_row(a: Stage, b: Stage) -> bool {
     match (a, b) {
         (
-            Stage::ScriptError { vm_session: av, row_seq: ar, .. },
-            Stage::ScriptError { vm_session: bv, row_seq: br, .. },
+            Stage::ScriptError {
+                vm_session: av,
+                row_seq: ar,
+                ..
+            },
+            Stage::ScriptError {
+                vm_session: bv,
+                row_seq: br,
+                ..
+            },
         )
         | (
-            Stage::ScriptLoadError { vm_session: av, row_seq: ar, .. },
-            Stage::ScriptLoadError { vm_session: bv, row_seq: br, .. },
+            Stage::ScriptLoadError {
+                vm_session: av,
+                row_seq: ar,
+                ..
+            },
+            Stage::ScriptLoadError {
+                vm_session: bv,
+                row_seq: br,
+                ..
+            },
         ) => av == bv && ar == br,
         _ => false,
     }
@@ -2701,18 +2901,18 @@ fn loot_vendor_evidence_label(stage: &Stage) -> Option<(String, bool)> {
         Stage::InventoryFailure { reason } => {
             (format!("server reported inventory failure {reason}"), false)
         }
-        Stage::DomainEvent { event: DomainEvent::LootError } => {
-            ("server reported loot error".to_owned(), false)
-        }
-        Stage::DomainEvent { event: DomainEvent::VendorBuyFailed } => {
-            ("server reported buy failure".to_owned(), false)
-        }
-        Stage::DomainEvent { event: DomainEvent::VendorSellFailed } => {
-            ("server reported sell failure".to_owned(), false)
-        }
-        Stage::DomainEvent { event: DomainEvent::InventoryFailure } => {
-            ("server reported inventory failure".to_owned(), false)
-        }
+        Stage::DomainEvent {
+            event: DomainEvent::LootError,
+        } => ("server reported loot error".to_owned(), false),
+        Stage::DomainEvent {
+            event: DomainEvent::VendorBuyFailed,
+        } => ("server reported buy failure".to_owned(), false),
+        Stage::DomainEvent {
+            event: DomainEvent::VendorSellFailed,
+        } => ("server reported sell failure".to_owned(), false),
+        Stage::DomainEvent {
+            event: DomainEvent::InventoryFailure,
+        } => ("server reported inventory failure".to_owned(), false),
         _ => return None,
     })
 }
@@ -2720,7 +2920,13 @@ fn loot_vendor_evidence_label(stage: &Stage) -> Option<(String, bool)> {
 /// A refusal carries its own authoritative numeric subject only for the vendor buy failure, whose
 /// `item_entry` the server sends. Loot errors and sell failures do not carry an item entry.
 fn candidate_subject_is_authoritative(stage: Stage) -> bool {
-    matches!(stage, Stage::VendorBuyFailedObserved { item_id: Some(_), .. })
+    matches!(
+        stage,
+        Stage::VendorBuyFailedObserved {
+            item_id: Some(_),
+            ..
+        }
+    )
 }
 
 fn is_panel_stage(stage: Stage) -> bool {
@@ -2730,7 +2936,9 @@ fn is_panel_stage(stage: Stage) -> bool {
             | Stage::DetailPanel
             | Stage::ProgressPanel
             | Stage::RewardPanel
-            | Stage::DomainEvent { event: DomainEvent::GossipMenu }
+            | Stage::DomainEvent {
+                event: DomainEvent::GossipMenu
+            }
     )
 }
 
@@ -3071,8 +3279,8 @@ impl History {
             .notes
             .first()
             .is_some_and(|note| chain.notes.len() > 1 || note.stage != terminal_stage);
-        let opening_recovered = opening_note_present
-            && chain.notes.first().is_some_and(|note| note.recovered);
+        let opening_recovered =
+            opening_note_present && chain.notes.first().is_some_and(|note| note.recovered);
         let opening_note_source = if !opening_note_present {
             "unavailable"
         } else if opening_recovered {
@@ -3169,9 +3377,7 @@ impl History {
         let selected: Vec<(u64, &Event)> = if prior_truncated {
             let mut selected = Vec::with_capacity(MAX_INCIDENT_EVIDENCE);
             selected.push(priors[0]);
-            selected.extend_from_slice(
-                &priors[priors.len() - (MAX_INCIDENT_EVIDENCE - 2)..],
-            );
+            selected.extend_from_slice(&priors[priors.len() - (MAX_INCIDENT_EVIDENCE - 2)..]);
             selected
         } else {
             priors
@@ -3264,13 +3470,13 @@ impl History {
     ) -> (u64, u64) {
         let terminal_stage = terminal.stage;
         // An old scope's written cast can never explain a native edge in the new world.
-        self.cast_candidates.retain(|candidate| {
-            !match (retired_scope, candidate.subject.scope) {
+        self.cast_candidates.retain(
+            |candidate| !match (retired_scope, candidate.subject.scope) {
                 (Some(target), Some(current)) => target == current,
                 (None, _) => true,
                 _ => false,
-            }
-        });
+            },
+        );
         let mut remaining = VecDeque::with_capacity(self.open_interactions.len());
         let mut retired = Vec::new();
         while let Some(open) = self.open_interactions.pop_front() {
@@ -3290,8 +3496,7 @@ impl History {
         let mut retired_local = 0u64;
         let mut retired_written = 0u64;
         for open in retired {
-            let opening_note = if open.start_seq != 0
-                && !self.entries.contains_key(&open.start_seq)
+            let opening_note = if open.start_seq != 0 && !self.entries.contains_key(&open.start_seq)
             {
                 Some(EvidenceNote::recovered(
                     open.start_seq,
@@ -3617,13 +3822,12 @@ impl History {
         let mut locals: Vec<LocalCast> = Vec::new();
         for row in self.entries.values() {
             let interaction = row.subject.interaction;
-            if interaction == 0
-                || row.subject.scope != scope
-                || row.elapsed_ms > event.elapsed_ms
-            {
+            if interaction == 0 || row.subject.scope != scope || row.elapsed_ms > event.elapsed_ms {
                 continue;
             }
-            let index = locals.iter().position(|local| local.interaction == interaction);
+            let index = locals
+                .iter()
+                .position(|local| local.interaction == interaction);
             match row.stage {
                 Stage::Cast {
                     spell_id: Some(row_spell),
@@ -3707,12 +3911,7 @@ impl History {
         let within_window: Vec<LocalCast> = locals
             .iter()
             .copied()
-            .filter(|local| {
-                event
-                    .elapsed_ms
-                    .saturating_sub(local.written_elapsed_ms)
-                    <= window_ms
-            })
+            .filter(|local| event.elapsed_ms.saturating_sub(local.written_elapsed_ms) <= window_ms)
             .collect();
         let mut eligible = within_window.clone();
         if native_count.is_some() {
@@ -3767,9 +3966,9 @@ impl History {
             .find(|candidate| candidate.subject.interaction == interaction)
             .map(|candidate| candidate.subject)
             .or_else(|| {
-                self.entries.values().find_map(|row| {
-                    (row.subject.interaction == interaction).then_some(row.subject)
-                })
+                self.entries
+                    .values()
+                    .find_map(|row| (row.subject.interaction == interaction).then_some(row.subject))
             })
     }
 
@@ -3989,9 +4188,7 @@ impl History {
                 // A native edge joins the local chain it can be attributed to. When no unique
                 // local write exists it keeps its own bounded chain, so the line can say the
                 // local action was not retained instead of printing interaction 0.
-                match self
-                    .attributed_interaction(&self.cast_attribution(event, true))
-                {
+                match self.attributed_interaction(&self.cast_attribution(event, true)) {
                     Some(interaction) => ChainKey::Local(interaction),
                     None => ChainKey::Native {
                         scope: event.subject.scope,
@@ -4257,8 +4454,7 @@ fn loot_vendor_evidence_matches_action(action: &Subject, evidence: &Event) -> bo
     };
     match (action.operation, &evidence.stage) {
         (Operation::Loot, Stage::LootSlotRemoved { slot, .. }) => {
-            slot_matches(action.slot, Some(*slot))
-                && item_matches(action.item, stage_item)
+            slot_matches(action.slot, Some(*slot)) && item_matches(action.item, stage_item)
         }
         (Operation::Loot, Stage::LootMoneyNotify { .. } | Stage::LootMoneyCleared) => true,
         (Operation::Loot, Stage::LootErrorObserved { .. }) => {
@@ -4532,7 +4728,6 @@ fn script_error_attachment(
         ),
     }
 }
-
 
 #[cfg(feature = "dev")]
 impl History {
@@ -5007,7 +5202,9 @@ impl History {
                 source_gaps: self.source_gaps,
                 sampled_updates: self.sampled_updates(),
                 incidents: cap(
-                    self.recent_incidents().map(|line| line.to_string()).collect(),
+                    self.recent_incidents()
+                        .map(|line| line.to_string())
+                        .collect(),
                     8,
                 ),
                 actions: cap(self.action_summaries(), 8),
@@ -5078,7 +5275,12 @@ impl History {
                 .rev()
                 .find(|incident| incident.subject.interaction == id);
             let (outcome, confidence) = incident.map_or_else(
-                || ("in progress/unconfirmed".to_string(), "Unverified".to_string()),
+                || {
+                    (
+                        "in progress/unconfirmed".to_string(),
+                        "Unverified".to_string(),
+                    )
+                },
                 |incident| {
                     (
                         format!("{:?}", incident.outcome),
@@ -5156,11 +5358,7 @@ impl History {
             }
         }
 
-        let current_rg = self
-            .source
-            .0
-            .reload_generation
-            .load(Ordering::Acquire);
+        let current_rg = self.source.0.reload_generation.load(Ordering::Acquire);
         if let Some((_, event)) = self.entries.iter().rev().find(|(_, event)| {
             matches!(
                 event.stage,
@@ -5266,10 +5464,8 @@ impl History {
                     .entries
                     .iter()
                     .filter_map(|(_, candidate)| {
-                        let written = matches!(
-                            candidate.stage,
-                            Stage::Delivery(CommandDelivery::Written)
-                        );
+                        let written =
+                            matches!(candidate.stage, Stage::Delivery(CommandDelivery::Written));
                         let within_window = candidate.subject.scope == Some(scope)
                             && candidate.subject.reload_generation
                                 == event.subject.reload_generation
@@ -5649,9 +5845,7 @@ impl History {
                     CastEdge::Requested => "cast requested; delivery unconfirmed",
                     CastEdge::LocalRefusal { .. } => "cast refused locally",
                     CastEdge::Admitted => "cast admitted; delivery unconfirmed",
-                    CastEdge::CancelRequested => {
-                        "cancel requested; authoritative outcome pending"
-                    }
+                    CastEdge::CancelRequested => "cancel requested; authoritative outcome pending",
                     CastEdge::Started => "cast started; outcome pending",
                     CastEdge::Delayed => "cast delayed; outcome pending",
                     CastEdge::Launched => "cast launched",
@@ -5676,8 +5870,10 @@ impl History {
                 _ => String::new(),
             };
             let suffix = if gaps { "; trace has gaps" } else { "" };
-            let server_evidence = if matches!(event.stage, Stage::Delivery(CommandDelivery::Written))
-            {
+            let server_evidence = if matches!(
+                event.stage,
+                Stage::Delivery(CommandDelivery::Written)
+            ) {
                 self.entries
                     .iter()
                     .find_map(|(_, later)| {
@@ -6041,10 +6237,14 @@ impl History {
         let mut out = Vec::new();
         let gaps = self.has_telemetry_gaps();
 
-        let login = self.entries.iter().rev().find_map(|(_, event)| match event.stage {
-            Stage::LoginMilestone { attempt, milestone } => Some((attempt, milestone)),
-            _ => None,
-        });
+        let login = self
+            .entries
+            .iter()
+            .rev()
+            .find_map(|(_, event)| match event.stage {
+                Stage::LoginMilestone { attempt, milestone } => Some((attempt, milestone)),
+                _ => None,
+            });
         match (login, self.session_state.login_milestone) {
             (Some((attempt, milestone)), _) => out.push(format!(
                 "login attempt {:?}: last milestone {:?}",
@@ -6058,14 +6258,18 @@ impl History {
                 out.push("login attempt: unknown (no retained login milestone)".to_string())
             }
         }
-        let ring_phase = self.entries.iter().rev().find_map(|(_, event)| match event.stage {
-            Stage::SessionPhase {
-                phase,
-                attempt,
-                map_id,
-            } => Some((phase, attempt, map_id)),
-            _ => None,
-        });
+        let ring_phase = self
+            .entries
+            .iter()
+            .rev()
+            .find_map(|(_, event)| match event.stage {
+                Stage::SessionPhase {
+                    phase,
+                    attempt,
+                    map_id,
+                } => Some((phase, attempt, map_id)),
+                _ => None,
+            });
         match (ring_phase, self.session_state.session_phase) {
             (Some((phase, attempt, map_id)), _) => out.push(format!(
                 "last session phase: {:?} (attempt {:?}, map {:?})",
@@ -6146,9 +6350,7 @@ impl History {
             .entries
             .iter()
             .filter_map(|(_, event)| match event.stage {
-                Stage::SessionEnded { kind } => {
-                    Some((event.subject.scope.unwrap_or((0, 0)), kind))
-                }
+                Stage::SessionEnded { kind } => Some((event.subject.scope.unwrap_or((0, 0)), kind)),
                 _ => None,
             })
             .max_by_key(|(scope, _)| *scope)
@@ -6172,7 +6374,10 @@ impl History {
                     to,
                     retired_local,
                     retired_written,
-                } => Some((to.unwrap_or((0, 0)), (from, to, map_id, retired_local, retired_written))),
+                } => Some((
+                    to.unwrap_or((0, 0)),
+                    (from, to, map_id, retired_local, retired_written),
+                )),
                 _ => None,
             })
             .max_by_key(|(to, _)| *to)
@@ -6191,14 +6396,18 @@ impl History {
             (None, None) => out.push("last transfer: none retained".to_string()),
         }
 
-        let ring_reload = self.entries.iter().rev().find_map(|(_, event)| match event.stage {
-            Stage::UiReload {
-                old_vm_session,
-                old_reload_generation,
-                new_reload_generation,
-            } => Some((old_vm_session, old_reload_generation, new_reload_generation)),
-            _ => None,
-        });
+        let ring_reload = self
+            .entries
+            .iter()
+            .rev()
+            .find_map(|(_, event)| match event.stage {
+                Stage::UiReload {
+                    old_vm_session,
+                    old_reload_generation,
+                    new_reload_generation,
+                } => Some((old_vm_session, old_reload_generation, new_reload_generation)),
+                _ => None,
+            });
         match (ring_reload, self.session_state.last_reload) {
             (Some((old_vm_session, old_generation, new_generation)), _) => out.push(format!(
                 "last reload: old VM {:?}, generation {:?} -> {:?}",
@@ -6213,13 +6422,16 @@ impl History {
             (None, None) => out.push("last reload: none retained".to_string()),
         }
         let ring_reload_loaded =
-            self.entries.iter().rev().find_map(|(_, event)| match event.stage {
-                Stage::UiReloadLoaded {
-                    vm_session,
-                    reload_generation,
-                } => Some((vm_session, reload_generation)),
-                _ => None,
-            });
+            self.entries
+                .iter()
+                .rev()
+                .find_map(|(_, event)| match event.stage {
+                    Stage::UiReloadLoaded {
+                        vm_session,
+                        reload_generation,
+                    } => Some((vm_session, reload_generation)),
+                    _ => None,
+                });
         match (ring_reload_loaded, self.session_state.last_reload_loaded) {
             (Some((vm_session, reload_generation)), _) => out.push(format!(
                 "VM after reload attempt: session {:?}, generation {:?} (load result separate)",
@@ -6305,9 +6517,13 @@ impl History {
         for (_, event) in &self.entries {
             if let Stage::Delivery(delivery) = event.stage {
                 match delivery {
-                    crate::net::CommandDelivery::OutboxAdmitted => admitted = admitted.saturating_add(1),
+                    crate::net::CommandDelivery::OutboxAdmitted => {
+                        admitted = admitted.saturating_add(1)
+                    }
                     crate::net::CommandDelivery::Written => written = written.saturating_add(1),
-                    crate::net::CommandDelivery::Rejected(_) => rejected = rejected.saturating_add(1),
+                    crate::net::CommandDelivery::Rejected(_) => {
+                        rejected = rejected.saturating_add(1)
+                    }
                     crate::net::CommandDelivery::WriteFailed => failed = failed.saturating_add(1),
                 }
             }
@@ -6363,11 +6579,16 @@ impl History {
             if !available {
                 limiting_factors.push("uninstrumented".to_string());
             }
-            let (sampled_out, sampling_interval, sampling_denominator) = if vector == "allowlisted_packets" {
-                (Some(sampled_out_total), Some(64u64), Some(update_packets_seen))
-            } else {
-                (None, None, None)
-            };
+            let (sampled_out, sampling_interval, sampling_denominator) =
+                if vector == "allowlisted_packets" {
+                    (
+                        Some(sampled_out_total),
+                        Some(64u64),
+                        Some(update_packets_seen),
+                    )
+                } else {
+                    (None, None, None)
+                };
             let value = DiagnosticVectorEvidence {
                 vector: vector.to_string(),
                 instrumentation_available: available,
@@ -6482,7 +6703,11 @@ impl History {
             .collect();
         lines.push(format!(
             "high-volume retained: {}",
-            if top.is_empty() { "none".to_string() } else { top.join(" ") }
+            if top.is_empty() {
+                "none".to_string()
+            } else {
+                top.join(" ")
+            }
         ));
         lines.push(
             "cadence: asset=failure/missed or 30s heartbeat; frame=5s aggregate; replica=5s coalesced; ui_press/click, scene, movement, audio, script=change-driven"
@@ -6506,7 +6731,8 @@ impl History {
             packed.push(current);
         } else {
             for entry in vector_entries {
-                if !current.ends_with(':') && current.len() + 1 + entry.len() > SNAPSHOT_LINE_BYTES {
+                if !current.ends_with(':') && current.len() + 1 + entry.len() > SNAPSHOT_LINE_BYTES
+                {
                     packed.push(std::mem::take(&mut current));
                     if packed.len() >= MAX_EVICTION_LINES - 1 {
                         packed.push(
@@ -6675,10 +6901,9 @@ impl History {
                     PatchEvent::RestoredPrevious { failed_attempt, .. } => {
                         failed_attempt == Some(attempt)
                     }
-                    PatchEvent::RestoreUnavailable {
-                        failed_attempt,
-                        ..
-                    } => failed_attempt == Some(attempt),
+                    PatchEvent::RestoreUnavailable { failed_attempt, .. } => {
+                        failed_attempt == Some(attempt)
+                    }
                     _ => false,
                 });
                 if has_restore_terminal {
@@ -6721,7 +6946,10 @@ impl History {
     }
 
     pub(crate) fn sampled_updates(&self) -> u64 {
-        self.source.0.update_packets_sampled_out.load(Ordering::Relaxed)
+        self.source
+            .0
+            .update_packets_sampled_out
+            .load(Ordering::Relaxed)
     }
 
     pub(crate) fn update_packets_seen(&self) -> u64 {
@@ -6844,9 +7072,16 @@ impl History {
     }
     pub(crate) fn recent(&self) -> impl Iterator<Item = String> + '_ {
         self.entries.iter().rev().take(16).map(|(seq, e)| {
-            format!("#{seq} +{}ms · action {} {:?} · npc {:?} · quest {:?} · {:?} · scope {:?}",
-                e.elapsed_ms, e.subject.interaction, e.subject.operation, e.subject.npc_alias,
-                e.subject.quest, e.stage, e.subject.scope)
+            format!(
+                "#{seq} +{}ms · action {} {:?} · npc {:?} · quest {:?} · {:?} · scope {:?}",
+                e.elapsed_ms,
+                e.subject.interaction,
+                e.subject.operation,
+                e.subject.npc_alias,
+                e.subject.quest,
+                e.stage,
+                e.subject.scope
+            )
         })
     }
 
@@ -7074,12 +7309,19 @@ impl History {
             .iter()
             .map(|(seq, event)| (*seq, event.clone()))
             .collect();
-        let incidents: Vec<_> = self.incidents.iter().map(|incident| {
-            let missing: Vec<_> = incident.evidence.iter().copied()
-                .filter(|seq| !self.entries.contains_key(seq))
-                .collect();
-            serde_json::json!({ "record": incident, "missing_event_sequences": missing })
-        }).collect();
+        let incidents: Vec<_> = self
+            .incidents
+            .iter()
+            .map(|incident| {
+                let missing: Vec<_> = incident
+                    .evidence
+                    .iter()
+                    .copied()
+                    .filter(|seq| !self.entries.contains_key(seq))
+                    .collect();
+                serde_json::json!({ "record": incident, "missing_event_sequences": missing })
+            })
+            .collect();
         let incidents_evicted = self.incidents_evicted;
         let interaction_tracking_lost = self.interaction_tracking_lost;
         let ingress_pending = self.incoming.len();
@@ -7195,8 +7437,8 @@ impl History {
         mut header: serde_json::Value,
         rows: &[(u64, Event)],
     ) -> anyhow::Result<std::path::PathBuf> {
-        use std::io::{Read, Write};
         use sha1::{Digest, Sha1};
+        use std::io::{Read, Write};
         std::fs::create_dir_all(directory)?;
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -7217,7 +7459,9 @@ impl History {
         if let Some(obj) = header.as_object_mut() {
             obj.insert(
                 "executable_file_sha1".to_string(),
-                file_hash.map(serde_json::Value::String).unwrap_or(serde_json::Value::Null),
+                file_hash
+                    .map(serde_json::Value::String)
+                    .unwrap_or(serde_json::Value::Null),
             );
         }
         let mut text = header.to_string();
@@ -7270,10 +7514,15 @@ impl History {
     }
 
     /// Save an allowlisted snapshot away from the frame thread.
-    pub(crate) fn export(&self, build: benilla_world::build_id::BuildId, protocol_mode: &'static str) -> Result<(), String> {
+    pub(crate) fn export(
+        &self,
+        build: benilla_world::build_id::BuildId,
+        protocol_mode: &'static str,
+    ) -> Result<(), String> {
         let directory = crate::local_state::home()
             .ok_or_else(|| "Local report storage is unavailable".to_owned())?
-            .join("Logs").join("InteractionDiagnostics");
+            .join("Logs")
+            .join("InteractionDiagnostics");
         let mut writer = ExportWriter::acquire(&self.source.0, None)?;
         let (header, rows) = self.build_export_payload(build, protocol_mode);
         let spawn = spawn_export_writer(move || {
@@ -7316,16 +7565,22 @@ pub(crate) fn new_pair() -> (Source, History) {
         ui_dispatches: Mutex::new(VecDeque::with_capacity(8)),
         origin: Instant::now(),
         #[cfg(feature = "dev")]
-        run_id: format!("{:x}-{:x}",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        run_id: format!(
+            "{:x}-{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |duration| duration.as_nanos()),
-            std::process::id()),
+            std::process::id()
+        ),
         #[cfg(feature = "dev")]
         asset_profile: if std::env::var_os("WM_ASSET_MANIFEST").is_some() {
             let name = std::env::var("WM_ASSET_PROFILE").unwrap_or_else(|_| "base".into());
-            (!name.is_empty() && name.len() <= 64
-                && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b)))
-                .then_some(name)
+            (!name.is_empty()
+                && name.len() <= 64
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b)))
+            .then_some(name)
         } else {
             Some("stock-discovery".into())
         },
@@ -7363,7 +7618,20 @@ pub(crate) fn install(app: &mut App) {
     app.insert_resource(source)
         .init_resource::<ScriptCursor>()
         .insert_resource(history)
-        .add_systems(Last, (poll_script_diagnostics, poll_replica, poll_audio, poll_movement, poll_scene, poll_frame_time, poll_asset_failures, drain).chain());
+        .add_systems(
+            Last,
+            (
+                poll_script_diagnostics,
+                poll_replica,
+                poll_audio,
+                poll_movement,
+                poll_scene,
+                poll_frame_time,
+                poll_asset_failures,
+                drain,
+            )
+                .chain(),
+        );
     #[cfg(feature = "dev")]
     {
         app.add_systems(Last, auto_export_incidents.after(drain));
@@ -7404,7 +7672,8 @@ fn auto_export_incidents(
     if crate::run_mode::unattended() || crate::local_state::home().is_none() {
         return;
     }
-    let total_incidents = (history.incidents.len() as u64).saturating_add(history.incidents_evicted);
+    let total_incidents =
+        (history.incidents.len() as u64).saturating_add(history.incidents_evicted);
     if total_incidents <= state.last_exported_incidents_total {
         return;
     }
@@ -7469,8 +7738,15 @@ fn poll_asset_failures(
     let mut failures_this = 0u64;
     for failure in cursor.read(&events) {
         failures_this += 1;
-        let extension = failure.path.path().extension().and_then(|s| s.to_str()).unwrap_or("");
-        let family = if extension.eq_ignore_ascii_case("m2") || extension.eq_ignore_ascii_case("skin") {
+        let extension = failure
+            .path
+            .path()
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let family = if extension.eq_ignore_ascii_case("m2")
+            || extension.eq_ignore_ascii_case("skin")
+        {
             AssetFamily::Model
         } else if extension.eq_ignore_ascii_case("wmo") || extension.eq_ignore_ascii_case("adt") {
             AssetFamily::World
@@ -7478,8 +7754,10 @@ fn poll_asset_failures(
             AssetFamily::Texture
         } else if extension.eq_ignore_ascii_case("wgsl") {
             AssetFamily::Shader
-        } else if extension.eq_ignore_ascii_case("ogg") || extension.eq_ignore_ascii_case("wav")
-            || extension.eq_ignore_ascii_case("mp3") {
+        } else if extension.eq_ignore_ascii_case("ogg")
+            || extension.eq_ignore_ascii_case("wav")
+            || extension.eq_ignore_ascii_case("mp3")
+        {
             AssetFamily::Audio
         } else if extension.eq_ignore_ascii_case("xml") || extension.eq_ignore_ascii_case("lua") {
             AssetFamily::Ui
@@ -7489,9 +7767,10 @@ fn poll_asset_failures(
         use bevy::asset::AssetLoadError as E;
         let cause = match &failure.error {
             E::AssetReaderError(_) => AssetFailure::Reader,
-            E::MissingAssetLoader { .. } | E::MissingAssetLoaderForExtension(_)
-            | E::MissingAssetLoaderForTypeName(_) | E::MissingAssetLoaderForTypeIdError(_) =>
-                AssetFailure::LoaderMissing,
+            E::MissingAssetLoader { .. }
+            | E::MissingAssetLoaderForExtension(_)
+            | E::MissingAssetLoaderForTypeName(_)
+            | E::MissingAssetLoaderForTypeIdError(_) => AssetFailure::LoaderMissing,
             E::AssetLoaderError(_) => AssetFailure::LoaderError,
             E::AssetLoaderPanic { .. } => AssetFailure::LoaderPanic,
             _ => AssetFailure::Other,
@@ -7499,7 +7778,13 @@ fn poll_asset_failures(
         source.observe(scope, None, Stage::AssetFailure { family, cause });
     }
     if missed > 0 {
-        source.observe(scope, None, Stage::AssetEventsLost { count: missed as u64 });
+        source.observe(
+            scope,
+            None,
+            Stage::AssetEventsLost {
+                count: missed as u64,
+            },
+        );
     }
     window.failures = window.failures.saturating_add(failures_this);
     window.missed = window.missed.saturating_add(missed as u64);
@@ -7507,15 +7792,20 @@ fn poll_asset_failures(
     // A real failure or missed-event burst is coalesced into at most one window per scan
     // interval, so the exact count survives without one event per failure.  The surviving
     // zero-value heartbeat only supplies a denominator for a healthy vector.
-    let condition_due = (window.failures > 0 || window.missed > 0) && elapsed >= ASSET_SCAN_WINDOW_SECS;
+    let condition_due =
+        (window.failures > 0 || window.missed > 0) && elapsed >= ASSET_SCAN_WINDOW_SECS;
     let heartbeat_due = now - window.last_emit >= ASSET_HEARTBEAT_SECS;
     if condition_due || heartbeat_due {
         let window_ms = (elapsed * 1000.0).round() as u64;
-        source.observe(scope, None, Stage::AssetWindow {
-            failures: window.failures,
-            missed: window.missed,
-            window_ms: window_ms.max(1),
-        });
+        source.observe(
+            scope,
+            None,
+            Stage::AssetWindow {
+                failures: window.failures,
+                missed: window.missed,
+                window_ms: window_ms.max(1),
+            },
+        );
         window.failures = 0;
         window.missed = 0;
         window.scan_start = now;
@@ -7546,9 +7836,20 @@ fn poll_frame_time(
         let window_ms = ((now - window.start) * 1000.0).round().max(1.0) as u64;
         let frames = window.frames.max(1);
         let mean_us = window.sum_us / u64::from(frames);
-        source.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
-            Stage::FrameWindow { frames, mean_us, max_us: window.max_us, window_ms });
-        *window = FrameWindow { start: now, ..Default::default() };
+        source.observe(
+            view.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+            None,
+            Stage::FrameWindow {
+                frames,
+                mean_us,
+                max_us: window.max_us,
+                window_ms,
+            },
+        );
+        *window = FrameWindow {
+            start: now,
+            ..Default::default()
+        };
     }
 }
 
@@ -7573,8 +7874,14 @@ fn poll_scene(
     // Already change-driven: the poll only decides whether a real count change occurred.
     if *last != Some(current) {
         *last = Some(current);
-        source.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
-            Stage::SceneSummary { world_cameras: current.0, animated_rigs: current.1 });
+        source.observe(
+            view.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+            None,
+            Stage::SceneSummary {
+                world_cameras: current.0,
+                animated_rigs: current.1,
+            },
+        );
     }
 }
 
@@ -7614,7 +7921,14 @@ fn poll_movement(
             }
         }
     }
-    let current = (admitted, coalesced, refused, written, queue_depth, oldest_age_ms);
+    let current = (
+        admitted,
+        coalesced,
+        refused,
+        written,
+        queue_depth,
+        oldest_age_ms,
+    );
     // Already change-driven: the one-second poll emits only a nonzero delta or queue-depth change.
     if let Some(previous) = *last {
         let deltas = (
@@ -7626,7 +7940,9 @@ fn poll_movement(
         let depth_changed = queue_depth != previous.4;
         if deltas.0 > 0 || deltas.1 > 0 || deltas.2 > 0 || deltas.3 > 0 || depth_changed {
             *last = Some(current);
-            source.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
+            source.observe(
+                view.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+                None,
                 Stage::MovementPressure {
                     baseline: false,
                     admitted: deltas.0,
@@ -7635,14 +7951,17 @@ fn poll_movement(
                     written: deltas.3,
                     queue_depth,
                     oldest_age_ms,
-                });
+                },
+            );
         } else {
             *last = Some(current);
         }
     } else {
         *last = Some(current);
         // First sample: emit baseline deltas (current counts) so evidence exists.
-        source.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
+        source.observe(
+            view.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+            None,
             Stage::MovementPressure {
                 baseline: true,
                 admitted: 0,
@@ -7651,7 +7970,8 @@ fn poll_movement(
                 written: 0,
                 queue_depth,
                 oldest_age_ms,
-            });
+            },
+        );
     }
 }
 
@@ -7683,13 +8003,17 @@ fn poll_audio(
         let stolen_delta = current.3.saturating_sub(previous.map_or(0, |p| p.3));
         let copies_delta = current.4.saturating_sub(previous.map_or(0, |p| p.4));
         let scope = view.as_ref().map(|v| (v.session_epoch, v.world_generation));
-        source.observe(scope, None, Stage::AudioMixer {
-            present: current.0,
-            voices: current.1,
-            denied: denied_delta,
-            stolen: stolen_delta,
-            copies_dropped: copies_delta,
-        });
+        source.observe(
+            scope,
+            None,
+            Stage::AudioMixer {
+                present: current.0,
+                voices: current.1,
+                denied: denied_delta,
+                stolen: stolen_delta,
+                copies_dropped: copies_delta,
+            },
+        );
     }
 }
 
@@ -7718,7 +8042,11 @@ fn poll_replica(
         return;
     }
     window.next_poll = now + 1.0;
-    let current = (view.session_epoch, view.world_generation, view.state_revision);
+    let current = (
+        view.session_epoch,
+        view.world_generation,
+        view.state_revision,
+    );
     if window.observed != Some(current) {
         window.observed = Some(current);
     }
@@ -7728,8 +8056,13 @@ fn poll_replica(
     if window.observed != window.emitted && due {
         window.emitted = window.observed;
         window.last_emit = now;
-        source.observe(Some((current.0, current.1)), None,
-            Stage::ReplicaRevision { revision: current.2 });
+        source.observe(
+            Some((current.0, current.1)),
+            None,
+            Stage::ReplicaRevision {
+                revision: current.2,
+            },
+        );
     }
 }
 
@@ -7748,7 +8081,12 @@ fn poll_script_diagnostics(
     *next_poll = now + 1.0;
     if let Some(script) = script {
         let scope = view.as_ref().map(|v| (v.session_epoch, v.world_generation));
-        source.capture_script_counts(scope, &mut cursor, script.session(), &script.diagnostic_counters());
+        source.capture_script_counts(
+            scope,
+            &mut cursor,
+            script.session(),
+            &script.diagnostic_counters(),
+        );
         let frames = [
             (UiFrame::Questgiver, "QuestFrame"),
             (UiFrame::QuestLog, "QuestLogFrame"),
@@ -7762,11 +8100,15 @@ fn poll_script_diagnostics(
             let visible = script.frame_visibility(name);
             if cursor.frames[index] != Some(visible) {
                 cursor.frames[index] = Some(visible);
-                source.observe(scope, None, Stage::UiFrame {
-                    frame,
-                    visible,
-                    vm_session: script.session(),
-                });
+                source.observe(
+                    scope,
+                    None,
+                    Stage::UiFrame {
+                        frame,
+                        visible,
+                        vm_session: script.session(),
+                    },
+                );
             }
         }
     }
@@ -7778,14 +8120,19 @@ pub(crate) fn drain(mut history: ResMut<History>) {
 
 pub(crate) fn drain_history(history: &mut History) {
     for _ in 0..64 {
-        let Ok(mut event) = history.incoming.try_recv() else { break };
+        let Ok(mut event) = history.incoming.try_recv() else {
+            break;
+        };
         history.received += 1;
         let seq = history.received;
         let mut captured_opening_note: Option<EvidenceNote> = None;
-        if matches!(event.stage,
-            Stage::NativeEventsLost { .. } | Stage::ScriptRowsLost { .. }
-                | Stage::ScriptRowsEvicted { .. } | Stage::AssetEventsLost { .. })
-        {
+        if matches!(
+            event.stage,
+            Stage::NativeEventsLost { .. }
+                | Stage::ScriptRowsLost { .. }
+                | Stage::ScriptRowsEvicted { .. }
+                | Stage::AssetEventsLost { .. }
+        ) {
             history.source_gaps = history.source_gaps.saturating_add(1);
         }
         #[cfg(feature = "hotpatch")]
@@ -7797,9 +8144,7 @@ pub(crate) fn drain_history(history: &mut History) {
                 event: PatchEvent::RestoredPrevious { digest, .. },
             } => history.last_observed_patch_digest = digest,
             Stage::Hotpatch {
-                event:
-                    PatchEvent::FrameFailed { .. }
-                    | PatchEvent::RestoreUnavailable { .. },
+                event: PatchEvent::FrameFailed { .. } | PatchEvent::RestoreUnavailable { .. },
             } => history.last_observed_patch_digest = None,
             _ => {}
         }
@@ -7863,10 +8208,7 @@ pub(crate) fn drain_history(history: &mut History) {
                     // The write is recorded on the transport thread, so a write can reach the
                     // recorder before this command's admitted row. The candidate is refreshed
                     // from that row instead of keeping the count it lacked at write time.
-                    history.note_cast_admission(
-                        event.subject.interaction,
-                        wire_cast_count,
-                    );
+                    history.note_cast_admission(event.subject.interaction, wire_cast_count);
                 }
                 Stage::GuardRefused
                 | Stage::NoWorld
@@ -7911,13 +8253,11 @@ pub(crate) fn drain_history(history: &mut History) {
                 let stale_scopes: Vec<_> = history
                     .open_interactions
                     .iter()
-                    .filter_map(|open| {
-                        match (open.subject.scope, new_scope) {
-                            (Some((oe, ow)), Some((ne, nw))) if oe < ne || (oe == ne && ow < nw) => {
-                                Some(Some((oe, ow)))
-                            }
-                            _ => None,
+                    .filter_map(|open| match (open.subject.scope, new_scope) {
+                        (Some((oe, ow)), Some((ne, nw))) if oe < ne || (oe == ne && ow < nw) => {
+                            Some(Some((oe, ow)))
                         }
+                        _ => None,
                     })
                     .collect();
                 let mut retired_local = 0u64;
@@ -7929,7 +8269,10 @@ pub(crate) fn drain_history(history: &mut History) {
                 }
                 // Replace the placeholder counts with the bounded summary of what this
                 // transfer actually retired; one event, not one per interaction.
-                if let Stage::WorldTransfer { map_id, from, to, .. } = event.stage {
+                if let Stage::WorldTransfer {
+                    map_id, from, to, ..
+                } = event.stage
+                {
                     event.stage = Stage::WorldTransfer {
                         map_id,
                         from,
@@ -8013,8 +8356,12 @@ pub(crate) fn drain_history(history: &mut History) {
                 old_reload_generation,
                 new_reload_generation,
             } => {
-                history.session_state.last_reload =
-                    Some((seq, old_vm_session, old_reload_generation, new_reload_generation));
+                history.session_state.last_reload = Some((
+                    seq,
+                    old_vm_session,
+                    old_reload_generation,
+                    new_reload_generation,
+                ));
             }
             Stage::UiReloadLoaded {
                 vm_session,
@@ -8093,9 +8440,10 @@ pub(crate) fn drain_history(history: &mut History) {
                 let writes: Vec<(u64, u64)> = matching_indices
                     .iter()
                     .filter_map(|&idx| match history.open_interactions[idx].state {
-                        OpenState::Written { seq: write_seq, elapsed_ms } => {
-                            Some((write_seq, elapsed_ms))
-                        }
+                        OpenState::Written {
+                            seq: write_seq,
+                            elapsed_ms,
+                        } => Some((write_seq, elapsed_ms)),
                         OpenState::Local => None,
                     })
                     .collect();
@@ -8137,8 +8485,12 @@ pub(crate) fn drain_history(history: &mut History) {
         // edges remain continuations of the same attempt.
         let cast_terminal = match event.stage {
             Stage::Cast {
-                edge: CastEdge::Started | CastEdge::Launched | CastEdge::ChannelStarted
-                    | CastEdge::ChannelUpdated | CastEdge::ChannelEnded,
+                edge:
+                    CastEdge::Started
+                    | CastEdge::Launched
+                    | CastEdge::ChannelStarted
+                    | CastEdge::ChannelUpdated
+                    | CastEdge::ChannelEnded,
                 ..
             } => Some(history.correlate_cast_edge(&event, false)),
             Stage::Cast {
@@ -8190,9 +8542,7 @@ pub(crate) fn drain_history(history: &mut History) {
                             wire_cast_count,
                         )) = candidate_data
                         {
-                            if started_seq != 0
-                                && !history.entries.contains_key(&started_seq)
-                            {
+                            if started_seq != 0 && !history.entries.contains_key(&started_seq) {
                                 let stage = if started_from_request {
                                     Stage::Cast {
                                         spell_id: Some(spell_id),
@@ -8222,8 +8572,7 @@ pub(crate) fn drain_history(history: &mut History) {
                             .iter()
                             .find(|open| open.subject.interaction == subject.interaction)
                         {
-                            if open.start_seq != 0
-                                && !history.entries.contains_key(&open.start_seq)
+                            if open.start_seq != 0 && !history.entries.contains_key(&open.start_seq)
                             {
                                 captured_opening_note = Some(EvidenceNote::recovered(
                                     open.start_seq,
@@ -8280,17 +8629,17 @@ pub(crate) fn drain_history(history: &mut History) {
                         {
                             return None;
                         }
-                        loot_vendor_evidence_matches_action(&open.subject, &event)
-                            .then_some(idx)
+                        loot_vendor_evidence_matches_action(&open.subject, &event).then_some(idx)
                     })
                     .collect();
                 if matching_indices.len() > 1 {
                     let writes: Vec<(u64, u64)> = matching_indices
                         .iter()
                         .filter_map(|&idx| match history.open_interactions[idx].state {
-                            OpenState::Written { seq: write_seq, elapsed_ms } => {
-                                Some((write_seq, elapsed_ms))
-                            }
+                            OpenState::Written {
+                                seq: write_seq,
+                                elapsed_ms,
+                            } => Some((write_seq, elapsed_ms)),
                             OpenState::Local => None,
                         })
                         .collect();
@@ -8372,8 +8721,11 @@ pub(crate) fn drain_history(history: &mut History) {
                     subject,
                 ))
             }
-            Stage::GuardRefused | Stage::NoWorld | Stage::AlreadyPending
-            | Stage::TrackingCapacity | Stage::ChannelDisconnected
+            Stage::GuardRefused
+            | Stage::NoWorld
+            | Stage::AlreadyPending
+            | Stage::TrackingCapacity
+            | Stage::ChannelDisconnected
             | Stage::Delivery(CommandDelivery::Rejected(_))
             | Stage::Outbound {
                 state: OutboundState::Refused,
@@ -8400,10 +8752,8 @@ pub(crate) fn drain_history(history: &mut History) {
                     .entries
                     .iter()
                     .filter_map(|(c_seq, candidate)| {
-                        let written = matches!(
-                            candidate.stage,
-                            Stage::Delivery(CommandDelivery::Written)
-                        );
+                        let written =
+                            matches!(candidate.stage, Stage::Delivery(CommandDelivery::Written));
                         let in_window = candidate.subject.scope.is_some()
                             && candidate.subject.scope == event.subject.scope
                             && candidate.elapsed_ms <= event.elapsed_ms
@@ -8442,8 +8792,7 @@ pub(crate) fn drain_history(history: &mut History) {
                             .iter()
                             .find(|open| open.subject.interaction == matched_subj.interaction)
                         {
-                            if open.start_seq != 0
-                                && !history.entries.contains_key(&open.start_seq)
+                            if open.start_seq != 0 && !history.entries.contains_key(&open.start_seq)
                             {
                                 captured_opening_note = Some(EvidenceNote::recovered(
                                     open.start_seq,
@@ -8520,14 +8869,10 @@ pub(crate) fn drain_history(history: &mut History) {
                                 && candidate.subject.scope == event.subject.scope
                                 && candidate.subject.operation == operation
                                 && candidate.elapsed_ms <= event.elapsed_ms
-                                && event.elapsed_ms.saturating_sub(candidate.elapsed_ms)
-                                    <= 30_000;
+                                && event.elapsed_ms.saturating_sub(candidate.elapsed_ms) <= 30_000;
                             (written
                                 && in_window
-                                && loot_vendor_evidence_matches_action(
-                                    &candidate.subject,
-                                    &event,
-                                ))
+                                && loot_vendor_evidence_matches_action(&candidate.subject, &event))
                             .then_some(candidate.subject)
                         })
                         .collect(),
@@ -8549,14 +8894,10 @@ pub(crate) fn drain_history(history: &mut History) {
                                         | Operation::Sell
                                 )
                                 && candidate.elapsed_ms <= event.elapsed_ms
-                                && event.elapsed_ms.saturating_sub(candidate.elapsed_ms)
-                                    <= 30_000;
+                                && event.elapsed_ms.saturating_sub(candidate.elapsed_ms) <= 30_000;
                             (written
                                 && in_window
-                                && loot_vendor_evidence_matches_action(
-                                    &candidate.subject,
-                                    &event,
-                                ))
+                                && loot_vendor_evidence_matches_action(&candidate.subject, &event))
                             .then_some(candidate.subject)
                         })
                         .collect(),
@@ -8568,8 +8909,7 @@ pub(crate) fn drain_history(history: &mut History) {
                             .iter()
                             .find(|open| open.subject.interaction == subject.interaction)
                         {
-                            if open.start_seq != 0
-                                && !history.entries.contains_key(&open.start_seq)
+                            if open.start_seq != 0 && !history.entries.contains_key(&open.start_seq)
                             {
                                 captured_opening_note = Some(EvidenceNote::recovered(
                                     open.start_seq,
@@ -8617,9 +8957,15 @@ pub(crate) fn drain_history(history: &mut History) {
                     attributed_subject,
                 ))
             }
-            Stage::SocketReadFailed | Stage::SocketWriteFailed | Stage::AssetFailure { .. }
-            | Stage::ReducerRejected { .. } | Stage::GameplayRejected { .. }
-            | Stage::SessionEnded { kind: SessionEndKind::Lost } | Stage::ScriptError { .. }
+            Stage::SocketReadFailed
+            | Stage::SocketWriteFailed
+            | Stage::AssetFailure { .. }
+            | Stage::ReducerRejected { .. }
+            | Stage::GameplayRejected { .. }
+            | Stage::SessionEnded {
+                kind: SessionEndKind::Lost,
+            }
+            | Stage::ScriptError { .. }
             | Stage::ScriptLoadError { .. } => Some((
                 IncidentOutcome::ObservedFailure,
                 IncidentConfidence::Exact,
@@ -8631,14 +8977,17 @@ pub(crate) fn drain_history(history: &mut History) {
                 underruns,
                 overloads,
                 ..
-            } if nonfinite_samples > 0 || voices_refused > 0 || underruns > 0 || overloads > 0 =>
+            } if nonfinite_samples > 0 || voices_refused > 0 || underruns > 0 || overloads > 0 => {
                 Some((
                     IncidentOutcome::ObservedFailure,
                     IncidentConfidence::Exact,
                     event.subject,
-                )),
-            Stage::NativeEventsLost { .. } | Stage::ScriptRowsLost { .. }
-            | Stage::ScriptRowsEvicted { .. } | Stage::AssetEventsLost { .. } => Some((
+                ))
+            }
+            Stage::NativeEventsLost { .. }
+            | Stage::ScriptRowsLost { .. }
+            | Stage::ScriptRowsEvicted { .. }
+            | Stage::AssetEventsLost { .. } => Some((
                 IncidentOutcome::TelemetryGap,
                 IncidentConfidence::Exact,
                 event.subject,
@@ -8660,9 +9009,11 @@ pub(crate) fn drain_history(history: &mut History) {
         };
         if let Some((outcome, confidence, attributed_subject)) = outcome {
             let note = EvidenceNote::from_event(seq, &event);
-            let existing = history.incidents.iter_mut().rev().find(|incident| {
-                same_script_row(incident.terminal_stage, event.stage)
-            });
+            let existing = history
+                .incidents
+                .iter_mut()
+                .rev()
+                .find(|incident| same_script_row(incident.terminal_stage, event.stage));
             let updated = if let Some(incident) = existing {
                 incident.terminal_stage = event.stage;
                 incident.telemetry_gap |= gaps;
@@ -8710,9 +9061,7 @@ pub(crate) fn drain_history(history: &mut History) {
                         wire_cast_count,
                     )) = candidate_data
                     {
-                        if started_seq != 0
-                            && !history.entries.contains_key(&started_seq)
-                        {
+                        if started_seq != 0 && !history.entries.contains_key(&started_seq) {
                             let stage = if started_from_request {
                                 Stage::Cast {
                                     spell_id: Some(spell_id),
@@ -8741,13 +9090,9 @@ pub(crate) fn drain_history(history: &mut History) {
                     if let Some(open) = history
                         .open_interactions
                         .iter()
-                        .find(|open| {
-                            open.subject.interaction == attributed_subject.interaction
-                        })
+                        .find(|open| open.subject.interaction == attributed_subject.interaction)
                     {
-                        if open.start_seq != 0
-                            && !history.entries.contains_key(&open.start_seq)
-                        {
+                        if open.start_seq != 0 && !history.entries.contains_key(&open.start_seq) {
                             return Some(EvidenceNote::recovered(
                                 open.start_seq,
                                 open.start_elapsed_ms,
@@ -8764,13 +9109,7 @@ pub(crate) fn drain_history(history: &mut History) {
                     &event,
                     opening_note,
                 );
-                history.push_incident(
-                    attributed_subject,
-                    outcome,
-                    confidence,
-                    event.stage,
-                    chain,
-                );
+                history.push_incident(attributed_subject, outcome, confidence, event.stage, chain);
             }
         }
         history.insert_retained(seq, event);
@@ -8799,9 +9138,15 @@ mod tests {
         }
         drain_all(&mut history);
         let (received, evicted, dropped) = history.counters();
-        assert_eq!(received, 256, "bounded 256-entry ingress drains without blocking");
+        assert_eq!(
+            received, 256,
+            "bounded 256-entry ingress drains without blocking"
+        );
         assert_eq!(evicted, 0);
-        assert_eq!(dropped, 44, "excess events increment dropped counter immediately");
+        assert_eq!(
+            dropped, 44,
+            "excess events increment dropped counter immediately"
+        );
         assert!(history.has_telemetry_gaps());
         #[cfg(feature = "dev")]
         {
@@ -8887,7 +9232,17 @@ mod tests {
             source.begin_with_npc(Some((1, 1)), Some(783), Some(0x1111), Operation::Accept);
         old_accept.record(Stage::Delivery(CommandDelivery::Written));
         // World transfer to generation 2 retires the old scope's open write as unverified.
-        source.observe(Some((1, 2)), None, Stage::WorldTransfer { map_id: None, from: None, to: None, retired_local: 0, retired_written: 0 });
+        source.observe(
+            Some((1, 2)),
+            None,
+            Stage::WorldTransfer {
+                map_id: None,
+                from: None,
+                to: None,
+                retired_local: 0,
+                retired_written: 0,
+            },
+        );
         // A slot addition in the new world (1, 2) must not match the (1, 1) write.
         source.observe(Some((1, 2)), Some(783), Stage::QuestSlotAdded);
         drain_all(&mut history);
@@ -8932,7 +9287,15 @@ mod tests {
         source.observe(Some((1, 1)), Some(783), Stage::JournalProjection);
 
         // Simulate /reload: advance reload generation and start VM session 11.
-        source.observe(Some((1, 1)), None, Stage::UiReload { old_vm_session: Some(10), old_reload_generation: Some(0), new_reload_generation: Some(1) });
+        source.observe(
+            Some((1, 1)),
+            None,
+            Stage::UiReload {
+                old_vm_session: Some(10),
+                old_reload_generation: Some(0),
+                new_reload_generation: Some(1),
+            },
+        );
         source.advance_reload_generation();
         source.capture_script_counts(
             Some((1, 1)),
@@ -9009,7 +9372,12 @@ mod tests {
         let raw_guid = 0xF130_0007_C300_BEEF_u64;
         let open = source.begin_with_npc(Some((1, 1)), None, Some(raw_guid), Operation::Open);
         open.record(Stage::Delivery(CommandDelivery::Written));
-        source.observe_with_npc(Some((1, 1)), None, Some(raw_guid), Stage::ServerQuestLogFull);
+        source.observe_with_npc(
+            Some((1, 1)),
+            None,
+            Some(raw_guid),
+            Stage::ServerQuestLogFull,
+        );
         drain_all(&mut history);
 
         let serialized = serde_json::to_string(&history.entries.iter().collect::<Vec<_>>())
@@ -9248,7 +9616,8 @@ mod tests {
         assert!(
             chains
                 .iter()
-                .all(|line| !line.contains(&format!("action {interaction}")) || line.contains("Launched")),
+                .all(|line| !line.contains(&format!("action {interaction}"))
+                    || line.contains("Launched")),
             "any printed chain for the action keeps its native edge: {chains:?}"
         );
     }
@@ -9336,7 +9705,10 @@ mod export_gate_tests {
     /// `(sequence, event)` row per later line, and a final newline so no row was cut short.
     fn read_snapshot(path: &std::path::Path) -> (serde_json::Value, usize) {
         let text = std::fs::read_to_string(path).expect("snapshot is readable");
-        assert!(text.ends_with('\n'), "a written snapshot ends with a whole line");
+        assert!(
+            text.ends_with('\n'),
+            "a written snapshot ends with a whole line"
+        );
         let mut lines = text.lines();
         let header: serde_json::Value =
             serde_json::from_str(lines.next().expect("header line")).expect("header parses");
@@ -9345,7 +9717,8 @@ mod export_gate_tests {
             assert!(!line.is_empty(), "no blank line inside a snapshot");
             let row: serde_json::Value = serde_json::from_str(line).expect("row parses");
             assert!(
-                row.as_array().is_some_and(|pair| pair.len() == 2 && pair[0].is_u64()),
+                row.as_array()
+                    .is_some_and(|pair| pair.len() == 2 && pair[0].is_u64()),
                 "a row is one (sequence, event) pair: {line}"
             );
             rows += 1;
@@ -9368,7 +9741,10 @@ mod export_gate_tests {
             "a second non-waiting export returns the existing refusal"
         );
         drop(held);
-        assert_eq!(history.export_status(), "Report could not be saved. See the client log.");
+        assert_eq!(
+            history.export_status(),
+            "Report could not be saved. See the client log."
+        );
     }
 
     #[test]
@@ -9402,7 +9778,10 @@ mod export_gate_tests {
             Some(rows as u64),
             "the header and the rows came from the same snapshot"
         );
-        assert_eq!(history.export_status(), "Report saved in Logs/InteractionDiagnostics.");
+        assert_eq!(
+            history.export_status(),
+            "Report saved in Logs/InteractionDiagnostics."
+        );
     }
 
     #[test]
@@ -9431,8 +9810,8 @@ mod export_gate_tests {
             let barrier = Arc::clone(&barrier);
             let directory = directory.clone();
             std::thread::spawn(move || {
-                let mut writer =
-                    ExportWriter::acquire(&source.0, None).expect("background writer takes the gate");
+                let mut writer = ExportWriter::acquire(&source.0, None)
+                    .expect("background writer takes the gate");
                 barrier.wait();
                 let refusal = attempt_rx.recv().expect("the manual attempt reports");
                 let result =
@@ -9445,7 +9824,9 @@ mod export_gate_tests {
         let refusal = history
             .export(Default::default(), "test")
             .expect_err("the manual export cannot start while the gate is held");
-        attempt_tx.send(refusal.clone()).expect("background still holds");
+        attempt_tx
+            .send(refusal.clone())
+            .expect("background still holds");
         let (background_refusal, background_result) = background.join().expect("writer thread");
         assert_eq!(background_refusal, "A report is already being saved");
         let first = background_result.expect("the gate holder's snapshot is written");
@@ -9453,14 +9834,18 @@ mod export_gate_tests {
         let second = history
             .export_sync(Default::default(), "test")
             .expect("the exit snapshot takes the gate after the first writer released it");
-        assert_ne!(first, second, "two snapshots are two files, not one rewritten file");
+        assert_ne!(
+            first, second,
+            "two snapshots are two files, not one rewritten file"
+        );
         let (first_header, first_rows) = read_snapshot(&first);
         let (second_header, second_rows) = read_snapshot(&second);
         assert_eq!(first_rows, 3);
         assert_eq!(second_rows, 3);
         assert_eq!(first_header["schema"], second_header["schema"]);
         // The guard is not lost: it is free again once both writers finished.
-        let free = ExportWriter::acquire(&source.0, None).expect("the gate is free after both writers");
+        let free =
+            ExportWriter::acquire(&source.0, None).expect("the gate is free after both writers");
         drop(free);
     }
 
@@ -9486,4 +9871,3 @@ mod export_gate_tests {
         drop(free);
     }
 }
-

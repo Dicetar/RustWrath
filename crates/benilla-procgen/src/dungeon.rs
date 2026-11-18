@@ -103,7 +103,13 @@ pub struct DungeonSpec {
 
 impl Default for DungeonSpec {
     fn default() -> Self {
-        Self { width: 96, height: 64, target_rooms: 10, min_room: 8, extra_loops: 2 }
+        Self {
+            width: 96,
+            height: 64,
+            target_rooms: 10,
+            min_room: 8,
+            extra_loops: 2,
+        }
     }
 }
 
@@ -126,7 +132,13 @@ pub fn generate(rng: &mut ProcRng, spec: &DungeonSpec) -> Result<Dungeon, Valida
     let mut tiles = vec![Tile::Solid; (width * height) as usize];
 
     // 1. BSP partition into leaves.
-    let mut leaves: Vec<Leaf> = vec![Leaf { x: 1, y: 1, w: width - 2, h: height - 2, room: None }];
+    let mut leaves: Vec<Leaf> = vec![Leaf {
+        x: 1,
+        y: 1,
+        w: width - 2,
+        h: height - 2,
+        room: None,
+    }];
     let mut split_cursor = 0;
     while leaves.len() < spec.target_rooms as usize && split_cursor < leaves.len() {
         let leaf = &leaves[split_cursor];
@@ -135,22 +147,47 @@ pub fn generate(rng: &mut ProcRng, spec: &DungeonSpec) -> Result<Dungeon, Valida
         if !can_split {
             continue;
         }
-        let split_vertical = if leaf.w >= spec.min_room as u32 * 2 && leaf.h >= spec.min_room as u32 * 2 {
-            rng.next_u64() & 1 == 0
-        } else {
-            leaf.w > leaf.h
-        };
+        let split_vertical =
+            if leaf.w >= spec.min_room as u32 * 2 && leaf.h >= spec.min_room as u32 * 2 {
+                rng.next_u64() & 1 == 0
+            } else {
+                leaf.w > leaf.h
+            };
         let (a, b) = if split_vertical {
             let cut = rng.int(spec.min_room as i64, (leaf.w - spec.min_room as u32) as i64) as u32;
             (
-                Leaf { x: leaf.x, y: leaf.y, w: cut, h: leaf.h, room: None },
-                Leaf { x: leaf.x + cut, y: leaf.y, w: leaf.w - cut, h: leaf.h, room: None },
+                Leaf {
+                    x: leaf.x,
+                    y: leaf.y,
+                    w: cut,
+                    h: leaf.h,
+                    room: None,
+                },
+                Leaf {
+                    x: leaf.x + cut,
+                    y: leaf.y,
+                    w: leaf.w - cut,
+                    h: leaf.h,
+                    room: None,
+                },
             )
         } else {
             let cut = rng.int(spec.min_room as i64, (leaf.h - spec.min_room as u32) as i64) as u32;
             (
-                Leaf { x: leaf.x, y: leaf.y, w: leaf.w, h: cut, room: None },
-                Leaf { x: leaf.x, y: leaf.y + cut, w: leaf.w, h: leaf.h - cut, room: None },
+                Leaf {
+                    x: leaf.x,
+                    y: leaf.y,
+                    w: leaf.w,
+                    h: cut,
+                    room: None,
+                },
+                Leaf {
+                    x: leaf.x,
+                    y: leaf.y + cut,
+                    w: leaf.w,
+                    h: leaf.h - cut,
+                    room: None,
+                },
             )
         };
         // Replace the split leaf with its two children (room map by index).
@@ -178,38 +215,47 @@ pub fn generate(rng: &mut ProcRng, spec: &DungeonSpec) -> Result<Dungeon, Valida
             }
         }
         leaf.room = Some(rooms.len());
-        rooms.push(Room { id: rooms.len(), x, y, w, h, archetype: RoomArchetype::Normal, connections: Vec::new() });
+        rooms.push(Room {
+            id: rooms.len(),
+            x,
+            y,
+            w,
+            h,
+            archetype: RoomArchetype::Normal,
+            connections: Vec::new(),
+        });
     }
 
     // 3. Connect: chain leaves in reading order (guaranteed spanning), then extra loops.
-    let connect = |a: usize, b: usize, tiles: &mut Vec<Tile>, rooms: &mut Vec<Room>, rng: &mut ProcRng| {
-        if a == b || rooms[a].connections.contains(&b) {
-            return;
-        }
-        let (ax, ay) = rooms[a].center();
-        let (bx, by) = rooms[b].center();
-        // L-shaped corridor; horizontal first or vertical first by coin.
-        let horizontal_first = rng.next_u64() & 1 == 0;
-        let carve = |tiles: &mut Vec<Tile>, x0: u32, x1: u32, y0: u32, y1: u32| {
-            for x in x0.min(x1)..=x0.max(x1) {
-                for y in y0.min(y1)..=y0.max(y1) {
-                    let i = (y * width + x) as usize;
-                    if tiles[i] == Tile::Solid {
-                        tiles[i] = Tile::Corridor;
+    let connect =
+        |a: usize, b: usize, tiles: &mut Vec<Tile>, rooms: &mut Vec<Room>, rng: &mut ProcRng| {
+            if a == b || rooms[a].connections.contains(&b) {
+                return;
+            }
+            let (ax, ay) = rooms[a].center();
+            let (bx, by) = rooms[b].center();
+            // L-shaped corridor; horizontal first or vertical first by coin.
+            let horizontal_first = rng.next_u64() & 1 == 0;
+            let carve = |tiles: &mut Vec<Tile>, x0: u32, x1: u32, y0: u32, y1: u32| {
+                for x in x0.min(x1)..=x0.max(x1) {
+                    for y in y0.min(y1)..=y0.max(y1) {
+                        let i = (y * width + x) as usize;
+                        if tiles[i] == Tile::Solid {
+                            tiles[i] = Tile::Corridor;
+                        }
                     }
                 }
+            };
+            if horizontal_first {
+                carve(tiles, ax, bx, ay, ay);
+                carve(tiles, bx, bx, ay, by);
+            } else {
+                carve(tiles, ax, ax, ay, by);
+                carve(tiles, ax, bx, by, by);
             }
+            rooms[a].connections.push(b);
+            rooms[b].connections.push(a);
         };
-        if horizontal_first {
-            carve(tiles, ax, bx, ay, ay);
-            carve(tiles, bx, bx, ay, by);
-        } else {
-            carve(tiles, ax, ax, ay, by);
-            carve(tiles, ax, bx, by, by);
-        }
-        rooms[a].connections.push(b);
-        rooms[b].connections.push(a);
-    };
     for pair in 0..rooms.len().saturating_sub(1) {
         connect(pair, pair + 1, &mut tiles, &mut rooms, rng);
     }
@@ -271,7 +317,14 @@ pub fn generate(rng: &mut ProcRng, spec: &DungeonSpec) -> Result<Dungeon, Valida
         }
     }
 
-    Ok(Dungeon { width, height, tiles, rooms, entrance, boss_room })
+    Ok(Dungeon {
+        width,
+        height,
+        tiles,
+        rooms,
+        entrance,
+        boss_room,
+    })
 }
 
 fn edge_nearest_room(rooms: &[Room], width: u32, height: u32) -> usize {
@@ -362,7 +415,10 @@ impl std::error::Error for ValidationError {}
 
 impl ValidationError {
     pub(crate) fn new(field: &'static str, reason: &str) -> Self {
-        Self { field, reason: reason.to_owned() }
+        Self {
+            field,
+            reason: reason.to_owned(),
+        }
     }
 }
 
@@ -370,29 +426,50 @@ impl DungeonSpec {
     /// Rejects parameter combinations that cannot produce a playable layout.
     pub fn validate(&self) -> Result<(), ValidationError> {
         let fail = |field: &'static str, reason: &str| -> Result<(), ValidationError> {
-            Err(ValidationError { field, reason: reason.to_owned() })
+            Err(ValidationError {
+                field,
+                reason: reason.to_owned(),
+            })
         };
         if !(1..=1024).contains(&self.target_rooms) {
             return fail("dungeon.target_rooms", "expected 1..=1024 rooms");
         }
         if self.min_room < 3 {
-            return fail("dungeon.min_room", "rooms smaller than 3 tiles cannot hold a center");
+            return fail(
+                "dungeon.min_room",
+                "rooms smaller than 3 tiles cannot hold a center",
+            );
         }
-        let min_side = self.min_room.checked_mul(4)
+        let min_side = self
+            .min_room
+            .checked_mul(4)
             .ok_or_else(|| ValidationError::new("dungeon.min_room", "dimension overflow"))?;
-        if self.width > 2048 || self.height > 2048
+        if self.width > 2048
+            || self.height > 2048
             || u64::from(self.width) * u64::from(self.height) > 1_048_576
         {
-            return fail("dungeon.dimensions", "maximum side 2048 and maximum 1048576 tiles");
+            return fail(
+                "dungeon.dimensions",
+                "maximum side 2048 and maximum 1048576 tiles",
+            );
         }
         if self.extra_loops > 4096 {
-            return fail("dungeon.extra_loops", "maximum 4096 extra corridor attempts");
+            return fail(
+                "dungeon.extra_loops",
+                "maximum 4096 extra corridor attempts",
+            );
         }
         if self.width < min_side {
-            return fail("dungeon.width", "map width must fit four minimum room edges");
+            return fail(
+                "dungeon.width",
+                "map width must fit four minimum room edges",
+            );
         }
         if self.height < min_side {
-            return fail("dungeon.height", "map height must fit four minimum room edges");
+            return fail(
+                "dungeon.height",
+                "map height must fit four minimum room edges",
+            );
         }
         Ok(())
     }
@@ -415,19 +492,54 @@ mod tests {
     #[test]
     fn rooms_connected_and_reachable() {
         for seed in 0..25 {
-            let dungeon = generate(&mut ProcRng::new(seed), &DungeonSpec::default()).expect("valid dungeon");
-            assert!(dungeon.rooms.len() >= 5, "seed {seed}: room count {}", dungeon.rooms.len());
-            assert!(dungeon.all_reachable(), "seed {seed}: unreachable walkable tiles");
-            assert_eq!(dungeon.rooms[dungeon.entrance].archetype, RoomArchetype::Entrance);
-            assert_eq!(dungeon.rooms[dungeon.boss_room].archetype, RoomArchetype::Boss);
+            let dungeon =
+                generate(&mut ProcRng::new(seed), &DungeonSpec::default()).expect("valid dungeon");
+            assert!(
+                dungeon.rooms.len() >= 5,
+                "seed {seed}: room count {}",
+                dungeon.rooms.len()
+            );
+            assert!(
+                dungeon.all_reachable(),
+                "seed {seed}: unreachable walkable tiles"
+            );
+            assert_eq!(
+                dungeon.rooms[dungeon.entrance].archetype,
+                RoomArchetype::Entrance
+            );
+            assert_eq!(
+                dungeon.rooms[dungeon.boss_room].archetype,
+                RoomArchetype::Boss
+            );
             assert_ne!(dungeon.entrance, dungeon.boss_room);
         }
     }
 
     #[test]
     fn exactly_one_boss_and_one_entrance() {
-        let dungeon = generate(&mut ProcRng::new(77), &DungeonSpec { target_rooms: 8, ..Default::default() }).expect("valid dungeon");
-        assert_eq!(dungeon.rooms.iter().filter(|r| r.archetype == RoomArchetype::Boss).count(), 1);
-        assert_eq!(dungeon.rooms.iter().filter(|r| r.archetype == RoomArchetype::Entrance).count(), 1);
+        let dungeon = generate(
+            &mut ProcRng::new(77),
+            &DungeonSpec {
+                target_rooms: 8,
+                ..Default::default()
+            },
+        )
+        .expect("valid dungeon");
+        assert_eq!(
+            dungeon
+                .rooms
+                .iter()
+                .filter(|r| r.archetype == RoomArchetype::Boss)
+                .count(),
+            1
+        );
+        assert_eq!(
+            dungeon
+                .rooms
+                .iter()
+                .filter(|r| r.archetype == RoomArchetype::Entrance)
+                .count(),
+            1
+        );
     }
 }

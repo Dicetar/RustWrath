@@ -86,9 +86,9 @@ pub(super) fn load(chain: &mut Chain) -> Result<HashMap<u32, ChainEffect>> {
     match field_count(&bytes) {
         Some(48) => return load_wrath(&bytes),
         Some(SPELL_CHAIN_EFFECTS_FIELDS) => {}
-        Some(columns) => bail!(
-            "unsupported SpellChainEffects.dbc layout: {columns} fields (expected 8 or 48)"
-        ),
+        Some(columns) => {
+            bail!("unsupported SpellChainEffects.dbc layout: {columns} fields (expected 8 or 48)")
+        }
         None => bail!("parsing SpellChainEffects.dbc header: truncated field count"),
     }
     let set = parse(&bytes, chain_effects_schema(), "SpellChainEffects.dbc")?;
@@ -143,19 +143,32 @@ fn load_wrath(bytes: &[u8]) -> Result<HashMap<u32, ChainEffect>> {
         let offset = row
             .u32_at(28)
             .context("SpellChainEffects.dbc missing texture offset")? as usize;
-        let text = strings
-            .get(offset..)
-            .with_context(|| format!("SpellChainEffects.dbc {id}: invalid texture offset {offset}"))?;
-        let end = text.iter().position(|byte| *byte == 0).unwrap_or(text.len());
+        let text = strings.get(offset..).with_context(|| {
+            format!("SpellChainEffects.dbc {id}: invalid texture offset {offset}")
+        })?;
+        let end = text
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(text.len());
         rows.insert(
             id,
             ChainEffect {
-                avg_seg_len: row.f32_at(4).context("SpellChainEffects.dbc segment length")?,
+                avg_seg_len: row
+                    .f32_at(4)
+                    .context("SpellChainEffects.dbc segment length")?,
                 half_width: row.f32_at(8).context("SpellChainEffects.dbc width")?,
-                noise_scale: row.f32_at(12).context("SpellChainEffects.dbc noise scale")?,
-                scroll_period_s: row.f32_at(16).context("SpellChainEffects.dbc texture period")?,
-                bolt_life_ms: row.u32_at(20).context("SpellChainEffects.dbc segment duration")?,
-                bolt_stagger_ms: row.u32_at(24).context("SpellChainEffects.dbc segment delay")?,
+                noise_scale: row
+                    .f32_at(12)
+                    .context("SpellChainEffects.dbc noise scale")?,
+                scroll_period_s: row
+                    .f32_at(16)
+                    .context("SpellChainEffects.dbc texture period")?,
+                bolt_life_ms: row
+                    .u32_at(20)
+                    .context("SpellChainEffects.dbc segment duration")?,
+                bolt_stagger_ms: row
+                    .u32_at(24)
+                    .context("SpellChainEffects.dbc segment delay")?,
                 texture: String::from_utf8_lossy(&text[..end]).into_owned(),
             },
         );

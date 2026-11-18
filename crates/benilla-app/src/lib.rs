@@ -77,8 +77,6 @@ mod item_lane;
 mod item_names;
 mod item_watch;
 mod items;
-mod wrath_inventory;
-mod wrath_item;
 mod lanes;
 mod loading_screen;
 mod local_state;
@@ -109,9 +107,13 @@ mod screen_fade;
 mod screenshot;
 mod script_calls;
 mod shaders;
+mod wrath_inventory;
+mod wrath_item;
 
 mod game_tip;
+mod multiclass;
 mod opaque2d;
+mod quest_trace;
 /// Where "the client is going down" is observed, in `Last`; every system that persists state on the
 /// way out registers through it.
 mod shutdown;
@@ -207,13 +209,11 @@ mod weapon_trail;
 mod world_backdrop;
 mod world_console;
 mod world_state;
+mod world_state_ui;
 mod wrath;
 mod wrath_field_map;
-mod wrath_translate;
-mod multiclass;
-mod quest_trace;
 mod wrath_native;
-mod world_state_ui;
+mod wrath_translate;
 
 use bevy::prelude::*;
 
@@ -370,7 +370,12 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
         Some(manifest_path) => {
             let profile_name =
                 std::env::var("WM_ASSET_PROFILE").unwrap_or_else(|_| "base".to_owned());
-            benilla_assets::register_profile_source(&mut app, &data_dir, &manifest_path, &profile_name)
+            benilla_assets::register_profile_source(
+                &mut app,
+                &data_dir,
+                &manifest_path,
+                &profile_name,
+            )
         }
         None => benilla_assets::register_mpq_source(&mut app, &data_dir),
     };
@@ -587,7 +592,10 @@ mod economy {
             let mapped = crate::wrath::wrath_mail_list(list);
             assert_eq!(mapped.len(), 1);
             let row = &mapped[0];
-            assert_eq!(row.inline_body.as_deref(), Some("Twelve attachments inside."));
+            assert_eq!(
+                row.inline_body.as_deref(),
+                Some("Twelve attachments inside.")
+            );
             assert_eq!(row.attachments.len(), 12);
             assert_eq!(row.item.map(|a| a.entry), Some(40000));
             assert_eq!(row.attachments[11].entry, 40011);
@@ -811,10 +819,7 @@ mod social {
             let wire =
                 benilla_protocol_wrath::gameplay::encode_pet_action(pet_guid, packed, target_guid);
             assert_eq!(wire.len(), 20);
-            assert_eq!(
-                u64::from_le_bytes(wire[0..8].try_into().unwrap()),
-                pet_guid
-            );
+            assert_eq!(u64::from_le_bytes(wire[0..8].try_into().unwrap()), pet_guid);
             assert_eq!(u32::from_le_bytes(wire[8..12].try_into().unwrap()), packed);
             assert_eq!(
                 u64::from_le_bytes(wire[12..20].try_into().unwrap()),
@@ -823,4 +828,3 @@ mod social {
         }
     }
 }
-

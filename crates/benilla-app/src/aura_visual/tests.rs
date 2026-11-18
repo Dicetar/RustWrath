@@ -173,7 +173,10 @@ fn the_ramp_is_linear_in_the_reference_alpha_byte() {
 
     n.alpha.clear();
     n.retarget(AURA_ALPHA_FADE_SECS);
-    assert!((n.from - 76.0 / 255.0).abs() < 1e-6, "ramps from the live value");
+    assert!(
+        (n.from - 76.0 / 255.0).abs() < 1e-6,
+        "ramps from the live value"
+    );
     assert!((n.to - 1.0).abs() < 1e-6);
     assert!((n.tick(2.0 * AURA_ALPHA_FADE_SECS) - 1.0).abs() < 1e-6);
     assert!(!n.translucent(), "settled opaque again");

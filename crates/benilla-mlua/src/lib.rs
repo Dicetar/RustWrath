@@ -960,7 +960,9 @@ impl Lua {
     /// The supported primitive metatable is the string library's 5.1 method table.
     pub fn set_type_metatable<T>(&self, metatable: Option<Table>) {
         if std::any::type_name::<T>() == std::any::type_name::<String>() {
-            let table = metatable.as_ref().map(|m| self.unref(&m.0).as_table().expect("table metatable"));
+            let table = metatable
+                .as_ref()
+                .map(|m| self.unref(&m.0).as_table().expect("table metatable"));
             self.vm().set_string_metatable(table);
         }
     }
@@ -1046,13 +1048,19 @@ impl Lua {
 
     /// Save/restore legacy handler globals while also passing explicit arguments. Their owned
     /// handles remain rooted through the call and conversion of a raised Lua value.
-    pub fn call_with_globals_args(&self, func: &Function, globals: &[(&str, Value)], args: MultiValue) -> Result<()> {
+    pub fn call_with_globals_args(
+        &self,
+        func: &Function,
+        globals: &[(&str, Value)],
+        args: MultiValue,
+    ) -> Result<()> {
         let f = self.unref(&func.0);
         let sets: Vec<(benilla_lua::value::StrRef, benilla_lua::Value)> = globals
             .iter()
             .map(|(name, v)| (self.vm().heap.intern(name.as_bytes()), self.unwrap(v)))
             .collect();
-        let arguments: Vec<benilla_lua::Value> = args.iter().map(|value| self.unwrap(value)).collect();
+        let arguments: Vec<benilla_lua::Value> =
+            args.iter().map(|value| self.unwrap(value)).collect();
         let result = self
             .vm()
             .call_with_globals_traced(f, &sets, &arguments)

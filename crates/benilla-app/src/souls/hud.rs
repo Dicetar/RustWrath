@@ -9,8 +9,8 @@
 //! strike bar fills over its windup: orange for a strike on us (red in its last fifth), grey for
 //! one on someone else.
 
-use bevy::prelude::*;
 use benilla_world::view::WorldCamera;
+use bevy::prelude::*;
 
 use super::server::SoulsLink;
 use super::{current_kit, souls_on, SoulsConfig, SoulsState};

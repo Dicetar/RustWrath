@@ -434,8 +434,7 @@ impl UiScript {
             // `interface\cooldown\star4.blp` (a grey four-point spark on black, so an ADD blend;
             // its alpha is opaque everywhere). Both draw at the frame's size: the hand's square is
             // rotated to the sweep boundary, the spark's square centred on the boundary rim.
-            if let (ZTarget::Frame(fh), Some(fr), Some((progress, reverse))) =
-                (target, rect, sweep)
+            if let (ZTarget::Frame(fh), Some(fr), Some((progress, reverse))) = (target, rect, sweep)
             {
                 if let Some(crate::widget::KindState::Cooldown(cd)) =
                     model.arena.frame(fh).map(|f| &f.kind_state)
@@ -481,10 +480,7 @@ impl UiScript {
                         // Screen clockwise from the top is `(sin, -cos)` y-down; the layout rect is
                         // y-up, so its centre offset is `(sin, cos)` scaled by the rect's half sizes,
                         // which puts the spark on the quad's rim at the sector angle.
-                        let (sx, sy) = (
-                            cx + angle.sin() * w * 0.5,
-                            cy + angle.cos() * h * 0.5,
-                        );
+                        let (sx, sy) = (cx + angle.sin() * w * 0.5, cy + angle.cos() * h * 0.5);
                         let (sw, sh) = (w * 0.35, h * 0.35);
                         out.push(ExtractedQuad {
                             target,

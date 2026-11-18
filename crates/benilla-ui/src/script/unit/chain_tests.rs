@@ -431,10 +431,7 @@ fn wrath_tokens_are_quiet_and_resolve_present_units() {
     s.set_unit_guids(&guids);
     for token in ["focus", "vehicle", "boss1", "boss4"] {
         assert!(
-            eval::<bool>(
-                &s,
-                &format!(r#"return UnitExists("{token}") == nil"#)
-            ),
+            eval::<bool>(&s, &format!(r#"return UnitExists("{token}") == nil"#)),
             "{token} absent"
         );
         assert_eq!(
@@ -467,7 +464,8 @@ fn wrath_tokens_are_quiet_and_resolve_present_units() {
     );
     assert_eq!(s.eval::<i64>(r#"return UnitLevel("focus")"#).unwrap(), 0);
     assert_eq!(
-        s.eval::<i64>(r#"return UnitIsPartyLeader("focus")"#).unwrap(),
+        s.eval::<i64>(r#"return UnitIsPartyLeader("focus")"#)
+            .unwrap(),
         1,
         "no snapshot is the zero-guid leader, as the reference"
     );
@@ -483,7 +481,8 @@ fn wrath_tokens_are_quiet_and_resolve_present_units() {
     );
     assert_eq!(s.eval::<i64>(r#"return UnitLevel("focus")"#).unwrap(), 60);
     assert_eq!(
-        s.eval::<i64>(r#"return UnitIsPartyLeader("focus")"#).unwrap(),
+        s.eval::<i64>(r#"return UnitIsPartyLeader("focus")"#)
+            .unwrap(),
         1
     );
     guids.target = P1;
@@ -509,10 +508,7 @@ fn wrath_tokens_are_quiet_and_resolve_present_units() {
         ("boss1", "target"),
     ] {
         assert!(
-            eval::<bool>(
-                &s,
-                &format!(r#"return UnitExists("{token}") == 1"#)
-            ),
+            eval::<bool>(&s, &format!(r#"return UnitExists("{token}") == 1"#)),
             "{token} present"
         );
         assert!(
@@ -535,7 +531,11 @@ fn wrath_bases_read_guid_snapshots_without_duplicate_token_pushes() {
     s.set_unit_guids(&guids);
     s.set_unit_by_guid(MOB, Some(state("Shared", MOB, 432)));
     for token in ["focus", "vehicle", "boss1"] {
-        assert_eq!(s.eval::<i64>(&format!("return UnitHealth('{token}')")).unwrap(), 432);
+        assert_eq!(
+            s.eval::<i64>(&format!("return UnitHealth('{token}')"))
+                .unwrap(),
+            432
+        );
     }
     s.set_unit("focus", Some(state("Old focus", MOB, 999)));
     guids.focus = P1;

@@ -630,7 +630,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, ()| {
             let d = inspect_honor(lua).unwrap_or_default();
             // PaperDollInfoFrame_Scripts.cpp::Script_GetInspectHonorData (0x005E77C0).
-            if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
+            if lua.app_data_ref::<Model>().expect("model app_data").target
+                == super::UiTarget::Wrath335
+            {
                 return Ok(MultiValue::from_vec(vec![
                     Value::Integer(i64::from(d.session_hk)),
                     Value::Integer(i64::from(d.today_honor)),

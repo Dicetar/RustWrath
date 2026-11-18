@@ -470,7 +470,8 @@ fn the_death_popup_natives_read_the_pushed_state() {
     let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
     s.keep_calls();
     assert_eq!(
-        s.eval::<Option<f64>>("return CannotBeResurrected()").unwrap(),
+        s.eval::<Option<f64>>("return CannotBeResurrected()")
+            .unwrap(),
         None
     );
     assert_eq!(s.eval::<Option<f64>>("return IsFalling()").unwrap(), None);
@@ -498,7 +499,8 @@ fn the_death_popup_natives_read_the_pushed_state() {
         ..Default::default()
     });
     assert_eq!(
-        s.eval::<Option<f64>>("return CannotBeResurrected()").unwrap(),
+        s.eval::<Option<f64>>("return CannotBeResurrected()")
+            .unwrap(),
         Some(1.0)
     );
     assert_eq!(
@@ -541,7 +543,11 @@ fn death_release_position_binding() {
     let (x, y) = s
         .eval::<(f64, f64)>("return GetDeathReleasePosition()")
         .unwrap();
-    assert_eq!((x, y), (0.0, 0.0), "the resurrection's clear hides it again");
+    assert_eq!(
+        (x, y),
+        (0.0, 0.0),
+        "the resurrection's clear hides it again"
+    );
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 

@@ -272,12 +272,18 @@ pub(in crate::script) fn build_item(
             let wrath = lua.app_data_ref::<Model>().expect("model app_data").target
                 == crate::script::UiTarget::Wrath335;
             if wrath {
-                if let (Some(instance), Some(source)) = (inst.as_mut(), build.source_link.as_deref()) {
+                if let (Some(instance), Some(source)) =
+                    (inst.as_mut(), build.source_link.as_deref())
+                {
                     if instance.name.is_none() && !source.contains("|h[") {
-                        if let Some(item) = crate::script::item_stats::wrath::ItemLink::parse(source) {
+                        if let Some(item) =
+                            crate::script::item_stats::wrath::ItemLink::parse(source)
+                        {
                             if item.random_property != 0 {
                                 instance.name = crate::script::item_stats::wrath::item_name(
-                                    lua, &v.name, item.random_property,
+                                    lua,
+                                    &v.name,
+                                    item.random_property,
                                 );
                             }
                         }
@@ -354,7 +360,12 @@ pub(in crate::script) fn build_item(
         }
     }
     show_or_hide_empty(lua, h);
-    if lua.app_data_ref::<Model>().expect("model").item_builds.contains_key(&h) {
+    if lua
+        .app_data_ref::<Model>()
+        .expect("model")
+        .item_builds
+        .contains_key(&h)
+    {
         crate::script::tooltip::fire_content(lua, h, "OnTooltipSetItem");
     }
     Ok(live)

@@ -234,8 +234,16 @@ fn on_login_edge(
         SessionEvent::CharActionResult { action, code } => {
             char_action_result(action, code, &mut e.char_actions)
         }
-        SessionEvent::RealmSplit { choice, state, date } => {
-            e.realm_split.write(super::RealmSplitMessage { choice, state, date });
+        SessionEvent::RealmSplit {
+            choice,
+            state,
+            date,
+        } => {
+            e.realm_split.write(super::RealmSplitMessage {
+                choice,
+                state,
+                date,
+            });
         }
         SessionEvent::CharRenamed { result, renamed } => {
             e.char_renames
@@ -249,10 +257,15 @@ fn on_login_edge(
         }
         _ => {}
     }
-
 }
 
-fn on_character_list(In(ev): In<SessionEvent>, mut e: Edges, mut b: Bridge, trace: Option<Res<crate::quest_trace::Source>>, view: Option<Res<crate::wrath::WrathWorldView>>) {
+fn on_character_list(
+    In(ev): In<SessionEvent>,
+    mut e: Edges,
+    mut b: Bridge,
+    trace: Option<Res<crate::quest_trace::Source>>,
+    view: Option<Res<crate::wrath::WrathWorldView>>,
+) {
     if let SessionEvent::CharacterList {
         characters,
         realm,
@@ -285,7 +298,13 @@ fn on_character_list(In(ev): In<SessionEvent>, mut e: Edges, mut b: Bridge, trac
     }
 }
 
-fn on_connected(In(ev): In<SessionEvent>, mut e: Edges, mut b: Bridge, trace: Option<Res<crate::quest_trace::Source>>, view: Option<Res<crate::wrath::WrathWorldView>>) {
+fn on_connected(
+    In(ev): In<SessionEvent>,
+    mut e: Edges,
+    mut b: Bridge,
+    trace: Option<Res<crate::quest_trace::Source>>,
+    view: Option<Res<crate::wrath::WrathWorldView>>,
+) {
     if let SessionEvent::Connected {
         self_guid: guid,
         name,
@@ -309,9 +328,13 @@ fn on_connected(In(ev): In<SessionEvent>, mut e: Edges, mut b: Bridge, trace: Op
         if view.is_none() {
             if let Some(trace) = trace.as_ref() {
                 use crate::quest_trace::{DomainEvent as D, Stage};
-                trace.observe(None, None, Stage::DomainEvent {
-                    event: D::PlayerConnected,
-                });
+                trace.observe(
+                    None,
+                    None,
+                    Stage::DomainEvent {
+                        event: D::PlayerConnected,
+                    },
+                );
             }
         }
     }
@@ -373,9 +396,13 @@ fn on_disconnected(
         if view.is_none() {
             if let Some(trace) = trace.as_ref() {
                 use crate::quest_trace::{DomainEvent as D, Stage};
-                trace.observe(None, None, Stage::DomainEvent {
-                    event: D::PlayerDisconnected,
-                });
+                trace.observe(
+                    None,
+                    None,
+                    Stage::DomainEvent {
+                        event: D::PlayerDisconnected,
+                    },
+                );
             }
         }
     }
@@ -471,15 +498,24 @@ fn on_worldport(
         if view.is_none() {
             if let Some(trace) = trace.as_ref() {
                 use crate::quest_trace::{DomainEvent as D, Stage};
-                trace.observe(None, None, Stage::DomainEvent {
-                    event: D::Worldport,
-                });
+                trace.observe(
+                    None,
+                    None,
+                    Stage::DomainEvent {
+                        event: D::Worldport,
+                    },
+                );
             }
         }
     }
 }
 
-fn on_transfer(In(ev): In<SessionEvent>, mut e: Edges, trace: Option<Res<crate::quest_trace::Source>>, view: Option<Res<crate::wrath::WrathWorldView>>) {
+fn on_transfer(
+    In(ev): In<SessionEvent>,
+    mut e: Edges,
+    trace: Option<Res<crate::quest_trace::Source>>,
+    view: Option<Res<crate::wrath::WrathWorldView>>,
+) {
     match ev {
         SessionEvent::TransferPending {
             map_id,

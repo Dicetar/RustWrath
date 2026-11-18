@@ -357,7 +357,9 @@ pub(crate) struct GlueCreate {
 
 impl GlueCreate {
     pub(super) fn race_file(&self, race: u8) -> &str {
-        self.catalog.race(u32::from(race)).map_or("", |r| r.file.as_str())
+        self.catalog
+            .race(u32::from(race))
+            .map_or("", |r| r.file.as_str())
     }
 }
 
@@ -781,7 +783,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .race(if m.target == super::UiTarget::Wrath335 {
                     let index = number_arg(lua, arg(&args, 0), "Usage: GetFactionForRace(index)")?;
                     c.race_at(index.wrapping_sub(1))
-                } else { c.obj().race })
+                } else {
+                    c.obj().race
+                })
                 .and_then(|r| r.faction.as_ref());
             Ok(MultiValue::from_vec(vec![
                 text(lua, faction.map(|f| f.0.as_str()))?,
@@ -801,8 +805,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 out.push(text(lua, Some(&r.name))?);
                 out.push(text(lua, Some(&r.file))?);
                 if m.target == super::UiTarget::Wrath335 {
-                    let required = m.glue.create.catalog.race_expansions.get(&r.id).copied().unwrap_or(0);
-                    out.push(Value::Number(f64::from(u8::from(u32::from(m.glue.account_expansion) >= required))));
+                    let required = m
+                        .glue
+                        .create
+                        .catalog
+                        .race_expansions
+                        .get(&r.id)
+                        .copied()
+                        .unwrap_or(0);
+                    out.push(Value::Number(f64::from(u8::from(
+                        u32::from(m.glue.account_expansion) >= required,
+                    ))));
                 }
             }
             Ok(MultiValue::from_vec(out))
@@ -811,20 +824,26 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
     if model(lua).target == super::UiTarget::Wrath335 {
         // 12340 0x004E0830: all class records, three values per record.
-        g.set("GetAvailableClasses", lua.create_function(|lua, _: MultiValue| {
-            let m = model(lua);
-            let c = &m.glue.create.catalog;
-            let mut ids: Vec<_> = c.classes.keys().copied().collect();
-            ids.sort_unstable();
-            let mut out = Vec::new();
-            for id in ids {
-                let row = &c.classes[&id];
-                out.push(text(lua, Some(&row.name))?);
-                out.push(text(lua, Some(&row.file))?);
-                out.push(Value::Number(f64::from(u8::from(u32::from(m.glue.account_expansion) >= c.class_expansions.get(&id).copied().unwrap_or(0)))));
-            }
-            Ok(MultiValue::from_vec(out))
-        })?)?;
+        g.set(
+            "GetAvailableClasses",
+            lua.create_function(|lua, _: MultiValue| {
+                let m = model(lua);
+                let c = &m.glue.create.catalog;
+                let mut ids: Vec<_> = c.classes.keys().copied().collect();
+                ids.sort_unstable();
+                let mut out = Vec::new();
+                for id in ids {
+                    let row = &c.classes[&id];
+                    out.push(text(lua, Some(&row.name))?);
+                    out.push(text(lua, Some(&row.file))?);
+                    out.push(Value::Number(f64::from(u8::from(
+                        u32::from(m.glue.account_expansion)
+                            >= c.class_expansions.get(&id).copied().unwrap_or(0),
+                    ))));
+                }
+                Ok(MultiValue::from_vec(out))
+            })?,
+        )?;
     }
 
     // `0x471560`: name (`+0x14`) and file string (`+0x38`) for each class of the list, nil, nil
@@ -840,7 +859,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 out.push(text(lua, row.map(|r| r.name.as_str()))?);
                 out.push(text(lua, row.map(|r| r.file.as_str()))?);
                 if m.target == super::UiTarget::Wrath335 {
-                    out.push(Value::Number(f64::from(u8::from(u32::from(m.glue.account_expansion) >= c.catalog.class_expansions.get(id).copied().unwrap_or(0)))));
+                    out.push(Value::Number(f64::from(u8::from(
+                        u32::from(m.glue.account_expansion)
+                            >= c.catalog.class_expansions.get(id).copied().unwrap_or(0),
+                    ))));
                 }
             }
             Ok(MultiValue::from_vec(out))
@@ -893,7 +915,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "GetSelectedSex",
         lua.create_function(|lua, _: MultiValue| {
             let m = model(lua);
-            Ok(f64::from(m.glue.create.obj().sex) + if m.target == super::UiTarget::Wrath335 { 2.0 } else { 1.0 })
+            Ok(f64::from(m.glue.create.obj().sex)
+                + if m.target == super::UiTarget::Wrath335 {
+                    2.0
+                } else {
+                    1.0
+                })
         })?,
     )?;
 
@@ -911,13 +938,24 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 text(lua, row.map(|r| r.file.as_str()))?,
             ];
             if m.target == super::UiTarget::Wrath335 {
-                if row.is_none() { return Ok(MultiValue::new()); }
+                if row.is_none() {
+                    return Ok(MultiValue::new());
+                }
                 // 0x004E0A60; class records in the shipped 12340 table are ID ordered.
                 let mut ids: Vec<_> = c.catalog.classes.keys().copied().collect();
                 ids.sort_unstable();
-                let index = ids.iter().position(|&id| u32::from(id) == c.class).map_or(0, |i| i + 1);
+                let index = ids
+                    .iter()
+                    .position(|&id| u32::from(id) == c.class)
+                    .map_or(0, |i| i + 1);
                 out.push(Value::Number(index as f64));
-                let roles = match c.class { 1 | 6 => 0x0b, 2 | 11 => 0x0f, 5 | 7 => 0x0d, 3 | 4 | 8 | 9 => 0x09, _ => 0 };
+                let roles = match c.class {
+                    1 | 6 => 0x0b,
+                    2 | 11 => 0x0f,
+                    5 | 7 => 0x0d,
+                    3 | 4 | 8 | 9 => 0x09,
+                    _ => 0,
+                };
                 out.extend([2, 4, 8].map(|bit| Value::Boolean(roles & bit != 0)));
             }
             Ok(MultiValue::from_vec(out))
@@ -944,7 +982,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, args: MultiValue| {
             let sex = number_arg(lua, arg(&args, 0), "Usage: SetSelectedSex(index)")?;
             let mut m = model(lua);
-            let base = if m.target == super::UiTarget::Wrath335 { 2 } else { 1 };
+            let base = if m.target == super::UiTarget::Wrath335 {
+                2
+            } else {
+                1
+            };
             m.glue.create.select_sex(sex.wrapping_sub(base));
             Ok(())
         })?,
@@ -960,7 +1002,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             if m.target == super::UiTarget::Wrath335 {
                 let mut ids: Vec<_> = m.glue.create.catalog.classes.keys().copied().collect();
                 ids.sort_unstable();
-                if let Some(id) = usize::try_from(index.wrapping_sub(1)).ok().and_then(|i| ids.get(i)) {
+                if let Some(id) = usize::try_from(index.wrapping_sub(1))
+                    .ok()
+                    .and_then(|i| ids.get(i))
+                {
                     if let Some(at) = m.glue.create.class_list.iter().position(|c| c == id) {
                         m.glue.create.select_class(at as i32);
                     }

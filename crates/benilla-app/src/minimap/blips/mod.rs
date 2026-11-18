@@ -271,11 +271,7 @@ fn stale_dots() -> &'static Mutex<StaleDots> {
 /// The coordinate a dynamic dot draws at this frame: `fresh` on a rebuild, else the throttled one.
 /// `fresh` is `None` for a dot the rebuild would omit (out of range, wrong floor); holding that too
 /// keeps the dot from reappearing until the next rebuild, as the reference's list does.
-pub(super) fn stale_offset(
-    key: DotSource,
-    fresh: Option<Vec2>,
-    px_per_yd: f32,
-) -> Option<Vec2> {
+pub(super) fn stale_offset(key: DotSource, fresh: Option<Vec2>, px_per_yd: f32) -> Option<Vec2> {
     let Ok(mut cache) = stale_dots().lock() else {
         return fresh;
     };
@@ -809,7 +805,12 @@ mod tests {
         let culled_at = t0 + BLIP_STALE + BLIP_STALE;
         assert_eq!(cache.offset(key, None, 1.0, culled_at), None);
         assert_eq!(
-            cache.offset(key, Some(Vec2::ZERO), 1.0, culled_at + Duration::from_millis(500)),
+            cache.offset(
+                key,
+                Some(Vec2::ZERO),
+                1.0,
+                culled_at + Duration::from_millis(500)
+            ),
             None,
             "a culled dot does not flicker back before the next rebuild"
         );

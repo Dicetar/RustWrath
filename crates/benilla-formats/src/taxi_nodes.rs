@@ -85,7 +85,11 @@ fn schema(fields: Option<usize>) -> Schema {
 
 fn parse_taxi_nodes_bytes(bytes: &[u8], locale: Locale) -> Result<TaxiNodes> {
     let fields = field_count(bytes);
-    let (horde_col, alliance_col) = if fields == Some(24) { (22, 23) } else { (14, 15) };
+    let (horde_col, alliance_col) = if fields == Some(24) {
+        (22, 23)
+    } else {
+        (14, 15)
+    };
     let rs = parse(bytes, schema(fields), "TaxiNodes")?;
     let rows = rs.records().iter().filter_map(|r| {
         let id = u32_at(r, 0)?;

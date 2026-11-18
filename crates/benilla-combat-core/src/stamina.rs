@@ -18,11 +18,7 @@ impl Stamina {
         }
     }
 
-    pub(crate) fn restore(
-        current: u32,
-        max: u32,
-        regen_resume_at: Option<Ticks>,
-    ) -> Option<Self> {
+    pub(crate) fn restore(current: u32, max: u32, regen_resume_at: Option<Ticks>) -> Option<Self> {
         // A spend is the only way to leave full, and it always schedules the deadline. Keeping the
         // pair canonical prevents a snapshot from inventing a partial bar that never regenerates.
         let deadline_matches = (current < max) == regen_resume_at.is_some();

@@ -37,16 +37,17 @@ pub(crate) fn parse_with_trailing_fields(
         as usize;
     while schema.fields.len() < fields {
         let index = schema.fields.len();
-        schema.add_field(SchemaField::new(format!("Unknown{index}"), FieldType::UInt32));
+        schema.add_field(SchemaField::new(
+            format!("Unknown{index}"),
+            FieldType::UInt32,
+        ));
     }
     parse(bytes, schema, what)
 }
 
 /// The 4-byte field count a DBC header declares, for a loader that has a known 3.3.5 layout.
 pub(crate) fn field_count(bytes: &[u8]) -> Option<usize> {
-    Some(
-        u32::from_le_bytes(bytes.get(8..12)?.try_into().ok()?) as usize,
-    )
+    Some(u32::from_le_bytes(bytes.get(8..12)?.try_into().ok()?) as usize)
 }
 
 /// An unsigned field, from either int variant: the schema tag only picks the decoding.

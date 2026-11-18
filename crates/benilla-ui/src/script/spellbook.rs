@@ -598,26 +598,28 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "GetSpellName",
         lua.create_function(|lua, (id, book_type): (Value, Value)| {
-            let (id, book_type) = match spell_slot_args(id.clone(), book_type.clone(), "GetSpellName")
-            {
-                Ok(slot) => slot,
-                Err(err) => {
-                    // `GetSlotFromLua` (`SpellBookFrame.cpp:1447-1487`) raises for a numeric value
-                    // outside the book; the ID `GetActionInfo` answers for a bar spell with no
-                    // displayed slot is the one pair Wrath resolves through the host instead.
-                    let Some((spell_id, _)) = action_bar_spell_reference(lua, id, book_type)? else {
-                        return Err(err);
-                    };
-                    let view = super::host::with_host(lua, |host| host.spell_info(spell_id)).flatten();
-                    let Some(view) = view else {
-                        return Ok(MultiValue::from_vec(vec![Value::Nil, Value::Nil]));
-                    };
-                    return Ok(MultiValue::from_vec(vec![
-                        Value::String(lua.create_string(&view.name)?),
-                        Value::String(lua.create_string(view.rank.as_deref().unwrap_or(""))?),
-                    ]));
-                }
-            };
+            let (id, book_type) =
+                match spell_slot_args(id.clone(), book_type.clone(), "GetSpellName") {
+                    Ok(slot) => slot,
+                    Err(err) => {
+                        // `GetSlotFromLua` (`SpellBookFrame.cpp:1447-1487`) raises for a numeric value
+                        // outside the book; the ID `GetActionInfo` answers for a bar spell with no
+                        // displayed slot is the one pair Wrath resolves through the host instead.
+                        let Some((spell_id, _)) = action_bar_spell_reference(lua, id, book_type)?
+                        else {
+                            return Err(err);
+                        };
+                        let view =
+                            super::host::with_host(lua, |host| host.spell_info(spell_id)).flatten();
+                        let Some(view) = view else {
+                            return Ok(MultiValue::from_vec(vec![Value::Nil, Value::Nil]));
+                        };
+                        return Ok(MultiValue::from_vec(vec![
+                            Value::String(lua.create_string(&view.name)?),
+                            Value::String(lua.create_string(view.rank.as_deref().unwrap_or(""))?),
+                        ]));
+                    }
+                };
             // Out of `[0, 0x400)` already raised in `spell_slot_args`; the binding's own bound
             // check (`0x4b4018`) is never taken.
             let model = lua.app_data_ref::<Model>().expect("model app_data");

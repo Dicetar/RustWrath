@@ -17,15 +17,13 @@
 use std::collections::HashMap;
 
 use benilla_assets::{AnimClip, ModelAnimations};
+#[cfg(test)]
+use benilla_combat_core::spell_action;
 use benilla_combat_core::{
     dodge_from_clip, enemy_action, melee_action, ActionId, ActionKind, ActionSpec, ActionTable,
     ClipSummary, CombatResult, DodgeSpec, ProfilePolicy, SpellSummary, TickRate,
 };
-#[cfg(test)]
-use benilla_combat_core::spell_action;
-use benilla_formats::{
-    AnimDataCatalog, SpellCastTimeCatalog, SpellDisplay, SpellDurationCatalog,
-};
+use benilla_formats::{AnimDataCatalog, SpellCastTimeCatalog, SpellDisplay, SpellDurationCatalog};
 
 /// The dodge action every encounter shares; the host range `1..=999`.
 pub(crate) const HOST_DODGE: ActionId = ActionId(1);
@@ -218,7 +216,10 @@ pub(crate) fn enemy_melee_actions(
         let Some(summary) = clip_summary(clip) else {
             continue;
         };
-        moves.push((enemy_action(ActionId(id), summary, policy, rate)?, resolved.id));
+        moves.push((
+            enemy_action(ActionId(id), summary, policy, rate)?,
+            resolved.id,
+        ));
         id = id.wrapping_add(1);
     }
     Ok(moves)
@@ -307,7 +308,12 @@ mod tests {
         let swing = clip(
             17,
             1.0,
-            &[(b"$SND", 0.1), (b"$AH1", 0.4), (b"$AH2", 0.6), (b"$HIT", 0.5)],
+            &[
+                (b"$SND", 0.1),
+                (b"$AH1", 0.4),
+                (b"$AH2", 0.6),
+                (b"$HIT", 0.5),
+            ],
         );
         assert_eq!(
             clip_summary(&swing),
@@ -328,7 +334,11 @@ mod tests {
     /// The 2H families compile heavy; the 1H family, dagger, fist and empty hands compile light.
     #[test]
     fn melee_kind_splits_the_two_handed_family() {
-        assert_eq!(melee_kind(Some((2, 0x7))), ActionKind::MeleeLight, "1H sword");
+        assert_eq!(
+            melee_kind(Some((2, 0x7))),
+            ActionKind::MeleeLight,
+            "1H sword"
+        );
         assert_eq!(melee_kind(Some((2, 0xf))), ActionKind::MeleeLight, "dagger");
         assert_eq!(melee_kind(Some((2, 0x1))), ActionKind::MeleeHeavy, "2H axe");
         assert_eq!(melee_kind(Some((2, 0xa))), ActionKind::MeleeHeavy, "staff");
@@ -357,7 +367,10 @@ mod tests {
         assert_eq!(anim_id, 17);
         assert_eq!(spec.kind, ActionKind::MeleeLight);
         assert_eq!(spec.total_ticks, 100);
-        assert_eq!(spec.contact.map(|window| (window.from, window.to)), Some((40, 60)));
+        assert_eq!(
+            spec.contact.map(|window| (window.from, window.to)),
+            Some((40, 60))
+        );
         assert_eq!(spec.stamina_cost, 20);
     }
 
@@ -463,18 +476,10 @@ mod tests {
         )]);
         // A 2H-capable-looking rig that only ships Attack1H: Attack2H (18) falls back to 17, so
         // the move list holds the 1H clip once.
-        let single = rig(vec![
-            clip(0, 1.0, &[]),
-            clip(17, 1.0, &[(b"$AH0", 0.4)]),
-        ]);
-        let moves = enemy_melee_actions(
-            1_000,
-            &single,
-            &catalog,
-            &ProfilePolicy::default(),
-            rate(),
-        )
-        .expect("compile");
+        let single = rig(vec![clip(0, 1.0, &[]), clip(17, 1.0, &[(b"$AH0", 0.4)])]);
+        let moves =
+            enemy_melee_actions(1_000, &single, &catalog, &ProfilePolicy::default(), rate())
+                .expect("compile");
         assert_eq!(moves.len(), 1);
         assert_eq!(moves[0].1, 17);
         assert_eq!(moves[0].0.kind, ActionKind::EnemyStrike);

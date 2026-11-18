@@ -26,9 +26,7 @@ use bevy::asset::io::{
 use bevy::asset::AssetApp;
 use bevy::prelude::*;
 
-use crate::{
-    internal_path, LooseFiles, LooseOpen, MPQ_LOOSE_SOURCE, MPQ_SOURCE,
-};
+use crate::{internal_path, LooseFiles, LooseOpen, MPQ_LOOSE_SOURCE, MPQ_SOURCE};
 
 /// One class of content a coherent revision must be able to serve.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,7 +148,10 @@ pub enum ContentRevisionError {
     /// A required input is not in the candidate at all.
     MissingInput { input: ContentInput },
     /// A required input resolves to a delete marker: unreadable by design.
-    TombstonedInput { input: ContentInput, archive: PathBuf },
+    TombstonedInput {
+        input: ContentInput,
+        archive: PathBuf,
+    },
     /// A required input resolved but cannot be read.
     UnreadableInput { input: ContentInput, detail: String },
     /// A required input resolved but is not the content its class promises.
@@ -273,7 +274,11 @@ pub struct CommittedContentRevision {
 
 impl CommittedContentRevision {
     pub fn provenance(&self) -> String {
-        format!("revision {} [{}]", self.serial, describe_archives(&self.archives))
+        format!(
+            "revision {} [{}]",
+            self.serial,
+            describe_archives(&self.archives)
+        )
     }
 }
 
@@ -320,8 +325,12 @@ pub(crate) fn read_profile_sync(source: &str, path: &Path) -> Option<Vec<u8>> {
 
 impl ProfileAssetReader {
     pub fn open(data_dir: &Path, manifest_path: &Path, profile: &str) -> Result<Self> {
-        let opened = Profile::open(data_dir, manifest_path, profile)
-            .with_context(|| format!("opening profile `{profile}` from {}", manifest_path.display()))?;
+        let opened = Profile::open(data_dir, manifest_path, profile).with_context(|| {
+            format!(
+                "opening profile `{profile}` from {}",
+                manifest_path.display()
+            )
+        })?;
         Ok(Self {
             active: Arc::new(RwLock::new(ActiveRevision {
                 profile: Arc::new(opened),
@@ -344,9 +353,7 @@ impl ProfileAssetReader {
 
     /// The serial of the revision readers currently see.
     pub fn revision_serial(&self) -> u64 {
-        self.active
-            .read()
-            .map_or(0, |active| active.serial)
+        self.active.read().map_or(0, |active| active.serial)
     }
 
     /// Open and validate a candidate revision from the manifest on disk, without changing what any
@@ -427,7 +434,10 @@ impl ProfileAssetReader {
             manifest_path: _,
             profile_name: _,
         } = staged;
-        let mut active = self.active.write().map_err(|_| ContentRevisionError::Lock)?;
+        let mut active = self
+            .active
+            .write()
+            .map_err(|_| ContentRevisionError::Lock)?;
         check_commit_base(base, active.serial)?;
         *active = ActiveRevision {
             profile: Arc::new(profile),
@@ -460,9 +470,7 @@ impl ProfileAssetReader {
             .read()
             .map(|active| Arc::clone(&active.profile))
             .map_err(|_| {
-                AssetReaderError::Io(Arc::new(std::io::Error::other(
-                    "profile lock poisoned",
-                )))
+                AssetReaderError::Io(Arc::new(std::io::Error::other("profile lock poisoned")))
             })
     }
 
@@ -470,11 +478,9 @@ impl ProfileAssetReader {
         let internal = internal_path(path)?;
         // The revision is cloned under the lock and read outside it: an open candidate or a
         // commit never blocks a read, and this read never sees a half-swapped archive set.
-        self.snapshot()?
-            .read(&internal)
-            .map_err(|error| {
-                AssetReaderError::Io(Arc::new(std::io::Error::other(format!("{error:#}"))))
-            })
+        self.snapshot()?.read(&internal).map_err(|error| {
+            AssetReaderError::Io(Arc::new(std::io::Error::other(format!("{error:#}"))))
+        })
     }
 }
 
@@ -541,9 +547,7 @@ fn validate_input(
     let input = ContentInput::new(path);
     let served_today = !matches!(active.status(path), Status::Missing);
     validate_input_from(input, served_today, candidate.status(path), || {
-        candidate
-            .read(path)
-            .map_err(|error| format!("{error:#}"))
+        candidate.read(path).map_err(|error| format!("{error:#}"))
     })
 }
 
@@ -569,18 +573,21 @@ fn validate_input_from(
                 input: input.clone(),
                 detail,
             })?;
-            input.kind.check(&bytes).map_err(|detail| {
-                ContentRevisionError::InvalidInput {
+            input
+                .kind
+                .check(&bytes)
+                .map_err(|detail| ContentRevisionError::InvalidInput {
                     input: input.clone(),
                     detail,
-                }
-            })?;
+                })?;
             Ok(ValidatedContentInput {
                 input,
                 served: Some((archive, size)),
             })
         }
-        Status::Tombstoned { archive } => Err(ContentRevisionError::TombstonedInput { input, archive }),
+        Status::Tombstoned { archive } => {
+            Err(ContentRevisionError::TombstonedInput { input, archive })
+        }
         Status::Missing => Err(ContentRevisionError::MissingInput { input }),
     }
 }
@@ -736,7 +743,10 @@ mod tests {
         let text = error.to_string();
         assert!(matches!(error, ContentRevisionError::MissingInput { .. }));
         assert!(text.contains("DBFilesClient\\Map.dbc"), "{text}");
-        assert!(text.contains("dbc"), "the class is part of the report: {text}");
+        assert!(
+            text.contains("dbc"),
+            "the class is part of the report: {text}"
+        );
     }
 
     /// A present input with the wrong bytes is `InvalidInput`, and the message names the exact
@@ -822,7 +832,10 @@ mod tests {
         )
         .expect_err("a tombstone refuses the candidate");
         let text = error.to_string();
-        assert!(matches!(error, ContentRevisionError::TombstonedInput { .. }));
+        assert!(matches!(
+            error,
+            ContentRevisionError::TombstonedInput { .. }
+        ));
         assert!(text.contains("patch-z.mpq"), "{text}");
     }
 
@@ -909,6 +922,9 @@ mod tests {
             Err(error) => error,
         };
         let text = format!("{error:#}");
-        assert!(text.contains("common.mpq"), "the missing archive is named: {text}");
+        assert!(
+            text.contains("common.mpq"),
+            "the missing archive is named: {text}"
+        );
     }
 }

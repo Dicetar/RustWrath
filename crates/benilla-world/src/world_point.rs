@@ -254,9 +254,7 @@ impl WorldPoint<'_, '_> {
             let dist_sq = (point[0] - wow[0]).powi(2)
                 + (point[1] - wow[1]).powi(2)
                 + (point[2] - wow[2]).powi(2);
-            if dist_sq <= radius * radius
-                && best.as_ref().is_none_or(|b| dist_sq < b.dist_sq)
-            {
+            if dist_sq <= radius * radius && best.as_ref().is_none_or(|b| dist_sq < b.dist_sq) {
                 best = Some(NearestLiquid {
                     dist_sq,
                     point,

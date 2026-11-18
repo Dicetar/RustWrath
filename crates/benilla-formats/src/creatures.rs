@@ -462,11 +462,8 @@ pub fn load_creature_catalog(chain: &mut Chain) -> Result<CreatureCatalog> {
         let bytes = chain
             .read_file(CREATURE_MODEL_DATA)
             .with_context(|| format!("reading {CREATURE_MODEL_DATA}"))?;
-        let rs = parse_with_trailing_fields(
-            &bytes,
-            creature_model_data_schema(),
-            "CreatureModelData",
-        )?;
+        let rs =
+            parse_with_trailing_fields(&bytes, creature_model_data_schema(), "CreatureModelData")?;
         let mut m = HashMap::with_capacity(rs.records().len());
         for r in rs.records() {
             if let Some(id) = u32_at(r, 0) {

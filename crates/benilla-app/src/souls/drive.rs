@@ -20,8 +20,8 @@
 //!
 //! Off (or with no kit table), the drive is the default: the controller runs its stock path.
 
-use bevy::prelude::*;
 use benilla_combat_core::{KitAction, Milli};
+use bevy::prelude::*;
 
 use super::{
     current_kit, in_window, running_action, souls_on, ErControls, Instance, SoulsConfig,
@@ -187,7 +187,11 @@ pub(super) fn drive_controller(
     }
 
     // Turn lock: the facing holds through a no-turn window (over the lock-on bearing too).
-    let locked = !released && action.no_turn.iter().any(|&window| in_window(frame, window));
+    let locked = !released
+        && action
+            .no_turn
+            .iter()
+            .any(|&window| in_window(frame, window));
     if features.turn_lock && locked {
         let held = *track.held_yaw.get_or_insert(player.facing());
         drive.face = Some(held);

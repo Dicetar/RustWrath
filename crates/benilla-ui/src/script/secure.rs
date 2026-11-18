@@ -58,10 +58,11 @@ const MAX_WRAPS: usize = 1024;
 /// Whether a `CreateFrame` inherits string names a native secure-handler template. Wrath splits
 /// `inherits` on commas, so any element counts.
 pub(super) fn is_secure_template(template: &str) -> bool {
-    template
-        .split(',')
-        .map(str::trim)
-        .any(|name| SECURE_TEMPLATES.iter().any(|t| name.eq_ignore_ascii_case(t)))
+    template.split(',').map(str::trim).any(|name| {
+        SECURE_TEMPLATES
+            .iter()
+            .any(|t| name.eq_ignore_ascii_case(t))
+    })
 }
 
 fn key(h: FrameHandle) -> u64 {
@@ -74,15 +75,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         let mut templates = model.framexml_templates.borrow_mut();
         for name in SECURE_TEMPLATES {
             if !templates.contains(name) {
-                let el = crate::framexml::Element::empty("Frame")
-                    .with_attr("protected", "true");
+                let el = crate::framexml::Element::empty("Frame").with_attr("protected", "true");
                 templates.register(name, el, FALLBACK_CONTEXT);
             }
         }
         for &(name, tag) in FALLBACK_TEMPLATES {
             if !templates.contains(name) {
-                let el = crate::framexml::Element::empty(tag)
-                    .with_attr("protected", "true");
+                let el = crate::framexml::Element::empty(tag).with_attr("protected", "true");
                 templates.register(name, el, FALLBACK_CONTEXT);
             }
         }
@@ -111,9 +110,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
     lua.globals().set(
         "SecureHandlerExecute",
-        lua.create_function(|lua, (frame, body): (Table, Value)| {
-            execute_body(lua, (frame, body))
-        })?,
+        lua.create_function(|lua, (frame, body): (Table, Value)| execute_body(lua, (frame, body)))?,
     )?;
     lua.globals().set(
         "SecureHandlerSetFrameRef",
@@ -145,7 +142,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "RegisterStateDriver",
         lua.create_function(|lua, (frame, state, condition): (Table, Value, Value)| {
             let owner = super::object::frame_handle_of(lua, &frame)?;
-            let state = text_arg(lua, &state, "Usage: RegisterStateDriver(frame, state, condition)")?;
+            let state = text_arg(
+                lua,
+                &state,
+                "Usage: RegisterStateDriver(frame, state, condition)",
+            )?;
             validate_state(&state).map_err(mlua::Error::runtime)?;
             let condition = text_arg(
                 lua,
@@ -171,11 +172,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "UnregisterStateDriver",
         lua.create_function(|lua, (frame, state): (Table, Value)| {
             let owner = super::object::frame_handle_of(lua, &frame)?;
-            let state = text_arg(
-                lua,
-                &state,
-                "Usage: UnregisterStateDriver(frame, state)",
-            )?;
+            let state = text_arg(lua, &state, "Usage: UnregisterStateDriver(frame, state)")?;
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             if let Some(rows) = model.secure_drivers.get_mut(&key(owner)) {
                 rows.remove(&state);
@@ -395,7 +392,11 @@ fn eval_single_condition(lua: &Lua, raw: &str, unit: &str) -> bool {
         },
         _ => false,
     };
-    if negated { !matched } else { matched }
+    if negated {
+        !matched
+    } else {
+        matched
+    }
 }
 
 /// The client stores secure handlers on a frame created with a secure template; here it is the
@@ -447,10 +448,7 @@ fn execute_body(lua: &Lua, (this, body): (Table, Value)) -> mlua::Result<()> {
     Ok(())
 }
 
-fn set_frame_ref(
-    lua: &Lua,
-    (this, label, ref_frame): (Table, Value, Table),
-) -> mlua::Result<()> {
+fn set_frame_ref(lua: &Lua, (this, label, ref_frame): (Table, Value, Table)) -> mlua::Result<()> {
     let _owner = super::object::frame_handle_of(lua, &this)?;
     let _ref_h = super::object::frame_handle_of(lua, &ref_frame)?;
     let label = text_arg(
@@ -477,8 +475,7 @@ fn wrap_script(
     lua: &Lua,
     (this, target, script, before, after): (Table, Table, Value, Value, Option<Value>),
 ) -> mlua::Result<()> {
-    const USAGE: &str =
-        "Usage: SecureHandler:WrapScript(frame, scriptName, preBody [, postBody])";
+    const USAGE: &str = "Usage: SecureHandler:WrapScript(frame, scriptName, preBody [, postBody])";
     let owner = super::object::frame_handle_of(lua, &this)?;
     let target = super::object::frame_handle_of(lua, &target)?;
     let script = text_arg(lua, &script, USAGE)?;
@@ -639,23 +636,30 @@ mod tests {
             .unwrap();
         {
             let model = script.model_ref();
-            let rows = model.secure_drivers.values().next().expect("one frame's rows");
-            assert_eq!(rows.get("page").map(String::as_str), Some("[bonusbar:1]1;0"));
+            let rows = model
+                .secure_drivers
+                .values()
+                .next()
+                .expect("one frame's rows");
+            assert_eq!(
+                rows.get("page").map(String::as_str),
+                Some("[bonusbar:1]1;0")
+            );
             assert_eq!(
                 rows.get("assist-help").map(String::as_str),
                 Some("[help]nil; [target=targettarget, help]targettarget; nil")
             );
             assert!(model.secure_wraps.is_empty());
         }
-        assert!(script
-            .eval::<bool>("return Exploded == nil")
-            .unwrap());
-        script
-            .run(r#"UnregisterStateDriver(Bar, "page")"#)
-            .unwrap();
+        assert!(script.eval::<bool>("return Exploded == nil").unwrap());
+        script.run(r#"UnregisterStateDriver(Bar, "page")"#).unwrap();
         {
             let model = script.model_ref();
-            let rows = model.secure_drivers.values().next().expect("the other row remains");
+            let rows = model
+                .secure_drivers
+                .values()
+                .next()
+                .expect("the other row remains");
             assert!(!rows.contains_key("page"));
             assert!(rows.contains_key("assist-help"));
         }
@@ -672,10 +676,12 @@ mod tests {
     fn wrap_script_stores_bounded_bodies_and_never_executes_them() {
         let mut script = script();
         script
-            .run(r#"
+            .run(
+                r#"
                 Executed = nil
                 Bar:WrapScript(Bar, "OnShow", [[Executed = "before"]], [[Executed = "after"]])
-            "#)
+            "#,
+            )
             .unwrap();
         {
             let model = script.model_ref();
@@ -686,23 +692,17 @@ mod tests {
             assert_eq!(wraps[0].after, r#"Executed = "after""#);
         }
         assert!(
-            script
-                .eval::<bool>("return Executed == nil")
-                .unwrap(),
+            script.eval::<bool>("return Executed == nil").unwrap(),
             "storing a body must never run it"
         );
         // A plain frame is refused: no fake secure owner, no stored body.
         assert!(script
             .run(r#"Plain:WrapScript(Plain, "OnShow", "Executed = true")"#)
             .is_err());
-        assert!(script
-            .eval::<bool>("return Executed == nil")
-            .unwrap());
+        assert!(script.eval::<bool>("return Executed == nil").unwrap());
         // Oversized bodies are refused at admission.
         let oversized = "x".repeat(MAX_WRAP_LEN + 1);
-        let chunk = format!(
-            r#"Bar:WrapScript(Bar, "OnShow", [=[{oversized}]=])"#
-        );
+        let chunk = format!(r#"Bar:WrapScript(Bar, "OnShow", [=[{oversized}]=])"#);
         assert!(script.run(&chunk).is_err());
     }
 
@@ -785,13 +785,21 @@ mod tests {
         player.in_combat = true;
         script.set_unit("player", Some(player.clone()));
 
-        assert!(!script.eval::<bool>("return Bar:CanChangeProtectedState()").unwrap());
-        assert!(!script.eval::<bool>("return Child:CanChangeProtectedState()").unwrap());
-        assert!(script.eval::<bool>("return Plain:CanChangeProtectedState()").unwrap());
+        assert!(!script
+            .eval::<bool>("return Bar:CanChangeProtectedState()")
+            .unwrap());
+        assert!(!script
+            .eval::<bool>("return Child:CanChangeProtectedState()")
+            .unwrap());
+        assert!(script
+            .eval::<bool>("return Plain:CanChangeProtectedState()")
+            .unwrap());
 
         player.in_combat = false;
         script.set_unit("player", Some(player));
-        assert!(script.eval::<bool>("return Bar:CanChangeProtectedState()").unwrap());
+        assert!(script
+            .eval::<bool>("return Bar:CanChangeProtectedState()")
+            .unwrap());
 
         // XML `protected="true"` and inheriting from an explicit template both mark protected.
         let xml = r#"<Ui>

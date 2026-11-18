@@ -542,7 +542,11 @@ pub fn parse_cameras(b: &[u8]) -> Vec<M2Camera> {
 
 /// Parse the MD20 CameraLookup (`0x118` in Wrath, `0x12c` in the donor; `u16` each).
 pub fn parse_camera_lookup(b: &[u8]) -> Vec<u16> {
-    let header = if b.u32_at(4).is_some_and(|v| v >= 264) { 0x118 } else { 0x12c };
+    let header = if b.u32_at(4).is_some_and(|v| v >= 264) {
+        0x118
+    } else {
+        0x12c
+    };
     let (Some(count), Some(ofs)) = (b.u32_at(header), b.u32_at(header + 4)) else {
         return Vec::new();
     };

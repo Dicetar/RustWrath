@@ -416,10 +416,7 @@ fn set_text_gates_on_lua_isstring_and_names_the_box() {
         .run(r#"local u = CreateFrame("EditBox"); u:SetText(nil)"#)
         .expect_err("an unnamed box raises its own usage line")
         .to_string();
-    assert!(
-        err.contains(r#"Usage: <unnamed>:SetText("text")"#),
-        "{err}"
-    );
+    assert!(err.contains(r#"Usage: <unnamed>:SetText("text")"#), "{err}");
 
     s.run("E:SetText(5)").unwrap();
     assert_eq!(text(), "5", "a number passes the gate as its number text");

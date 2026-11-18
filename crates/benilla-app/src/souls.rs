@@ -43,9 +43,9 @@ mod retarget;
 mod server;
 mod targets;
 
-use bevy::prelude::*;
 use benilla_combat_core::{ActionId, Kit, KitAction, Milli, TickRate};
 use benilla_world::schedule::WorldStage;
+use bevy::prelude::*;
 
 use crate::combat_kit::PlayerKit;
 use crate::combat_mode::{CombatMode, CombatModeView};
@@ -71,7 +71,10 @@ impl Plugin for SoulsPlugin {
             .init_resource::<SwingMute>()
             .init_resource::<ErControls>()
             .add_systems(Startup, (config::load_souls_config, hud::spawn_hud))
-            .add_systems(Update, controls::claim_inputs.before(crate::ui_script::UiInput))
+            .add_systems(
+                Update,
+                controls::claim_inputs.before(crate::ui_script::UiInput),
+            )
             .add_systems(
                 Update,
                 controls::interact_key
@@ -193,7 +196,9 @@ fn souls_on(view: &CombatModeView) -> bool {
 
 /// The kit the profile table was compiled from, once it is current.
 fn current_kit<'a>(kit: &'a PlayerKit, profiles: &CombatProfiles) -> Option<&'a Kit> {
-    kit.kit.as_ref().filter(|_| kit_table_current(kit, profiles))
+    kit.kit
+        .as_ref()
+        .filter(|_| kit_table_current(kit, profiles))
 }
 
 /// The running kit action: its instance, its kit row and the frame it is on.

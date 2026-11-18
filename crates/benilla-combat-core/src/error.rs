@@ -12,28 +12,83 @@ pub enum CombatError {
     InvalidConfig(&'static str),
     TickRateOutOfRange(u16),
     TickArithmeticOverflow,
-    TimeWentBackwards { now: Ticks, requested: Ticks },
-    AdvanceTooLarge { from: Ticks, to: Ticks, limit: u64 },
-    SessionMismatch { expected: SessionEpoch, got: SessionEpoch },
-    PlayerMismatch { expected: PlayerId, got: PlayerId },
-    ActionRevisionMismatch { expected: ActionRevision, got: ActionRevision },
-    DuplicateSequence { last: Sequence },
-    StaleSequence { last: Sequence, got: Sequence },
-    SequenceGapTooLarge { last: Sequence, got: Sequence, limit: u64 },
-    InputInPast { now: Ticks, input: Ticks },
-    InputTooFarAhead { now: Ticks, input: Ticks, limit: u64 },
-    InputOutOfOrderTick { last: Ticks, got: Ticks },
-    InputQueueFull { limit: usize },
+    TimeWentBackwards {
+        now: Ticks,
+        requested: Ticks,
+    },
+    AdvanceTooLarge {
+        from: Ticks,
+        to: Ticks,
+        limit: u64,
+    },
+    SessionMismatch {
+        expected: SessionEpoch,
+        got: SessionEpoch,
+    },
+    PlayerMismatch {
+        expected: PlayerId,
+        got: PlayerId,
+    },
+    ActionRevisionMismatch {
+        expected: ActionRevision,
+        got: ActionRevision,
+    },
+    DuplicateSequence {
+        last: Sequence,
+    },
+    StaleSequence {
+        last: Sequence,
+        got: Sequence,
+    },
+    SequenceGapTooLarge {
+        last: Sequence,
+        got: Sequence,
+        limit: u64,
+    },
+    InputInPast {
+        now: Ticks,
+        input: Ticks,
+    },
+    InputTooFarAhead {
+        now: Ticks,
+        input: Ticks,
+        limit: u64,
+    },
+    InputOutOfOrderTick {
+        last: Ticks,
+        got: Ticks,
+    },
+    InputQueueFull {
+        limit: usize,
+    },
     InvalidButtonState,
     PlayerDead,
     EnemyDead,
     EnemyBusy,
-    SessionNotAdvanced { previous: SessionEpoch, requested: SessionEpoch },
-    SnapshotSessionMismatch { expected: SessionEpoch, got: SessionEpoch },
-    SnapshotPlayerMismatch { expected: PlayerId, got: PlayerId },
-    SnapshotRevisionMismatch { expected: ActionRevision, got: ActionRevision },
-    SnapshotStaleTick { current: Ticks, snapshot: Ticks },
-    SnapshotStaleSequence { current: Option<Sequence>, snapshot: Option<Sequence> },
+    SessionNotAdvanced {
+        previous: SessionEpoch,
+        requested: SessionEpoch,
+    },
+    SnapshotSessionMismatch {
+        expected: SessionEpoch,
+        got: SessionEpoch,
+    },
+    SnapshotPlayerMismatch {
+        expected: PlayerId,
+        got: PlayerId,
+    },
+    SnapshotRevisionMismatch {
+        expected: ActionRevision,
+        got: ActionRevision,
+    },
+    SnapshotStaleTick {
+        current: Ticks,
+        snapshot: Ticks,
+    },
+    SnapshotStaleSequence {
+        current: Option<Sequence>,
+        snapshot: Option<Sequence>,
+    },
     SnapshotInvalid(&'static str),
     /// A compiled action table already holds this action id.
     DuplicateAction(u32),
@@ -48,7 +103,11 @@ impl fmt::Display for CombatError {
             Self::TickRateOutOfRange(hz) => write!(f, "tick rate {hz} Hz is outside 1..=1000"),
             Self::TickArithmeticOverflow => write!(f, "tick arithmetic overflowed"),
             Self::TimeWentBackwards { now, requested } => {
-                write!(f, "time cannot move backwards from {} to {}", now.0, requested.0)
+                write!(
+                    f,
+                    "time cannot move backwards from {} to {}",
+                    now.0, requested.0
+                )
             }
             Self::AdvanceTooLarge { from, to, limit } => write!(
                 f,
@@ -56,10 +115,18 @@ impl fmt::Display for CombatError {
                 from.0, to.0
             ),
             Self::SessionMismatch { expected, got } => {
-                write!(f, "input session {} does not match active session {}", got.0, expected.0)
+                write!(
+                    f,
+                    "input session {} does not match active session {}",
+                    got.0, expected.0
+                )
             }
             Self::PlayerMismatch { expected, got } => {
-                write!(f, "input player {} does not match active player {}", got.0, expected.0)
+                write!(
+                    f,
+                    "input player {} does not match active player {}",
+                    got.0, expected.0
+                )
             }
             Self::ActionRevisionMismatch { expected, got } => write!(
                 f,
@@ -70,7 +137,11 @@ impl fmt::Display for CombatError {
                 write!(f, "input sequence {} was already accepted", last.0)
             }
             Self::StaleSequence { last, got } => {
-                write!(f, "input sequence {} is older than accepted sequence {}", got.0, last.0)
+                write!(
+                    f,
+                    "input sequence {} is older than accepted sequence {}",
+                    got.0, last.0
+                )
             }
             Self::SequenceGapTooLarge { last, got, limit } => write!(
                 f,
@@ -97,7 +168,10 @@ impl fmt::Display for CombatError {
             Self::PlayerDead => write!(f, "the player is dead"),
             Self::EnemyDead => write!(f, "the enemy is dead"),
             Self::EnemyBusy => write!(f, "the enemy already has a telegraph in progress"),
-            Self::SessionNotAdvanced { previous, requested } => write!(
+            Self::SessionNotAdvanced {
+                previous,
+                requested,
+            } => write!(
                 f,
                 "reconnect session {} is not newer than {}",
                 requested.0, previous.0

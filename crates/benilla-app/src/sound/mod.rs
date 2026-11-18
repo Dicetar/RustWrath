@@ -585,7 +585,9 @@ fn poll_mix_health(
     let lead_min_ms = window.lead_min_ms.map(|v| v.round() as i64);
     let ring_min_ms = window.ring_min_ms.map(|v| v.round() as i64);
     if let Some(trace) = &trace {
-        trace.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
+        trace.observe(
+            view.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+            None,
             crate::quest_trace::Stage::AudioHealth {
                 over_full_scale_samples: level.over,
                 nonfinite_samples: level.nonfinite,
@@ -602,7 +604,8 @@ fn poll_mix_health(
                 cycle_ms: window.cycle_ms.round() as u64,
                 chunk_ms: window.chunk_ms.round() as u64,
                 peak_load_percent: (peak * 100.0).round() as u32,
-            });
+            },
+        );
     }
     if new_refused > 0 {
         warn!(

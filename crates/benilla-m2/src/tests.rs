@@ -85,7 +85,11 @@ fn a_wrath_track_flattens_per_sequence_arrays_behind_windows() {
     let m = fmt.model();
     assert_eq!(m.transparency_tracks.len(), 1);
     let t = &m.transparency_tracks[0];
-    assert_eq!(t.keys.len(), 3, "both sequences' keys flatten in file order");
+    assert_eq!(
+        t.keys.len(),
+        3,
+        "both sequences' keys flatten in file order"
+    );
     assert_eq!(
         t.ranges,
         vec![(0, 1), (2, 2)],
@@ -165,7 +169,10 @@ fn a_wrath_empty_sequence_holds_a_neighbour_without_overlapping_windows() {
             t.ranges
         );
     }
-    assert!(t.ranges.iter().all(|&(_, hi)| hi as usize <= t.keys.len() - 1));
+    assert!(t
+        .ranges
+        .iter()
+        .all(|&(_, hi)| hi as usize <= t.keys.len() - 1));
 }
 
 /// A global-sequence track reads its first nested timeline and retains its global clock,
@@ -184,7 +191,10 @@ fn a_wrath_global_sequence_track_reads_first_nested_timeline() {
     let fmt = parse(&b).expect("a wrath gseq fixture parses");
     let t = &fmt.model().transparency_tracks[0];
     assert_eq!(t.gseq, 3);
-    assert!(t.ranges.is_empty(), "a global sequence has no per-slot windows");
+    assert!(
+        t.ranges.is_empty(),
+        "a global sequence has no per-slot windows"
+    );
     assert_eq!(t.keys.len(), 2);
     assert_eq!(t.keys[0].0, 0);
     assert_eq!(t.keys[1].0, 250);
@@ -767,9 +777,17 @@ fn wrath_camera_uses_its_header_stride_and_bases() {
     b[4..8].copy_from_slice(&264u32.to_le_bytes());
     set_arr(&mut b, 0x110, 1, record as u32);
     set_arr(&mut b, 0x118, 1, 0x140);
-    for (offset, value) in [(4, 0.8f32), (8, 1000.0), (12, 0.1),
-        (0x24, 10.0), (0x28, 20.0), (0x2c, 30.0),
-        (0x44, 40.0), (0x48, 50.0), (0x4c, 60.0)] {
+    for (offset, value) in [
+        (4, 0.8f32),
+        (8, 1000.0),
+        (12, 0.1),
+        (0x24, 10.0),
+        (0x28, 20.0),
+        (0x2c, 30.0),
+        (0x44, 40.0),
+        (0x48, 50.0),
+        (0x4c, 60.0),
+    ] {
         b[record + offset..record + offset + 4].copy_from_slice(&value.to_le_bytes());
     }
     let cameras = parse_cameras(&b);
@@ -778,7 +796,10 @@ fn wrath_camera_uses_its_header_stride_and_bases() {
     assert_eq!(cameras[0].target_base, [40.0, 50.0, 60.0]);
     assert_eq!(parse_camera_lookup(&b), vec![0]);
     b.pop();
-    assert!(parse_cameras(&b).is_empty(), "a partial record must not become a camera");
+    assert!(
+        parse_cameras(&b).is_empty(),
+        "a partial record must not become a camera"
+    );
 }
 
 #[test]

@@ -465,9 +465,14 @@ impl SelfCancel<'_> {
     fn cancel_inflight(&mut self, failed: bool, why: &str) {
         let self_e = self.self_entity();
         let wire_spell = (!self.ground.active())
-            .then(|| inflight(&self.pending, &self.queued_melee, &self.ground).map(|s| s.spell_id()))
+            .then(|| {
+                inflight(&self.pending, &self.queued_melee, &self.ground).map(|s| s.spell_id())
+            })
             .flatten();
-        let scope = self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation));
+        let scope = self
+            .wrath_view
+            .as_ref()
+            .map(|v| (v.session_epoch, v.world_generation));
         let cancel_trace = if let Some(trace) = self.trace.as_deref() {
             let ix = trace.begin(scope, None, crate::quest_trace::Operation::Observed);
             // The cancel carries a new local interaction; the recorder joins it to the written
@@ -595,7 +600,10 @@ impl SelfCancel<'_> {
                     if *crate::net::CAST_TRACE {
                         info!("cast-trace: LOCAL channel self-cancel — spell {spell_id}, CMSG_CANCEL_CHANNELLING");
                     }
-                    let scope = self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation));
+                    let scope = self
+                        .wrath_view
+                        .as_ref()
+                        .map(|v| (v.session_epoch, v.world_generation));
                     let cancel_trace = if let Some(trace) = self.trace.as_deref() {
                         let ix = trace.begin(scope, None, crate::quest_trace::Operation::Observed);
                         ix.record(crate::quest_trace::Stage::Cast {
@@ -953,7 +961,10 @@ mod tests {
             assert!(
                 matches!(
                     rx.try_recv(),
-                    Ok(crate::net::ClientCommand::CancelCast { spell_id: FIREBALL, .. })
+                    Ok(crate::net::ClientCommand::CancelCast {
+                        spell_id: FIREBALL,
+                        ..
+                    })
                 ),
                 "the move edge ships CMSG_CANCEL_CAST for the in-flight cast"
             );
@@ -1199,7 +1210,10 @@ mod tests {
             assert!(
                 matches!(
                     rx.try_recv(),
-                    Ok(crate::net::ClientCommand::CancelCast { spell_id: FIREBALL, .. })
+                    Ok(crate::net::ClientCommand::CancelCast {
+                        spell_id: FIREBALL,
+                        ..
+                    })
                 ),
                 "the second press reaches the cast half"
             );
@@ -1404,7 +1418,10 @@ mod tests {
             assert!(
                 matches!(
                     rx.try_recv(),
-                    Ok(crate::net::ClientCommand::CancelCast { spell_id: FIREBALL, .. })
+                    Ok(crate::net::ClientCommand::CancelCast {
+                        spell_id: FIREBALL,
+                        ..
+                    })
                 ),
                 "the nested cast is what sits in the inflight slot — it dies first"
             );
@@ -1567,7 +1584,10 @@ mod tests {
             run(&mut app, true);
             assert!(matches!(
                 rx.try_recv(),
-                Ok(crate::net::ClientCommand::CancelCast { spell_id: FIREBALL, .. })
+                Ok(crate::net::ClientCommand::CancelCast {
+                    spell_id: FIREBALL,
+                    ..
+                })
             ));
             let self_e = app.world().resource::<GuidIndex>().0[&10];
             assert!(
@@ -1597,7 +1617,10 @@ mod tests {
             run(&mut app, true);
             assert!(matches!(
                 rx.try_recv(),
-                Ok(crate::net::ClientCommand::CancelCast { spell_id: FIREBALL, .. })
+                Ok(crate::net::ClientCommand::CancelCast {
+                    spell_id: FIREBALL,
+                    ..
+                })
             ));
             let self_e = app.world().resource::<GuidIndex>().0[&10];
             assert!(
@@ -1638,7 +1661,10 @@ mod tests {
             assert_eq!(stop_casting(&mut app), Some(1));
             assert!(matches!(
                 rx.try_recv(),
-                Ok(crate::net::ClientCommand::CancelCast { spell_id: FIREBALL, .. })
+                Ok(crate::net::ClientCommand::CancelCast {
+                    spell_id: FIREBALL,
+                    ..
+                })
             ));
             assert_eq!(app.world().resource::<PendingCast>().current(), None);
         }
@@ -1673,4 +1699,3 @@ mod tests {
         assert_eq!(ch.current(t0), None);
     }
 }
-

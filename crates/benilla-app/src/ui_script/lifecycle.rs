@@ -290,7 +290,11 @@ fn build_vm<E: std::fmt::Display>(
         script.lua().srand(1);
     }
     install_addon_asset_resolvers(world, &mut script);
-    info!("ui_script: new {:?} VM, session {}", script.target(), script.session());
+    info!(
+        "ui_script: new {:?} VM, session {}",
+        script.target(),
+        script.session()
+    );
     if script.target() == UiTarget::Wrath335 {
         warn!("ui_script: Wrath host source integration is incomplete; addon/API and rendered acceptance remain unverified");
     }
@@ -831,7 +835,8 @@ fn load_ingame_ui_seated_with(world: &mut World, seat: LoadSeat, prepared: Optio
     }
     // Ensure unit frames whose unit does not exist are hidden, preventing orphaned empty frames
     // (TargetFrame, FocusFrame, Boss1..4TargetFrame) from cluttering the screen at initial load.
-    let _ = script.run(r#"
+    let _ = script.run(
+        r#"
         local units = {
             TargetFrame = "target",
             FocusFrame = "focus",
@@ -848,7 +853,8 @@ fn load_ingame_ui_seated_with(world: &mut World, seat: LoadSeat, prepared: Optio
                 end
             end
         end
-    "#);
+    "#,
+    );
     // The load is over: disarm its instruction bound, so no handler is killed for being slow.
     script.clear_instruction_budget();
     world.insert_non_send_resource(script);
@@ -1271,7 +1277,10 @@ pub(crate) fn run_pending_reload(world: &mut World) {
             Some(reader) => match reader.stage_content_revision(RELOAD_CONTENT_INPUTS) {
                 Ok(staged) => Some((reader, staged)),
                 Err(error) => {
-                    refuse_reload(world, format!("the candidate content revision is not coherent: {error}"));
+                    refuse_reload(
+                        world,
+                        format!("the candidate content revision is not coherent: {error}"),
+                    );
                     return;
                 }
             },
@@ -1308,9 +1317,10 @@ pub(crate) fn run_pending_reload(world: &mut World) {
             script.map(|script| (script.session(), script.diagnostic_counters()))
         });
         let old_vm_session = rows.as_ref().map(|(vm_session, _)| *vm_session);
-        if let (Some((vm_session, rows)), Some(mut cursor)) =
-            (rows, world.get_resource_mut::<crate::quest_trace::ScriptCursor>())
-        {
+        if let (Some((vm_session, rows)), Some(mut cursor)) = (
+            rows,
+            world.get_resource_mut::<crate::quest_trace::ScriptCursor>(),
+        ) {
             trace.capture_script_counts(reload_scope, &mut cursor, vm_session, &rows);
         }
         // Recorded before disposal: the old VM's rows, session and generation are the evidence
@@ -2098,10 +2108,8 @@ mod tests {
         let _l = ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let home = std::env::temp_dir().join(format!(
-            "benilla-reload-refused-{}",
-            std::process::id()
-        ));
+        let home =
+            std::env::temp_dir().join(format!("benilla-reload-refused-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).expect("the pinned state folder");
         // A directory where the flat file belongs: `fs::read` fails with something other than
@@ -2122,7 +2130,10 @@ mod tests {
         for attempt in 1..=2 {
             world.insert_resource(ReloadUiPending(true));
             run_pending_reload(&mut world);
-            assert!(!world.resource::<ReloadUiPending>().0, "the request is consumed");
+            assert!(
+                !world.resource::<ReloadUiPending>().0,
+                "the request is consumed"
+            );
             let failure = world
                 .get_resource::<UiReloadFailure>()
                 .expect("a refusal is recorded");

@@ -13,11 +13,27 @@ use super::{decode_id, draw_layer_from_str, frame_handle_of, publish_global};
 
 fn script_kind(lua: &Lua, name: &str) -> Option<&'static str> {
     let extra: &[&'static str] = if lua.app_data_ref::<Model>().expect("model").target
-        == crate::script::UiTarget::Wrath335 {
-        &["OnTooltipSetItem", "OnTooltipSetUnit", "OnTooltipSetSpell", "OnAttributeChanged",
-          "PreClick", "PostClick", "OnEnable", "OnDisable", "OnMinMaxChanged"]
-    } else { &[] };
-    SCRIPT_KINDS.iter().chain(extra).copied().find(|kind| kind.eq_ignore_ascii_case(name))
+        == crate::script::UiTarget::Wrath335
+    {
+        &[
+            "OnTooltipSetItem",
+            "OnTooltipSetUnit",
+            "OnTooltipSetSpell",
+            "OnAttributeChanged",
+            "PreClick",
+            "PostClick",
+            "OnEnable",
+            "OnDisable",
+            "OnMinMaxChanged",
+        ]
+    } else {
+        &[]
+    };
+    SCRIPT_KINDS
+        .iter()
+        .chain(extra)
+        .copied()
+        .find(|kind| kind.eq_ignore_ascii_case(name))
 }
 
 /// Append `h` to `event`'s listener list unless it is there (`0x7021a8` → `0x702264`): the walk
@@ -47,15 +63,22 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
         // Installed Details uses this predicate before registering its chat listener.
         // Read the same membership store RegisterEvent/UnregisterEvent update; no new state.
-        m.set("IsEventRegistered", lua.create_function(
-            |lua, (this, name): (Table, String)| {
+        m.set(
+            "IsEventRegistered",
+            lua.create_function(|lua, (this, name): (Table, String)| {
                 let handle = frame_handle_of(lua, &this)?;
                 let model = lua.app_data_ref::<Model>().expect("model");
-                Ok(model.target.event_key(model.vm, &name).is_some_and(|event| {
-                    model.frame_events.get(&handle).is_some_and(|events| events.contains(event))
-                }))
-            },
-        )?)?;
+                Ok(model
+                    .target
+                    .event_key(model.vm, &name)
+                    .is_some_and(|event| {
+                        model
+                            .frame_events
+                            .get(&handle)
+                            .is_some_and(|events| events.contains(event))
+                    }))
+            })?,
+        )?;
     }
     m.set(
         "RegisterEvent",
@@ -130,24 +153,28 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
         lua.create_function(|lua, (this, name): (Table, String)| get_script(lua, &this, &name))?,
     )?;
     if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
-        m.set("HookScript", lua.create_function(|lua, (this, name, hook): (Table, String, Function)| {
-            let kind = script_kind(lua, &name)
-                .ok_or_else(|| mlua::Error::runtime(format!("HookScript: unsupported script '{name}'")))?;
-            let h = frame_handle_of(lua, &this)?;
-            let id = lua.app_data_mut::<Model>().expect("model").frame_id(h);
-            let original = match get_script(lua, &this, kind)? {
-                Value::Function(function) => Some(function),
-                _ => None,
-            };
-            if original.is_none() && !crate::script::event::has_script_hooks(lua, id, kind) {
-                set_script(lua, &this, kind, Some(hook))?;
-            } else {
-                let hook = crate::script::posthook::invocation(lua, hook)?;
-                crate::script::event::append_script_hook(lua, id, kind, hook)?;
-                set_script(lua, &this, kind, original)?;
-            }
-            Ok(true)
-        })?)?;
+        m.set(
+            "HookScript",
+            lua.create_function(|lua, (this, name, hook): (Table, String, Function)| {
+                let kind = script_kind(lua, &name).ok_or_else(|| {
+                    mlua::Error::runtime(format!("HookScript: unsupported script '{name}'"))
+                })?;
+                let h = frame_handle_of(lua, &this)?;
+                let id = lua.app_data_mut::<Model>().expect("model").frame_id(h);
+                let original = match get_script(lua, &this, kind)? {
+                    Value::Function(function) => Some(function),
+                    _ => None,
+                };
+                if original.is_none() && !crate::script::event::has_script_hooks(lua, id, kind) {
+                    set_script(lua, &this, kind, Some(hook))?;
+                } else {
+                    let hook = crate::script::posthook::invocation(lua, hook)?;
+                    crate::script::event::append_script_hook(lua, id, kind, hook)?;
+                    set_script(lua, &this, kind, original)?;
+                }
+                Ok(true)
+            })?,
+        )?;
     }
     // `HasScript(name)`: 1 if the widget can carry that script kind, else nil, whether or not one
     // is set. Answered from the flat `SCRIPT_KINDS`, so another type's kind reads 1 too, where the

@@ -123,7 +123,10 @@ fn on_talents_involuntarily_reset(In(ev): In<SessionEvent>, mut state: ResMut<Wr
 }
 
 fn on_talent_session_end(In(ev): In<SessionEvent>, mut state: ResMut<WrathTalentState>) {
-    if matches!(ev, SessionEvent::LoggedOut | SessionEvent::Disconnected { .. }) {
+    if matches!(
+        ev,
+        SessionEvent::LoggedOut | SessionEvent::Disconnected { .. }
+    ) {
         state.clear_session();
     }
 }
@@ -292,11 +295,7 @@ fn rank_of_spec(t: &Talent, spec: &TalentGroupInfo) -> u32 {
         })
 }
 
-fn rank_of_with_wrath(
-    t: &Talent,
-    known: &BTreeSet<u32>,
-    wrath: Option<&WrathTalentState>,
-) -> u32 {
+fn rank_of_with_wrath(t: &Talent, known: &BTreeSet<u32>, wrath: Option<&WrathTalentState>) -> u32 {
     let from_spells = rank_of(t, known);
     let from_spec = wrath
         .and_then(WrathTalentState::active_player_spec)
@@ -398,7 +397,11 @@ fn build_pet_talent_views(
     // first zero-mask pet tab in `TalentTab.dbc`.
     let matched_tab = pet_talents
         .iter()
-        .find_map(|&(talent_id, _)| catalog.talent_by_id(talent_id).and_then(|t| catalog.tab_by_id(t.tab)))
+        .find_map(|&(talent_id, _)| {
+            catalog
+                .talent_by_id(talent_id)
+                .and_then(|t| catalog.tab_by_id(t.tab))
+        })
         .or_else(|| catalog.pet_tabs().into_iter().next());
 
     if let Some(tab) = matched_tab {
@@ -1058,22 +1061,26 @@ mod tests {
         s.set_wrath_talents(wrath_ui);
 
         assert_eq!(
-            s.eval::<i64>("return GetNumTalentTabs(false, true)").unwrap(),
+            s.eval::<i64>("return GetNumTalentTabs(false, true)")
+                .unwrap(),
             1
         );
-        let (tab_name, _, spent, bg, preview): (String, String, i64, String, i64) =
-            s.eval("return GetTalentTabInfo(1, false, true, 1)").unwrap();
+        let (tab_name, _, spent, bg, preview): (String, String, i64, String, i64) = s
+            .eval("return GetTalentTabInfo(1, false, true, 1)")
+            .unwrap();
         assert_eq!(tab_name, "Ferocity");
         assert_eq!(spent, 1);
         assert_eq!(bg, "HunterPetFerocity");
         assert_eq!(preview, 0);
 
         assert_eq!(
-            s.eval::<i64>("return GetNumTalents(1, false, true)").unwrap(),
+            s.eval::<i64>("return GetNumTalents(1, false, true)")
+                .unwrap(),
             2
         );
-        let (t_name, _, tier, col, rank, max_rank): (String, String, i64, i64, i64, i64) =
-            s.eval("return GetTalentInfo(1, 1, false, true, 1)").unwrap();
+        let (t_name, _, tier, col, rank, max_rank): (String, String, i64, i64, i64, i64) = s
+            .eval("return GetTalentInfo(1, 1, false, true, 1)")
+            .unwrap();
         assert_eq!(t_name, "Cobra Reflexes");
         assert_eq!((tier, col, rank, max_rank), (1, 1, 1, 2));
 

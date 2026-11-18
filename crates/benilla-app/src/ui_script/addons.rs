@@ -113,7 +113,9 @@ impl Addon {
     fn chunk_name(&self, file: &str, path: &str) -> String {
         match &self.source {
             Source::Builtin => benilla_ui::script::addon_chunk_name(&self.name, file),
-            Source::Dir(_) | Source::Chain | Source::ChainAddon => format!("@{}", path.replace('/', "\\")),
+            Source::Dir(_) | Source::Chain | Source::ChainAddon => {
+                format!("@{}", path.replace('/', "\\"))
+            }
         }
     }
 
@@ -162,7 +164,9 @@ impl Addon {
                 // the package's fault, which the reference skips silently, and an ERROR line fails
                 // `smoke.sh`.
                 match self.source {
-                    Source::Builtin | Source::Chain | Source::ChainAddon => error!("ui_script: {e}"),
+                    Source::Builtin | Source::Chain | Source::ChainAddon => {
+                        error!("ui_script: {e}")
+                    }
                     Source::Dir(_) => warn!("ui_script: {e}"),
                 }
                 // Retained for the player: the commonest way an addon fails with nothing on screen.
@@ -200,42 +204,44 @@ impl Addon {
             };
             // The loader resolves relative references against the document's own directory, and
             // names the file a raise came from.
-            let (mut report, timings) = if let (Some(read_start), Some(parse_start)) =
-                (read_start, parse_start)
-            {
-                let dependency_read = Cell::new(Duration::ZERO);
-                let timed_provider = |req: &str| {
-                    let started = Instant::now();
-                    let bytes = provider(req);
-                    dependency_read.set(dependency_read.get() + started.elapsed());
-                    bytes
+            let (mut report, timings) =
+                if let (Some(read_start), Some(parse_start)) = (read_start, parse_start) {
+                    let dependency_read = Cell::new(Duration::ZERO);
+                    let timed_provider = |req: &str| {
+                        let started = Instant::now();
+                        let bytes = provider(req);
+                        dependency_read.set(dependency_read.get() + started.elapsed());
+                        bytes
+                    };
+                    let log_item = |document: &str, phase: &str, item: &str, elapsed: Duration| {
+                        if elapsed >= Duration::from_millis(100) {
+                            let ms = elapsed.as_millis();
+                            info!("wrath chat load: {document} {phase} {item} elapsed_ms={ms}");
+                        }
+                    };
+                    let build_start = Instant::now();
+                    let report = benilla_ui::loader::load_in_timed(
+                        script,
+                        &doc,
+                        &path,
+                        &timed_provider,
+                        &log_item,
+                    );
+                    let build_end = Instant::now();
+                    let timings = (
+                        parse_start.duration_since(read_start),
+                        build_start.duration_since(parse_start),
+                        build_end.duration_since(build_start),
+                        dependency_read.get(),
+                        build_end,
+                    );
+                    (report, Some(timings))
+                } else {
+                    (
+                        benilla_ui::loader::load_in(script, &doc, &path, &provider),
+                        None,
+                    )
                 };
-                let log_item = |document: &str, phase: &str, item: &str, elapsed: Duration| {
-                    if elapsed >= Duration::from_millis(100) {
-                        let ms = elapsed.as_millis();
-                        info!("wrath chat load: {document} {phase} {item} elapsed_ms={ms}");
-                    }
-                };
-                let build_start = Instant::now();
-                let report = benilla_ui::loader::load_in_timed(
-                    script,
-                    &doc,
-                    &path,
-                    &timed_provider,
-                    &log_item,
-                );
-                let build_end = Instant::now();
-                let timings = (
-                    parse_start.duration_since(read_start),
-                    build_start.duration_since(parse_start),
-                    build_end.duration_since(build_start),
-                    dependency_read.get(),
-                    build_end,
-                );
-                (report, Some(timings))
-            } else {
-                (benilla_ui::loader::load_in(script, &doc, &path, &provider), None)
-            };
             std::mem::take(&mut report.status).close_into(
                 toc,
                 script.framexml_debug(),
@@ -257,7 +263,9 @@ impl Addon {
             for m in &report.missing_files {
                 let e = format!("{}/{file}: {m}", self.name);
                 match self.source {
-                    Source::Builtin | Source::Chain | Source::ChainAddon => error!("ui_script: {e}"),
+                    Source::Builtin | Source::Chain | Source::ChainAddon => {
+                        error!("ui_script: {e}")
+                    }
                     Source::Dir(_) => warn!("ui_script: {e}"),
                 }
                 script.report_load_failure(&e);
@@ -361,7 +369,8 @@ pub(crate) fn roots() -> Vec<PathBuf> {
                 }
             }
         }
-        let win_default = PathBuf::from(r"D:\Projects\wow\server\world of warcraft 3.3.5a hd\Interface\AddOns");
+        let win_default =
+            PathBuf::from(r"D:\Projects\wow\server\world of warcraft 3.3.5a hd\Interface\AddOns");
         if win_default.is_dir() && !out.contains(&win_default) {
             out.push(win_default);
         }
@@ -401,14 +410,17 @@ const BLIZZARD_ADDONS: [&str; 12] = [
 /// startup addons. Vanilla retains its twelve known LoadOnDemand archive rows.
 fn chain_addons() -> Vec<Addon> {
     if crate::wrath::selected_from_env() {
-        return super::reference_ui::addon_manifests().into_iter().filter_map(|(name, path)| {
-            let bytes = super::reference_ui::read(&path)?;
-            Some(Addon {
-                name,
-                toc: Toc::parse(&benilla_ui::source::decode(&bytes)),
-                source: Source::ChainAddon,
+        return super::reference_ui::addon_manifests()
+            .into_iter()
+            .filter_map(|(name, path)| {
+                let bytes = super::reference_ui::read(&path)?;
+                Some(Addon {
+                    name,
+                    toc: Toc::parse(&benilla_ui::source::decode(&bytes)),
+                    source: Source::ChainAddon,
+                })
             })
-        }).collect();
+            .collect();
     }
     BLIZZARD_ADDONS
         .iter()
@@ -908,7 +920,9 @@ fn seed_saved_variables_from_wtf(addons: &[Addon]) {
         if dest.exists() {
             continue;
         }
-        let root_sv = wtf.join("SavedVariables").join(format!("{}.lua", addon.name));
+        let root_sv = wtf
+            .join("SavedVariables")
+            .join(format!("{}.lua", addon.name));
         if root_sv.is_file() {
             if let Ok(bytes) = std::fs::read(&root_sv) {
                 let _ = std::fs::write(&dest, bytes);
@@ -1123,7 +1137,10 @@ impl benilla_ui::script::AddonLoad for Walk<'_> {
         match reason {
             "DISABLED" => {
                 info!("ui_script: {} is disabled — not loaded", addon.name);
-                warn!("diag[ADDON] {} is DISABLED in AddOn enable configuration", addon.name);
+                warn!(
+                    "diag[ADDON] {} is DISABLED in AddOn enable configuration",
+                    addon.name
+                );
             }
             "INTERFACE_VERSION" => {
                 info!(
@@ -1156,7 +1173,10 @@ impl benilla_ui::script::AddonLoad for Walk<'_> {
             self.all[i].name
         );
         error!("ui_script: {e}");
-        warn!("diag[ADDON] {} dependency failed: {}", self.all[i].name, dep);
+        warn!(
+            "diag[ADDON] {} dependency failed: {}",
+            self.all[i].name, dep
+        );
         // Retained for the player, who can usually fix it by installing the dependency.
         self.script.report_load_failure(&e);
         self.failures.push(e);

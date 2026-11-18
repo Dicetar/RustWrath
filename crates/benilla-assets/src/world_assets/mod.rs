@@ -13,8 +13,8 @@ use bevy::render::render_resource::{Buffer, Face};
 use crate::materials::{WowModelExt, WowModelMaterial, VANILLA_ALPHA_KEY_REF};
 use crate::SpatialCache;
 use benilla_formats::{
-    blp_to_rgba, blp_to_rgba_base, read_texture_native_chain, tga_texture_size, tga_to_rgba, Chain, ModelBlend,
-    TGA_GATE_PREFIX,
+    blp_to_rgba, blp_to_rgba_base, read_texture_native_chain, tga_texture_size, tga_to_rgba, Chain,
+    ModelBlend, TGA_GATE_PREFIX,
 };
 pub use benilla_formats::{LooseFile, LooseIndex, LooseIndexCell, LooseOpen};
 

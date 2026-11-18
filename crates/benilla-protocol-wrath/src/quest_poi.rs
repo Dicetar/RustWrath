@@ -39,9 +39,13 @@ pub fn query(quest_ids: &[u32]) -> Result<Vec<u8>> {
 /// Decode a complete response, checking counts against the remaining bytes before allocating.
 pub fn decode_response(mut bytes: &[u8]) -> Result<Vec<QuestPoi>> {
     fn word(bytes: &mut &[u8]) -> Result<u32> {
-        let (head, rest) = bytes.split_at_checked(4).context("truncated quest POI response")?;
+        let (head, rest) = bytes
+            .split_at_checked(4)
+            .context("truncated quest POI response")?;
         *bytes = rest;
-        Ok(u32::from_le_bytes(head.try_into().expect("four-byte slice")))
+        Ok(u32::from_le_bytes(
+            head.try_into().expect("four-byte slice"),
+        ))
     }
     fn count(bytes: &mut &[u8], min_size: usize) -> Result<usize> {
         let n = word(bytes)? as usize;
@@ -69,10 +73,24 @@ pub fn decode_response(mut bytes: &[u8]) -> Result<Vec<QuestPoi>> {
             for _ in 0..points {
                 coordinates.push((word(&mut bytes)? as i32, word(&mut bytes)? as i32));
             }
-            records.push(QuestPoiBlob { id, objective_index, map_id, world_map_area_id, floor, priority, flags, points: coordinates });
+            records.push(QuestPoiBlob {
+                id,
+                objective_index,
+                map_id,
+                world_map_area_id,
+                floor,
+                priority,
+                flags,
+                points: coordinates,
+            });
         }
-        result.push(QuestPoi { quest_id, blobs: records });
+        result.push(QuestPoi {
+            quest_id,
+            blobs: records,
+        });
     }
-    if !bytes.is_empty() { bail!("trailing bytes in quest POI response"); }
+    if !bytes.is_empty() {
+        bail!("trailing bytes in quest POI response");
+    }
     Ok(result)
 }

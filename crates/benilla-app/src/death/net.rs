@@ -316,7 +316,10 @@ mod tests {
         resurrect_request_for_tests(0x9, &mut death);
         assert_eq!(death.resurrect.as_ref().map(|o| o.caster), Some(0x9));
         assert_eq!(death.resurrect_generation, 1);
-        assert!(death.resurrect.take().is_some(), "the answer takes the offer");
+        assert!(
+            death.resurrect.take().is_some(),
+            "the answer takes the offer"
+        );
         resurrect_request_for_tests(0xA, &mut death);
         assert_eq!(death.resurrect_generation, 2);
         assert_eq!(death.resurrect.as_ref().map(|o| o.caster), Some(0xA));
@@ -342,7 +345,13 @@ mod tests {
         };
 
         let mut death = DeathNet::default();
-        note_corpse(BODY, EntityKind::Corpse, &corpse_fields(ME, None), &me, &mut death);
+        note_corpse(
+            BODY,
+            EntityKind::Corpse,
+            &corpse_fields(ME, None),
+            &me,
+            &mut death,
+        );
         assert_eq!(death.corpse_guid, Some(BODY), "our body arms the reclaim");
 
         // Another player's body must not steal the latch.

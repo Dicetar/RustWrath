@@ -145,7 +145,11 @@ const fn deviates(
 }
 
 /// A row the reference has no counterpart for.
-pub(super) const fn ours(name: &'static str, default: &'static str, why: &'static str) -> Registered {
+pub(super) const fn ours(
+    name: &'static str,
+    default: &'static str,
+    why: &'static str,
+) -> Registered {
     Registered {
         name,
         default,

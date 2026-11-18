@@ -347,7 +347,10 @@ impl SoulsConfig {
                 return;
             }
             Err(error) => {
-                warn!("souls config: {} could not be read: {error}", path.display());
+                warn!(
+                    "souls config: {} could not be read: {error}",
+                    path.display()
+                );
                 return;
             }
         };
@@ -388,7 +391,9 @@ fn resolve(file: SoulsFile) -> Result<SoulsConfig, String> {
         .iter()
         .map(|name| match parse_key(name) {
             Some(SoulsKey::Key(code)) => Ok(code),
-            _ => Err(format!("controls.cursor_keys: unknown keyboard key `{name}`")),
+            _ => Err(format!(
+                "controls.cursor_keys: unknown keyboard key `{name}`"
+            )),
         })
         .collect::<Result<Vec<_>, _>>()?;
     let quick_item = file.controls.quick_item.trim().to_ascii_uppercase();
@@ -526,12 +531,27 @@ mod tests {
         .expect("a valid file");
         assert!(!config.features.root_motion);
         assert!(config.features.lock_on);
-        assert_eq!(config.binds.heavy, SoulsBind::plain(SoulsKey::Key(KeyCode::KeyG)));
-        assert_eq!(config.binds.guard, SoulsBind::plain(SoulsKey::Mouse(MouseButton::Back)));
-        assert_eq!(config.binds.light, SoulsBind::plain(SoulsKey::Mouse(MouseButton::Left)));
-        assert_eq!(config.binds.parry, SoulsBind::shifted(SoulsKey::Mouse(MouseButton::Right)));
+        assert_eq!(
+            config.binds.heavy,
+            SoulsBind::plain(SoulsKey::Key(KeyCode::KeyG))
+        );
+        assert_eq!(
+            config.binds.guard,
+            SoulsBind::plain(SoulsKey::Mouse(MouseButton::Back))
+        );
+        assert_eq!(
+            config.binds.light,
+            SoulsBind::plain(SoulsKey::Mouse(MouseButton::Left))
+        );
+        assert_eq!(
+            config.binds.parry,
+            SoulsBind::shifted(SoulsKey::Mouse(MouseButton::Right))
+        );
         assert_eq!(config.controls.cursor_keys.first(), Some(&KeyCode::Escape));
-        assert_eq!(SoulsConfig::from_text("").expect("empty"), SoulsConfig::default());
+        assert_eq!(
+            SoulsConfig::from_text("").expect("empty"),
+            SoulsConfig::default()
+        );
 
         let bad_key = SoulsConfig::from_text("[binds]\nlight = \"F10\"\n").unwrap_err();
         assert!(bad_key.contains("F10"), "{bad_key}");

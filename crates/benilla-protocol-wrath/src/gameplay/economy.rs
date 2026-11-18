@@ -13,11 +13,23 @@ use anyhow::Result;
 /// `MailHandler.cpp::HandleSendMail`: one attachment is all the current compose UI owns.
 /// NUL in a string cannot be represented in the protocol's terminated fields.
 pub fn send_mail(
-    mailbox: u64, receiver: &str, subject: &str, body: &str, stationery: u32,
-    item_guid: u64, money: u32, cod: u32,
+    mailbox: u64,
+    receiver: &str,
+    subject: &str,
+    body: &str,
+    stationery: u32,
+    item_guid: u64,
+    money: u32,
+    cod: u32,
 ) -> Option<Vec<u8>> {
-    if [receiver, subject, body].iter().any(|value| value.as_bytes().contains(&0))
-        || receiver.len().saturating_add(subject.len()).saturating_add(body.len()) > 10189
+    if [receiver, subject, body]
+        .iter()
+        .any(|value| value.as_bytes().contains(&0))
+        || receiver
+            .len()
+            .saturating_add(subject.len())
+            .saturating_add(body.len())
+            > 10189
     {
         return None;
     }
@@ -91,8 +103,12 @@ pub fn read_buy_bank_slot_result(body: &[u8]) -> Result<u32> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TradeStatus {
     Busy,
-    BeginTrade { partner: u64 },
-    OpenWindow { trade_id: u32 },
+    BeginTrade {
+        partner: u64,
+    },
+    OpenWindow {
+        trade_id: u32,
+    },
     Canceled,
     Accept,
     Busy2,
@@ -115,8 +131,12 @@ pub enum TradeStatus {
     YouLogout,
     TargetLogout,
     TrialAccount,
-    WrongRealm { slot: u8 },
-    NotOnTapList { slot: u8 },
+    WrongRealm {
+        slot: u8,
+    },
+    NotOnTapList {
+        slot: u8,
+    },
     Unknown(u32),
 }
 
@@ -130,12 +150,8 @@ pub fn read_trade_status(body: &[u8]) -> Result<TradeStatus> {
     let status = r.u32()?;
     let decoded = match status {
         0 => TradeStatus::Busy,
-        1 => TradeStatus::BeginTrade {
-            partner: r.u64()?,
-        },
-        2 => TradeStatus::OpenWindow {
-            trade_id: r.u32()?,
-        },
+        1 => TradeStatus::BeginTrade { partner: r.u64()? },
+        2 => TradeStatus::OpenWindow { trade_id: r.u32()? },
         3 => TradeStatus::Canceled,
         4 => TradeStatus::Accept,
         5 => TradeStatus::Busy2,
@@ -368,14 +384,18 @@ pub fn read_mail_list_result(body: &[u8]) -> Result<MailList> {
     let real_count = r.u32()?;
     let shown_count = r.u8()?;
     if usize::from(shown_count) > MAX_INBOX_CLIENT_CAPACITY {
-        return Err(DecodeError::invalid_count("mail list exceeds the client inbox cap")
-            .with_value(u32::from(shown_count))
-            .into());
+        return Err(
+            DecodeError::invalid_count("mail list exceeds the client inbox cap")
+                .with_value(u32::from(shown_count))
+                .into(),
+        );
     }
     if real_count < u32::from(shown_count) {
-        return Err(DecodeError::invalid_count("mail real count below shown count")
-            .with_value(real_count)
-            .into());
+        return Err(
+            DecodeError::invalid_count("mail real count below shown count")
+                .with_value(real_count)
+                .into(),
+        );
     }
     let mut mails = Vec::with_capacity(usize::from(shown_count));
     for _ in 0..shown_count {
@@ -422,15 +442,19 @@ fn read_mail_entry(r: &mut Reader<'_>) -> Result<MailEntry> {
     for _ in 0..attachment_count {
         let index = r.u8()?;
         if index >= 16 {
-            return Err(DecodeError::invalid_value("mail attachment index out of range")
-                .with_value(u32::from(index))
-                .into());
+            return Err(
+                DecodeError::invalid_value("mail attachment index out of range")
+                    .with_value(u32::from(index))
+                    .into(),
+            );
         }
         let bit = 1u32 << index;
         if used & bit != 0 {
-            return Err(DecodeError::invalid_value("duplicate mail attachment index")
-                .with_value(u32::from(index))
-                .into());
+            return Err(
+                DecodeError::invalid_value("duplicate mail attachment index")
+                    .with_value(u32::from(index))
+                    .into(),
+            );
         }
         used |= bit;
 
@@ -463,9 +487,11 @@ fn read_mail_entry(r: &mut Reader<'_>) -> Result<MailEntry> {
 
     let consumed = before - r.remaining();
     if !mail_size_matches(size, consumed) {
-        return Err(DecodeError::invalid_value("mail size does not match its record")
-            .with_value(u32::from(size))
-            .into());
+        return Err(
+            DecodeError::invalid_value("mail size does not match its record")
+                .with_value(u32::from(size))
+                .into(),
+        );
     }
 
     Ok(MailEntry {
@@ -564,9 +590,11 @@ pub fn read_next_mail_time(body: &[u8]) -> Result<(f32, Vec<MailSenderInfo>)> {
     let next = r.f32()?;
     let count = r.u32()?;
     if count > 3 {
-        return Err(DecodeError::invalid_count("next mail time has more than three senders")
-            .with_value(count)
-            .into());
+        return Err(
+            DecodeError::invalid_count("next mail time has more than three senders")
+                .with_value(count)
+                .into(),
+        );
     }
     let mut senders = Vec::with_capacity(count as usize);
     for _ in 0..count {
@@ -713,9 +741,11 @@ fn read_auction_list(body: &[u8], cap: u32) -> Result<AuctionList> {
     let mut r = Reader::new(body);
     let count = r.u32()?;
     if count > cap {
-        return Err(DecodeError::invalid_count("auction list exceeds its page cap")
-            .with_value(count)
-            .into());
+        return Err(
+            DecodeError::invalid_count("auction list exceeds its page cap")
+                .with_value(count)
+                .into(),
+        );
     }
     let mut auctions = Vec::with_capacity(count as usize);
     for _ in 0..count {
@@ -855,7 +885,10 @@ mod tests {
             read_trade_status(&13u32.to_le_bytes()).unwrap(),
             TradeStatus::Unknown(13)
         );
-        assert_eq!(read_trade_status(&8u32.to_le_bytes()).unwrap(), TradeStatus::Complete);
+        assert_eq!(
+            read_trade_status(&8u32.to_le_bytes()).unwrap(),
+            TradeStatus::Complete
+        );
         let mut status_extra = 8u32.to_le_bytes().to_vec();
         status_extra.push(0);
         assert!(read_trade_status(&status_extra).is_err());
@@ -914,8 +947,7 @@ mod tests {
         let header = 1 + 4 * 5;
         let row = 1 + 72;
         for end in 0..body.len() {
-            let complete = end == header
-                || (end > header && (end - header) % row == 0);
+            let complete = end == header || (end > header && (end - header) % row == 0);
             assert_eq!(
                 read_trade_status_extended(&body[..end]).is_ok(),
                 complete,
@@ -1053,9 +1085,8 @@ mod tests {
         // field sequence, not the declared size.
         let mut server_sized = body.clone();
         let declared = u16::from_le_bytes([server_sized[5], server_sized[6]]);
-        server_sized[5..7].copy_from_slice(
-            &(declared + MAIL_SIZE_WRITER_SLACK as u16).to_le_bytes(),
-        );
+        server_sized[5..7]
+            .copy_from_slice(&(declared + MAIL_SIZE_WRITER_SLACK as u16).to_le_bytes());
         let server_list = read_mail_list_result(&server_sized).unwrap();
         assert_eq!(server_list.real_count, list.real_count);
         assert_eq!(server_list.mails.len(), list.mails.len());
@@ -1122,7 +1153,10 @@ mod tests {
         equip.extend_from_slice(&2u32.to_le_bytes());
         equip.extend_from_slice(&1u32.to_le_bytes());
         equip.extend_from_slice(&0x28u32.to_le_bytes());
-        assert_eq!(read_send_mail_result(&equip).unwrap().equip_error, Some(0x28));
+        assert_eq!(
+            read_send_mail_result(&equip).unwrap().equip_error,
+            Some(0x28)
+        );
 
         let mut item = 4u32.to_le_bytes().to_vec();
         item.extend_from_slice(&2u32.to_le_bytes());
@@ -1279,7 +1313,9 @@ mod tests {
         failed.extend_from_slice(&1u32.to_le_bytes());
         failed.extend_from_slice(&0x28u32.to_le_bytes());
         assert_eq!(
-            read_auction_command_result(&failed).unwrap().inventory_error,
+            read_auction_command_result(&failed)
+                .unwrap()
+                .inventory_error,
             Some(0x28)
         );
         // The server does not append the word for a non-zero error; the client would read past

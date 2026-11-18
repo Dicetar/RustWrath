@@ -17,9 +17,9 @@ pub(super) fn parse_spells(bytes: &[u8]) -> Result<(RecordSet, SpellLayout)> {
     let layout = match field_count(bytes) {
         Some(173) => SpellLayout::Vanilla,
         Some(234) => SpellLayout::Wrath,
-        Some(columns) => bail!(
-            "unsupported Spell.dbc layout: {columns} fields (expected 173 or 234)"
-        ),
+        Some(columns) => {
+            bail!("unsupported Spell.dbc layout: {columns} fields (expected 173 or 234)")
+        }
         None => bail!("parsing Spell.dbc header: truncated field count"),
     };
     let schema = match layout {
@@ -90,7 +90,8 @@ impl SpellLayout {
 
     pub(super) fn int(self, record: &Record, legacy: usize) -> Option<i32> {
         if matches!(self, Self::Wrath) {
-            if (super::COL_EFFECT_BASE_DICE_1..super::COL_EFFECT_BASE_DICE_1 + 3).contains(&legacy) {
+            if (super::COL_EFFECT_BASE_DICE_1..super::COL_EFFECT_BASE_DICE_1 + 3).contains(&legacy)
+            {
                 // SpellEffectInfo::CalcValue: a zero DieSides adds no roll; otherwise the
                 // roll includes 1. WotLK has no authored BaseDice or DicePerLevel columns.
                 let effect = legacy - super::COL_EFFECT_BASE_DICE_1;

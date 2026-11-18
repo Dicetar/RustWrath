@@ -143,5 +143,3 @@ fn cvar_int(lua: &Lua, name: &str) -> mlua::Result<Value> {
         .and_then(|slot| slot.value.trim().parse::<i64>().ok())
         .map_or(Value::Nil, Value::Integer))
 }
-
-

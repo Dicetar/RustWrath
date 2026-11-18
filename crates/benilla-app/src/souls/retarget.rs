@@ -34,8 +34,8 @@
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use bevy::prelude::*;
 use benilla_world::rig_anim::RigPose;
+use bevy::prelude::*;
 
 use super::{current_kit, running_action, souls_on, SoulsConfig, SoulsState, YARDS_PER_METRE};
 use crate::combat_kit::PlayerKit;
@@ -117,8 +117,20 @@ const JOINT_NAMES: [&str; JOINTS] = [
 const SPINE: [J; 6] = [J::Pelvis, J::Spine, J::Spine1, J::Spine2, J::Neck, J::Head];
 /// Clavicle to the middle knuckle, `[right, left]`.
 const ARMS: [[J; 5]; 2] = [
-    [J::RClavicle, J::RUpperArm, J::RForearm, J::RHand, J::RFinger2],
-    [J::LClavicle, J::LUpperArm, J::LForearm, J::LHand, J::LFinger2],
+    [
+        J::RClavicle,
+        J::RUpperArm,
+        J::RForearm,
+        J::RHand,
+        J::RFinger2,
+    ],
+    [
+        J::LClavicle,
+        J::LUpperArm,
+        J::LForearm,
+        J::LHand,
+        J::LFinger2,
+    ],
 ];
 /// Thigh to toe, `[right, left]`.
 const LEGS: [[J; 4]; 2] = [
@@ -275,7 +287,14 @@ impl ErClips {
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect();
             if frames > 0 && data.iter().all(|v| v.is_finite()) {
-                clips.insert(name, ErClip { blend, frames, data });
+                clips.insert(
+                    name,
+                    ErClip {
+                        blend,
+                        frames,
+                        data,
+                    },
+                );
             }
         }
         Ok(Self {
@@ -521,7 +540,11 @@ impl RigMap {
             lowest(true).ok_or("no right foot")?,
             lowest(false).ok_or("no left foot")?,
         ];
-        let hip_root = |toe: usize| ancestors(rig.parents, toe).into_iter().find(|&b| on_head_chain(b));
+        let hip_root = |toe: usize| {
+            ancestors(rig.parents, toe)
+                .into_iter()
+                .find(|&b| on_head_chain(b))
+        };
         let pelvis = hip_root(toes[0]).ok_or("the right leg does not join the spine")?;
         if hip_root(toes[1]) != Some(pelvis) {
             return Err("the legs hang from different bones".into());
@@ -662,7 +685,11 @@ impl RigMap {
             for (er_i, joint) in [(1, leg[1]), (2, leg[2])] {
                 let want = points[0].y * rest.at(joint).y / hip_y;
                 let pick = (floor + 1..last)
-                    .min_by(|&a, &b| (points[a].y - want).abs().total_cmp(&(points[b].y - want).abs()))
+                    .min_by(|&a, &b| {
+                        (points[a].y - want)
+                            .abs()
+                            .total_cmp(&(points[b].y - want).abs())
+                    })
                     .filter(|&i| (points[i].y - want).abs() < points[0].y * 0.1);
                 if let Some(i) = pick {
                     anchors.push((i, er_i));
@@ -799,7 +826,8 @@ impl Retarget {
         if self.pending.is_some() {
             return;
         }
-        let Some(path) = crate::local_state::souls_config_path().map(|p| p.with_file_name(CLIP_FILE))
+        let Some(path) =
+            crate::local_state::souls_config_path().map(|p| p.with_file_name(CLIP_FILE))
         else {
             return;
         };
@@ -853,7 +881,10 @@ impl Retarget {
             Ok((clips, rest))
         }) {
             Ok((clips, rest)) => {
-                info!("souls retarget: {} Elden Ring clips loaded", clips.clips.len());
+                info!(
+                    "souls retarget: {} Elden Ring clips loaded",
+                    clips.clips.len()
+                );
                 self.clips = Some(clips);
                 self.rest = Some(rest);
                 self.stamp = stamp;
@@ -998,7 +1029,9 @@ pub(super) fn drive_retarget(
     let bones = rig.locals.len();
     if let (Some(rest), true) = (
         r.rest.as_ref(),
-        r.map.as_ref().is_none_or(|(e, n, _)| *e != entity || *n != bones),
+        r.map
+            .as_ref()
+            .is_none_or(|(e, n, _)| *e != entity || *n != bones),
     ) {
         let built = map_rig(&rig, twist, attach, rest);
         if let Err(e) = &built {
@@ -1021,8 +1054,8 @@ pub(super) fn drive_retarget(
             let action = running.filter(|_| features.retarget).and_then(
                 |(kit, (instance, action, frame))| {
                     let clip = clips.clips.get(&action.source)?;
-                    let at = frame.0 as f32 / 1000.0 * CLIP_FPS
-                        / f32::from(kit.frame_rate_hz.max(1));
+                    let at =
+                        frame.0 as f32 / 1000.0 * CLIP_FPS / f32::from(kit.frame_rate_hz.max(1));
                     Some((ClipKey::Action(instance), at, false, clip.blend))
                 },
             );
@@ -1040,12 +1073,7 @@ pub(super) fn drive_retarget(
                 let (id, rate) = loco_clip(&souls, forward, right);
                 let clip = clips.named(id)?;
                 r.loco_clock += dt * rate;
-                Some((
-                    ClipKey::Loco(id),
-                    r.loco_clock * CLIP_FPS,
-                    true,
-                    clip.blend,
-                ))
+                Some((ClipKey::Loco(id), r.loco_clock * CLIP_FPS, true, clip.blend))
             });
         }
     }
@@ -1094,12 +1122,10 @@ pub(super) fn drive_retarget(
     }
     if let (Some((key, frame, looped, _)), Some(clips)) = (target, r.clips.as_ref()) {
         let clip = match key {
-            ClipKey::Action(_) => {
-                current_kit(&kit, &profiles).and_then(|kit| {
-                    let (_, action, _) = running_action(kit, &playback)?;
-                    clips.clips.get(&action.source)
-                })
-            }
+            ClipKey::Action(_) => current_kit(&kit, &profiles).and_then(|kit| {
+                let (_, action, _) = running_action(kit, &playback)?;
+                clips.clips.get(&action.source)
+            }),
             ClipKey::Loco(id) => clips.named(id),
         };
         if let Some(clip) = clip {

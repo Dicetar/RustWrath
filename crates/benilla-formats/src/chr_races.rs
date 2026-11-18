@@ -262,7 +262,11 @@ fn table_from_wrath(bytes: &[u8], locale_index: usize) -> Result<ChrRaces> {
         rows.insert(
             id,
             Row {
-                name: names.get(locale_index).cloned().flatten().unwrap_or_default(),
+                name: names
+                    .get(locale_index)
+                    .cloned()
+                    .flatten()
+                    .unwrap_or_default(),
                 file: str_at(&rs, r, WRATH_FILE_FIELD).unwrap_or_default(),
                 intro: u32_at(r, WRATH_INTRO_FIELD).unwrap_or(0),
                 expansion: u32_at(r, 68).unwrap_or(0),

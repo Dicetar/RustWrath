@@ -307,11 +307,8 @@ fn click_mask(model: &Model, h: FrameHandle, button: &str) -> UiClickMask {
 /// Whether a Lua `OnClick`-equivalent handler (or hook) is bound: the Wrath three-script slot,
 /// else `OnClick`. Read from the registry, never the name.
 pub(super) fn has_click_handler(lua: &mlua::Lua, id: u32) -> bool {
-    let wrath = lua
-        .app_data_ref::<Model>()
-        .expect("model app_data")
-        .target
-        == super::UiTarget::Wrath335;
+    let wrath =
+        lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335;
     if wrath {
         ["PreClick", "OnClick", "PostClick"]
             .into_iter()
@@ -491,7 +488,11 @@ impl UiScript {
         x: f32,
         y: f32,
         collect: bool,
-    ) -> (Option<FrameHandle>, bool, Option<(FrameHandle, UiBlockReason)>) {
+    ) -> (
+        Option<FrameHandle>,
+        bool,
+        Option<(FrameHandle, UiBlockReason)>,
+    ) {
         let model = self.model_ref();
         let sorted = order::pick_order(&model.arena);
         let blip_held = model.minimap_blip.is_some();
@@ -543,7 +544,11 @@ impl UiScript {
             }
             hit
         });
-        (hit, minimap_missed.get(), if hit.is_some() { None } else { clipped.get() })
+        (
+            hit,
+            minimap_missed.get(),
+            if hit.is_some() { None } else { clipped.get() },
+        )
     }
 
     /// [`Self::hit_test_frame`] as a frame id, the id the app and the Lua bindings use.
@@ -621,8 +626,10 @@ impl UiScript {
                 let old_id = old_id.filter(|_| button::hover_notify_runs(&model, old_handle));
                 // Wrath's notification reads eligibility after the old leave handler; that
                 // handler can enable/disable the new button or change its motion flag.
-                let enter_id = new_id.filter(|_| model.target == super::UiTarget::Wrath335
-                    || button::hover_notify_runs(&model, new_handle));
+                let enter_id = new_id.filter(|_| {
+                    model.target == super::UiTarget::Wrath335
+                        || button::hover_notify_runs(&model, new_handle)
+                });
                 let leave = old_handle.map(|h| (h, old_id));
                 (leave, drag_start, enter_id, slider_change, color_change)
             }
@@ -663,10 +670,16 @@ impl UiScript {
         let (enter_id, motion_only) = {
             let model = self.model_ref();
             let enter_id = if model.target == super::UiTarget::Wrath335 {
-                enter_id.filter(|_| model.mouseover == new_handle
-                    && button::hover_notify_runs(&model, new_handle))
-            } else { enter_id };
-            (enter_id, new_handle.is_some_and(|h| button::motion_only(&model, h)))
+                enter_id.filter(|_| {
+                    model.mouseover == new_handle && button::hover_notify_runs(&model, new_handle)
+                })
+            } else {
+                enter_id
+            };
+            (
+                enter_id,
+                new_handle.is_some_and(|h| button::motion_only(&model, h)),
+            )
         };
         if let Some(nid) = enter_id {
             // A hyperlink button's enter is its text frame's `OnHyperlinkEnter` (`0x7a34b0`); the
@@ -761,7 +774,12 @@ impl UiScript {
                     let mut model = self.model_mut();
                     model.cursor_pos = (x, y);
                     if let Some(h) = target {
-                        crate::script::object::movable::start_layout_drag(&mut model, h, (x, y), ctrl);
+                        crate::script::object::movable::start_layout_drag(
+                            &mut model,
+                            h,
+                            (x, y),
+                            ctrl,
+                        );
                     }
                 }
                 facts.blocked = UiClickBlock::LayoutDrag;
@@ -841,7 +859,8 @@ impl UiScript {
             facts.press_target = press_target.and_then(|h| frame_facts(&model, h));
             facts.press_same_frame = press_target.is_some() && press_target == hit_handle;
             facts.press_contains = press_target.is_some_and(|h| frame_contains(&model, h, x, y));
-            facts.clicks = press_target.map_or(UiClickMask::None, |h| click_mask(&model, h, button));
+            facts.clicks =
+                press_target.map_or(UiClickMask::None, |h| click_mask(&model, h, button));
         }
         if hooked {
             // `ClearCursor(1, 1)` at `0x492bb5`; the handler returns without a capture, a raise or
@@ -884,8 +903,8 @@ impl UiScript {
             } else {
                 UiClickBlock::None
             };
-            facts.onclick_present = registered_down
-                && press_id.is_some_and(|id| has_click_handler(&self.lua, id));
+            facts.onclick_present =
+                registered_down && press_id.is_some_and(|id| has_click_handler(&self.lua, id));
         }
         // ── The raise, first ────────────────────────────────────────────────────────────────────
         //
@@ -933,8 +952,7 @@ impl UiScript {
                 facts.press_target = pressed.and_then(|h| frame_facts(&model, h));
                 facts.press_same_frame = pressed.is_some() && pressed == hit_handle;
                 facts.press_contains = pressed.is_some_and(|h| frame_contains(&model, h, x, y));
-                facts.clicks =
-                    pressed.map_or(UiClickMask::None, |h| click_mask(&model, h, button));
+                facts.clicks = pressed.map_or(UiClickMask::None, |h| click_mask(&model, h, button));
             }
             {
                 let mut model = self.model_mut();

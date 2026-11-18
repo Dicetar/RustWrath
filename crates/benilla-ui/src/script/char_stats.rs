@@ -1157,17 +1157,20 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     }
 
     if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
-        g.set("GetInventoryItemID", lua.create_function(|lua, (unit, slot): (Value, Value)| {
-            let (token, slot) = inventory_item_args(
-                lua,
-                (unit, slot),
-                "Usage: GetInventoryItemID(unit, slot)",
-                "Invalid inventory slot in GetInventoryItemID",
-            )?;
-            Ok(player_inv_slot(lua, &token, slot)
-                .map(|view| view.item_id)
-                .filter(|&id| id != 0))
-        })?)?;
+        g.set(
+            "GetInventoryItemID",
+            lua.create_function(|lua, (unit, slot): (Value, Value)| {
+                let (token, slot) = inventory_item_args(
+                    lua,
+                    (unit, slot),
+                    "Usage: GetInventoryItemID(unit, slot)",
+                    "Invalid inventory slot in GetInventoryItemID",
+                )?;
+                Ok(player_inv_slot(lua, &token, slot)
+                    .map(|view| view.item_id)
+                    .filter(|&id| id != 0))
+            })?,
+        )?;
     }
 
     // GetInventoryItemTexture(unit, slot) → icon path, or nil until the item's template arrives.
@@ -1242,10 +1245,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let slot0 =
                 super::binding_abi::number_arg(lua, slot, INVALID_SLOT_GET_INVENTORY_ITEM_COUNT)?;
             let slot0 = slot0.wrapping_sub(1);
-            let target = lua
-                .app_data_ref::<Model>()
-                .expect("model app_data")
-                .target;
+            let target = lua.app_data_ref::<Model>().expect("model app_data").target;
             if !inventory_slot_reader_accepts(slot0, target) {
                 return Err(mlua::Error::RuntimeError(
                     INVALID_SLOT_GET_INVENTORY_ITEM_COUNT.into(),
@@ -1338,10 +1338,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 INVALID_SLOT_GET_INVENTORY_ITEM_COOLDOWN,
             )?
             .wrapping_sub(1);
-            let target = lua
-                .app_data_ref::<Model>()
-                .expect("model app_data")
-                .target;
+            let target = lua.app_data_ref::<Model>().expect("model app_data").target;
             if !inventory_slot_reader_accepts(slot0, target) {
                 return Err(mlua::Error::RuntimeError(
                     INVALID_SLOT_GET_INVENTORY_ITEM_COOLDOWN.into(),
@@ -1457,7 +1454,10 @@ mod tests {
         assert!(inventory_slot_reader_accepts(73, wrath), "3.3.5 bag 7");
         assert!(!inventory_slot_reader_accepts(74, wrath), "3.3.5 has no 75");
         assert!(inventory_slot_reader_accepts(86, wrath), "3.3.5 keyring 1");
-        assert!(inventory_slot_reader_accepts(117, wrath), "3.3.5 keyring 32");
+        assert!(
+            inventory_slot_reader_accepts(117, wrath),
+            "3.3.5 keyring 32"
+        );
         assert!(!inventory_slot_reader_accepts(118, wrath));
     }
     use super::{

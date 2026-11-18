@@ -2,15 +2,15 @@ use std::io;
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::time::Duration;
 
+use crate::action::{ActionRequest, ActionResult};
 use crate::auth::AuthToken;
 use crate::error::{Error, Result};
-use crate::action::{ActionRequest, ActionResult};
 use crate::frame::{
-    ActionResultFrame, HealthFrame, HelloFrame, MAX_FRAME_BYTES, ObservationFrame, PROTOCOL_NAME,
-    PROTOCOL_VERSION, ServerFrame, encode, read_frame, write_frame,
+    encode, read_frame, write_frame, ActionResultFrame, HealthFrame, HelloFrame, ObservationFrame,
+    ServerFrame, MAX_FRAME_BYTES, PROTOCOL_NAME, PROTOCOL_VERSION,
 };
 use crate::health::SourceHealth;
-use crate::observation::{OBSERVATION_SCHEMA_VERSION, Observation};
+use crate::observation::{Observation, OBSERVATION_SCHEMA_VERSION};
 
 /// Default loopback port used by the Python receiver.
 pub const DEFAULT_PORT: u16 = 48_765;
@@ -160,7 +160,9 @@ impl LoopbackSink {
                 return Err(Error::UnexpectedServerFrame("health_ack before hello_ack"));
             }
             ServerFrame::ActionRequest { .. } | ServerFrame::ActionCancel { .. } => {
-                return Err(Error::UnexpectedServerFrame("action frame before hello_ack"));
+                return Err(Error::UnexpectedServerFrame(
+                    "action frame before hello_ack",
+                ));
             }
             ServerFrame::HelloAck {
                 protocol,

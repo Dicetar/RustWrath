@@ -66,8 +66,17 @@ pub(crate) fn parse(src: &[u8], chunkname: &[u8], heap: &mut Heap) -> R<Rc<Proto
     parse_with_dialect(src, chunkname, heap, crate::Dialect::Vanilla50)
 }
 
-pub(crate) fn parse_with_dialect(src: &[u8], chunkname: &[u8], heap: &mut Heap, dialect: crate::Dialect) -> R<Rc<Proto>> {
-    let lx = if dialect.is_51() { Lexer::with_dialect(src, chunkname, dialect)? } else { Lexer::new(src, chunkname)? };
+pub(crate) fn parse_with_dialect(
+    src: &[u8],
+    chunkname: &[u8],
+    heap: &mut Heap,
+    dialect: crate::Dialect,
+) -> R<Rc<Proto>> {
+    let lx = if dialect.is_51() {
+        Lexer::with_dialect(src, chunkname, dialect)?
+    } else {
+        Lexer::new(src, chunkname)?
+    };
     let mut p = Parser {
         lx,
         fs: Vec::new(),
@@ -76,7 +85,9 @@ pub(crate) fn parse_with_dialect(src: &[u8], chunkname: &[u8], heap: &mut Heap, 
         name_hint: None,
     };
     p.fs.push(FuncState::new(Rc::from(chunkname), 0, Key::default()));
-    if dialect.is_51() { p.fs.last_mut().unwrap().vararg = true; }
+    if dialect.is_51() {
+        p.fs.last_mut().unwrap().vararg = true;
+    }
     p.chunk()?;
     // The client's `luaY_parser` raises its own bare text past the last statement (`0x6fca1a`,
     // `0x871cf4`).
@@ -330,7 +341,11 @@ impl<'a> Parser<'a> {
         if let Some(i) = fs.upvals.iter().position(|&u| u == key) {
             return Ok(Some(Kind::Upval(i as u16)));
         }
-        let limit = if self.lx.dialect.is_51() { 60 } else { MAXUPVALUES };
+        let limit = if self.lx.dialect.is_51() {
+            60
+        } else {
+            MAXUPVALUES
+        };
         if fs.upvals.len() + 1 > limit {
             return Err(self.errorlimit(limit, "upvalues"));
         }
@@ -446,7 +461,11 @@ impl<'a> Parser<'a> {
             }
         }
         self.adjustlocalvars(nparams);
-        let limit = if self.lx.dialect.is_51() { MAXVARS } else { MAXPARAMS };
+        let limit = if self.lx.dialect.is_51() {
+            MAXVARS
+        } else {
+            MAXPARAMS
+        };
         if self.fsr().nactvar as usize > limit {
             return Err(self.errorlimit(limit, "parameters"));
         }
@@ -663,7 +682,9 @@ impl<'a> Parser<'a> {
     /// `(for limit)` and `(for step)` (`0x6fe390`..`0x6fe3ac`); the step is taken off the start
     /// by a plain subtraction (`0x6fe42c`), and a jump enters the loop at its test.
     fn fornum(&mut self, varname: &[u8], line: u32) -> R<()> {
-        if self.lx.dialect.is_51() { return self.fornum_51(varname, line); }
+        if self.lx.dialect.is_51() {
+            return self.fornum_51(varname, line);
+        }
         let base = self.fsr().freereg;
         self.new_localvar(varname, 0)?;
         self.new_localvar(b"(for limit)", 1)?;
@@ -692,7 +713,9 @@ impl<'a> Parser<'a> {
     /// of them the control the generator is passed. The values are adjusted to all of them
     /// (`0x6fe5db`), with room for the call above them (`0x6fe5e7`).
     fn forlist(&mut self, indexname: &[u8]) -> R<()> {
-        if self.lx.dialect.is_51() { return self.forlist_51(indexname); }
+        if self.lx.dialect.is_51() {
+            return self.forlist_51(indexname);
+        }
         let base = self.fsr().freereg;
         self.new_localvar(b"(for generator)", 0)?;
         self.new_localvar(b"(for state)", 1)?;
@@ -727,7 +750,11 @@ impl<'a> Parser<'a> {
     fn forbody_51(&mut self, base: Reg, line: u32, names: usize, numeric: bool) -> R<()> {
         self.adjustlocalvars(3);
         self.checknext(Tok::Do)?;
-        let prep = if numeric { self.code(Op::ForPrep51(base, NO_JUMP), 1)? } else { self.jump()? as usize };
+        let prep = if numeric {
+            self.code(Op::ForPrep51(base, NO_JUMP), 1)?
+        } else {
+            self.jump()? as usize
+        };
         self.enterblock(true);
         self.enterblock(false);
         self.adjustlocalvars(names);
@@ -736,8 +763,11 @@ impl<'a> Parser<'a> {
         // User loop variables close before the next iteration; hidden controls stay live.
         self.leaveblock()?;
         self.patchtohere(prep as i32)?;
-        let test = if numeric { self.code(Op::ForLoop51(base, NO_JUMP), 1)? }
-            else { self.code(Op::TForLoop51(base, names as u8), 1)? };
+        let test = if numeric {
+            self.code(Op::ForLoop51(base, NO_JUMP), 1)?
+        } else {
+            self.code(Op::TForLoop51(base, names as u8), 1)?
+        };
         self.fixline(line);
         let back = if numeric { test as i32 } else { self.jump()? };
         self.patchlist(back, prep + 1)?;
@@ -754,8 +784,9 @@ impl<'a> Parser<'a> {
         self.exp1()?;
         self.checknext(Tok::Char(b','))?;
         self.exp1()?;
-        if self.testnext(Tok::Char(b','))? { self.exp1()?; }
-        else {
+        if self.testnext(Tok::Char(b','))? {
+            self.exp1()?;
+        } else {
             let register = self.fsr().freereg;
             let constant = self.number_k(1.0)?;
             self.number_k50(1.0);
@@ -1057,7 +1088,9 @@ impl<'a> Parser<'a> {
         let mut key = if self.tok() == Tok::Name {
             // The 1.12 grammar's placement: only a `name = v` field counts toward the hash
             // size hint, as 5.0's `recfield` counted it.
-            if !self.lx.dialect.is_51() { cc.nh += 1; }
+            if !self.lx.dialect.is_51() {
+                cc.nh += 1;
+            }
             let name = self.str_checkname()?;
             if let Some(p) = &cc.prefix {
                 let mut n = p.clone();
@@ -1074,7 +1107,9 @@ impl<'a> Parser<'a> {
         let mut val = self.expr()?;
         let rv = self.exp2rk(&mut val)?;
         self.code_settable(cc.t, rkkey, rv)?;
-        if self.lx.dialect.is_51() { cc.nh += 1; }
+        if self.lx.dialect.is_51() {
+            cc.nh += 1;
+        }
         self.fs().freereg = reg;
         Ok(())
     }
@@ -1101,7 +1136,9 @@ impl<'a> Parser<'a> {
             // The call counts as one item toward the array hint, as 5.0's `lastlistfield` leaves
             // `na` (`0x6fd72b`).
             self.setlist(cc.t, cc.na, -1)?;
-            if self.lx.dialect.is_51() { cc.na -= 1; }
+            if self.lx.dialect.is_51() {
+                cc.na -= 1;
+            }
         } else {
             if cc.v.k != Kind::Void {
                 self.exp2nextreg(&mut cc.v)?;
@@ -1142,7 +1179,9 @@ impl<'a> Parser<'a> {
         };
         self.checknext(Tok::Char(b'{'))?;
         loop {
-            if !self.lx.dialect.is_51() { self.testnext(Tok::Char(b';'))?; }
+            if !self.lx.dialect.is_51() {
+                self.testnext(Tok::Char(b';'))?;
+            }
             if self.tok() == Tok::Char(b'}') {
                 break;
             }
@@ -1167,9 +1206,13 @@ impl<'a> Parser<'a> {
         // `OP_NEWTABLE`'s hints: the array size as a floating point byte (`0x6fd53c`), kept
         // decoded, and the hash part's log size, `luaO_log2(nh) + 1` (`0x6fd563`, `0x6fd568`).
         let (array, hash) = if self.lx.dialect.is_51() {
-            (crate::compile::fb2int_51(crate::compile::int2fb_51(cc.na)),
-                crate::compile::fb2int_51(crate::compile::int2fb_51(cc.nh)))
-        } else { (crate::compile::fb2int(crate::compile::int2fb(cc.na)), cc.nh) };
+            (
+                crate::compile::fb2int_51(crate::compile::int2fb_51(cc.na)),
+                crate::compile::fb2int_51(crate::compile::int2fb_51(cc.nh)),
+            )
+        } else {
+            (crate::compile::fb2int(crate::compile::int2fb(cc.na)), cc.nh)
+        };
         self.fs().code[pc] = Op::NewTable(treg, array, crate::table::lsize_for(hash as usize));
         Ok(t)
     }
@@ -1358,7 +1401,9 @@ impl<'a> Parser<'a> {
             Tok::True => Exp::new(Kind::True),
             Tok::False => Exp::new(Kind::False),
             Tok::Dots if self.lx.dialect.is_51() => {
-                if !self.fsr().vararg { return Err(self.lx.error("cannot use '...' outside a vararg function")); }
+                if !self.fsr().vararg {
+                    return Err(self.lx.error("cannot use '...' outside a vararg function"));
+                }
                 self.fs().vararg_table = false;
                 let destination = self.fsr().freereg;
                 self.reserveregs(1)?;

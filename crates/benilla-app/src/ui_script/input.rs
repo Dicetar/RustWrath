@@ -296,7 +296,9 @@ pub(super) fn feed_ui_input(
                             MouseButton::Back => UiButton::Back,
                             _ => continue,
                         };
-                        let scope = diagnostics.1.as_ref()
+                        let scope = diagnostics
+                            .1
+                            .as_ref()
                             .map(|v| (v.session_epoch, v.world_generation));
                         trace.record_ui_press(
                             scope,
@@ -320,7 +322,9 @@ pub(super) fn feed_ui_input(
                             MouseButton::Back => UiButton::Back,
                             _ => continue,
                         };
-                        let scope = diagnostics.1.as_ref()
+                        let scope = diagnostics
+                            .1
+                            .as_ref()
                             .map(|v| (v.session_epoch, v.world_generation));
                         trace.record_ui_click(
                             scope,

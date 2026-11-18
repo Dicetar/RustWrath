@@ -61,7 +61,8 @@ impl TrackedInfo {
 
     /// "Track Low Level Quests": the low-level available statuses 2 and 4 draw too.
     fn trivial(self) -> bool {
-        self.0.is_some_and(|t| t.kind == TrackingKind::TrivialQuests)
+        self.0
+            .is_some_and(|t| t.kind == TrackingKind::TrivialQuests)
     }
 
     /// A town-service row whose 3.3.5 NPC flag the unit carries.
@@ -256,43 +257,44 @@ pub(in crate::minimap) fn emit_tracking_dots(
     hover: &mut MinimapBlipHover,
 ) {
     // The unit pass runs even with an empty creature mask: the always-show clauses need none.
-    let mut dot =
-        |key: super::DotSource, tf: &GlobalTransform, cell: [f32; 4], name: DotName| {
-            let w = bevy_to_wow(tf.translation());
-            let d3 = ((w[0] - ctx.wx).powi(2)
-                + (w[1] - ctx.wy).powi(2)
-                + (w[2] - ctx.wz).powi(2))
-            .sqrt();
-            let fresh = (d3 <= ctx.radius_yd).then(|| ctx.offset(w));
-            let Some(off) = super::stale_offset(key, fresh, ctx.px_per_yd) else {
-                return;
-            };
-            let grey = unit_indoors(tf.translation()) != player_indoors;
-            let tint = if grey { 0xb0 as f32 / 255.0 } else { 1.0 };
-            let rect = Rect::from_center_size(
-                ctx.center + off,
-                Vec2::splat(ctx.side * (QUEST_DOT_PX / BLIP_BASIS_PX)),
-            );
-            quads.overlays.push(UiQuad {
-                rect,
-                z_key: ctx.z,
-                texture: Some(icons.clone()),
-                uv: UvRect::from_tex_coords(cell),
-                color: [tint, tint, tint, ctx.alpha],
-                ..default()
-            });
-            if let Some(c) = ctx.cursor {
-                if rect.contains(c) {
-                    *hover = match name {
-                        DotName::Guid(guid) => MinimapBlipHover::Npc(guid, grey),
-                        DotName::Known(n) => MinimapBlipHover::TrackedGo(n, grey),
-                    };
-                }
-            }
+    let mut dot = |key: super::DotSource, tf: &GlobalTransform, cell: [f32; 4], name: DotName| {
+        let w = bevy_to_wow(tf.translation());
+        let d3 =
+            ((w[0] - ctx.wx).powi(2) + (w[1] - ctx.wy).powi(2) + (w[2] - ctx.wz).powi(2)).sqrt();
+        let fresh = (d3 <= ctx.radius_yd).then(|| ctx.offset(w));
+        let Some(off) = super::stale_offset(key, fresh, ctx.px_per_yd) else {
+            return;
         };
+        let grey = unit_indoors(tf.translation()) != player_indoors;
+        let tint = if grey { 0xb0 as f32 / 255.0 } else { 1.0 };
+        let rect = Rect::from_center_size(
+            ctx.center + off,
+            Vec2::splat(ctx.side * (QUEST_DOT_PX / BLIP_BASIS_PX)),
+        );
+        quads.overlays.push(UiQuad {
+            rect,
+            z_key: ctx.z,
+            texture: Some(icons.clone()),
+            uv: UvRect::from_tex_coords(cell),
+            color: [tint, tint, tint, ctx.alpha],
+            ..default()
+        });
+        if let Some(c) = ctx.cursor {
+            if rect.contains(c) {
+                *hover = match name {
+                    DotName::Guid(guid) => MinimapBlipHover::Npc(guid, grey),
+                    DotName::Known(n) => MinimapBlipHover::TrackedGo(n, grey),
+                };
+            }
+        }
+    };
     // Cell 8, GameObjects: the tracked mailbox, or a node resource tracking finds.
     let resources = locks.filter(|_| tracking.resources != 0);
-    if resources.is_some() || info.0.is_some_and(|t| t.kind == TrackingKind::GameObjectType) {
+    if resources.is_some()
+        || info
+            .0
+            .is_some_and(|t| t.kind == TrackingKind::GameObjectType)
+    {
         for (guid, net, tf, store, _) in candidates.iter() {
             if net.kind != EntityKind::GameObject {
                 continue;
@@ -381,8 +383,7 @@ pub(in crate::minimap) fn emit_party_dots(
             continue;
         };
         let d = ((x - ctx.wx).powi(2) + (y - ctx.wy).powi(2)).sqrt();
-        let fresh =
-            (d / ctx.radius_yd <= super::BLIP_EDGE_RATIO).then(|| ctx.offset([x, y, 0.0]));
+        let fresh = (d / ctx.radius_yd <= super::BLIP_EDGE_RATIO).then(|| ctx.offset([x, y, 0.0]));
         let Some(off) =
             super::stale_offset(super::DotSource::Party(slot as u8), fresh, ctx.px_per_yd)
         else {

@@ -7,10 +7,9 @@ use super::{
     auction, backdrop, bank, camera_view, char_stats, chat_window, colorselect, container, craft,
     cursor, death, follow, gossip, guild, item_calls, item_text, loot, loot_roll, macros, mail,
     merchant, parse_unit_token_for, party, petition, pointer::UiHitFacts, pvp, quest, quest_log,
-    reputation, simplehtml,
-    skills, slider, social, spellbook, stable, taxi, trade, tradeskill, trainer, weapon_enchant,
-    ActionSlot, AuraState, FontObject, ItemTemplateView, MusicRequest, PlayerReqState, RegionData,
-    ScriptValue, SoundRequest, UnitBase, UnitState, UnitTokenParse,
+    reputation, simplehtml, skills, slider, social, spellbook, stable, taxi, trade, tradeskill,
+    trainer, weapon_enchant, ActionSlot, AuraState, FontObject, ItemTemplateView, MusicRequest,
+    PlayerReqState, RegionData, ScriptValue, SoundRequest, UnitBase, UnitState, UnitTokenParse,
 };
 
 // ── The Rust-side model ──
@@ -1577,9 +1576,9 @@ impl Model {
         } = parse_unit_token_for(token, self.is_wrath())
         {
             let guid = self.unit_guids.resolve_unit(base, hops)?;
-            return self.chained_unit(token).or_else(|| {
-                self.pushed_unit(token).filter(|unit| unit.guid == guid)
-            });
+            return self
+                .chained_unit(token)
+                .or_else(|| self.pushed_unit(token).filter(|unit| unit.guid == guid));
         }
         self.pushed_unit(token).or_else(|| self.chained_unit(token))
     }
@@ -1607,8 +1606,12 @@ impl Model {
     fn chained_unit(&self, token: &str) -> Option<&UnitState> {
         match parse_unit_token_for(token, self.is_wrath()) {
             UnitTokenParse::Unit { base, hops }
-                if hops > 0 || matches!(base,
-                    UnitBase::Target | UnitBase::Focus | UnitBase::Vehicle | UnitBase::Boss(_)) => {
+                if hops > 0
+                    || matches!(
+                        base,
+                        UnitBase::Target | UnitBase::Focus | UnitBase::Vehicle | UnitBase::Boss(_)
+                    ) =>
+            {
                 let guid = self.unit_guids.resolve_unit(base, hops)?;
                 match self.units_by_guid.get(&guid) {
                     Some(held) if held.has_object => Some(held),

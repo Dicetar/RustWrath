@@ -15,8 +15,8 @@ use crate::query_cache::Ask;
 use crate::ui_script::gate;
 
 use super::{
-    find_equip_slot, has_key_in_player, keyring_size_in_target, BAGS,
-    BANK_BAG_ID_FIRST, BANK_CONTAINER, KEYRING_CONTAINER, PACK_SLOTS,
+    find_equip_slot, has_key_in_player, keyring_size_in_target, BAGS, BANK_BAG_ID_FIRST,
+    BANK_CONTAINER, KEYRING_CONTAINER, PACK_SLOTS,
 };
 
 /// The doll's equipment slots, 0-based descriptor slots 0..=18 (live-API ids 1..=19).
@@ -1071,19 +1071,23 @@ fn resolve_slot_in_target(
     has_relic_slot: bool,
 ) -> Option<ContainerSlot> {
     let mut slot = resolve_slot(
-        guid, objects, items, icons, rolls, cooldowns, spells, names, petitions,
-        now, ui_now, has_relic_slot,
+        guid,
+        objects,
+        items,
+        icons,
+        rolls,
+        cooldowns,
+        spells,
+        names,
+        petitions,
+        now,
+        ui_now,
+        has_relic_slot,
     )?;
     if target == benilla_ui::script::UiTarget::Wrath335 && slot.item_id != 0 {
         let read = objects.item_read(guid)?;
         let template = items.template(slot.item_id, guid, Ask::Read);
-        let link = super::object_link_in_target_item(
-            target,
-            render_level,
-            read,
-            template,
-            rolls,
-        );
+        let link = super::object_link_in_target_item(target, render_level, read, template, rolls);
         if slot.link.is_some() {
             slot.link = Some(link);
         } else {
@@ -1297,8 +1301,7 @@ pub(crate) fn feed_containers(
             props: catalogs.1.as_deref(),
         };
         let player = inv.self_store.iter().next();
-        let player_inv =
-            inv.player(script.target() == benilla_ui::script::UiTarget::Wrath335);
+        let player_inv = inv.player(script.target() == benilla_ui::script::UiTarget::Wrath335);
         let mut key_pair = None;
 
         let mut fresh: HashMap<i64, ContainerState> = HashMap::new();

@@ -79,11 +79,7 @@ fn schema() -> Schema {
         s.add_field(SchemaField::new(name, FieldType::UInt32));
     }
     s.add_field(SchemaField::new("TransitionSkyBox", FieldType::Float32));
-    s.add_field(SchemaField::new_array(
-        "EffectColor",
-        FieldType::Float32,
-        3,
-    ));
+    s.add_field(SchemaField::new_array("EffectColor", FieldType::Float32, 3));
     s.add_field(SchemaField::new("EffectTexture", FieldType::String));
     s
 }

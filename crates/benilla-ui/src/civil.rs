@@ -281,8 +281,9 @@ fn crt_tz(value: Option<&std::ffi::OsStr>) {
     }
     let name = std::ffi::CString::new("TZ").expect("literal name");
     let value = match value {
-        Some(v) => std::ffi::CString::new(v.to_string_lossy().as_bytes())
-            .expect("zone string has no NUL"),
+        Some(v) => {
+            std::ffi::CString::new(v.to_string_lossy().as_bytes()).expect("zone string has no NUL")
+        }
         None => std::ffi::CString::new("").expect("empty"),
     };
     // SAFETY: both are NUL-terminated C strings the runtime copies.

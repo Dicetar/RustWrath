@@ -402,25 +402,31 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
-        g.set("GetBuybackItemLink", lua.create_function(|lua, index: Value| {
-            let index = binding_abi::index_arg(lua, index, "Usage: GetBuybackItemLink(index)")?;
-            let link = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model.merchant.as_ref()
-                    .and_then(|m| index.checked_sub(1).and_then(|n| m.buyback.get(n)))
-                    .and_then(|item| item.link.clone())
-            };
-            match link {
-                Some(link) => Ok(Value::String(lua.create_string(&link)?)),
-                None => Ok(Value::Nil),
-            }
-        })?)?;
+        g.set(
+            "GetBuybackItemLink",
+            lua.create_function(|lua, index: Value| {
+                let index = binding_abi::index_arg(lua, index, "Usage: GetBuybackItemLink(index)")?;
+                let link = {
+                    let model = lua.app_data_ref::<Model>().expect("model app_data");
+                    model
+                        .merchant
+                        .as_ref()
+                        .and_then(|m| index.checked_sub(1).and_then(|n| m.buyback.get(n)))
+                        .and_then(|item| item.link.clone())
+                };
+                match link {
+                    Some(link) => Ok(Value::String(lua.create_string(&link)?)),
+                    None => Ok(Value::Nil),
+                }
+            })?,
+        )?;
 
         // 12340 MerchantFrame_Scripts.cpp:101-142: Script_GetMerchantItemCostInfo
         g.set(
             "GetMerchantItemCostInfo",
             lua.create_function(|lua, index: Value| {
-                let index = binding_abi::index_arg(lua, index, "Usage: GetMerchantItemCostInfo(index)")?;
+                let index =
+                    binding_abi::index_arg(lua, index, "Usage: GetMerchantItemCostInfo(index)")?;
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 let cost = model
                     .merchant
@@ -1541,15 +1547,9 @@ mod tests {
 
         // Row 1: 7th return is nil (no extended cost)
         let (n1, _t1, _p1, _q1, _a1, u1, c1) = s
-            .eval::<(
-                String,
-                String,
-                i64,
-                i64,
-                i64,
-                Option<i64>,
-                Option<i64>,
-            )>("return GetMerchantItemInfo(1)")
+            .eval::<(String, String, i64, i64, i64, Option<i64>, Option<i64>)>(
+                "return GetMerchantItemInfo(1)",
+            )
             .unwrap();
         assert_eq!(n1, "Refreshing Spring Water");
         assert_eq!(u1, Some(1));
@@ -1557,15 +1557,9 @@ mod tests {
 
         // Row 3: 7th return is 1 (has extended cost)
         let (n3, _t3, _p3, _q3, _a3, u3, c3) = s
-            .eval::<(
-                String,
-                String,
-                i64,
-                i64,
-                i64,
-                Option<i64>,
-                Option<i64>,
-            )>("return GetMerchantItemInfo(3)")
+            .eval::<(String, String, i64, i64, i64, Option<i64>, Option<i64>)>(
+                "return GetMerchantItemInfo(3)",
+            )
             .unwrap();
         assert_eq!(n3, "Deadly Gladiator's Pummeler");
         assert_eq!(u3, Some(1));

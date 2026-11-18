@@ -464,14 +464,19 @@ fn an_unresolved_wrath_frame_answers_zero_and_is_named_once() {
     wrath.run(r#"CreateFrame("Frame", "NoRect")"#).unwrap();
     let _ = wrath.take_warnings();
     assert_eq!(
-        wrath.eval::<(f64, f64)>("return NoRect:GetCenter()").unwrap(),
+        wrath
+            .eval::<(f64, f64)>("return NoRect:GetCenter()")
+            .unwrap(),
         (0.0, 0.0)
     );
     assert_eq!(wrath.eval::<f64>("return NoRect:GetLeft()").unwrap(), 0.0);
     let warns = wrath.take_warnings();
     let named: Vec<_> = warns.iter().filter(|w| w.contains("NoRect:")).collect();
     assert_eq!(named.len(), 1, "{warns:?}");
-    assert!(named[0].contains("NoRect:GetCenter(): no resolved rect"), "{named:?}");
+    assert!(
+        named[0].contains("NoRect:GetCenter(): no resolved rect"),
+        "{named:?}"
+    );
 
     let mut vanilla = script();
     vanilla.run(r#"CreateFrame("Frame", "NoRect")"#).unwrap();

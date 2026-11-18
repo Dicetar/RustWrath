@@ -1168,7 +1168,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 out.push(Value::String(lua.create_string(row.token)?));
                 if wrath {
                     let offered = !armor || armor_offers_slot(sub_position, row);
-                    out.push(if offered { Value::Number(1.0) } else { Value::Nil });
+                    out.push(if offered {
+                        Value::Number(1.0)
+                    } else {
+                        Value::Nil
+                    });
                 }
             }
             Ok(MultiValue::from_vec(out))
@@ -2186,10 +2190,26 @@ mod tests {
             .unwrap()
         };
         // Rows: head neck shoulder body chest waist legs feet wrist hand finger trinket back held.
-        assert_eq!(marks(&s, "GetAuctionInvTypes(2, 1)"), "28:11-1------11-1", "Miscellaneous");
-        assert_eq!(marks(&s, "GetAuctionInvTypes(2, 2)"), "28:1-1-111111--1-", "Cloth keeps Back");
-        assert_eq!(marks(&s, "GetAuctionInvTypes(2, 3)"), "28:1-1-111111----", "Leather");
-        assert_eq!(s.arity("GetAuctionInvTypes(2, 4)").unwrap(), 0, "Shields: no 0x200");
+        assert_eq!(
+            marks(&s, "GetAuctionInvTypes(2, 1)"),
+            "28:11-1------11-1",
+            "Miscellaneous"
+        );
+        assert_eq!(
+            marks(&s, "GetAuctionInvTypes(2, 2)"),
+            "28:1-1-111111--1-",
+            "Cloth keeps Back"
+        );
+        assert_eq!(
+            marks(&s, "GetAuctionInvTypes(2, 3)"),
+            "28:1-1-111111----",
+            "Leather"
+        );
+        assert_eq!(
+            s.arity("GetAuctionInvTypes(2, 4)").unwrap(),
+            0,
+            "Shields: no 0x200"
+        );
         assert_eq!(
             marks(&s, "GetAuctionInvTypes(1, 9)"),
             "28:11111111111111",

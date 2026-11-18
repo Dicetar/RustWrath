@@ -26,11 +26,11 @@
 
 use std::collections::HashMap;
 
-use bevy::prelude::*;
 use benilla_combat_core::{
     ActionId, ActionKind, ActionRevision, ActionTable, Kit, KitError, Milli, StaminaConfig,
     TickRate,
 };
+use bevy::prelude::*;
 
 use crate::creature_anim::move_flags;
 
@@ -287,13 +287,28 @@ end
         let light = |running| resolve_press(&kit, running, Press::Light, 0);
         assert_eq!(light(None), Some(ActionId(103)), "the opener");
         assert_eq!(light(Some(ActionId(103))), Some(ActionId(104)), "the chain");
-        assert_eq!(light(Some(ActionId(104))), Some(ActionId(103)), "the chain wraps");
-        assert_eq!(light(Some(ActionId(100))), Some(ActionId(104)), "the backstep's attack");
-        assert_eq!(light(Some(ActionId(101))), Some(ActionId(103)), "no follow-up: the opener");
+        assert_eq!(
+            light(Some(ActionId(104))),
+            Some(ActionId(103)),
+            "the chain wraps"
+        );
+        assert_eq!(
+            light(Some(ActionId(100))),
+            Some(ActionId(104)),
+            "the backstep's attack"
+        );
+        assert_eq!(
+            light(Some(ActionId(101))),
+            Some(ActionId(103)),
+            "no follow-up: the opener"
+        );
 
         let dodge = |flags| resolve_press(&kit, None, Press::Dodge, flags);
         assert_eq!(dodge(0), Some(ActionId(100)), "no direction: backstep");
-        assert_eq!(dodge(move_flags::FORWARD | move_flags::STRAFE_LEFT), Some(ActionId(101)));
+        assert_eq!(
+            dodge(move_flags::FORWARD | move_flags::STRAFE_LEFT),
+            Some(ActionId(101))
+        );
         assert_eq!(dodge(move_flags::STRAFE_LEFT), Some(ActionId(102)));
         assert_eq!(
             dodge(move_flags::BACKWARD),
@@ -322,12 +337,17 @@ end
         };
         let stamina = engine_stamina(&kit, rate, fallback);
         assert_eq!(stamina.max, 50 * 20);
-        assert_eq!(stamina.regen_per_tick, 9, "45 points a second at 100 Hz, scaled by 20");
+        assert_eq!(
+            stamina.regen_per_tick, 9,
+            "45 points a second at 100 Hz, scaled by 20"
+        );
         assert_eq!(stamina.regen_delay_ticks, 100);
 
         let bindings = clip_bindings(&kit, Some(30), Some(17));
         assert_eq!(bindings.get(&ActionId(100)), Some(&30));
         assert_eq!(bindings.get(&ActionId(104)), Some(&17));
-        assert!(clip_bindings(&kit, None, Some(17)).get(&ActionId(101)).is_none());
+        assert!(clip_bindings(&kit, None, Some(17))
+            .get(&ActionId(101))
+            .is_none());
     }
 }

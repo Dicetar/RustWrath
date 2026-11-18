@@ -205,7 +205,11 @@ impl ActionEngine {
     /// starts at tick zero; an adapter whose clock already advanced must use [`Self::new_at`]
     /// (or advance in bounded chunks) so the first span stays within
     /// [`MAX_ADVANCE_SPAN_TICKS`].
-    pub fn new(table: ActionTable, stamina: StaminaConfig, buffer_ttl_ticks: u64) -> CombatResult<Self> {
+    pub fn new(
+        table: ActionTable,
+        stamina: StaminaConfig,
+        buffer_ttl_ticks: u64,
+    ) -> CombatResult<Self> {
         Self::new_at(table, stamina, buffer_ttl_ticks, Ticks::ZERO)
     }
 
@@ -545,7 +549,13 @@ impl ActionEngine {
     }
 
     /// Start one action: spend its cost and open the instance.
-    fn start(&mut self, id: ActionId, now: Ticks, from_buffer: bool, events: &mut Vec<EngineEvent>) {
+    fn start(
+        &mut self,
+        id: ActionId,
+        now: Ticks,
+        from_buffer: bool,
+        events: &mut Vec<EngineEvent>,
+    ) {
         let Some(spec) = self.table.get(id).copied() else {
             return;
         };
@@ -959,9 +969,13 @@ mod tests {
                 "the contact window closes inside every trace"
             );
             assert_eq!(
-                jump_events
-                    .iter()
-                    .any(|event| matches!(event, EngineEvent::Started { from_buffer: true, .. })),
+                jump_events.iter().any(|event| matches!(
+                    event,
+                    EngineEvent::Started {
+                        from_buffer: true,
+                        ..
+                    }
+                )),
                 starts_from_buffer,
                 "the trace's buffer either starts or expires"
             );
@@ -1215,10 +1229,7 @@ mod tests {
         table.insert(melee(1, 1_000)).expect("insert");
         let mut engine = ActionEngine::new(table.clone(), stamina(), 50).expect("engine");
         let refused = engine.advance_to(t(MAX_ADVANCE_SPAN_TICKS + 1));
-        assert!(matches!(
-            refused,
-            Err(CombatError::AdvanceTooLarge { .. })
-        ));
+        assert!(matches!(refused, Err(CombatError::AdvanceTooLarge { .. })));
         assert_eq!(engine.active(), None);
         engine
             .advance_to(t(MAX_ADVANCE_SPAN_TICKS))
@@ -1295,10 +1306,7 @@ mod tests {
         engine.advance_to(t(101)).expect("advance");
         assert_eq!(engine.stamina(), 1, "regeneration resumed after the delay");
         let events = engine.submit(ActionId(1), t(101)).expect("submit");
-        assert!(matches!(
-            events.first(),
-            Some(EngineEvent::Started { .. })
-        ));
+        assert!(matches!(events.first(), Some(EngineEvent::Started { .. })));
     }
 
     fn dodge(id: u32) -> ActionSpec {
@@ -1320,7 +1328,9 @@ mod tests {
     /// swings, 3 a dodge, 4 a heavy swing.
     fn engine_with_inputs(swing: ActionSpec, inputs: InputWindows) -> ActionEngine {
         let mut table = ActionTable::new(ActionRevision(1), rate());
-        table.insert_with_inputs(swing, inputs).expect("insert swing");
+        table
+            .insert_with_inputs(swing, inputs)
+            .expect("insert swing");
         let heavy = ActionSpec {
             kind: ActionKind::MeleeHeavy,
             ..melee(4, 50)
@@ -1356,15 +1366,27 @@ mod tests {
         engine.submit(ActionId(3), t(5)).expect("submit");
         engine.advance_to(t(29)).expect("advance");
         assert_eq!(engine.active(), Some(ActionId(1)));
-        assert!(replaced_at(&engine.advance_to(t(30)).expect("advance"), 3, 30));
+        assert!(replaced_at(
+            &engine.advance_to(t(30)).expect("advance"),
+            3,
+            30
+        ));
         assert_eq!(engine.active(), Some(ActionId(3)));
 
         let mut engine = engine_with_inputs(melee(1, 100), inputs);
         engine.submit(ActionId(1), t(0)).expect("submit");
         engine.submit(ActionId(2), t(25)).expect("submit");
         engine.advance_to(t(59)).expect("advance");
-        assert_eq!(engine.active(), Some(ActionId(1)), "the spec's offset of 40 no longer applies");
-        assert!(replaced_at(&engine.advance_to(t(60)).expect("advance"), 2, 60));
+        assert_eq!(
+            engine.active(),
+            Some(ActionId(1)),
+            "the spec's offset of 40 no longer applies"
+        );
+        assert!(replaced_at(
+            &engine.advance_to(t(60)).expect("advance"),
+            2,
+            60
+        ));
 
         let mut engine = engine_with_inputs(melee(1, 100), inputs);
         engine.submit(ActionId(1), t(0)).expect("submit");
@@ -1399,13 +1421,19 @@ mod tests {
         let mut engine = engine_with_inputs(late_listener, inputs);
         engine.submit(ActionId(1), t(0)).expect("submit");
         assert!(refused(engine.submit(ActionId(3), t(4)).expect("submit")));
-        assert!(refused(engine.submit(ActionId(2), t(10)).expect("submit")), "a swing waits for 20");
+        assert!(
+            refused(engine.submit(ActionId(2), t(10)).expect("submit")),
+            "a swing waits for 20"
+        );
         engine.submit(ActionId(3), t(10)).expect("submit");
         assert_eq!(engine.buffered(), Some(ActionId(3)));
 
         let mut engine = engine_with_inputs(melee(1, 100), InputWindows::default());
         engine.submit(ActionId(1), t(0)).expect("submit");
-        assert!(refused(engine.submit(ActionId(3), t(50)).expect("submit")), "no dodge offset at all");
+        assert!(
+            refused(engine.submit(ActionId(3), t(50)).expect("submit")),
+            "no dodge offset at all"
+        );
         engine.submit(ActionId(2), t(50)).expect("submit");
         assert_eq!(engine.buffered(), Some(ActionId(2)));
     }
@@ -1429,11 +1457,19 @@ mod tests {
         engine.submit(ActionId(1), t(0)).expect("submit");
         engine.submit(ActionId(5), t(5)).expect("submit");
         engine.advance_to(t(45)).expect("advance");
-        assert_eq!(engine.active(), Some(ActionId(1)), "a light swing that is not the follow-up waits");
+        assert_eq!(
+            engine.active(),
+            Some(ActionId(1)),
+            "a light swing that is not the follow-up waits"
+        );
         assert_eq!(engine.buffered(), Some(ActionId(5)));
 
         engine.submit(ActionId(3), t(46)).expect("submit");
-        assert!(replaced_at(&engine.advance_to(t(47)).expect("advance"), 3, 47));
+        assert!(replaced_at(
+            &engine.advance_to(t(47)).expect("advance"),
+            3,
+            47
+        ));
         assert_eq!(engine.active(), Some(ActionId(3)));
     }
 }

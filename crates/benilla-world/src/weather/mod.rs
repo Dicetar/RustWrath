@@ -371,17 +371,25 @@ mod tests {
     #[test]
     fn the_weather_row_names_the_effect_and_the_kit() {
         let table = WeatherTable(Some(benilla_formats::WeatherCatalog::from_rows([
-            (1, 0, 0), // fog: no precipitation effect in this state's column
-            (3, 100, 1), // light rain
-            (6, 200, 2), // light snow
+            (1, 0, 0),    // fog: no precipitation effect in this state's column
+            (3, 100, 1),  // light rain
+            (6, 200, 2),  // light snow
             (22, 300, 3), // light sandstorm
         ])));
         assert_eq!(table.kind(3), WeatherKind::Rain);
         assert_eq!(table.kind(6), WeatherKind::Snow);
         assert_eq!(table.kind(22), WeatherKind::Sand);
-        assert_eq!(table.kind(1), WeatherKind::Fine, "the row's own effect type wins");
+        assert_eq!(
+            table.kind(1),
+            WeatherKind::Fine,
+            "the row's own effect type wins"
+        );
         assert_eq!(table.kind(0), WeatherKind::Fine);
-        assert_eq!(table.kind(999), WeatherKind::Fine, "an unknown row draws nothing");
+        assert_eq!(
+            table.kind(999),
+            WeatherKind::Fine,
+            "an unknown row draws nothing"
+        );
         assert_eq!(table.ambience(3), 100);
         assert_eq!(table.ambience(1), 0);
         assert_eq!(table.ambience(999), 0);

@@ -1840,9 +1840,11 @@ pub(crate) fn drive_glue_mgr(
     hosted_vm.run(|script| {
         let shared = shared.clone();
         let now_ms = time.elapsed().as_millis() as u32;
-        let wrath = script.as_ref().map_or_else(crate::wrath::selected_from_env, |s| {
-            s.target() == benilla_ui::script::UiTarget::Wrath335
-        });
+        let wrath = script
+            .as_ref()
+            .map_or_else(crate::wrath::selected_from_env, |s| {
+                s.target() == benilla_ui::script::UiTarget::Wrath335
+            });
         let mut script = script.filter(|s| s.vm_kind() == VmKind::Glue);
         let in_world = state.is_some_and(|s| *s.get() == crate::client_state::ClientState::InWorld);
         let glue_up = script.is_some() && !in_world;
@@ -2062,11 +2064,10 @@ pub(crate) fn drive_glue_mgr(
         }
         if let Some(s) = script.as_deref_mut() {
             for msg in news.realm_split.read() {
-                s.fire_event("SERVER_SPLIT_NOTICE", realm_split_event_args(
-                    msg.choice,
-                    msg.state,
-                    &msg.date,
-                ));
+                s.fire_event(
+                    "SERVER_SPLIT_NOTICE",
+                    realm_split_event_args(msg.choice, msg.state, &msg.date),
+                );
             }
         }
         // What the news raised runs out before the frame's arm, as the reference's network handlers
@@ -2237,7 +2238,11 @@ fn glue_character(c: &Character, names: &RosterNames) -> GlueCharacter {
         background_model: if c.class == 6 {
             text(names.classes.and_then(|k| k.file(6)))
         } else {
-            let race = match c.race { 7 => 3, 8 => 2, race => race };
+            let race = match c.race {
+                7 => 3,
+                8 => 2,
+                race => race,
+            };
             text(names.create.and_then(|r| r.race_file(race)))
         },
         gender: c.gender,

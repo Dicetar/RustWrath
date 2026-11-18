@@ -50,7 +50,10 @@ pub fn open(vm: &mut Vm) {
 }
 
 pub(crate) fn open_51(vm: &mut Vm) {
-    let table = vm.get_global("math").as_table().expect("math library installed");
+    let table = vm
+        .get_global("math")
+        .as_table()
+        .expect("math library installed");
     let functions: [(&'static str, crate::heap::NativeFn); 5] = [
         ("fmod", |vm, n| bin(vm, n, |a, b| a % b)),
         ("modf", modf),
@@ -61,10 +64,16 @@ pub(crate) fn open_51(vm: &mut Vm) {
     for (name, function) in functions {
         let value = vm.new_native(name, function);
         let key = vm.str(name.as_bytes());
-        vm.heap.table_mut(table).set(key, value).expect("library key");
+        vm.heap
+            .table_mut(table)
+            .set(key, value)
+            .expect("library key");
     }
     let huge = vm.str(b"huge");
-    vm.heap.table_mut(table).set(huge, Value::Num(f64::INFINITY)).expect("math.huge key");
+    vm.heap
+        .table_mut(table)
+        .set(huge, Value::Num(f64::INFINITY))
+        .expect("math.huge key");
 }
 
 fn modf(vm: &mut Vm, nargs: usize) -> R<usize> {

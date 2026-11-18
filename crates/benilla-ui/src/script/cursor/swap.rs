@@ -33,8 +33,7 @@ pub enum Swap {
 /// slots).
 fn equip_position(model: &Model, bag: i64, slot: u32) -> bool {
     bag == EQUIPMENT_BAG
-        && ((1..=23).contains(&slot)
-            || super::bag_verbs::bank_bag_inv_slots(model).contains(&slot))
+        && ((1..=23).contains(&slot) || super::bag_verbs::bank_bag_inv_slots(model).contains(&slot))
 }
 
 /// What `SwapItem` finds at the move's other end when exactly one end is an equipment position.

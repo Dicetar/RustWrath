@@ -505,7 +505,10 @@ impl CombatCore {
             return Err(CombatError::DuplicateSequence { last });
         }
         if sequence < last {
-            return Err(CombatError::StaleSequence { last, got: sequence });
+            return Err(CombatError::StaleSequence {
+                last,
+                got: sequence,
+            });
         }
         if sequence.0 - last.0 > self.config.max_sequence_gap {
             return Err(CombatError::SequenceGapTooLarge {
@@ -521,10 +524,7 @@ impl CombatCore {
         let ending_revision = self.player.active_revision();
         if self.player.sync_phase(now, &self.config) {
             if let Some(revision) = ending_revision {
-                events.push(CombatEvent::DodgeEnded {
-                    at: now,
-                    revision,
-                });
+                events.push(CombatEvent::DodgeEnded { at: now, revision });
             }
         }
 
@@ -602,11 +602,9 @@ impl CombatCore {
             return self.start_or_reject(now, revision, events);
         }
 
-        let buffered = self.buffer.push(
-            revision,
-            now,
-            self.config.input_buffer_ttl_ticks,
-        );
+        let buffered = self
+            .buffer
+            .push(revision, now, self.config.input_buffer_ttl_ticks);
         events.push(CombatEvent::DodgeBuffered {
             at: now,
             expires_at: buffered.expires_at,
@@ -725,11 +723,7 @@ impl CombatCore {
         }
     }
 
-    fn reject(
-        now: Ticks,
-        reason: DodgeRejection,
-        events: &mut Vec<CombatEvent>,
-    ) -> DodgeResult {
+    fn reject(now: Ticks, reason: DodgeRejection, events: &mut Vec<CombatEvent>) -> DodgeResult {
         events.push(CombatEvent::DodgeRejected { at: now, reason });
         DodgeResult::Rejected(reason)
     }

@@ -612,10 +612,7 @@ pub(crate) fn scene_rig(lights: &[benilla_assets::ModelLight]) -> SceneRig {
         .any(|(_, c)| c.iter().sum::<f32>() > 0.01);
     if ambient.iter().sum::<f32>() < 0.05 && !has_active_diffuse {
         ambient = [0.45, 0.45, 0.5];
-        lobes.push((
-            Vec3::new(0.4, 0.7, 0.5).normalize(),
-            [0.75, 0.75, 0.75],
-        ));
+        lobes.push((Vec3::new(0.4, 0.7, 0.5).normalize(), [0.75, 0.75, 0.75]));
     }
     SceneRig {
         ambient,
@@ -627,11 +624,17 @@ pub(crate) fn scene_rig(lights: &[benilla_assets::ModelLight]) -> SceneRig {
 fn pane_scene_rig(preview: &GluePreview, model: &M2Model, ghost: bool) -> SceneRig {
     let lights = &preview.effects.lights[0][usize::from(ghost)];
     let mut rig = if lights.is_empty() {
-        if ghost { ghost_rig() } else { scene_rig(&model.lights) }
+        if ghost {
+            ghost_rig()
+        } else {
+            scene_rig(&model.lights)
+        }
     } else {
         let mut rig = SceneRig::default();
         for light in lights {
-            for (sum, value) in rig.ambient.iter_mut().zip(light.ambient) { *sum += value; }
+            for (sum, value) in rig.ambient.iter_mut().zip(light.ambient) {
+                *sum += value;
+            }
             let vector = benilla_assets::coords::wow_to_bevy(light.vector);
             if light.omni {
                 rig.points.push((vector, light.diffuse));
@@ -648,10 +651,8 @@ fn pane_scene_rig(preview: &GluePreview, model: &M2Model, ghost: bool) -> SceneR
         .any(|(_, c)| c.iter().sum::<f32>() > 0.01);
     if rig.ambient.iter().sum::<f32>() < 0.05 && !has_active_diffuse {
         rig.ambient = [0.45, 0.45, 0.5];
-        rig.lobes.push((
-            Vec3::new(0.4, 0.7, 0.5).normalize(),
-            [0.75, 0.75, 0.75],
-        ));
+        rig.lobes
+            .push((Vec3::new(0.4, 0.7, 0.5).normalize(), [0.75, 0.75, 0.75]));
     }
     rig
 }

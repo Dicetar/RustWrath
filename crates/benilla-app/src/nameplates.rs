@@ -1261,8 +1261,8 @@ mod tests {
     /// as the reference re-reads the posed PlayerName attachment with no smoothing.
     #[test]
     fn a_mounted_plate_follows_the_full_seat() {
-        use bevy::ecs::system::RunSystemOnce;
         use crate::entities::mount::MountChild;
+        use bevy::ecs::system::RunSystemOnce;
 
         let mut world = World::new();
         world.init_resource::<Time>();

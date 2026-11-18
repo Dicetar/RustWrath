@@ -277,9 +277,9 @@ pub fn load_spell_ranges(chain: &mut Chain) -> Result<SpellRangeCatalog> {
     let (columns, max_column, flags_column) = match field_count(&bytes) {
         Some(SPELL_RANGE_FIELDS) => (SPELL_RANGE_FIELDS, 2, 3),
         Some(WRATH_SPELL_RANGE_FIELDS) => (WRATH_SPELL_RANGE_FIELDS, 3, 5),
-        Some(columns) => bail!(
-            "unsupported SpellRange.dbc layout: {columns} fields (expected 22 or 40)"
-        ),
+        Some(columns) => {
+            bail!("unsupported SpellRange.dbc layout: {columns} fields (expected 22 or 40)")
+        }
         None => bail!("parsing SpellRange.dbc header: truncated field count"),
     };
     let wrath = columns == WRATH_SPELL_RANGE_FIELDS;

@@ -165,9 +165,9 @@ pub fn load_chat_channels_catalog(chain: &mut Chain) -> Result<ChatChannelsCatal
     let locale_slots = match field_count(&bytes) {
         Some(CHAT_CHANNEL_FIELDS) => 8,
         Some(WRATH_CHAT_CHANNEL_FIELDS) => 16,
-        Some(columns) => bail!(
-            "unsupported ChatChannels.dbc layout: {columns} fields (expected 21 or 37)"
-        ),
+        Some(columns) => {
+            bail!("unsupported ChatChannels.dbc layout: {columns} fields (expected 21 or 37)")
+        }
         None => bail!("parsing ChatChannels.dbc header: truncated field count"),
     };
     let shortcut_column = 4 + locale_slots;

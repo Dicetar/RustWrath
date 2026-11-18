@@ -236,8 +236,8 @@ pub(super) fn pickup_bag_from_slot(lua: &Lua, live: u32) -> mlua::Result<()> {
         if !accepts(&model, live) {
             return Ok(());
         }
-        let gated =
-            !model.player_control || (bank_bag_inv_slots(&model).contains(&live) && model.bank.is_none());
+        let gated = !model.player_control
+            || (bank_bag_inv_slots(&model).contains(&live) && model.bank.is_none());
         let occupied = usize::try_from(live)
             .ok()
             .and_then(|slot| model.inv_slot("player", slot))

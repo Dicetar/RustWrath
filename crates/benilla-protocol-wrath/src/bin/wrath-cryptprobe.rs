@@ -12,10 +12,18 @@ use hmac::{Hmac, Mac};
 use sha1::{Digest, Sha1};
 
 type HmacSha1 = Hmac<sha1::Sha1>;
-const L_ENC: [u8; 16] = [0xCC, 0x98, 0xAE, 0x04, 0xE8, 0x97, 0xEA, 0xCA, 0x12, 0xDD, 0xC0, 0x93, 0x42, 0x91, 0x53, 0x57];
-const L_DEC: [u8; 16] = [0xC2, 0xB3, 0x72, 0x3C, 0xC6, 0xAE, 0xD9, 0xB5, 0x34, 0x3C, 0x53, 0xEE, 0x2F, 0x43, 0x67, 0xCE];
+const L_ENC: [u8; 16] = [
+    0xCC, 0x98, 0xAE, 0x04, 0xE8, 0x97, 0xEA, 0xCA, 0x12, 0xDD, 0xC0, 0x93, 0x42, 0x91, 0x53, 0x57,
+];
+const L_DEC: [u8; 16] = [
+    0xC2, 0xB3, 0x72, 0x3C, 0xC6, 0xAE, 0xD9, 0xB5, 0x34, 0x3C, 0x53, 0xEE, 0x2F, 0x43, 0x67, 0xCE,
+];
 
-struct Rc4 { s: [u8; 256], i: usize, j: usize }
+struct Rc4 {
+    s: [u8; 256],
+    i: usize,
+    j: usize,
+}
 impl Rc4 {
     fn new(key: &[u8]) -> Self {
         let mut s: [u8; 256] = core::array::from_fn(|i| i as u8);
@@ -94,7 +102,10 @@ fn main() -> Result<()> {
         let size = ((head[0] as usize) << 8 | head[1] as usize) - 2;
         let opcode = u16::from_le_bytes([head[2], head[3]]);
         let sane = (4..=300).contains(&size);
-        println!("{name:34} -> size={size:5} opcode={opcode:#06x} {}", if sane { "<== SANE" } else { "" });
+        println!(
+            "{name:34} -> size={size:5} opcode={opcode:#06x} {}",
+            if sane { "<== SANE" } else { "" }
+        );
     }
     let plain = &raw[..4.min(raw.len())];
     println!("plaintext first4: {:02x?}", plain);

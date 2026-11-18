@@ -276,7 +276,10 @@ impl CastCore<'_> {
             self.cancel(false, true, REASON_ERROR);
         }
         if let Some(spell_id) = self.queued_melee.take_save() {
-            let _ = self.net.0.send(ClientCommand::CancelCast { spell_id, trace: None });
+            let _ = self.net.0.send(ClientCommand::CancelCast {
+                spell_id,
+                trace: None,
+            });
         }
     }
 
@@ -610,4 +613,3 @@ mod tests {
         assert_eq!(s.tutorials.take_fired(), [0x2d], "published as 0x2c + 1");
     }
 }
-

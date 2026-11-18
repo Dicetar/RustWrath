@@ -39,49 +39,48 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
-use bevy::prelude::*;
 use benilla_world::schedule::WorldStage;
 use benilla_world::world_map::CurrentMap;
+use bevy::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 
-use benilla_protocol::{
-    messages::ObjectType, wire::Vector3d, Character, CharEnumItem, EntityKind, MoveSpeeds,
-    ObjectFields, RosterCause, SessionEvent, TalentGroupInfo,
-};
 use crate::client_state::ClientState;
-use benilla_protocol_wrath::cast_failure;
-use benilla_wm_native::{
-    ActionBridge, ActionCorrelation, ActionEvidence, ActionIntent, ActionRequest, ActionResult,
-    ActionStatus,
-};
-use benilla_protocol_wrath::gameplay::{self, ServerEvent as WrathGameplayEvent};
-use benilla_assets::coords::wow_to_bevy;
-use benilla_ui::script::{QuestSlotView, QUEST_LOG_SLOTS};
 use crate::entities::Equipment;
 use crate::items::{Countdowns, ItemObject};
 use crate::net::{
-    CharPick, CharRequest, ClientCommand, Guid, GuidIndex, NetCommandTap, NetCommands, NetEntity,
-    ObjectStore, ParkRequest, ParkSender, SelfGuid, SelfPlayer, UnitSpeeds,
-    WorldEnterCascadeMessage, EnteredWorldMessage, FieldChanged,
+    CharPick, CharRequest, ClientCommand, EnteredWorldMessage, FieldChanged, Guid, GuidIndex,
+    NetCommandTap, NetCommands, NetEntity, ObjectStore, ParkRequest, ParkSender, SelfGuid,
+    SelfPlayer, UnitSpeeds, WorldEnterCascadeMessage,
 };
+use benilla_assets::coords::wow_to_bevy;
 use benilla_protocol::messages::{
     ActionButton, AttackSwingError, AttackerState as ProtocolAttackerState,
-    GossipOption as ProtocolGossipOption, ItemDamage as ProtocolItemDamage, ItemInfo,
-    ItemPushResult, ItemSpellEntry as ProtocolItemSpell,
-    ItemUseSpell as ProtocolItemUseSpell, LootAllPassed as ProtocolLootAllPassed,
-    LootItem as ProtocolLootItem, LootRoll as ProtocolLootRoll,
-    LootRollWon as ProtocolLootRollWon, LootStartRoll as ProtocolLootStartRoll,
-    NpcTextBlock as ProtocolNpcTextBlock, PeriodicAuraLog as ProtocolPeriodicAuraLog,
-    PeriodicTick as ProtocolPeriodicTick, QuestComplete, QuestDetails, QuestGiverList,
+    ChatMessage as ProtocolChatMessage, GossipOption as ProtocolGossipOption,
+    ItemDamage as ProtocolItemDamage, ItemInfo, ItemPushResult,
+    ItemSpellEntry as ProtocolItemSpell, ItemUseSpell as ProtocolItemUseSpell,
+    LootAllPassed as ProtocolLootAllPassed, LootItem as ProtocolLootItem,
+    LootRoll as ProtocolLootRoll, LootRollWon as ProtocolLootRollWon,
+    LootStartRoll as ProtocolLootStartRoll, NpcTextBlock as ProtocolNpcTextBlock,
+    PeriodicAuraLog as ProtocolPeriodicAuraLog, PeriodicTick as ProtocolPeriodicTick,
+    QuestComplete, QuestConfirmAccept as ProtocolQuestConfirmAccept, QuestDetails, QuestGiverList,
     QuestListEntry, QuestObjective, QuestOfferReward, QuestRequestItems, QuestRewardItem,
-    QuestConfirmAccept as ProtocolQuestConfirmAccept, QuestTemplate,
-    SpellDamageLog as ProtocolSpellDamageLog,
-    ChatMessage as ProtocolChatMessage, TrainerSpell as ProtocolTrainerSpell,
+    QuestTemplate, SpellDamageLog as ProtocolSpellDamageLog, TrainerSpell as ProtocolTrainerSpell,
     VendorItem as ProtocolVendorItem,
+};
+use benilla_protocol::{
+    messages::ObjectType, wire::Vector3d, CharEnumItem, Character, EntityKind, MoveSpeeds,
+    ObjectFields, RosterCause, SessionEvent, TalentGroupInfo,
+};
+use benilla_protocol_wrath::cast_failure;
+use benilla_protocol_wrath::gameplay::{self, ServerEvent as WrathGameplayEvent};
+use benilla_ui::script::{QuestSlotView, QUEST_LOG_SLOTS};
+use benilla_wm_native::{
+    ActionBridge, ActionCorrelation, ActionEvidence, ActionIntent, ActionRequest, ActionResult,
+    ActionStatus,
 };
 
 use benilla_protocol_wrath::reducer::VehicleAttachment;
@@ -574,7 +573,11 @@ pub enum WrathFeedEvent {
     },
     /// A world scope changed: the mapped entity set and pending publications for the old
     /// scope are invalid from this event on (issue 22 clears its entity map here).
-    WorldTransfer { session_epoch: u64, world_generation: u64, map_id: u32 },
+    WorldTransfer {
+        session_epoch: u64,
+        world_generation: u64,
+        map_id: u32,
+    },
     /// A producer export was refused with a reason â€” diagnostics for the debug panel.
     ExportSkipped(String),
     /// The IO-thread session ended (Ok = clean logout; Err = failure reason). The scope is
@@ -705,13 +708,14 @@ pub enum WrathFeedEvent {
 impl WrathFeedEvent {
     fn from_session(event: LifeEvent, session_epoch: u64) -> Self {
         match event {
-            LifeEvent::WorldTransfer { world_generation, map_id } => {
-                Self::WorldTransfer {
-                    session_epoch,
-                    world_generation,
-                    map_id,
-                }
-            }
+            LifeEvent::WorldTransfer {
+                world_generation,
+                map_id,
+            } => Self::WorldTransfer {
+                session_epoch,
+                world_generation,
+                map_id,
+            },
         }
     }
 }
@@ -907,7 +911,10 @@ fn parse_char_rename(payload: &[u8]) -> anyhow::Result<(u8, Option<(u64, String)
         .ok_or_else(|| anyhow::anyhow!("truncated SMSG_CHAR_RENAME guid"))?;
     let name = std::ffi::CStr::from_bytes_with_nul(&payload[9..])?.to_str()?;
     anyhow::ensure!(!name.is_empty(), "empty SMSG_CHAR_RENAME name");
-    Ok((0, Some((u64::from_le_bytes(guid.try_into()?), name.to_owned()))))
+    Ok((
+        0,
+        Some((u64::from_le_bytes(guid.try_into()?), name.to_owned())),
+    ))
 }
 
 impl WrathSessionConfig {
@@ -919,18 +926,25 @@ impl WrathSessionConfig {
             return Ok(None);
         }
         let interactive = interactive_from_env();
-        let account = if interactive { String::new() } else {
+        let account = if interactive {
+            String::new()
+        } else {
             std::env::var("WOW_USER").context("WOW_WRATH needs WOW_USER")?
         };
-        let password = if interactive { String::new() } else {
+        let password = if interactive {
+            String::new()
+        } else {
             std::env::var("WOW_PASS").context("WOW_WRATH needs WOW_PASS")?
         };
         let auth_addr =
             std::env::var("WOW_WRATH_AUTH").unwrap_or_else(|_| "127.0.0.1:3724".to_owned());
-        let world_addr =
-            std::env::var("WOW_WRATH_WORLD").unwrap_or_else(|_| {
-                if interactive { String::new() } else { "127.0.0.1:8095".to_owned() }
-            });
+        let world_addr = std::env::var("WOW_WRATH_WORLD").unwrap_or_else(|_| {
+            if interactive {
+                String::new()
+            } else {
+                "127.0.0.1:8095".to_owned()
+            }
+        });
         let dwell = std::env::var("WOW_WRATH_DWELL")
             .ok()
             .map(|raw| raw.parse::<u64>().map(Duration::from_secs))
@@ -946,8 +960,10 @@ impl WrathSessionConfig {
             password,
             auth_addr,
             world_addr,
-            character_name: std::env::var("WOW_CHAR").ok()
-                .map(|name| name.trim().to_owned()).filter(|name| !name.is_empty()),
+            character_name: std::env::var("WOW_CHAR")
+                .ok()
+                .map(|name| name.trim().to_owned())
+                .filter(|name| !name.is_empty()),
             wm_token,
             dwell,
             actions: None,
@@ -1071,7 +1087,9 @@ pub(crate) enum WrathSessionStart {
 impl WrathSessionStart {
     fn for_login_mode(self, interactive: bool) -> Self {
         match self {
-            Self::Auto if interactive => Self::Parked { roster_asked: false },
+            Self::Auto if interactive => Self::Parked {
+                roster_asked: false,
+            },
             mode => mode,
         }
     }
@@ -1350,7 +1368,9 @@ impl WrathWmActions {
         else {
             return;
         };
-        let Some(pending) = self.pending.remove(&id) else { return };
+        let Some(pending) = self.pending.remove(&id) else {
+            return;
+        };
         self.answer_with_evidence(
             id,
             ActionStatus::Succeeded,
@@ -1379,7 +1399,9 @@ impl WrathWmActions {
         use crate::wrath_native::WrathCastEventKind;
 
         let event = &resolved.event;
-        let Some(identity) = &event.identity else { return };
+        let Some(identity) = &event.identity else {
+            return;
+        };
         let caster = identity.caster;
         let spell_id = identity.spell_id;
         let attempt = event.attempt_serial;
@@ -1444,7 +1466,9 @@ impl WrathWmActions {
         }
 
         for id in matched {
-            let Some(pending) = self.pending.remove(&id) else { continue };
+            let Some(pending) = self.pending.remove(&id) else {
+                continue;
+            };
             let cancelling = matches!(&pending.intent, ActionIntent::CastCancel);
             let (status, detail) = match (cancelling, terminal) {
                 (false, benilla_wm_native::CastOutcome::Launched) => (
@@ -1461,10 +1485,7 @@ impl WrathWmActions {
                     ActionStatus::Failed,
                     Some("the cast launched before the cancel took effect".to_owned()),
                 ),
-                (true, _) => (
-                    ActionStatus::Succeeded,
-                    Some("the cast ended".to_owned()),
-                ),
+                (true, _) => (ActionStatus::Succeeded, Some("the cast ended".to_owned())),
                 // `terminal` is only the three gameplay outcomes above; keep the compiler's
                 // exhaustiveness without inventing a resolution for any other value.
                 (false, _) => continue,
@@ -1624,7 +1645,9 @@ fn retire_outbound_deliveries(
 
 impl WrathControl {
     pub(crate) fn account_expansion(&self) -> u8 {
-        self.feed.as_ref().map_or(0, |f| f.account_expansion.load(Ordering::SeqCst))
+        self.feed
+            .as_ref()
+            .map_or(0, |f| f.account_expansion.load(Ordering::SeqCst))
     }
     /// Whether a worker is currently running.
     pub fn running(&self) -> bool {
@@ -1648,7 +1671,9 @@ impl WrathControl {
     }
 
     fn start(&mut self, kind: WrathSessionStart) {
-        let Some(mut config) = self.config.clone() else { return };
+        let Some(mut config) = self.config.clone() else {
+            return;
+        };
         // Logout's terminal can drain before the app leaves InWorld. The interactive
         // account must still wait for a new pick, never boot the first roster record.
         let kind = kind.for_login_mode(config.login_generation.is_some());
@@ -1696,10 +1721,8 @@ impl WrathControl {
         let mut feed = WrathFeed::new();
         feed.trace = self.trace.clone();
         feed.multiclass = self.multiclass.clone();
-        feed.login_generation.store(
-            config.login_generation.unwrap_or(0),
-            Ordering::SeqCst,
-        );
+        feed.login_generation
+            .store(config.login_generation.unwrap_or(0), Ordering::SeqCst);
         self.feed = Some(feed.clone());
         self.last_error = None;
         self.ended = false;
@@ -1982,9 +2005,7 @@ impl WrathControl {
 
         if let Some(actions) = actions {
             report.actions = match end {
-                DeliveryScopeEnd::SessionEnded => {
-                    actions.retire_all(ActionStatus::Unknown, reason)
-                }
+                DeliveryScopeEnd::SessionEnded => actions.retire_all(ActionStatus::Unknown, reason),
                 DeliveryScopeEnd::WorldTransfer { retired, .. } => {
                     actions.retire_scope(retired, ActionStatus::Unknown, reason)
                 }
@@ -2019,7 +2040,10 @@ impl WrathControl {
 
     fn session_events_empty(&self) -> bool {
         match self.session_events.as_ref() {
-            Some(replies) => replies.lock().map(|replies| replies.is_empty()).unwrap_or(true),
+            Some(replies) => replies
+                .lock()
+                .map(|replies| replies.is_empty())
+                .unwrap_or(true),
             None => true,
         }
     }
@@ -2262,9 +2286,7 @@ impl WrathWorldView {
             max_health: entity.max_health,
             powers: entity.powers,
             max_powers: entity.max_powers,
-            power_type: entity
-                .bytes_0
-                .map(|bytes| ((bytes >> 24) & 0xff) as u8),
+            power_type: entity.bytes_0.map(|bytes| ((bytes >> 24) & 0xff) as u8),
         })
     }
 
@@ -2292,11 +2314,7 @@ impl WrathWorldView {
 
     /// Adopt one `SMSG_RESYNC_RUNES` snapshot. The writer's order is the class's real layout, so
     /// no slot is synthesized: the vector is exactly the decoded rows.
-    fn apply_rune_state(
-        &mut self,
-        runes: &[gameplay::wrath_systems::RuneSlot],
-        received_at: f64,
-    ) {
+    fn apply_rune_state(&mut self, runes: &[gameplay::wrath_systems::RuneSlot], received_at: f64) {
         self.runes = runes
             .iter()
             .map(|rune| WrathRuneSlot {
@@ -2453,7 +2471,8 @@ fn stamp_aura_anchors(world: &mut World, entities: &BTreeMap<u64, WrathEntity>) 
 }
 
 #[derive(Default, Clone, Debug, PartialEq)]
-pub struct WrathChanges {    pub created: Vec<u64>,
+pub struct WrathChanges {
+    pub created: Vec<u64>,
     pub updated: Vec<u64>,
     pub removed: Vec<u64>,
     pub world_transferred: bool,
@@ -2469,7 +2488,7 @@ impl Plugin for WrathNetPlugin {
         let commands: WrathOutbox = Arc::new(Mutex::new(VecDeque::new()));
         let multiclass = (self.config.is_some()
             && std::env::var("WOW_WRATH_MULTICLASS").as_deref() == Ok("1"))
-            .then(crate::multiclass::MulticlassBridge::default);
+        .then(crate::multiclass::MulticlassBridge::default);
         if let Some(bridge) = &multiclass {
             app.insert_resource(bridge.clone());
             info!("multiclass: WMC1 v3 extension enabled");
@@ -2507,7 +2526,10 @@ impl Plugin for WrathNetPlugin {
         .add_message::<crate::wrath_native::WrathCastEvent>()
         .add_message::<crate::wrath_native::WrathItemText>();
         if self.config.is_some() {
-            if !app.world().contains_resource::<crate::quest_trace::Source>() {
+            if !app
+                .world()
+                .contains_resource::<crate::quest_trace::Source>()
+            {
                 crate::quest_trace::install(app);
             }
             let trace = app.world().resource::<crate::quest_trace::Source>().clone();
@@ -2524,7 +2546,10 @@ impl Plugin for WrathNetPlugin {
                 .insert_resource(WrathPickQueue(pick_rx));
             let (login_tx, login_rx) = crossbeam_channel::unbounded();
             app.insert_resource(crate::net::LoginSubmit(login_tx))
-                .insert_resource(WrathLoginQueue { requests: login_rx, pending: None });
+                .insert_resource(WrathLoginQueue {
+                    requests: login_rx,
+                    pending: None,
+                });
             // One typed action seam for the app's lifetime; every publisher replacement clones
             // these channel ends, so a world transfer never strands a pending intent.
             let (action_tx, action_rx) = crossbeam_channel::unbounded::<ActionRequest>();
@@ -2535,9 +2560,7 @@ impl Plugin for WrathNetPlugin {
                 cancels: cancel_tx,
                 results: result_rx,
             };
-            app.world_mut()
-                .resource_mut::<WrathControl>()
-                .wm_actions = Some(bridge.clone());
+            app.world_mut().resource_mut::<WrathControl>().wm_actions = Some(bridge.clone());
             app.insert_resource(WrathWmActions {
                 requests: action_rx,
                 cancels: cancel_rx,
@@ -2661,9 +2684,7 @@ fn wrath_session_ownership(
         && control.restart_allowed
         && !has_pending_login
         && control.config.as_ref().is_some_and(|c| {
-            c.login_generation.is_some()
-                && c.preferred_realm.is_some()
-                && !c.account.is_empty()
+            c.login_generation.is_some() && c.preferred_realm.is_some() && !c.account.is_empty()
         });
     if control.shutdown || (*state.get() != ClientState::InWorld && !may_retry && !roster_restart) {
         return;
@@ -2684,7 +2705,9 @@ fn wrath_session_ownership(
         // the way the boot path does.
         control.start(if roster_restart {
             WrathSessionStart::Parked { roster_asked: true }
-        } else { WrathSessionStart::Auto });
+        } else {
+            WrathSessionStart::Auto
+        });
     }
 }
 
@@ -2698,7 +2721,11 @@ fn wrath_login_admission(
     mut login: ResMut<WrathLoginQueue>,
     abandon: Res<crate::net::LoginAbandon>,
 ) {
-    if control.config.as_ref().is_none_or(|c| c.login_generation.is_none()) {
+    if control
+        .config
+        .as_ref()
+        .is_none_or(|c| c.login_generation.is_none())
+    {
         // The existing direct-entry runner owns its explicit identity and named boot pick.
         for _ in login.requests.try_iter() {}
         return;
@@ -2736,27 +2763,39 @@ fn wrath_login_admission(
         }
     }
     for request in login.requests.try_iter().collect::<Vec<_>>() {
-        if request.generation != generation { continue; }
-        let Some(mut config) = control.config.clone() else { continue };
+        if request.generation != generation {
+            continue;
+        }
+        let Some(mut config) = control.config.clone() else {
+            continue;
+        };
         config.account = request.user;
         config.password = request.pass;
-        config.auth_addr = if request.host.contains(':') { request.host }
-            else { format!("{}:3724", request.host) };
+        config.auth_addr = if request.host.contains(':') {
+            request.host
+        } else {
+            format!("{}:3724", request.host)
+        };
         config.character_name = None;
         config.login_generation = Some(generation);
         config.preferred_realm = None;
         control.cancel.store(true, Ordering::SeqCst);
         login.pending = Some(config);
     }
-    if login.pending.is_some() && control.worker.is_none() && control.retiring.is_none()
-        && control.terminal_ready && control.session_events_empty()
+    if login.pending.is_some()
+        && control.worker.is_none()
+        && control.retiring.is_none()
+        && control.terminal_ready
+        && control.session_events_empty()
         && control.publisher_retiring.is_empty()
     {
         control.config = login.pending.take();
         control.ended = false;
         control.shutdown = false;
         control.retry_at = None;
-        control.start(WrathSessionStart::Parked { roster_asked: false });
+        control.start(WrathSessionStart::Parked {
+            roster_asked: false,
+        });
     }
 }
 
@@ -2790,10 +2829,9 @@ fn wrath_pick_admission(
                         let realm_id = realm.id;
                         let sent_to_parked = control.worker.is_some()
                             && !control.cancel.load(Ordering::SeqCst)
-                            && control
-                                .park_commands
-                                .as_ref()
-                                .is_some_and(|tx| tx.send(WrathParkedCommand::Realm(realm)).is_ok());
+                            && control.park_commands.as_ref().is_some_and(|tx| {
+                                tx.send(WrathParkedCommand::Realm(realm)).is_ok()
+                            });
                         if !sent_to_parked {
                             if let Some(mut config) = control.config.clone() {
                                 config.preferred_realm = Some(realm_id);
@@ -2808,10 +2846,9 @@ fn wrath_pick_admission(
                     RealmRequest::Refresh => {
                         let sent = control.worker.is_some()
                             && !control.cancel.load(Ordering::SeqCst)
-                            && control
-                                .park_commands
-                                .as_ref()
-                                .is_some_and(|tx| tx.send(WrathParkedCommand::RefreshRealms).is_ok());
+                            && control.park_commands.as_ref().is_some_and(|tx| {
+                                tx.send(WrathParkedCommand::RefreshRealms).is_ok()
+                            });
                         if !sent {
                             if let Some(mut config) = control.config.clone() {
                                 if !config.account.is_empty() && config.login_generation.is_some() {
@@ -2925,7 +2962,9 @@ fn wrath_wm_action_intake(
                 pending.session_epoch,
                 pending.world_generation,
                 revision,
-                Some("cancellation arrived after dispatch; the command may still execute".to_owned()),
+                Some(
+                    "cancellation arrived after dispatch; the command may still execute".to_owned(),
+                ),
             );
         } else {
             actions.cancelled.push(request_id);
@@ -2986,7 +3025,10 @@ fn wrath_wm_action_intake(
                 request.session_epoch,
                 request.world_generation,
                 revision,
-                Some("no remote movement owner exists; movement is the human input controller".to_owned()),
+                Some(
+                    "no remote movement owner exists; movement is the human input controller"
+                        .to_owned(),
+                ),
             );
             continue;
         }
@@ -3061,17 +3103,17 @@ fn wrath_wm_action_intake(
             // Record the local cancel request before admission can reject it. The resolved
             // mirror supplies the identity when one exists; otherwise the target is unknown.
             if let Some(trace) = trace.as_deref() {
-                let (spell_id, wire_cast_count) =
-                    if let Some(cast) = view.casting(view.player_guid) {
-                        (
-                            Some(cast.identity.spell_id),
-                            cast.identity.cast_count.map(u32::from),
-                        )
-                    } else if let Some(channel) = view.channeling(view.player_guid) {
-                        (Some(channel.spell_id), None)
-                    } else {
-                        (None, None)
-                    };
+                let (spell_id, wire_cast_count) = if let Some(cast) = view.casting(view.player_guid)
+                {
+                    (
+                        Some(cast.identity.spell_id),
+                        cast.identity.cast_count.map(u32::from),
+                    )
+                } else if let Some(channel) = view.channeling(view.player_guid) {
+                    (Some(channel.spell_id), None)
+                } else {
+                    (None, None)
+                };
                 let ix = trace.begin(
                     Some((view.session_epoch, view.world_generation)),
                     None,
@@ -3147,7 +3189,10 @@ fn wrath_wm_action_intake(
                         trace: None,
                     });
                 } else if let Some(spell_id) = actions.last_cast_spell {
-                    commands.push(ClientCommand::CancelCast { spell_id, trace: None });
+                    commands.push(ClientCommand::CancelCast {
+                        spell_id,
+                        trace: None,
+                    });
                 } else {
                     refused = Some("no client-known cast to cancel".to_owned());
                 }
@@ -3235,7 +3280,10 @@ fn wrath_wm_action_intake(
             ActionIntent::CastCancel => view
                 .casting(view.player_guid)
                 .map(|cast| cast.identity.spell_id)
-                .or_else(|| view.channeling(view.player_guid).map(|channel| channel.spell_id))
+                .or_else(|| {
+                    view.channeling(view.player_guid)
+                        .map(|channel| channel.spell_id)
+                })
                 .or(actions.last_cast_spell),
             _ => None,
         };
@@ -3338,7 +3386,7 @@ fn stock_chat_language(
         .map(|bytes| (bytes & 0xff) as u8);
     match race {
         Some(2 | 5 | 6 | 8 | 10) => 1, // Orcish
-        _ => 7,                         // Common
+        _ => 7,                        // Common
     }
 }
 
@@ -3447,12 +3495,20 @@ fn reward_items(items: Vec<gameplay::RewardItem>) -> Vec<QuestRewardItem> {
         .collect()
 }
 
-fn quest_panel_extra(extra: gameplay::QuestPanelExtra) -> benilla_protocol::messages::QuestPanelExtra {
+fn quest_panel_extra(
+    extra: gameplay::QuestPanelExtra,
+) -> benilla_protocol::messages::QuestPanelExtra {
     benilla_protocol::messages::QuestPanelExtra {
-        flags: extra.flags, suggested_players: extra.suggested_players, xp: extra.xp,
-        honor_tenths: extra.honor_tenths, honor_multiplier: extra.honor_multiplier,
-        cast_spell: extra.cast_spell, title_id: extra.title_id, talents: extra.talents,
-        arena_points: extra.arena_points, reputation: extra.reputation,
+        flags: extra.flags,
+        suggested_players: extra.suggested_players,
+        xp: extra.xp,
+        honor_tenths: extra.honor_tenths,
+        honor_multiplier: extra.honor_multiplier,
+        cast_spell: extra.cast_spell,
+        title_id: extra.title_id,
+        talents: extra.talents,
+        arena_points: extra.arena_points,
+        reputation: extra.reputation,
     }
 }
 
@@ -3650,13 +3706,19 @@ fn translate_gameplay(
                 m.flags & (0x200 | 0x800 | 0x400000)
             };
             if unsupported != 0 {
-                debug!(guid = m.guid, flags = m.flags, "Wrath spline needs unsupported evaluator");
+                debug!(
+                    guid = m.guid,
+                    flags = m.flags,
+                    "Wrath spline needs unsupported evaluator"
+                );
                 return Vec::new();
             }
             let facing = match m.facing {
                 gameplay::MonsterFacing::None => benilla_protocol::MonsterMoveFacing::None,
                 gameplay::MonsterFacing::Spot(p) => benilla_protocol::MonsterMoveFacing::Spot(p),
-                gameplay::MonsterFacing::Target(g) => benilla_protocol::MonsterMoveFacing::Target(g),
+                gameplay::MonsterFacing::Target(g) => {
+                    benilla_protocol::MonsterMoveFacing::Target(g)
+                }
                 gameplay::MonsterFacing::Angle(a) => benilla_protocol::MonsterMoveFacing::Angle(a),
             };
             vec![SessionEvent::MonsterMove {
@@ -3833,8 +3895,14 @@ fn translate_gameplay(
         WrathGameplayEvent::SpellCooldowns { caster, cooldowns } => {
             vec![SessionEvent::SpellCooldowns { caster, cooldowns }]
         }
-        WrathGameplayEvent::ItemCooldown { item_guid, spell_id } => {
-            vec![SessionEvent::ItemCooldown { item_guid, spell_id }]
+        WrathGameplayEvent::ItemCooldown {
+            item_guid,
+            spell_id,
+        } => {
+            vec![SessionEvent::ItemCooldown {
+                item_guid,
+                spell_id,
+            }]
         }
         WrathGameplayEvent::CooldownEvent { spell_id, caster } => {
             vec![SessionEvent::CooldownEvent { spell_id, caster }]
@@ -3910,8 +3978,16 @@ fn translate_gameplay(
         }
         WrathGameplayEvent::LoggedOut => vec![SessionEvent::LoggedOut],
         WrathGameplayEvent::LogoutCancelled => vec![SessionEvent::LogoutCancelled],
-        WrathGameplayEvent::TransferAborted { map_id, reason, argument } => {
-            vec![SessionEvent::TransferAborted { reason, map_id: Some(map_id), argument }]
+        WrathGameplayEvent::TransferAborted {
+            map_id,
+            reason,
+            argument,
+        } => {
+            vec![SessionEvent::TransferAborted {
+                reason,
+                map_id: Some(map_id),
+                argument,
+            }]
         }
         // Our own failure is reported once, by `SMSG_CAST_FAILED` (the CastFailed arm). 12340's
         // 0x133/0x2A6 handlers (`Packet_SMSG_SPELL_FAILURE` 0x809C70, `_FAILED_OTHER` 0x806AD0)
@@ -3926,7 +4002,9 @@ fn translate_gameplay(
         // interrupted by someone else, where 12340 shows the interrupted cast bar and no line.
         // Not applied: 0x809C70 also stops the local auto-repeat for reasons 52-54 (the
         // need-ammo family), which AzerothCore never sends through this message.
-        WrathGameplayEvent::SpellFailure { caster, spell_id, .. } => {
+        WrathGameplayEvent::SpellFailure {
+            caster, spell_id, ..
+        } => {
             vec![SessionEvent::SpellFailedOther { caster, spell_id }]
         }
         WrathGameplayEvent::SpellGo {
@@ -3961,13 +4039,13 @@ fn translate_gameplay(
                 hits,
                 misses: misses
                     .into_iter()
-                    .map(|(target, info, reflect_result)| {
-                        benilla_protocol::messages::SpellGoMiss {
+                    .map(
+                        |(target, info, reflect_result)| benilla_protocol::messages::SpellGoMiss {
                             target,
                             info,
                             reflect_result,
-                        }
-                    })
+                        },
+                    )
                     .collect(),
                 go_target: targets.gameobject,
                 target_mask: vanilla_target_mask(targets.mask),
@@ -4008,11 +4086,35 @@ fn translate_gameplay(
                     .collect(),
             }]
         }
-        WrathGameplayEvent::GameObjectInfo { entry, type_id, display_id, name, data } => {
-            vec![SessionEvent::GameObjectInfo { entry, type_id, display_id, name, data }]
+        WrathGameplayEvent::GameObjectInfo {
+            entry,
+            type_id,
+            display_id,
+            name,
+            data,
+        } => {
+            vec![SessionEvent::GameObjectInfo {
+                entry,
+                type_id,
+                display_id,
+                name,
+                data,
+            }]
         }
-        WrathGameplayEvent::PlayerName { guid, name, race, gender, class } => {
-            vec![SessionEvent::PlayerName { guid, name, race, gender, class }]
+        WrathGameplayEvent::PlayerName {
+            guid,
+            name,
+            race,
+            gender,
+            class,
+        } => {
+            vec![SessionEvent::PlayerName {
+                guid,
+                name,
+                race,
+                gender,
+                class,
+            }]
         }
         WrathGameplayEvent::CreatureName {
             entry,
@@ -4224,11 +4326,13 @@ fn translate_gameplay(
             quest_id,
             title,
             sender,
-        } => vec![SessionEvent::QuestConfirmAccept(ProtocolQuestConfirmAccept {
-            quest_id,
-            title,
-            sender,
-        })],
+        } => vec![SessionEvent::QuestConfirmAccept(
+            ProtocolQuestConfirmAccept {
+                quest_id,
+                title,
+                sender,
+            },
+        )],
         WrathGameplayEvent::QuestPushResult { member, msg } => {
             vec![SessionEvent::QuestPushResult {
                 member,
@@ -4452,8 +4556,8 @@ fn translate_gameplay(
             money: c.money,
             items: Vec::new(),
         })],
-        WrathGameplayEvent::QuestTemplate(t) => vec![SessionEvent::QuestTemplate(Box::new(
-            QuestTemplate {
+        WrathGameplayEvent::QuestTemplate(t) => {
+            vec![SessionEvent::QuestTemplate(Box::new(QuestTemplate {
                 quest_id: t.quest_id,
                 method: t.method,
                 level: t.level,
@@ -4494,8 +4598,8 @@ fn translate_gameplay(
                     item_count: o.item_count,
                     text: o.text,
                 }),
-            },
-        ))],
+            }))]
+        }
         WrathGameplayEvent::QuestObjectivesComplete { quest_id } => {
             vec![SessionEvent::QuestObjectivesComplete { quest_id }]
         }
@@ -4703,13 +4807,12 @@ fn translate_gameplay(
                 talk: talk as u32,
             }]
         }
-        WrathGameplayEvent::PetDismissSound {
-            model_id,
-            position,
-        } => vec![SessionEvent::PetDismissSound {
-            model_id: model_id as u32,
-            position,
-        }],
+        WrathGameplayEvent::PetDismissSound { model_id, position } => {
+            vec![SessionEvent::PetDismissSound {
+                model_id: model_id as u32,
+                position,
+            }]
+        }
         WrathGameplayEvent::PetLearnedSpell { spell_id } => {
             vec![SessionEvent::PetSpellLearned { spell_id }]
         }
@@ -4725,7 +4828,11 @@ fn translate_gameplay(
                 .or_else(|| info.pet_talents.as_ref().map(|p| p.unspent_points))
                 .unwrap_or(0);
             let (active_spec, specs, pet_talents) = if info.pet {
-                (None, Vec::new(), info.pet_talents.map(|p| p.talents).unwrap_or_default())
+                (
+                    None,
+                    Vec::new(),
+                    info.pet_talents.map(|p| p.talents).unwrap_or_default(),
+                )
             } else if let Some(player) = info.player {
                 (
                     Some(player.active_spec),
@@ -4842,7 +4949,11 @@ fn translate_gameplay(
             let tail = if result.error == 1 {
                 result
                     .inventory_error
-                    .map(|result| benilla_protocol::messages::AuctionCommandTail::Inventory { result })
+                    .map(
+                        |result| benilla_protocol::messages::AuctionCommandTail::Inventory {
+                            result,
+                        },
+                    )
                     .unwrap_or(benilla_protocol::messages::AuctionCommandTail::Empty)
             } else if result.error == 0 && result.action != 0 {
                 benilla_protocol::messages::AuctionCommandTail::BidPlaced {
@@ -4860,11 +4971,7 @@ fn translate_gameplay(
         }
         WrathGameplayEvent::AuctionList { kind, list } => {
             let list = *list;
-            let auctions = list
-                .auctions
-                .into_iter()
-                .map(wrath_auction_entry)
-                .collect();
+            let auctions = list.auctions.into_iter().map(wrath_auction_entry).collect();
             vec![match kind {
                 gameplay::AuctionListKind::Browse => SessionEvent::AuctionListResult {
                     auctions,
@@ -4918,7 +5025,9 @@ fn translate_gameplay(
             flags: list.flags,
             members: list.members,
         }],
-        WrathGameplayEvent::GuildInfo(info) => vec![SessionEvent::GuildInfo(wrath_guild_info(info))],
+        WrathGameplayEvent::GuildInfo(info) => {
+            vec![SessionEvent::GuildInfo(wrath_guild_info(info))]
+        }
         WrathGameplayEvent::GuildRoster(roster) => {
             vec![SessionEvent::GuildRoster(wrath_guild_roster(*roster))]
         }
@@ -4987,12 +5096,14 @@ fn translate_gameplay(
             health_delta,
             power_deltas,
             stat_deltas,
-        } => vec![SessionEvent::LevelUp(benilla_protocol::messages::LevelUpInfo {
-            level: new_level,
-            health: health_delta as i32,
-            powers: power_deltas.map(|v| v as i32),
-            stats: stat_deltas.map(|v| v as i32),
-        })],
+        } => vec![SessionEvent::LevelUp(
+            benilla_protocol::messages::LevelUpInfo {
+                level: new_level,
+                health: health_delta as i32,
+                powers: power_deltas.map(|v| v as i32),
+                stats: stat_deltas.map(|v| v as i32),
+            },
+        )],
         WrathGameplayEvent::SpellHealLog {
             target,
             caster,
@@ -5071,7 +5182,10 @@ fn translate_gameplay(
             None => {
                 // Unsupported: the shared mover has no flight or pitch speed to apply, and an ack
                 // for a speed we never use would tell the server something false.
-                warn!(?kind, guid, speed, "wrath: forced speed has no mover owner; not acked");
+                warn!(
+                    ?kind,
+                    guid, speed, "wrath: forced speed has no mover owner; not acked"
+                );
                 Vec::new()
             }
         },
@@ -5097,19 +5211,20 @@ fn translate_gameplay(
             None => {
                 // Unsupported: CanFly and gravity need the flight controller the shared mover
                 // lacks, so the order is neither applied nor acked.
-                warn!(?mode, apply, guid, "wrath: move mode has no mover owner; not acked");
+                warn!(
+                    ?mode,
+                    apply, guid, "wrath: move mode has no mover owner; not acked"
+                );
                 Vec::new()
             }
         },
-        WrathGameplayEvent::SplineMoveMode { mode, apply, guid } => {
-            match wrath_spline_mode(mode) {
-                Some(mode) => vec![SessionEvent::SplineMoveMode { guid, mode, apply }],
-                None => {
-                    debug!(?mode, apply, guid, "wrath: spline mode has no motion owner");
-                    Vec::new()
-                }
+        WrathGameplayEvent::SplineMoveMode { mode, apply, guid } => match wrath_spline_mode(mode) {
+            Some(mode) => vec![SessionEvent::SplineMoveMode { guid, mode, apply }],
+            None => {
+                debug!(?mode, apply, guid, "wrath: spline mode has no motion owner");
+                Vec::new()
             }
-        }
+        },
         WrathGameplayEvent::KnockBack {
             guid,
             counter,
@@ -5166,9 +5281,7 @@ fn wrath_move_mode(mode: gameplay::MoveMode) -> Option<benilla_protocol::message
 }
 
 /// The shared mode for a Wrath unit broadcast; `None` for flying and gravity.
-fn wrath_spline_mode(
-    mode: gameplay::SplineMode,
-) -> Option<benilla_protocol::messages::SplineMode> {
+fn wrath_spline_mode(mode: gameplay::SplineMode) -> Option<benilla_protocol::messages::SplineMode> {
     use benilla_protocol::messages::SplineMode as Shared;
     use gameplay::SplineMode as Wrath;
     Some(match mode {
@@ -5229,11 +5342,13 @@ pub(crate) fn wrath_group_list(list: gameplay::social::GroupList) -> SessionEven
             flags: wrath_group_member_flags(member.sub_group, member.flags),
         })
         .collect();
-    let loot = list.loot.map(|loot| benilla_protocol::messages::GroupLootInfo {
-        method: loot.method,
-        master: loot.master,
-        threshold: loot.threshold,
-    });
+    let loot = list
+        .loot
+        .map(|loot| benilla_protocol::messages::GroupLootInfo {
+            method: loot.method,
+            master: loot.master,
+            threshold: loot.threshold,
+        });
     SessionEvent::GroupList {
         group_type: list.group_type,
         own_flags: wrath_group_member_flags(list.sub_group, list.flags),
@@ -5355,15 +5470,15 @@ fn wrath_contacts(list: gameplay::social::ContactList) -> Vec<SessionEvent> {
 /// when the `SMSG_BATTLEFIELD_STATUS` arm (`STATUS_WAIT_QUEUE`) does not carry an explicit map word.
 pub(crate) fn wrath_bg_type_default_map_id(bg_type_id: u32) -> u32 {
     match bg_type_id {
-        1 => 30,  // BATTLEGROUND_AV -> Alterac Valley
-        2 => 489, // BATTLEGROUND_WS -> Warsong Gulch
-        3 => 529, // BATTLEGROUND_AB -> Arathi Basin
-        4 => 559, // BATTLEGROUND_NA -> Nagrand Arena
-        5 => 562, // BATTLEGROUND_BE -> Blade's Edge Arena
-        6 => 559, // BATTLEGROUND_AA -> All Arenas (fallback map)
-        7 => 566, // BATTLEGROUND_EY -> Eye of the Storm
-        8 => 572, // BATTLEGROUND_RL -> Ruins of Lordaeron
-        9 => 607, // BATTLEGROUND_SA -> Strand of the Ancients
+        1 => 30,   // BATTLEGROUND_AV -> Alterac Valley
+        2 => 489,  // BATTLEGROUND_WS -> Warsong Gulch
+        3 => 529,  // BATTLEGROUND_AB -> Arathi Basin
+        4 => 559,  // BATTLEGROUND_NA -> Nagrand Arena
+        5 => 562,  // BATTLEGROUND_BE -> Blade's Edge Arena
+        6 => 559,  // BATTLEGROUND_AA -> All Arenas (fallback map)
+        7 => 566,  // BATTLEGROUND_EY -> Eye of the Storm
+        8 => 572,  // BATTLEGROUND_RL -> Ruins of Lordaeron
+        9 => 607,  // BATTLEGROUND_SA -> Strand of the Ancients
         10 => 617, // BATTLEGROUND_DS -> Dalaran Sewers
         11 => 618, // BATTLEGROUND_RV -> Ring of Valor
         30 => 628, // BATTLEGROUND_IC -> Isle of Conquest
@@ -5411,12 +5526,7 @@ pub(crate) fn wrath_battlefield_status(
         gameplay::wrath_systems::BattlefieldStatusArm::Queued {
             average_wait_ms,
             queued_ms,
-        } => (
-            fallback_map,
-            None,
-            None,
-            Some((average_wait_ms, queued_ms)),
-        ),
+        } => (fallback_map, None, None, Some((average_wait_ms, queued_ms))),
         gameplay::wrath_systems::BattlefieldStatusArm::Confirm {
             map_id,
             port_expiration_ms,
@@ -5490,9 +5600,7 @@ fn wrath_friend_status(
     }
 }
 
-fn wrath_channel_notify(
-    notify: gameplay::social::ChannelNotify,
-) -> SessionEvent {
+fn wrath_channel_notify(notify: gameplay::social::ChannelNotify) -> SessionEvent {
     use benilla_protocol::messages::ChannelNoticeTail as Out;
     use gameplay::social::ChannelNotifyTail as In;
     let tail = match notify.tail {
@@ -5524,7 +5632,9 @@ fn wrath_channel_notify(
     }
 }
 
-fn wrath_guild_info(info: gameplay::social::GuildInfoWire) -> benilla_protocol::messages::GuildInfo {
+fn wrath_guild_info(
+    info: gameplay::social::GuildInfoWire,
+) -> benilla_protocol::messages::GuildInfo {
     // `AppendPackedTime` packs the client's WowTime: year-2000, month, day and time of day.
     let year = ((info.created_at >> 24) & 0x1F) + 2000;
     let month = ((info.created_at >> 20) & 0xF) + 1;
@@ -5568,7 +5678,9 @@ fn wrath_guild_roster(
 /// Map the 12340 trade status onto the donor UI's status enum. Codes 22/23 are intentionally
 /// kept as `Unknown`: their 3.3.5 meanings (wrong realm / not on tap list) have no 1.12 arm or
 /// line, and mapping them onto the conjured-only bounce would misreport the refusal.
-fn wrath_trade_status(status: gameplay::economy::TradeStatus) -> benilla_protocol::messages::TradeStatus {
+fn wrath_trade_status(
+    status: gameplay::economy::TradeStatus,
+) -> benilla_protocol::messages::TradeStatus {
     use benilla_protocol::messages::TradeStatus as Out;
     use gameplay::economy::TradeStatus as In;
     match status {
@@ -5607,7 +5719,9 @@ fn wrath_trade_status(status: gameplay::economy::TradeStatus) -> benilla_protoco
 }
 
 /// Map a 12340 trade side onto the trade state, preserving `trade_id` and `socket_enchant`.
-pub(crate) fn wrath_trade_extended(state: gameplay::economy::TradeExtended) -> benilla_protocol::messages::TradeStatusExtended {
+pub(crate) fn wrath_trade_extended(
+    state: gameplay::economy::TradeExtended,
+) -> benilla_protocol::messages::TradeStatusExtended {
     let mut slots = [None; gameplay::economy::TRADE_SLOT_COUNT];
     for (out, item) in slots.iter_mut().zip(state.slots) {
         *out = item.map(|item| benilla_protocol::messages::TradeItem {
@@ -5638,7 +5752,9 @@ pub(crate) fn wrath_trade_extended(state: gameplay::economy::TradeExtended) -> b
     }
 }
 
-pub(crate) fn wrath_mail_list(list: gameplay::economy::MailList) -> Vec<benilla_protocol::messages::MailListEntry> {
+pub(crate) fn wrath_mail_list(
+    list: gameplay::economy::MailList,
+) -> Vec<benilla_protocol::messages::MailListEntry> {
     list.mails
         .into_iter()
         .map(|mail| {
@@ -5682,7 +5798,9 @@ pub(crate) fn wrath_mail_list(list: gameplay::economy::MailList) -> Vec<benilla_
         .collect()
 }
 
-fn wrath_auction_entry(entry: gameplay::economy::AuctionEntry) -> benilla_protocol::messages::AuctionListEntry {
+fn wrath_auction_entry(
+    entry: gameplay::economy::AuctionEntry,
+) -> benilla_protocol::messages::AuctionListEntry {
     benilla_protocol::messages::AuctionListEntry {
         auction_id: entry.auction_id,
         item_entry: entry.item_entry,
@@ -5712,7 +5830,9 @@ fn wrath_tap_commands(
     player: Option<Res<crate::player::Player>>,
 ) {
     let Some(mut tap) = tap else { return };
-    let Some(receiver) = tap.0.as_mut() else { return };
+    let Some(receiver) = tap.0.as_mut() else {
+        return;
+    };
     // One reading for the pass: every `MovementInfo` written below carries the clock the
     // time-sync reply reports ([`wrath_client_ms`]).
     let now_ms = wrath_client_ms();
@@ -5720,7 +5840,11 @@ fn wrath_tap_commands(
         // Unwrap the shared transport-identity envelope exactly once before matching the inner
         // command. Its trace and scope flag are carried alongside the existing per-variant traces.
         let (env_trace, env_enforce_scope, from_tracked, command) = match raw_command {
-            ClientCommand::Tracked { trace, enforce_scope, command } => (trace, enforce_scope, true, *command),
+            ClientCommand::Tracked {
+                trace,
+                enforce_scope,
+                command,
+            } => (trace, enforce_scope, true, *command),
             other => (None, false, false, other),
         };
         // Self-movement is replaceable motion with its own admission rule, not an action.
@@ -5759,7 +5883,12 @@ fn wrath_tap_commands(
             admit_wrath_movement(&input, opcode, payload, trace.as_deref());
             continue;
         }
-        let opening = matches!(&command, ClientCommand::GossipHello { .. } | ClientCommand::QuestgiverHello { .. } | ClientCommand::QuestgiverOpenTracked { .. });
+        let opening = matches!(
+            &command,
+            ClientCommand::GossipHello { .. }
+                | ClientCommand::QuestgiverHello { .. }
+                | ClientCommand::QuestgiverOpenTracked { .. }
+        );
         let scope = Some((view.session_epoch, view.world_generation));
         let cmd_trace = match &command {
             ClientCommand::CastSpell { trace, .. }
@@ -5838,9 +5967,15 @@ fn wrath_tap_commands(
                     continue;
                 }
                 let command = if complete {
-                    ClientCommand::QuestgiverComplete { npc: receipt.npc, quest: receipt.quest }
+                    ClientCommand::QuestgiverComplete {
+                        npc: receipt.npc,
+                        quest: receipt.quest,
+                    }
                 } else {
-                    ClientCommand::QuestgiverQuery { npc: receipt.npc, quest: receipt.quest }
+                    ClientCommand::QuestgiverQuery {
+                        npc: receipt.npc,
+                        quest: receipt.quest,
+                    }
                 };
                 (command, Some(receipt))
             }
@@ -5908,25 +6043,25 @@ fn wrath_tap_commands(
         if enforce_scope {
             if let Some(ix) = &primary_trace {
                 if let Some((se, wg)) = ix.scope() {
-                if !view.entered_world
-                    || view.session_epoch != se
-                    || view.world_generation != wg
-                {
-                    if let Some(receipt) = receipt.as_ref() {
-                        receipt.report(crate::net::CommandDelivery::Rejected(
-                            crate::net::CommandRefusal::ScopeChanged,
-                        ));
-                    } else {
-                        ix.record(crate::quest_trace::Stage::Delivery(
-                            crate::net::CommandDelivery::Rejected(
+                    if !view.entered_world
+                        || view.session_epoch != se
+                        || view.world_generation != wg
+                    {
+                        if let Some(receipt) = receipt.as_ref() {
+                            receipt.report(crate::net::CommandDelivery::Rejected(
                                 crate::net::CommandRefusal::ScopeChanged,
-                            ),
-                        ));
+                            ));
+                        } else {
+                            ix.record(crate::quest_trace::Stage::Delivery(
+                                crate::net::CommandDelivery::Rejected(
+                                    crate::net::CommandRefusal::ScopeChanged,
+                                ),
+                            ));
+                        }
+                        continue;
                     }
-                    continue;
                 }
             }
-        }
         }
         let count = view.next_cast_count;
         // The wire cast count actually used by a CMSG_CAST_SPELL arm, when one encodes. It is
@@ -5938,19 +6073,27 @@ fn wrath_tap_commands(
                     debug!("wrath: dropping selection of unstreamed {guid:#x}");
                     continue;
                 }
-                Some((benilla_protocol_wrath::opcode::CMSG_SET_SELECTION, gameplay::set_selection(guid)))
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_SET_SELECTION,
+                    gameplay::set_selection(guid),
+                ))
             }
             ClientCommand::AttackSwing { guid } => {
                 if !view.entities.contains_key(&guid) {
                     continue;
                 }
-                Some((benilla_protocol_wrath::opcode::CMSG_ATTACKSWING, gameplay::attack_swing(guid)))
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_ATTACKSWING,
+                    gameplay::attack_swing(guid),
+                ))
             }
             ClientCommand::AttackStop => Some((
                 benilla_protocol_wrath::opcode::CMSG_ATTACKSTOP,
                 gameplay::attack_stop(),
             )),
-            ClientCommand::CastSpell { spell_id, target, .. } => {
+            ClientCommand::CastSpell {
+                spell_id, target, ..
+            } => {
                 admitted_wire_count = Some(count);
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
@@ -5966,11 +6109,7 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_GOSSIP_HELLO,
                 gameplay::gossip_hello(guid),
             )),
-            ClientCommand::GossipSelectOption {
-                guid,
-                option,
-                code,
-            } => {
+            ClientCommand::GossipSelectOption { guid, option, code } => {
                 let menu_id = view
                     .gossip_menu
                     .filter(|(npc, _)| *npc == guid)
@@ -6009,11 +6148,7 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_QUESTGIVER_REQUEST_REWARD,
                 gameplay::questgiver_request_reward(npc, quest),
             )),
-            ClientCommand::QuestgiverChooseReward {
-                npc,
-                quest,
-                choice,
-            } => Some((
+            ClientCommand::QuestgiverChooseReward { npc, quest, choice } => Some((
                 benilla_protocol_wrath::opcode::CMSG_QUESTGIVER_CHOOSE_REWARD,
                 gameplay::questgiver_choose_reward(npc, quest, choice),
             )),
@@ -6021,12 +6156,10 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_NAME_QUERY,
                 guid.to_le_bytes().to_vec(),
             )),
-            ClientCommand::GameObjectQuery { entry, guid } => {
-                Some((
-                    benilla_protocol_wrath::opcode::CMSG_GAMEOBJECT_QUERY,
-                    gameplay::gameobject_query(entry, guid),
-                ))
-            }
+            ClientCommand::GameObjectQuery { entry, guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GAMEOBJECT_QUERY,
+                gameplay::gameobject_query(entry, guid),
+            )),
             ClientCommand::CreatureQuery { entry, guid } => {
                 let mut payload = entry.to_le_bytes().to_vec();
                 payload.extend_from_slice(&guid.to_le_bytes());
@@ -6067,17 +6200,27 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_GET_MAIL_LIST,
                 benilla_protocol::messages::get_mail_list(mailbox),
             )),
-            ClientCommand::SendMail { mailbox, receiver, subject, body, stationery,
-                item_guid, money, cod, .. } => {
-                gameplay::economy::send_mail(mailbox, &receiver, &subject, &body,
-                    stationery, item_guid, money, cod)
-                    .map(|body| (benilla_protocol_wrath::opcode::CMSG_SEND_MAIL, body))
-            }
+            ClientCommand::SendMail {
+                mailbox,
+                receiver,
+                subject,
+                body,
+                stationery,
+                item_guid,
+                money,
+                cod,
+                ..
+            } => gameplay::economy::send_mail(
+                mailbox, &receiver, &subject, &body, stationery, item_guid, money, cod,
+            )
+            .map(|body| (benilla_protocol_wrath::opcode::CMSG_SEND_MAIL, body)),
             ClientCommand::MailMarkAsRead { mailbox, mail_id } => Some((
                 benilla_protocol_wrath::opcode::CMSG_MAIL_MARK_AS_READ,
                 benilla_protocol::messages::mail_mark_as_read(mailbox, mail_id),
             )),
-            ClientCommand::MailCreateTextItem { mailbox, mail_id, .. } => Some((
+            ClientCommand::MailCreateTextItem {
+                mailbox, mail_id, ..
+            } => Some((
                 benilla_protocol_wrath::opcode::CMSG_MAIL_CREATE_TEXT_ITEM,
                 benilla_protocol::messages::mail_mark_as_read(mailbox, mail_id),
             )),
@@ -6122,9 +6265,7 @@ fn wrath_tap_commands(
                 gameplay::set_action_button(button, packed),
             )),
             ClientCommand::SetActionButton { button, .. } => {
-                debug!(
-                    "wrath: action button {button} is outside the 12340 0..143 range; refused"
-                );
+                debug!("wrath: action button {button} is outside the 12340 0..143 range; refused");
                 None
             }
             ClientCommand::RepopRequest => Some((
@@ -6139,10 +6280,9 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_RECLAIM_CORPSE,
                 corpse.to_le_bytes().to_vec(),
             )),
-            ClientCommand::SelfRes => Some((
-                benilla_protocol_wrath::opcode::CMSG_SELF_RES,
-                Vec::new(),
-            )),
+            ClientCommand::SelfRes => {
+                Some((benilla_protocol_wrath::opcode::CMSG_SELF_RES, Vec::new()))
+            }
             ClientCommand::SpiritHealerActivate { npc } => Some((
                 benilla_protocol_wrath::opcode::CMSG_SPIRIT_HEALER_ACTIVATE,
                 npc.to_le_bytes().to_vec(),
@@ -6235,18 +6375,12 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_PUSHQUESTTOPARTY,
                 gameplay::push_quest_to_party(quest),
             )),
-            ClientCommand::QuestPushResultForQuest {
-                sharer,
-                quest,
-                msg,
-            } => Some((
+            ClientCommand::QuestPushResultForQuest { sharer, quest, msg } => Some((
                 u32::from(benilla_protocol_wrath::opcode::MSG_QUEST_PUSH_RESULT),
                 gameplay::quest_push_result(sharer, quest, msg.0),
             )),
             ClientCommand::QuestPushResult { .. } => {
-                debug!(
-                    "wrath: quest-share decline refused: the 12340 packet requires a quest id"
-                );
+                debug!("wrath: quest-share decline refused: the 12340 packet requires a quest id");
                 None
             }
             ClientCommand::BinderActivate { binder } => Some((
@@ -6532,7 +6666,9 @@ fn wrath_tap_commands(
                 // (67..=73); no donor-to-Wrath shift belongs here.
                 gameplay::autostore_bank_item(bag, slot),
             )),
-            ClientCommand::CastSpellGameObject { spell_id, go_guid, .. } => {
+            ClientCommand::CastSpellGameObject {
+                spell_id, go_guid, ..
+            } => {
                 let count = view.next_cast_count;
                 admitted_wire_count = Some(count);
                 view.next_cast_count = count.wrapping_add(1).max(1);
@@ -6541,7 +6677,11 @@ fn wrath_tap_commands(
                     gameplay::cast_spell_gameobject(count, spell_id, go_guid),
                 ))
             }
-            ClientCommand::CastSpellItem { spell_id, item_guid, .. } => {
+            ClientCommand::CastSpellItem {
+                spell_id,
+                item_guid,
+                ..
+            } => {
                 let count = view.next_cast_count;
                 admitted_wire_count = Some(count);
                 view.next_cast_count = count.wrapping_add(1).max(1);
@@ -6614,9 +6754,7 @@ fn wrath_tap_commands(
                     ))
                 }
                 _ => {
-                    debug!(
-                        "wrath: item use dropped (no item guid or an unsupported target block)"
-                    );
+                    debug!("wrath: item use dropped (no item guid or an unsupported target block)");
                     None
                 }
             },
@@ -6687,12 +6825,7 @@ fn wrath_tap_commands(
             )),
             ClientCommand::AddonMessage { distribution, text } => Some((
                 benilla_protocol_wrath::opcode::CMSG_MESSAGECHAT,
-                gameplay::message_chat(
-                    addon_chat_type(distribution),
-                    0xFFFF_FFFF,
-                    None,
-                    &text,
-                ),
+                gameplay::message_chat(addon_chat_type(distribution), 0xFFFF_FFFF, None, &text),
             )),
             ClientCommand::LearnTalent { talent_id, rank } => Some((
                 benilla_protocol_wrath::opcode::CMSG_LEARN_TALENT,
@@ -6791,18 +6924,15 @@ fn wrath_tap_commands(
                 guild_id.to_le_bytes().to_vec(),
             )),
             // `CMSG_TOGGLE_PVP` is toggle-by-opcode with no body; the donor sends `&[]` too.
-            ClientCommand::TogglePvp => Some((
-                benilla_protocol_wrath::opcode::CMSG_TOGGLE_PVP,
-                Vec::new(),
-            )),
-            ClientCommand::ToggleHelm => Some((
-                benilla_protocol_wrath::opcode::CMSG_SHOWING_HELM,
-                vec![1],
-            )),
-            ClientCommand::ToggleCloak => Some((
-                benilla_protocol_wrath::opcode::CMSG_SHOWING_CLOAK,
-                vec![1],
-            )),
+            ClientCommand::TogglePvp => {
+                Some((benilla_protocol_wrath::opcode::CMSG_TOGGLE_PVP, Vec::new()))
+            }
+            ClientCommand::ToggleHelm => {
+                Some((benilla_protocol_wrath::opcode::CMSG_SHOWING_HELM, vec![1]))
+            }
+            ClientCommand::ToggleCloak => {
+                Some((benilla_protocol_wrath::opcode::CMSG_SHOWING_CLOAK, vec![1]))
+            }
             ClientCommand::Emote { emote } => Some((
                 benilla_protocol_wrath::opcode::CMSG_EMOTE,
                 emote.to_le_bytes().to_vec(),
@@ -6827,7 +6957,10 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_UNLEARN_SKILL,
                 skill_id.to_le_bytes().to_vec(),
             )),
-            ClientCommand::SetFactionAtWar { rep_list_id, at_war } => Some((
+            ClientCommand::SetFactionAtWar {
+                rep_list_id,
+                at_war,
+            } => Some((
                 benilla_protocol_wrath::opcode::CMSG_SET_FACTION_ATWAR,
                 gameplay::set_faction_flag(rep_list_id, u8::from(at_war)),
             )),
@@ -7004,14 +7137,12 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_INITIATE_TRADE,
                 gameplay::encode_guid_only(target),
             )),
-            ClientCommand::BeginTrade => Some((
-                benilla_protocol_wrath::opcode::CMSG_BEGIN_TRADE,
-                Vec::new(),
-            )),
-            ClientCommand::BusyTrade => Some((
-                benilla_protocol_wrath::opcode::CMSG_BUSY_TRADE,
-                Vec::new(),
-            )),
+            ClientCommand::BeginTrade => {
+                Some((benilla_protocol_wrath::opcode::CMSG_BEGIN_TRADE, Vec::new()))
+            }
+            ClientCommand::BusyTrade => {
+                Some((benilla_protocol_wrath::opcode::CMSG_BUSY_TRADE, Vec::new()))
+            }
             ClientCommand::IgnoreTrade => Some((
                 benilla_protocol_wrath::opcode::CMSG_IGNORE_TRADE,
                 Vec::new(),
@@ -7120,10 +7251,9 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_GUILD_DECLINE,
                 Vec::new(),
             )),
-            ClientCommand::GuildInfoRequest => Some((
-                benilla_protocol_wrath::opcode::CMSG_GUILD_INFO,
-                Vec::new(),
-            )),
+            ClientCommand::GuildInfoRequest => {
+                Some((benilla_protocol_wrath::opcode::CMSG_GUILD_INFO, Vec::new()))
+            }
             ClientCommand::GuildRosterRequest => Some((
                 benilla_protocol_wrath::opcode::CMSG_GUILD_ROSTER,
                 Vec::new(),
@@ -7136,10 +7266,9 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_GUILD_DEMOTE,
                 gameplay::cstring_single(&name),
             )),
-            ClientCommand::GuildLeave => Some((
-                benilla_protocol_wrath::opcode::CMSG_GUILD_LEAVE,
-                Vec::new(),
-            )),
+            ClientCommand::GuildLeave => {
+                Some((benilla_protocol_wrath::opcode::CMSG_GUILD_LEAVE, Vec::new()))
+            }
             ClientCommand::GuildRemove { name } => Some((
                 benilla_protocol_wrath::opcode::CMSG_GUILD_REMOVE,
                 gameplay::cstring_single(&name),
@@ -7225,7 +7354,11 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_MAIL_TAKE_MONEY,
                 gameplay::mail_action(mailbox, mail_id),
             )),
-            ClientCommand::MailTakeItem { mailbox, mail_id, item_guid_low } => Some((
+            ClientCommand::MailTakeItem {
+                mailbox,
+                mail_id,
+                item_guid_low,
+            } => Some((
                 benilla_protocol_wrath::opcode::CMSG_MAIL_TAKE_ITEM,
                 gameplay::mail_action_with_u32(mailbox, mail_id, item_guid_low),
             )),
@@ -7381,10 +7514,7 @@ fn wrath_tap_commands(
                 body.extend_from_slice(&bg_type.to_le_bytes());
                 body.push(0); // from_where: UI / non-battlemaster
                 body.push(0); // xp_gain
-                Some((
-                    benilla_protocol_wrath::opcode::CMSG_BATTLEFIELD_LIST,
-                    body,
-                ))
+                Some((benilla_protocol_wrath::opcode::CMSG_BATTLEFIELD_LIST, body))
             }
             ClientCommand::BattlemasterJoin {
                 battlemaster,
@@ -7429,10 +7559,7 @@ fn wrath_tap_commands(
                 body.push(0);
                 body.extend_from_slice(&bg_type.to_le_bytes());
                 body.extend_from_slice(&0x1F90u16.to_le_bytes());
-                Some((
-                    benilla_protocol_wrath::opcode::CMSG_LEAVE_BATTLEFIELD,
-                    body,
-                ))
+                Some((benilla_protocol_wrath::opcode::CMSG_LEAVE_BATTLEFIELD, body))
             }
             ClientCommand::GmTicketCreate {
                 category,
@@ -7509,9 +7636,9 @@ fn wrath_tap_commands(
                     SpeedKind::SwimBack => u32::from(
                         benilla_protocol_wrath::opcode::CMSG_FORCE_SWIM_BACK_SPEED_CHANGE_ACK,
                     ),
-                    SpeedKind::TurnRate => u32::from(
-                        benilla_protocol_wrath::opcode::CMSG_FORCE_TURN_RATE_CHANGE_ACK,
-                    ),
+                    SpeedKind::TurnRate => {
+                        u32::from(benilla_protocol_wrath::opcode::CMSG_FORCE_TURN_RATE_CHANGE_ACK)
+                    }
                 };
                 Some((
                     opcode,
@@ -7587,7 +7714,12 @@ fn wrath_tap_commands(
                     now_ms,
                     pos,
                     orientation,
-                    (launch.zspeed, launch.sin_angle, launch.cos_angle, launch.xy_speed),
+                    (
+                        launch.zspeed,
+                        launch.sin_angle,
+                        launch.cos_angle,
+                        launch.xy_speed,
+                    ),
                     transport.map(|t| (t.guid, [t.pos.x, t.pos.y, t.pos.z], t.orientation, 0)),
                 ),
             )),
@@ -7637,7 +7769,9 @@ fn wrath_tap_commands(
             if let Ok(mut queue) = input.0.lock() {
                 if (opcode == benilla_protocol_wrath::opcode::CMSG_ITEM_QUERY_SINGLE
                     || opcode == benilla_protocol_wrath::opcode::CMSG_NAME_QUERY)
-                    && queue.iter().any(|o| o.opcode == opcode && o.payload == payload)
+                    && queue
+                        .iter()
+                        .any(|o| o.opcode == opcode && o.payload == payload)
                 {
                     if let Some(receipt) = receipt.as_ref() {
                         receipt.report(crate::net::CommandDelivery::OutboxAdmitted);
@@ -7646,7 +7780,8 @@ fn wrath_tap_commands(
                 }
                 if queue.len() < WRATH_OUTBOX_CAP {
                     // The Wrath encoder writes one cast-count byte before the spell ID.
-                    let admitted_spell = (opcode == benilla_protocol_wrath::opcode::CMSG_CAST_SPELL)
+                    let admitted_spell = (opcode
+                        == benilla_protocol_wrath::opcode::CMSG_CAST_SPELL)
                         .then(|| payload.get(1..5)?.try_into().ok().map(u32::from_le_bytes))
                         .flatten();
                     queue.push_back(WrathOutbound {
@@ -7665,7 +7800,11 @@ fn wrath_tap_commands(
                         // remains the authority, so a distinct envelope trace records only when its
                         // interaction differs from the receipt's.
                         if let Some(pt) = &primary_trace {
-                            let receipt_ix = receipt.trace.as_ref().map(|t| t.interaction_id()).unwrap_or(0);
+                            let receipt_ix = receipt
+                                .trace
+                                .as_ref()
+                                .map(|t| t.interaction_id())
+                                .unwrap_or(0);
                             if pt.interaction_id() != receipt_ix {
                                 pt.record_delivery(crate::net::CommandDelivery::OutboxAdmitted);
                             }
@@ -7699,7 +7838,11 @@ fn wrath_tap_commands(
                     }
                     if opening {
                         if let Some(trace) = &trace {
-                            trace.observe(scope, None, crate::quest_trace::Stage::OpenOutboxAdmitted);
+                            trace.observe(
+                                scope,
+                                None,
+                                crate::quest_trace::Stage::OpenOutboxAdmitted,
+                            );
                         }
                     }
                 } else {
@@ -7712,7 +7855,9 @@ fn wrath_tap_commands(
                     );
                     if opcode == benilla_protocol_wrath::opcode::CMSG_ITEM_QUERY_SINGLE {
                         // The ask stays pending until the item cache's re-ask clock runs out.
-                        let item = payload.get(..4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+                        let item = payload
+                            .get(..4)
+                            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
                         warn!("wrath: item template ask for item {item:?} dropped (outbox full)");
                     }
                     if let Some(receipt) = receipt.as_ref() {
@@ -7720,7 +7865,11 @@ fn wrath_tap_commands(
                             crate::net::CommandRefusal::OutboxFull,
                         ));
                         if let Some(pt) = &primary_trace {
-                            let receipt_ix = receipt.trace.as_ref().map(|t| t.interaction_id()).unwrap_or(0);
+                            let receipt_ix = receipt
+                                .trace
+                                .as_ref()
+                                .map(|t| t.interaction_id())
+                                .unwrap_or(0);
                             if pt.interaction_id() != receipt_ix {
                                 pt.record_delivery(crate::net::CommandDelivery::Rejected(
                                     crate::net::CommandRefusal::OutboxFull,
@@ -7745,7 +7894,11 @@ fn wrath_tap_commands(
                     }
                     if opening {
                         if let Some(trace) = &trace {
-                            trace.observe(scope, None, crate::quest_trace::Stage::OpenOutboxRefused);
+                            trace.observe(
+                                scope,
+                                None,
+                                crate::quest_trace::Stage::OpenOutboxRefused,
+                            );
                         }
                     }
                 }
@@ -7755,7 +7908,11 @@ fn wrath_tap_commands(
                         crate::net::CommandRefusal::Unavailable,
                     ));
                     if let Some(pt) = &primary_trace {
-                        let receipt_ix = receipt.trace.as_ref().map(|t| t.interaction_id()).unwrap_or(0);
+                        let receipt_ix = receipt
+                            .trace
+                            .as_ref()
+                            .map(|t| t.interaction_id())
+                            .unwrap_or(0);
                         if pt.interaction_id() != receipt_ix {
                             pt.record_delivery(crate::net::CommandDelivery::Rejected(
                                 crate::net::CommandRefusal::Unavailable,
@@ -7804,10 +7961,20 @@ fn diagnostic_outbound(opcode: u32) -> bool {
     use benilla_protocol_wrath::opcode::*;
     matches!(
         opcode,
-        CMSG_CAST_SPELL | CMSG_ATTACKSWING | CMSG_ATTACKSTOP | CMSG_LOOT
-            | CMSG_LOOT_MONEY | CMSG_LOOT_RELEASE | CMSG_LOOT_ROLL
-            | CMSG_AUTOSTORE_LOOT_ITEM | CMSG_LIST_INVENTORY | CMSG_SELL_ITEM
-            | CMSG_BUY_ITEM | CMSG_BUY_ITEM_IN_SLOT | CMSG_USE_ITEM | CMSG_AUTOEQUIP_ITEM
+        CMSG_CAST_SPELL
+            | CMSG_ATTACKSWING
+            | CMSG_ATTACKSTOP
+            | CMSG_LOOT
+            | CMSG_LOOT_MONEY
+            | CMSG_LOOT_RELEASE
+            | CMSG_LOOT_ROLL
+            | CMSG_AUTOSTORE_LOOT_ITEM
+            | CMSG_LIST_INVENTORY
+            | CMSG_SELL_ITEM
+            | CMSG_BUY_ITEM
+            | CMSG_BUY_ITEM_IN_SLOT
+            | CMSG_USE_ITEM
+            | CMSG_AUTOEQUIP_ITEM
     )
 }
 
@@ -7816,14 +7983,26 @@ fn diagnostic_opcode(opcode: u16) -> bool {
     use benilla_protocol_wrath::opcode::*;
     matches!(
         opcode,
-        SMSG_UPDATE_OBJECT | SMSG_GOSSIP_MESSAGE | SMSG_GOSSIP_COMPLETE
-            | SMSG_QUESTGIVER_QUEST_LIST | SMSG_QUESTGIVER_QUEST_DETAILS
-            | SMSG_QUESTGIVER_REQUEST_ITEMS | SMSG_QUESTGIVER_OFFER_REWARD
-            | SMSG_QUESTGIVER_QUEST_INVALID | SMSG_QUESTGIVER_QUEST_FAILED
-            | SMSG_QUESTLOG_FULL | SMSG_QUEST_QUERY_RESPONSE
-            | SMSG_SPELL_START | SMSG_SPELL_GO | SMSG_CAST_FAILED
-            | SMSG_SPELL_FAILURE | SMSG_SPELL_FAILED_OTHER | SMSG_SPELL_DELAYED
-            | SMSG_INVENTORY_CHANGE_FAILURE | SMSG_LOOT_RESPONSE | SMSG_ITEM_PUSH_RESULT
+        SMSG_UPDATE_OBJECT
+            | SMSG_GOSSIP_MESSAGE
+            | SMSG_GOSSIP_COMPLETE
+            | SMSG_QUESTGIVER_QUEST_LIST
+            | SMSG_QUESTGIVER_QUEST_DETAILS
+            | SMSG_QUESTGIVER_REQUEST_ITEMS
+            | SMSG_QUESTGIVER_OFFER_REWARD
+            | SMSG_QUESTGIVER_QUEST_INVALID
+            | SMSG_QUESTGIVER_QUEST_FAILED
+            | SMSG_QUESTLOG_FULL
+            | SMSG_QUEST_QUERY_RESPONSE
+            | SMSG_SPELL_START
+            | SMSG_SPELL_GO
+            | SMSG_CAST_FAILED
+            | SMSG_SPELL_FAILURE
+            | SMSG_SPELL_FAILED_OTHER
+            | SMSG_SPELL_DELAYED
+            | SMSG_INVENTORY_CHANGE_FAILURE
+            | SMSG_LOOT_RESPONSE
+            | SMSG_ITEM_PUSH_RESULT
     )
 }
 
@@ -7833,8 +8012,7 @@ fn scope_is_older(
     event_epoch: u64,
     event_world: u64,
 ) -> bool {
-    event_epoch < current_epoch
-        || (event_epoch == current_epoch && event_world < current_world)
+    event_epoch < current_epoch || (event_epoch == current_epoch && event_world < current_world)
 }
 
 /// Whether `candidate` belongs to `scope` or a scope before it. Used to fence a retirement to the
@@ -7847,7 +8025,8 @@ fn scope_at_or_before(scope: (u64, u64), candidate: (u64, u64)) -> bool {
 /// only path for Wrath gameplay replies; the stock 1.12 inbound channel is not used, so a queued
 /// old-world reply cannot overtake the transfer teardown.
 fn wrath_dispatch_events(world: &mut World) {
-    let login_generation = crate::net::LoginAbandon::now(world.get_resource::<crate::net::LoginAbandon>());
+    let login_generation =
+        crate::net::LoginAbandon::now(world.get_resource::<crate::net::LoginAbandon>());
     let (current_epoch, current_world) = world
         .get_resource::<WrathWorldView>()
         .map_or((0, 0), |view| (view.session_epoch, view.world_generation));
@@ -7860,7 +8039,12 @@ fn wrath_dispatch_events(world: &mut World) {
 
     let mut deliver = Vec::with_capacity(tagged.len());
     for event in tagged {
-        if event.login_generation.is_some_and(|g| g != login_generation) { continue; }
+        if event
+            .login_generation
+            .is_some_and(|g| g != login_generation)
+        {
+            continue;
+        }
         if event.force
             || (!ended
                 && !scope_is_older(
@@ -7918,7 +8102,8 @@ fn wrath_dispatch_events(world: &mut World) {
                 };
                 let kind = match &event.event {
                     SessionEvent::QuestComplete(_) => Some(D::QuestComplete),
-                    SessionEvent::QuestObjectiveKill { .. } | SessionEvent::QuestObjectiveItem { .. }
+                    SessionEvent::QuestObjectiveKill { .. }
+                    | SessionEvent::QuestObjectiveItem { .. }
                     | SessionEvent::QuestObjectivesComplete { .. } => Some(D::QuestObjective),
                     SessionEvent::GossipMenu { .. } => Some(D::GossipMenu),
                     SessionEvent::VendorInventory { .. } => Some(D::VendorList),
@@ -7928,7 +8113,9 @@ fn wrath_dispatch_events(world: &mut World) {
                     SessionEvent::LootResponse { .. } => Some(D::LootOpened),
                     SessionEvent::LootError { .. } => Some(D::LootError),
                     SessionEvent::LootRemoved { .. } => Some(D::LootRemoved),
-                    SessionEvent::LootMoneyNotify { .. } | SessionEvent::LootClearMoney => Some(D::LootMoney),
+                    SessionEvent::LootMoneyNotify { .. } | SessionEvent::LootClearMoney => {
+                        Some(D::LootMoney)
+                    }
                     SessionEvent::LootReleaseResponse { .. } => Some(D::LootReleased),
                     SessionEvent::ItemPushResult(_) => Some(D::ItemReceived),
                     SessionEvent::InventoryFailure { .. } => Some(D::InventoryFailure),
@@ -7947,13 +8134,12 @@ fn wrath_dispatch_events(world: &mut World) {
                 };
                 // Forced/terminal events (epoch 0) have no reliable producer scope; record them
                 // as unknown rather than borrowing the scope active at drain time.
-                let scope = if event.force
-                    || (event.session_epoch == 0 && event.world_generation == 0)
-                {
-                    None
-                } else {
-                    Some((event.session_epoch, event.world_generation))
-                };
+                let scope =
+                    if event.force || (event.session_epoch == 0 && event.world_generation == 0) {
+                        None
+                    } else {
+                        Some((event.session_epoch, event.world_generation))
+                    };
                 if let Some(milestone) = login_milestone {
                     // The attempt id comes from the wrapper that produced the event, not from
                     // whichever attempt happens to be newest when the trace is drained.
@@ -8019,9 +8205,15 @@ fn wrath_dispatch_events(world: &mut World) {
                         None,
                         Stage::LootMoneyNotify { amount: *amount },
                     ),
-                    SessionEvent::LootClearMoney => {
-                        trace.observe_with_subject(scope, None, None, None, None, None, Stage::LootMoneyCleared)
-                    }
+                    SessionEvent::LootClearMoney => trace.observe_with_subject(
+                        scope,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Stage::LootMoneyCleared,
+                    ),
                     SessionEvent::LootReleaseResponse { guid, .. } => trace.observe_with_subject(
                         scope,
                         None,
@@ -8110,8 +8302,8 @@ fn wrath_dispatch_events(world: &mut World) {
                             reason: *reason,
                         },
                     ),
-                    SessionEvent::VendorSellFailed { vendor, reason, .. } => {
-                        trace.observe_with_subject(
+                    SessionEvent::VendorSellFailed { vendor, reason, .. } => trace
+                        .observe_with_subject(
                             scope,
                             None,
                             Some(*vendor),
@@ -8119,8 +8311,7 @@ fn wrath_dispatch_events(world: &mut World) {
                             None,
                             None,
                             Stage::VendorSellFailedObserved { reason: *reason },
-                        )
-                    }
+                        ),
                     _ => {}
                 }
             }
@@ -8163,14 +8354,9 @@ fn wrath_dispatch_events(world: &mut World) {
             .get_resource::<WrathWorldView>()
             .is_some_and(|v| v.phase == Some(Phase::InWorld));
         for (op, serial, character_guid, arg0, arg1) in requests {
-            let payload = gameplay::encode_multiclass_request(
-                op,
-                serial,
-                character_guid,
-                arg0,
-                arg1,
-            )
-            .to_vec();
+            let payload =
+                gameplay::encode_multiclass_request(op, serial, character_guid, arg0, arg1)
+                    .to_vec();
             if in_world {
                 if let Some(input) = world.get_resource::<WrathInput>() {
                     if let Ok(mut queue) = input.0.lock() {
@@ -8200,7 +8386,9 @@ fn wrath_dispatch_events(world: &mut World) {
 /// world state.
 fn route_wm_action_outcomes(world: &mut World, events: &[SessionEvent]) {
     let self_guid = world.get_resource::<SelfGuid>().and_then(|g| g.0);
-    let revision = world.get_resource::<WrathWorldView>().map(|v| v.state_revision);
+    let revision = world
+        .get_resource::<WrathWorldView>()
+        .map(|v| v.state_revision);
     let Some(mut actions) = world.get_resource_mut::<WrathWmActions>() else {
         return;
     };
@@ -8216,9 +8404,10 @@ fn route_wm_action_outcomes(world: &mut World, events: &[SessionEvent]) {
                 continue;
             }
             let outcome = match (event, &pending.intent) {
-                (SessionEvent::AttackSwingError(_), ActionIntent::AttackStart { .. }) => {
-                    Some((ActionStatus::Failed, Some("attack swing refused".to_owned())))
-                }
+                (SessionEvent::AttackSwingError(_), ActionIntent::AttackStart { .. }) => Some((
+                    ActionStatus::Failed,
+                    Some("attack swing refused".to_owned()),
+                )),
                 (SessionEvent::AttackStart { attacker, .. }, ActionIntent::AttackStart { .. })
                     if Some(*attacker) == self_guid =>
                 {
@@ -8247,14 +8436,14 @@ fn route_wm_action_outcomes(world: &mut World, events: &[SessionEvent]) {
                     ActionIntent::QuestComplete { quest, .. }
                     | ActionIntent::QuestChooseReward { quest, .. }
                     | ActionIntent::QuestAccept { quest, .. },
-                ) if quest_id == quest => {
-                    Some((ActionStatus::Failed, Some(format!("quest failed ({reason})"))))
-                }
-                (SessionEvent::LootRemoved { slot }, ActionIntent::LootTake { slot: wanted, .. })
-                    if slot == wanted =>
-                {
-                    Some((ActionStatus::Succeeded, None))
-                }
+                ) if quest_id == quest => Some((
+                    ActionStatus::Failed,
+                    Some(format!("quest failed ({reason})")),
+                )),
+                (
+                    SessionEvent::LootRemoved { slot },
+                    ActionIntent::LootTake { slot: wanted, .. },
+                ) if slot == wanted => Some((ActionStatus::Succeeded, None)),
                 (SessionEvent::LootMoneyNotify { .. }, ActionIntent::LootMoney { .. }) => {
                     Some((ActionStatus::Succeeded, None))
                 }
@@ -8262,7 +8451,10 @@ fn route_wm_action_outcomes(world: &mut World, events: &[SessionEvent]) {
                     SessionEvent::LootReleaseResponse { guid, .. },
                     ActionIntent::LootRelease { source },
                 ) if guid == source => Some((ActionStatus::Succeeded, None)),
-                (SessionEvent::LootError { guid, error }, ActionIntent::LootTake { source, .. })
+                (
+                    SessionEvent::LootError { guid, error },
+                    ActionIntent::LootTake { source, .. },
+                )
                 | (SessionEvent::LootError { guid, error }, ActionIntent::LootMoney { source })
                     if guid == source =>
                 {
@@ -8317,8 +8509,13 @@ fn wrath_net_drain(
     let mut drained = 0usize;
     if native_dropped > 0 {
         if let Some(trace) = &trace {
-            trace.observe(Some((view.session_epoch, view.world_generation)), None,
-                crate::quest_trace::Stage::NativeEventsLost { count: native_dropped });
+            trace.observe(
+                Some((view.session_epoch, view.world_generation)),
+                None,
+                crate::quest_trace::Stage::NativeEventsLost {
+                    count: native_dropped,
+                },
+            );
         }
     }
     for event in control.take_events() {
@@ -8476,7 +8673,11 @@ fn wrath_net_drain(
         }
         match event {
             WrathFeedEvent::Phase { phase, .. } => view.phase = Some(phase),
-            WrathFeedEvent::WorldTransfer { session_epoch, world_generation, map_id } => {
+            WrathFeedEvent::WorldTransfer {
+                session_epoch,
+                world_generation,
+                map_id,
+            } => {
                 // Same-frame teardown: old-scope entities are gone before Input runs. Everything
                 // the retired world could still answer is retired at one barrier: an intent
                 // admitted against it becomes Unknown and is never replayed, a receipt that never
@@ -8781,7 +8982,12 @@ fn wrath_net_drain(
             WrathFeedEvent::ExportSkipped(reason) => {
                 debug!("wrath export skipped: {reason}");
             }
-            WrathFeedEvent::SessionEnded { result, end: _, session_epoch, world_generation } => {
+            WrathFeedEvent::SessionEnded {
+                result,
+                end: _,
+                session_epoch,
+                world_generation,
+            } => {
                 control.ended = true;
                 control.terminal_ready = true;
                 // Whether this link served the select screen is decided before the barrier: the
@@ -8886,7 +9092,9 @@ fn wrath_net_drain(
                             Kind::Delayed { .. } => CastEdge::Delayed,
                             Kind::Launched { .. } => CastEdge::Launched,
                             Kind::Failed { reason } => CastEdge::Failed { reason: *reason },
-                            Kind::Interrupted { reason } => CastEdge::Interrupted { reason: *reason },
+                            Kind::Interrupted { reason } => {
+                                CastEdge::Interrupted { reason: *reason }
+                            }
                             Kind::ChannelStarted { .. } => CastEdge::ChannelStarted,
                             Kind::ChannelUpdated { .. } => CastEdge::ChannelUpdated,
                             Kind::ChannelEnded => CastEdge::ChannelEnded,
@@ -8903,12 +9111,19 @@ fn wrath_net_drain(
                             edge,
                         })
                     }
-                    WrathNativeFeedEvent::InventoryFailure { failure, .. } =>
-                        Some(Stage::InventoryFailure { reason: failure.reason }),
+                    WrathNativeFeedEvent::InventoryFailure { failure, .. } => {
+                        Some(Stage::InventoryFailure {
+                            reason: failure.reason,
+                        })
+                    }
                     WrathNativeFeedEvent::ItemText(_) => None,
                 };
                 if let Some(stage) = stage {
-                    trace.observe(Some((scope.session_epoch, scope.world_generation)), None, stage);
+                    trace.observe(
+                        Some((scope.session_epoch, scope.world_generation)),
+                        None,
+                        stage,
+                    );
                 }
             }
             match event {
@@ -8955,8 +9170,7 @@ fn wrath_net_drain(
                                     cast.start_ui_now_seconds = ui_now_seconds;
                                 } else if let Some(existing) = view.casts.get(&caster) {
                                     if existing.attempt_serial == cast.attempt_serial {
-                                        cast.start_ui_now_seconds =
-                                            existing.start_ui_now_seconds;
+                                        cast.start_ui_now_seconds = existing.start_ui_now_seconds;
                                     }
                                 }
                                 cast.last_update_ui_now_seconds = ui_now_seconds;
@@ -8975,8 +9189,7 @@ fn wrath_net_drain(
                                 if channel_started {
                                     channel.start_ui_now_seconds = ui_now_seconds;
                                 } else if let Some(existing) = view.channels.get(&caster) {
-                                    channel.start_ui_now_seconds =
-                                        existing.start_ui_now_seconds;
+                                    channel.start_ui_now_seconds = existing.start_ui_now_seconds;
                                 }
                                 channel.last_update_ui_now_seconds = ui_now_seconds;
                                 view.channels.insert(caster, channel);
@@ -9069,7 +9282,9 @@ fn wrath_net_drain(
         return;
     }
 
-    let Some(digest) = control.take_digest() else { return };
+    let Some(digest) = control.take_digest() else {
+        return;
+    };
     let new_session = digest.session_epoch != view.session_epoch;
     if new_session {
         // A replacement session restarts its epoch, world generation and revision counters, so
@@ -9189,12 +9404,23 @@ fn vanilla_npc_flags(flags: u32) -> u32 {
     // AC UnitDefines.h NPCFlags -> the donor service ladder in target/cursor_mode.rs.
     let mut mapped = flags & 0x3;
     for (source, destination) in [
-        (0x70, 0x10), (0xf80, 0x4), (0x1000, 0x4000), (0x2000, 0x8),
-        (0x4000, 0x20), (0x8000, 0x40), (0x10000, 0x80), (0x20000, 0x100),
-        (0x40000, 0x200), (0x80000, 0x400), (0x100000, 0x800),
-        (0x200000, 0x1000), (0x400000, 0x2000),
+        (0x70, 0x10),
+        (0xf80, 0x4),
+        (0x1000, 0x4000),
+        (0x2000, 0x8),
+        (0x4000, 0x20),
+        (0x8000, 0x40),
+        (0x10000, 0x80),
+        (0x20000, 0x100),
+        (0x40000, 0x200),
+        (0x80000, 0x400),
+        (0x100000, 0x800),
+        (0x200000, 0x1000),
+        (0x400000, 0x2000),
     ] {
-        if flags & source != 0 { mapped |= destination; }
+        if flags & source != 0 {
+            mapped |= destination;
+        }
     }
     mapped
 }
@@ -9225,7 +9451,9 @@ pub(crate) struct WrathNpcFlags(pub(crate) u32);
 
 /// Map 12340's `PLAYER_QUEST_LOG_*` block: id, state, two count dwords (four 16-bit counts) and
 /// the deadline, five dwords a slot for twenty-five slots.
-fn wrath_quest_slots(raw: &crate::wrath_inventory::WrathFieldWindow) -> [QuestSlotView; QUEST_LOG_SLOTS] {
+fn wrath_quest_slots(
+    raw: &crate::wrath_inventory::WrathFieldWindow,
+) -> [QuestSlotView; QUEST_LOG_SLOTS] {
     std::array::from_fn(|slot| {
         let src = 158 + slot * 5;
         let quest_id = raw.word_or_zero(src as u16);
@@ -9263,13 +9491,13 @@ fn push_player_unit_fields(
         (148u16, 188u16), // PLAYER_DUEL_ARBITER low
         (149, 189),       // PLAYER_DUEL_ARBITER high
         (150, benilla_protocol::field::FIELD_PLAYER_FLAGS),
-        (151, 191),       // PLAYER_GUILDID
-        (152, 192),       // PLAYER_GUILDRANK
-        (153, 193),       // PLAYER_BYTES: skin, face, hairStyle, hairColor
-        (154, 194),       // PLAYER_BYTES_2: facialHair, bank bags, rest
-        (155, 195),       // PLAYER_BYTES_3
-        (156, 196),       // PLAYER_DUEL_TEAM
-        (157, 197),       // PLAYER_GUILD_TIMESTAMP
+        (151, 191), // PLAYER_GUILDID
+        (152, 192), // PLAYER_GUILDRANK
+        (153, 193), // PLAYER_BYTES: skin, face, hairStyle, hairColor
+        (154, 194), // PLAYER_BYTES_2: facialHair, bank bags, rest
+        (155, 195), // PLAYER_BYTES_3
+        (156, 196), // PLAYER_DUEL_TEAM
+        (157, 197), // PLAYER_GUILD_TIMESTAMP
     ] {
         if let Some(value) = raw.get(src) {
             pairs.push((dst, value));
@@ -9336,10 +9564,7 @@ fn push_player_unit_fields(
 /// dynamic flags start two dwords earlier (`CORPSE_FIELD_DISPLAY_ID` 10 against the 1.12 slot
 /// 12; `Player.cpp:4809-4822`), so everything from 10 on shifts by two. Only delivered dwords
 /// are copied: an absent field leaves the create-shaped donor descriptor at 0.
-fn push_corpse_fields(
-    raw: &crate::wrath_inventory::WrathFieldWindow,
-    pairs: &mut Vec<(u16, u32)>,
-) {
+fn push_corpse_fields(raw: &crate::wrath_inventory::WrathFieldWindow, pairs: &mut Vec<(u16, u32)>) {
     for index in 6..benilla_protocol_wrath::fields::CORPSE_END {
         if let Some(value) = raw.get(index) {
             let dst = if index < 10 { index } else { index + 2 };
@@ -9386,9 +9611,8 @@ fn push_visible_item_fields(
     pairs: &mut Vec<(u16, u32)>,
 ) {
     for slot in 0..19u16 {
-        let src = usize::from(
-            benilla_protocol_wrath::fields::PLAYER_VISIBLE_ITEM_1_ENTRYID + 2 * slot,
-        );
+        let src =
+            usize::from(benilla_protocol_wrath::fields::PLAYER_VISIBLE_ITEM_1_ENTRYID + 2 * slot);
         // An undelivered entry is skipped, not treated as the end: a create may omit a zero
         // slot while a later slot is present.
         let Some(entry) = raw.get(src as u16) else {
@@ -9551,7 +9775,8 @@ fn apply_item_world(
             existing = None;
         }
     }
-    let old_fields = existing.and_then(|entity| world.get::<ObjectStore>(entity).map(|s| s.0.clone()));
+    let old_fields =
+        existing.and_then(|entity| world.get::<ObjectStore>(entity).map(|s| s.0.clone()));
     let old_row = existing
         .and_then(|entity| world.get::<crate::wrath_item::WrathItemRow>(entity))
         .cloned();
@@ -9616,7 +9841,9 @@ fn apply_item_world(
                 world.entity_mut(entity).insert(row.clone());
             }
             None => {
-                world.entity_mut(entity).remove::<crate::wrath_item::WrathItemRow>();
+                world
+                    .entity_mut(entity)
+                    .remove::<crate::wrath_item::WrathItemRow>();
             }
         }
     }
@@ -9687,10 +9914,7 @@ fn wrath_apply_world(world: &mut World) {
                 // The Net drain already retired this scope's outbox; this is the same terminal
                 // rule for anything queued after it. A receipt that never reached the wire is
                 // answered here instead of vanishing with the queue.
-                retire_outbound_deliveries(
-                    &mut queue,
-                    crate::net::CommandRefusal::ScopeChanged,
-                );
+                retire_outbound_deliveries(&mut queue, crate::net::CommandRefusal::ScopeChanged);
             }
         }
         if let Some(mut bags) = world.get_resource_mut::<crate::item_watch::BagCache>() {
@@ -10005,7 +10229,8 @@ fn wrath_apply_world(world: &mut World) {
                     pairs.push(((dst + 1) as u16, packed));
                     pairs.push(((dst + 2) as u16, s.timer));
                 }
-                let max_level = raw.word_or_zero(benilla_protocol_wrath::fields::PLAYER_FIELD_MAX_LEVEL);
+                let max_level =
+                    raw.word_or_zero(benilla_protocol_wrath::fields::PLAYER_FIELD_MAX_LEVEL);
                 let daily_start = benilla_protocol_wrath::fields::PLAYER_FIELD_DAILY_QUESTS_1;
                 let daily = (0..25u16)
                     .filter(|i| raw.word_or_zero(daily_start + i) != 0)
@@ -10049,7 +10274,9 @@ fn wrath_apply_world(world: &mut World) {
                         pairs.push((1111 + i, v));
                     }
                 }
-                if let Some(value) = raw.get(benilla_protocol_wrath::fields::PLAYER_REST_STATE_EXPERIENCE) {
+                if let Some(value) =
+                    raw.get(benilla_protocol_wrath::fields::PLAYER_REST_STATE_EXPERIENCE)
+                {
                     pairs.push((1175, value));
                 }
                 if let Some(value) = raw.get(1170) {
@@ -10131,14 +10358,18 @@ fn wrath_apply_world(world: &mut World) {
         }
         match existing {
             Some(entity) => {
-                let old = world.get::<ObjectStore>(entity).map(|store| store.0.clone());
+                let old = world
+                    .get::<ObjectStore>(entity)
+                    .map(|store| store.0.clone());
                 if let Some(old_fields) = &old {
                     let moved = diff_fields(old_fields, &fields);
                     if !moved.is_empty() {
                         field_diffs.push((*guid, object_type, moved));
                     }
                 }
-                let old_health = old.as_ref().and_then(benilla_protocol::ObjectFields::unit_health);
+                let old_health = old
+                    .as_ref()
+                    .and_then(benilla_protocol::ObjectFields::unit_health);
                 let old_max = old
                     .as_ref()
                     .and_then(benilla_protocol::ObjectFields::unit_max_health);
@@ -10147,8 +10378,7 @@ fn wrath_apply_world(world: &mut World) {
                 // The player descriptor is replaced whole, so the 1.12 watches get the quest-log
                 // signals by hand when any of the twenty-five slots moved.
                 let old_slots = world.get::<WrathQuestSlots>(entity).copied();
-                let quest_slots_changed =
-                    wrath_slots.is_some_and(|slots| old_slots != Some(slots));
+                let quest_slots_changed = wrath_slots.is_some_and(|slots| old_slots != Some(slots));
                 if *guid == player_guid {
                     let old_raw = world.get::<WrathPlayerRaw>(entity);
                     let old_xp = old_raw.and_then(|r| r.0.get(634));
@@ -10251,8 +10481,7 @@ fn wrath_apply_world(world: &mut World) {
                 if quest_slots_changed && *guid == player_guid {
                     // The same two signals the 1.12 values block raises: the rebuild notice and
                     // the event the stock log frame listens for.
-                    let mut notices =
-                        world.resource_mut::<crate::field_watch::NoticeLane>();
+                    let mut notices = world.resource_mut::<crate::field_watch::NoticeLane>();
                     notices.write(crate::field_watch::FieldNotice::QuestLog);
                     notices.write(crate::field_watch::FieldNotice::Unit {
                         guid: *guid,
@@ -10262,7 +10491,9 @@ fn wrath_apply_world(world: &mut World) {
                 if let Some(new_span) = new_span {
                     // The 12340 aura packets changed this unit's descriptor window; hand the
                     // 1.12 aura watcher the same edges and one call the stock block path makes.
-                    let old_span = old.as_ref().map_or([0u32; crate::net::AURA_WATCH_SPAN], aura_span);
+                    let old_span = old
+                        .as_ref()
+                        .map_or([0u32; crate::net::AURA_WATCH_SPAN], aura_span);
                     if old_span != new_span {
                         let at = crate::lanes::stamp();
                         for (offset, (old_value, new_value)) in
@@ -10294,11 +10525,15 @@ fn wrath_apply_world(world: &mut World) {
                         });
                     }
                 }
-                let old_bytes_1 = old.as_ref().and_then(benilla_protocol::ObjectFields::unit_bytes_1);
+                let old_bytes_1 = old
+                    .as_ref()
+                    .and_then(benilla_protocol::ObjectFields::unit_bytes_1);
                 let new_bytes_1 = world
                     .get::<ObjectStore>(entity)
                     .and_then(|s| s.0.unit_bytes_1());
-                let old_bytes_2 = old.as_ref().and_then(benilla_protocol::ObjectFields::unit_bytes_2);
+                let old_bytes_2 = old
+                    .as_ref()
+                    .and_then(benilla_protocol::ObjectFields::unit_bytes_2);
                 let new_bytes_2 = world
                     .get::<ObjectStore>(entity)
                     .and_then(|s| s.0.unit_bytes_2());
@@ -10445,8 +10680,8 @@ fn wrath_apply_world(world: &mut World) {
                             .get_resource::<crate::player::Player>()
                             .map_or(Vec3::ZERO, |p| p.pos);
                         if current.distance_squared(bevy) > 0.01 {
-                            let applied = if let Some(mut player) = world
-                                .get_resource_mut::<crate::player::Player>()
+                            let applied = if let Some(mut player) =
+                                world.get_resource_mut::<crate::player::Player>()
                             {
                                 player.apply_server_pose(bevy, pose.o);
                                 true
@@ -10454,8 +10689,11 @@ fn wrath_apply_world(world: &mut World) {
                                 false
                             };
                             if applied {
-                                if let Some(trace) = world.get_resource::<crate::quest_trace::Source>() {
-                                    let scope = world.get_resource::<WrathWorldView>()
+                                if let Some(trace) =
+                                    world.get_resource::<crate::quest_trace::Source>()
+                                {
+                                    let scope = world
+                                        .get_resource::<WrathWorldView>()
                                         .map(|v| (v.session_epoch, v.world_generation));
                                     let distance = current.distance(bevy);
                                     let distance_bucket = if distance <= 0.5 {
@@ -10467,13 +10705,18 @@ fn wrath_apply_world(world: &mut World) {
                                     } else {
                                         3
                                     };
-                                    let (movement_seq, ambiguous) = trace.movement_written_seq_unambiguous();
+                                    let (movement_seq, ambiguous) =
+                                        trace.movement_written_seq_unambiguous();
                                     trace.clear_movement_writes_since_correction();
-                                    trace.observe(scope, None, crate::quest_trace::Stage::MovementCorrectionApplied {
-                                        distance_bucket,
-                                        movement_seq,
-                                        ambiguous,
-                                    });
+                                    trace.observe(
+                                        scope,
+                                        None,
+                                        crate::quest_trace::Stage::MovementCorrectionApplied {
+                                            distance_bucket,
+                                            movement_seq,
+                                            ambiguous,
+                                        },
+                                    );
                                 }
                             }
                         }
@@ -10548,10 +10791,7 @@ fn wrath_apply_world(world: &mut World) {
                     entity.insert(WrathNpcFlags(flags));
                 }
                 if *guid == player_guid {
-                    entity.insert((
-                        SelfPlayer,
-                        Equipment::default(),
-                    ));
+                    entity.insert((SelfPlayer, Equipment::default()));
                 } else if kind == EntityKind::Player {
                     entity.insert(Equipment::default());
                 }
@@ -10579,7 +10819,9 @@ fn wrath_apply_world(world: &mut World) {
                     .get_resource::<WrathControl>()
                     .and_then(|control| control.feed.as_ref())
                     .and_then(|feed| feed.player_name.lock().ok().and_then(|pair| pair.clone()))
-                    .and_then(|(guid, name)| (guid == player_guid && !name.is_empty()).then_some(name))
+                    .and_then(|(guid, name)| {
+                        (guid == player_guid && !name.is_empty()).then_some(name)
+                    })
             })
             .or_else(|| {
                 world
@@ -10655,8 +10897,7 @@ fn wrath_apply_world(world: &mut World) {
                         _ => 0,
                     })
                 };
-                if let Some(mut bag_cache) =
-                    world.get_resource_mut::<crate::item_watch::BagCache>()
+                if let Some(mut bag_cache) = world.get_resource_mut::<crate::item_watch::BagCache>()
                 {
                     let lookup = |g: u64| stores_by_guid.get(&g);
                     bag_cache.seat_with(
@@ -10676,8 +10917,7 @@ fn wrath_apply_world(world: &mut World) {
                 .remove_resource::<crate::item_watch::BagCache>()
                 .unwrap_or_default();
             if let Some(items) = world.get_resource::<crate::items::Items>() {
-                let inventory =
-                    world.get_resource::<crate::wrath_inventory::WrathInventory>();
+                let inventory = world.get_resource::<crate::wrath_inventory::WrathInventory>();
                 let watch = crate::item_watch::Watch {
                     me: Some(player_guid),
                     lookup: |g: u64| stores_by_guid.get(&g),
@@ -10778,8 +11018,7 @@ fn wrath_apply_world(world: &mut World) {
                             } else {
                                 [0; 11]
                             };
-                        let seat =
-                            |n: u8| seats[usize::from(n.saturating_sub(1)).min(10)];
+                        let seat = |n: u8| seats[usize::from(n.saturating_sub(1)).min(10)];
                         for change in &changes.slots {
                             let extra = match change.addr {
                                 crate::wrath_inventory::InventoryAddr::Bank(i) => i >= 24,
@@ -10855,10 +11094,8 @@ fn wrath_apply_world(world: &mut World) {
                         if let Some(mut notices) =
                             world.get_resource_mut::<crate::field_watch::NoticeLane>()
                         {
-                            notices.write(crate::field_watch::FieldNotice::Signal {
-                                guid: *guid,
-                                id,
-                            });
+                            notices
+                                .write(crate::field_watch::FieldNotice::Signal { guid: *guid, id });
                         }
                     }
                     // The normal values-block watcher signals the dynamic-flags event on any
@@ -10913,7 +11150,9 @@ fn wrath_apply_world(world: &mut World) {
             if *guid == player_guid && *kind == ObjectType::Player {
                 // Snapshot replacement bypasses the normal field watchers; notify after seating
                 // the values so the XP bar, skill frame, reputation bar, and guild roster update.
-                let xp_changed = moved.iter().any(|&(index, _, _)| index == 716 || index == 717);
+                let xp_changed = moved
+                    .iter()
+                    .any(|&(index, _, _)| index == 716 || index == 717);
                 let rest_changed = moved.iter().any(|&(index, _, _)| index == 1175);
                 let skills_changed = moved
                     .iter()
@@ -10924,7 +11163,9 @@ fn wrath_apply_world(world: &mut World) {
                         || (1102..=1110).contains(&index)
                         || (1177..=1225).contains(&index)
                 });
-                if let Some(mut notices) = world.get_resource_mut::<crate::field_watch::NoticeLane>() {
+                if let Some(mut notices) =
+                    world.get_resource_mut::<crate::field_watch::NoticeLane>()
+                {
                     if xp_changed {
                         notices.write(crate::field_watch::FieldNotice::Player { id: 189 });
                     }
@@ -10993,23 +11234,16 @@ fn wrath_apply_world(world: &mut World) {
                 changed_slots.sort_unstable();
                 changed_slots.dedup();
                 if !changed_slots.is_empty() {
-                    if let Some(trace) =
-                        world.get_resource::<crate::quest_trace::Source>()
-                    {
+                    if let Some(trace) = world.get_resource::<crate::quest_trace::Source>() {
                         let scope = world
                             .get_resource::<WrathWorldView>()
                             .map(|v| (v.session_epoch, v.world_generation));
                         let mut entries: Vec<(u8, u64)> = Vec::new();
-                        if let Some(entity) =
-                            world.resource::<GuidIndex>().0.get(guid).copied()
-                        {
-                            if let Some(store) = world.get::<crate::net::ObjectStore>(entity)
-                            {
+                        if let Some(entity) = world.resource::<GuidIndex>().0.get(guid).copied() {
+                            if let Some(store) = world.get::<crate::net::ObjectStore>(entity) {
                                 for slot in &changed_slots {
-                                    entries.push((
-                                        *slot,
-                                        store.0.player_inv_slot(*slot).unwrap_or(0),
-                                    ));
+                                    entries
+                                        .push((*slot, store.0.player_inv_slot(*slot).unwrap_or(0)));
                                 }
                             }
                         }
@@ -11354,9 +11588,15 @@ fn boot_character<'a>(
 ) -> anyhow::Result<&'a gameplay::CharEnumRecord> {
     use anyhow::Context;
     match name {
-        Some(name) => records.iter().find(|record| record.name.eq_ignore_ascii_case(name))
-            .with_context(|| format!("WOW_CHAR requested character {name:?}, absent from the account roster")),
-        None => records.first().context("no character on the account roster"),
+        Some(name) => records
+            .iter()
+            .find(|record| record.name.eq_ignore_ascii_case(name))
+            .with_context(|| {
+                format!("WOW_CHAR requested character {name:?}, absent from the account roster")
+            }),
+        None => records
+            .first()
+            .context("no character on the account roster"),
     }
 }
 
@@ -11424,7 +11664,10 @@ pub fn run_session_with_cancel(
 ) -> anyhow::Result<()> {
     use benilla_wm_native::{pump_once, replace_publisher, PublisherConfig};
 
-    let multiclass = feed.multiclass.as_ref().map(crate::multiclass::MulticlassBridge::connect);
+    let multiclass = feed
+        .multiclass
+        .as_ref()
+        .map(crate::multiclass::MulticlassBridge::connect);
     let (parked, roster_asked) = match parked {
         Some(input) => (Some(input.commands), input.roster_asked),
         None => (None, false),
@@ -11434,18 +11677,31 @@ pub fn run_session_with_cancel(
     let send_glue = |event| {
         push_forced_event(&events_out, event, live_generation());
     };
-    send_glue(SessionEvent::LoginStage { stage: benilla_protocol::LoginStage::Connecting });
-    let mut logon = benilla_protocol_wrath::logon::logon(&config.auth_addr, &config.account, &config.password)?;
-    if cancel.load(Ordering::SeqCst) { return Ok(()); }
-    send_glue(SessionEvent::LoginStage { stage: benilla_protocol::LoginStage::Handshaking });
+    send_glue(SessionEvent::LoginStage {
+        stage: benilla_protocol::LoginStage::Connecting,
+    });
+    let mut logon =
+        benilla_protocol_wrath::logon::logon(&config.auth_addr, &config.account, &config.password)?;
+    if cancel.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    send_glue(SessionEvent::LoginStage {
+        stage: benilla_protocol::LoginStage::Handshaking,
+    });
     let realm_view = |r: &benilla_protocol_wrath::auth::RealmInfo| benilla_protocol::RealmInfo {
-        name: r.name.clone(), address: r.address.clone(), population: r.population,
-        characters: r.characters, realm_type: u32::from(r.realm_type), flags: r.flags,
-        category: r.category, id: r.realm_id,
+        name: r.name.clone(),
+        address: r.address.clone(),
+        population: r.population,
+        characters: r.characters,
+        realm_type: u32::from(r.realm_type),
+        flags: r.flags,
+        category: r.category,
+        id: r.realm_id,
     };
     let publish_realms = |logon: &benilla_protocol_wrath::logon::Logon, failed| {
         send_glue(SessionEvent::RealmList {
-            realms: logon.realms.iter().map(realm_view).collect(), failed,
+            realms: logon.realms.iter().map(realm_view).collect(),
+            failed,
         });
     };
     let refresh_or_relogon = |logon: &mut benilla_protocol_wrath::logon::Logon| -> bool {
@@ -11538,7 +11794,12 @@ pub fn run_session_with_cancel(
                 .ok_or_else(|| anyhow::anyhow!("realm list is empty"))?
                 .realm_id
         };
-        let Some(realm) = logon.realms.iter().find(|r| r.realm_id == realm_id).cloned() else {
+        let Some(realm) = logon
+            .realms
+            .iter()
+            .find(|r| r.realm_id == realm_id)
+            .cloned()
+        else {
             if config.login_generation.is_some() && parked.is_some() {
                 publish_realms(&logon, true);
                 continue 'realm;
@@ -11561,20 +11822,19 @@ pub fn run_session_with_cancel(
         } else {
             &config.world_addr
         };
-        let (mut world, seed) = match benilla_protocol_wrath::world::WorldConnection::connect(
-            connect_addr,
-        ) {
-            Ok(pair) => pair,
-            Err(e) if config.login_generation.is_some() && parked.is_some() => {
-                send_glue(SessionEvent::LoginFailed {
-                    refusal: None,
-                    reason: format!("{e:#}"),
-                    dial: e.downcast_ref::<benilla_protocol::DialFailure>().cloned(),
-                });
-                continue 'realm;
-            }
-            Err(e) => return Err(e),
-        };
+        let (mut world, seed) =
+            match benilla_protocol_wrath::world::WorldConnection::connect(connect_addr) {
+                Ok(pair) => pair,
+                Err(e) if config.login_generation.is_some() && parked.is_some() => {
+                    send_glue(SessionEvent::LoginFailed {
+                        refusal: None,
+                        reason: format!("{e:#}"),
+                        dial: e.downcast_ref::<benilla_protocol::DialFailure>().cloned(),
+                    });
+                    continue 'realm;
+                }
+                Err(e) => return Err(e),
+            };
         world
             .stream_mut()
             .set_read_timeout(Some(Duration::from_millis(200)))?;
@@ -11583,7 +11843,12 @@ pub fn run_session_with_cancel(
                 stage: benilla_protocol::LoginStage::WorldConnected,
             });
         }
-        world.auth_session(&logon.account, &logon.session_key, &seed, realm.realm_id as u32)?;
+        world.auth_session(
+            &logon.account,
+            &logon.session_key,
+            &seed,
+            realm.realm_id as u32,
+        )?;
         // auth_session sends the proof; only the server's AUTH_OK accepts the world link.
         let mut auth_deadline = Instant::now() + Duration::from_secs(30);
         let mut world_authed = false;
@@ -11733,7 +11998,9 @@ pub fn run_session_with_cancel(
             }
             match world.recv() {
                 Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_CHAR_ENUM => {
-                    records = Some(benilla_protocol_wrath::gameplay::parse_char_enum(&p.payload)?);
+                    records = Some(benilla_protocol_wrath::gameplay::parse_char_enum(
+                        &p.payload,
+                    )?);
                 }
                 Ok(_) => {}
                 Err(e) if benilla_protocol_wrath::world::is_idle(&e) => {}
@@ -11970,9 +12237,7 @@ pub fn run_session_with_cancel(
                             }
                         };
                         if let Some((renamed_guid, ref new_name)) = renamed {
-                            if let Some(rec) =
-                                records.iter_mut().find(|r| r.guid == renamed_guid)
-                            {
+                            if let Some(rec) = records.iter_mut().find(|r| r.guid == renamed_guid) {
                                 rec.name = new_name.clone();
                                 rec.character_flags &= !benilla_protocol::CHARACTER_FLAG_RENAME;
                             }
@@ -12145,9 +12410,7 @@ pub fn run_session_with_cancel(
                 }
             }
         }
-        fn resources(
-            &self,
-        ) -> benilla_wm_native::Result<benilla_wm_native::ResourceObservation> {
+        fn resources(&self) -> benilla_wm_native::Result<benilla_wm_native::ResourceObservation> {
             benilla_wm_native::ResourceObservation::pairs(
                 self.snapshot.resources.health,
                 self.snapshot.resources.max_health,
@@ -12205,8 +12468,10 @@ pub fn run_session_with_cancel(
     }
     session.start_session(guid); // re-begin with the real full GUID; phase resets to selection
     session.note_player_login();
-    feed.last_session_epoch.store(session.epoch(), Ordering::SeqCst);
-    feed.last_world_generation.store(session.world_generation(), Ordering::SeqCst);
+    feed.last_session_epoch
+        .store(session.epoch(), Ordering::SeqCst);
+    feed.last_world_generation
+        .store(session.world_generation(), Ordering::SeqCst);
     feed.push_event(WrathFeedEvent::Phase {
         phase: session.phase(),
         session_epoch: session.epoch(),
@@ -12214,11 +12479,12 @@ pub fn run_session_with_cancel(
         login_generation: live_generation(),
         map_id: session.map_id(),
     });
-    world.send(benilla_protocol_wrath::opcode::CMSG_PLAYER_LOGIN, &guid.to_le_bytes())?;
+    world.send(
+        benilla_protocol_wrath::opcode::CMSG_PLAYER_LOGIN,
+        &guid.to_le_bytes(),
+    )?;
 
-    let deadline = config
-        .dwell
-        .map(|dwell| std::time::Instant::now() + dwell);
+    let deadline = config.dwell.map(|dwell| std::time::Instant::now() + dwell);
     let mut last_ping = std::time::Instant::now();
     let mut last_server_response = std::time::Instant::now();
     let mut ping_seq = 1u32;
@@ -12226,8 +12492,10 @@ pub fn run_session_with_cancel(
     let mut logged_out = false;
     feed.publish_digest(build_digest(&session)); // initial state (character selection)
     while deadline.is_none_or(|deadline| std::time::Instant::now() < deadline) {
-        feed.last_session_epoch.store(session.epoch(), Ordering::SeqCst);
-        feed.last_world_generation.store(session.world_generation(), Ordering::SeqCst);
+        feed.last_session_epoch
+            .store(session.epoch(), Ordering::SeqCst);
+        feed.last_world_generation
+            .store(session.world_generation(), Ordering::SeqCst);
         if cancel.load(Ordering::SeqCst) {
             native.invalidate_scope();
             publisher.retire_all();
@@ -12241,7 +12509,11 @@ pub fn run_session_with_cancel(
         // been lost. End the session through the one terminal path instead of continuing to read
         // and silently discarding gameplay state.
         if let Some(replies) = events_out.as_ref() {
-            if replies.lock().map(|replies| replies.overloaded()).unwrap_or(false) {
+            if replies
+                .lock()
+                .map(|replies| replies.overloaded())
+                .unwrap_or(false)
+            {
                 anyhow::bail!(
                     "session reply backlog exceeded {WRATH_SESSION_REPLY_CAP} entries; \
                      ordered reply delivery was lost"
@@ -12262,9 +12534,10 @@ pub fn run_session_with_cancel(
                         ));
                         continue;
                     }
-                    if receipt.enforce_scope && (receipt.session_epoch != session.epoch()
-                        || receipt.world_generation != session.world_generation()
-                        || session.phase() != Phase::InWorld)
+                    if receipt.enforce_scope
+                        && (receipt.session_epoch != session.epoch()
+                            || receipt.world_generation != session.world_generation()
+                            || session.phase() != Phase::InWorld)
                     {
                         receipt.report(crate::net::CommandDelivery::Rejected(
                             crate::net::CommandRefusal::ScopeChanged,
@@ -12276,19 +12549,19 @@ pub fn run_session_with_cancel(
                 let mut stale_trace = false;
                 if command.enforce_scope {
                     if let Some(ix) = &command.trace {
-                    if let Some((se, wg)) = ix.scope() {
-                        if se != session.epoch()
-                            || wg != session.world_generation()
-                            || session.phase() != Phase::InWorld
-                        {
-                            stale_trace = true;
-                            ix.record(crate::quest_trace::Stage::Delivery(
-                                crate::net::CommandDelivery::Rejected(
-                                    crate::net::CommandRefusal::ScopeChanged,
-                                ),
-                            ));
+                        if let Some((se, wg)) = ix.scope() {
+                            if se != session.epoch()
+                                || wg != session.world_generation()
+                                || session.phase() != Phase::InWorld
+                            {
+                                stale_trace = true;
+                                ix.record(crate::quest_trace::Stage::Delivery(
+                                    crate::net::CommandDelivery::Rejected(
+                                        crate::net::CommandRefusal::ScopeChanged,
+                                    ),
+                                ));
+                            }
                         }
-                    }
                     }
                 }
                 if let Some(receipt) = &command.receipt {
@@ -12302,7 +12575,11 @@ pub fn run_session_with_cancel(
                                     stale_trace = true;
                                     // Reuse the receipt report path as authority for this interaction,
                                     // unless the same interaction was already recorded via command.trace.
-                                    let cmd_ix = command.trace.as_ref().map(|t| t.interaction_id()).unwrap_or(0);
+                                    let cmd_ix = command
+                                        .trace
+                                        .as_ref()
+                                        .map(|t| t.interaction_id())
+                                        .unwrap_or(0);
                                     if cmd_ix == 0 || cmd_ix != ix.interaction_id() {
                                         receipt.report(crate::net::CommandDelivery::Rejected(
                                             crate::net::CommandRefusal::ScopeChanged,
@@ -12337,7 +12614,9 @@ pub fn run_session_with_cancel(
                             },
                         });
                     } else if let Some(trace) = &feed.trace {
-                        trace.observe(Some((session.epoch(), session.world_generation())), None,
+                        trace.observe(
+                            Some((session.epoch(), session.world_generation())),
+                            None,
                             crate::quest_trace::Stage::Outbound {
                                 opcode: command.opcode,
                                 state: if result.is_ok() {
@@ -12345,20 +12624,29 @@ pub fn run_session_with_cancel(
                                 } else {
                                     crate::quest_trace::OutboundState::WriteFailed
                                 },
-                            });
+                            },
+                        );
                     }
                 }
                 if result.is_err() {
                     if let Some(ix) = &command.trace {
                         ix.record(crate::quest_trace::Stage::SocketWriteFailed);
                     } else if let Some(trace) = &feed.trace {
-                        trace.observe(Some((session.epoch(), session.world_generation())), None,
-                            crate::quest_trace::Stage::SocketWriteFailed);
+                        trace.observe(
+                            Some((session.epoch(), session.world_generation())),
+                            None,
+                            crate::quest_trace::Stage::SocketWriteFailed,
+                        );
                     }
                 }
                 // Delivery outcome records on trace-bearing commands (defect #2 fix), unless the
                 // same interaction is already reported through the receipt path.
-                let receipt_ix = command.receipt.as_ref().and_then(|r| r.trace.as_ref()).map(|t| t.interaction_id()).unwrap_or(0);
+                let receipt_ix = command
+                    .receipt
+                    .as_ref()
+                    .and_then(|r| r.trace.as_ref())
+                    .map(|t| t.interaction_id())
+                    .unwrap_or(0);
                 if let Some(ix) = &command.trace {
                     if receipt_ix == 0 || ix.interaction_id() != receipt_ix {
                         if result.is_ok() {
@@ -12380,9 +12668,7 @@ pub fn run_session_with_cancel(
                 // actually leaves, not when the UI asked for it. The authoritative terminal
                 // edge still decides the outcome; the export publishes only the request.
                 let spell_id = match command.opcode {
-                    benilla_protocol_wrath::opcode::CMSG_CANCEL_CAST => {
-                        command.payload.get(1..5)
-                    }
+                    benilla_protocol_wrath::opcode::CMSG_CANCEL_CAST => command.payload.get(1..5),
                     benilla_protocol_wrath::opcode::CMSG_CANCEL_CHANNELLING => {
                         command.payload.get(0..4)
                     }
@@ -12436,10 +12722,15 @@ pub fn run_session_with_cancel(
             return Ok(());
         }
         match world.recv() {
-            Ok(p) if p.opcode == benilla_protocol_wrath::multiclass::SERVER_OPCODE
-                && multiclass.is_some() => {
+            Ok(p)
+                if p.opcode == benilla_protocol_wrath::multiclass::SERVER_OPCODE
+                    && multiclass.is_some() =>
+            {
                 last_server_response = Instant::now();
-                multiclass.as_ref().expect("enabled multiclass").receive(&p.payload)?;
+                multiclass
+                    .as_ref()
+                    .expect("enabled multiclass")
+                    .receive(&p.payload)?;
             }
             Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_CHARACTER_LOGIN_FAILED => {
                 // AzerothCore sends LoginFailureReason, not ResponseCodes. The 12340
@@ -12469,21 +12760,29 @@ pub fn run_session_with_cancel(
                 let eligible = diagnostic_opcode(p.opcode);
                 let traced = eligible
                     && match &feed.trace {
-                        Some(trace) if p.opcode == benilla_protocol_wrath::opcode::SMSG_UPDATE_OBJECT =>
-                            trace.sample_update_packet(),
+                        Some(trace)
+                            if p.opcode == benilla_protocol_wrath::opcode::SMSG_UPDATE_OBJECT =>
+                        {
+                            trace.sample_update_packet()
+                        }
                         Some(_) => true,
                         None => false,
                     };
                 let scope = Some((session.epoch(), session.world_generation()));
                 if traced {
                     if let Some(trace) = &feed.trace {
-                        trace.observe(scope, None, crate::quest_trace::Stage::PacketReceived { opcode: p.opcode });
+                        trace.observe(
+                            scope,
+                            None,
+                            crate::quest_trace::Stage::PacketReceived { opcode: p.opcode },
+                        );
                     }
                 }
                 // The reducer, the decoder and the translation each run through a live-code
                 // boundary ([`crate::live_code::call`]), as the 1.12 stream's read does: this loop
                 // was entered before any patch, so a direct call would keep the old decoders.
-                let reduced = crate::live_code::call(|| session.reduce(p.opcode, &p.payload, now_ms()));
+                let reduced =
+                    crate::live_code::call(|| session.reduce(p.opcode, &p.payload, now_ms()));
                 if eligible && (traced || reduced.is_err()) {
                     if let Some(trace) = &feed.trace {
                         let stage = if reduced.is_ok() {
@@ -12495,7 +12794,10 @@ pub fn run_session_with_cancel(
                                 .map(benilla_protocol_wrath::gameplay::classify_reduce_failure)
                                 .map(crate::quest_trace::ReducerReason::from_decode_failure)
                                 .unwrap_or(crate::quest_trace::ReducerReason::Other);
-                            crate::quest_trace::Stage::ReducerRejected { opcode: p.opcode, reason }
+                            crate::quest_trace::Stage::ReducerRejected {
+                                opcode: p.opcode,
+                                reason,
+                            }
                         };
                         trace.observe(scope, None, stage);
                     }
@@ -12508,16 +12810,21 @@ pub fn run_session_with_cancel(
                     push_session_event(
                         &events_out,
                         &session,
-                        SessionEvent::SavedAnswer { opcode: p.opcode, body: p.payload.to_vec() },
+                        SessionEvent::SavedAnswer {
+                            opcode: p.opcode,
+                            body: p.payload.to_vec(),
+                        },
                     );
                 }
-                if let Some(parsed) = crate::live_code::call(|| gameplay::parse(p.opcode, &p.payload)) {
+                if let Some(parsed) =
+                    crate::live_code::call(|| gameplay::parse(p.opcode, &p.payload))
+                {
                     if traced {
                         if let Some(trace) = &feed.trace {
                             let stage = match &parsed {
-                                Ok(_) => crate::quest_trace::Stage::GameplayDecoded {
-                                    opcode: p.opcode,
-                                },
+                                Ok(_) => {
+                                    crate::quest_trace::Stage::GameplayDecoded { opcode: p.opcode }
+                                }
                                 Err(error) => crate::quest_trace::Stage::GameplayRejected {
                                     opcode: p.opcode,
                                     decoder: gameplay::decoder_family(p.opcode),
@@ -12844,7 +13151,8 @@ pub fn run_session_with_cancel(
                             debug!("wrath: ignored malformed 0x{:X} gameplay reply: {e}", p.opcode);
                         }
                     }
-                } else if session.player_guid().is_some() && is_shared_12340_server_opcode(p.opcode) {
+                } else if session.player_guid().is_some() && is_shared_12340_server_opcode(p.opcode)
+                {
                     let decoded = crate::live_code::call(|| {
                         benilla_protocol::messages::parse_server(p.opcode, &p.payload)
                             .map(benilla_protocol::decode)
@@ -12882,8 +13190,11 @@ pub fn run_session_with_cancel(
             Err(e) if benilla_protocol_wrath::world::is_idle(&e) => {}
             Err(e) => {
                 if let Some(trace) = &feed.trace {
-                    trace.observe(Some((session.epoch(), session.world_generation())), None,
-                        crate::quest_trace::Stage::SocketReadFailed);
+                    trace.observe(
+                        Some((session.epoch(), session.world_generation())),
+                        None,
+                        crate::quest_trace::Stage::SocketReadFailed,
+                    );
                 }
                 return Err(e);
             }
@@ -12892,12 +13203,12 @@ pub fn run_session_with_cancel(
             native.invalidate_scope();
             session.finish_session();
             feed.push_event(WrathFeedEvent::Phase {
-        phase: session.phase(),
-        session_epoch: session.epoch(),
-        world_generation: session.world_generation(),
-        login_generation: config.login_generation,
-        map_id: session.map_id(),
-    });
+                phase: session.phase(),
+                session_epoch: session.epoch(),
+                world_generation: session.world_generation(),
+                login_generation: config.login_generation,
+                map_id: session.map_id(),
+            });
             publisher.retire_all();
             return Ok(());
         }
@@ -12941,7 +13252,10 @@ pub fn run_session_with_cancel(
             let mut ack = enc_pack_guid(guid);
             ack.extend_from_slice(&0u32.to_le_bytes());
             ack.extend_from_slice(&0u32.to_le_bytes());
-            world.send(benilla_protocol_wrath::opcode::MSG_MOVE_TELEPORT_ACK as u32, &ack)?;
+            world.send(
+                benilla_protocol_wrath::opcode::MSG_MOVE_TELEPORT_ACK as u32,
+                &ack,
+            )?;
         }
         // Far transfer: the NEW_WORLD was processed; tear down, then acknowledge so the
         // server sends the new world's visibility traffic.
@@ -12961,7 +13275,12 @@ pub fn run_session_with_cancel(
                 session: &mut session,
                 native: &native,
             };
-            pump_once(publisher, &mut adapter, now_ms(), started.elapsed().as_millis() as u64)
+            pump_once(
+                publisher,
+                &mut adapter,
+                now_ms(),
+                started.elapsed().as_millis() as u64,
+            )
         });
         match outcome {
             None => {}
@@ -12988,12 +13307,12 @@ pub fn run_session_with_cancel(
         }
         if session.phase() != phase_before {
             feed.push_event(WrathFeedEvent::Phase {
-        phase: session.phase(),
-        session_epoch: session.epoch(),
-        world_generation: session.world_generation(),
-        login_generation: config.login_generation,
-        map_id: session.map_id(),
-    });
+                phase: session.phase(),
+                session_epoch: session.epoch(),
+                world_generation: session.world_generation(),
+                login_generation: config.login_generation,
+                map_id: session.map_id(),
+            });
         }
     }
 
@@ -13004,12 +13323,12 @@ pub fn run_session_with_cancel(
             Ok(p) if p.opcode == 0x04D => {
                 session.finish_session();
                 feed.push_event(WrathFeedEvent::Phase {
-        phase: session.phase(),
-        session_epoch: session.epoch(),
-        world_generation: session.world_generation(),
-        login_generation: config.login_generation,
-        map_id: session.map_id(),
-    });
+                    phase: session.phase(),
+                    session_epoch: session.epoch(),
+                    world_generation: session.world_generation(),
+                    login_generation: config.login_generation,
+                    map_id: session.map_id(),
+                });
                 publisher.retire_all();
                 return Ok(());
             }
@@ -13026,7 +13345,10 @@ fn enc_pack_guid(guid: u64) -> Vec<u8> {
     let mut bytes = Vec::new();
     for i in 0..8 {
         let b = (guid >> (i * 8)) as u8;
-        if b != 0 { mask |= 1 << i; bytes.push(b); }
+        if b != 0 {
+            mask |= 1 << i;
+            bytes.push(b);
+        }
     }
     let mut out = vec![mask];
     out.extend_from_slice(&bytes);
@@ -13168,8 +13490,8 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                         | benilla_protocol_wrath::updates::type_id::CONTAINER
                 )
                 .then(|| {
-                    let container = entry.type_id
-                        == benilla_protocol_wrath::updates::type_id::CONTAINER;
+                    let container =
+                        entry.type_id == benilla_protocol_wrath::updates::type_id::CONTAINER;
                     crate::wrath_inventory::WrathFieldWindow::from_fields(
                         if container {
                             fields::CONTAINER_END
@@ -13235,7 +13557,12 @@ mod tests {
     fn self_pose_is_not_replayed_by_unrelated_snapshots() {
         use benilla_protocol_wrath::updates::PositionSnapshot;
         let mut world = World::new();
-        let pose = PositionSnapshot { x: 1.0, y: 2.0, z: 3.0, o: 0.5 };
+        let pose = PositionSnapshot {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+            o: 0.5,
+        };
         let entity = world.spawn(WrathAppliedPosition(pose)).id();
         // Spawn already consumed this position. Health/aura snapshots retain it.
         assert!(!consume_wrath_position(&mut world, entity, pose));
@@ -13265,9 +13592,7 @@ mod tests {
     }
 
     fn translated_swing(hit_info: u32, school: u32) -> ProtocolAttackerState {
-        match translate_gameplay(wrath_swing(hit_info, school), 0x11, Instant::now())
-            .as_slice()
-        {
+        match translate_gameplay(wrath_swing(hit_info, school), 0x11, Instant::now()).as_slice() {
             [SessionEvent::AttackerState(s)] => *s,
             other => panic!("one swing expected, got {other:?}"),
         }
@@ -13451,14 +13776,20 @@ mod tests {
             "the self GO answers the send: {events:?}"
         );
         assert!(
-            matches!(events.get(1), Some(SessionEvent::SpellGo { caster: 0x1522, .. })),
+            matches!(
+                events.get(1),
+                Some(SessionEvent::SpellGo { caster: 0x1522, .. })
+            ),
             "and the GO itself still follows: {events:?}"
         );
         assert_eq!(events.len(), 2);
 
         let remote = translate_gameplay(go(0x99), 0x1522, Instant::now());
         assert_eq!(remote.len(), 1);
-        assert!(matches!(remote[0], SessionEvent::SpellGo { caster: 0x99, .. }));
+        assert!(matches!(
+            remote[0],
+            SessionEvent::SpellGo { caster: 0x99, .. }
+        ));
     }
 
     /// AzerothCore follows a refusal's `SMSG_CAST_FAILED` with `SendInterrupted(0)`. The self
@@ -13476,7 +13807,10 @@ mod tests {
         assert!(
             matches!(
                 events.as_slice(),
-                [SessionEvent::SpellFailedOther { caster: 0x1522, spell_id: 772 }]
+                [SessionEvent::SpellFailedOther {
+                    caster: 0x1522,
+                    spell_id: 772
+                }]
             ),
             "{events:?}"
         );
@@ -13498,7 +13832,10 @@ mod tests {
         assert!(
             matches!(
                 events.as_slice(),
-                [SessionEvent::SpellFailedOther { caster: 0x1522, spell_id: 133 }]
+                [SessionEvent::SpellFailedOther {
+                    caster: 0x1522,
+                    spell_id: 133
+                }]
             ),
             "{events:?}"
         );
@@ -13529,7 +13866,11 @@ mod tests {
             assert!(
                 matches!(
                     events.as_slice(),
-                    [SessionEvent::MonsterMove { guid: 0x1522, spline_id: 9, .. }]
+                    [SessionEvent::MonsterMove {
+                        guid: 0x1522,
+                        spline_id: 9,
+                        ..
+                    }]
                 ),
                 "flags {flags:#x}: {events:?}"
             );
@@ -13575,9 +13916,8 @@ mod tests {
             &crate::wrath_inventory::WrathFieldWindow::from_dense(raw),
             &mut pairs,
         );
-        let at = |slot: u16| {
-            benilla_protocol::field::FIELD_PLAYER_VISIBLE_ITEM_1_CREATOR + 12 * slot
-        };
+        let at =
+            |slot: u16| benilla_protocol::field::FIELD_PLAYER_VISIBLE_ITEM_1_CREATOR + 12 * slot;
         assert!(pairs.contains(&(at(0) + 2, 4368)));
         assert!(pairs.contains(&(at(0) + 3, 1)));
         assert!(pairs.contains(&(at(0) + 4, 2)));
@@ -13606,8 +13946,18 @@ mod tests {
         );
         let mut pairs = Vec::new();
         push_player_unit_fields(&window, &mut pairs);
-        let at = |dst: u16| pairs.iter().filter(|(i, _)| *i == dst).map(|(_, v)| *v).collect::<Vec<_>>();
-        assert!(at(36).is_empty(), "BYTES_0 comes from the digest, not the raw table: {:?}", at(36));
+        let at = |dst: u16| {
+            pairs
+                .iter()
+                .filter(|(i, _)| *i == dst)
+                .map(|(_, v)| *v)
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            at(36).is_empty(),
+            "BYTES_0 comes from the digest, not the raw table: {:?}",
+            at(36)
+        );
         assert!(at(133).is_empty(), "mount display comes from the digest");
         assert_eq!(at(125), [0x20], "aura state");
         assert_eq!(at(126), [2000], "main-hand attack time");
@@ -13660,7 +14010,9 @@ mod tests {
             "1.12's item-text id stays unwritten"
         );
         assert!(
-            !pairs.iter().any(|&(_, value)| value == 0x8888 || value == 0x9999),
+            !pairs
+                .iter()
+                .any(|&(_, value)| value == 0x8888 || value == 0x9999),
             "Wrath slots 8 and 12 never project"
         );
         assert!(
@@ -13672,13 +14024,13 @@ mod tests {
     /// An undelivered donor field stays absent rather than being written as an observed zero.
     #[test]
     fn an_absent_item_field_is_not_projected_as_a_delivered_zero() {
-        let window = item_window(
-            &[(fields::ITEM_FIELD_DURABILITY, 0)],
-            fields::ITEM_END,
-        );
+        let window = item_window(&[(fields::ITEM_FIELD_DURABILITY, 0)], fields::ITEM_END);
         let mut pairs = Vec::new();
         push_item_fields(&window, false, &mut pairs);
-        assert!(pairs.contains(&(46, 0)), "a delivered zero is an observed clear");
+        assert!(
+            pairs.contains(&(46, 0)),
+            "a delivered zero is an observed clear"
+        );
         assert!(
             !pairs.iter().any(|&(index, _)| index == 47),
             "max durability was never delivered and writes nothing"
@@ -13774,9 +14126,14 @@ mod tests {
         let mut index = HashMap::new();
         let (_, _, old_row, new_row) = apply_item_world(&mut world, &mut index, BAG, &remote);
         assert!(old_row.is_none());
-        assert_eq!(new_row.as_ref().and_then(|row| row.container_slot(0)), Some(0x11));
+        assert_eq!(
+            new_row.as_ref().and_then(|row| row.container_slot(0)),
+            Some(0x11)
+        );
         let entity = index[&BAG];
-        assert!(world.get::<crate::wrath_item::WrathItemRow>(entity).is_some());
+        assert!(world
+            .get::<crate::wrath_item::WrathItemRow>(entity)
+            .is_some());
 
         // The same generation updates in place; the changed row is the only write.
         remote.item_fields = Some(item_window(
@@ -13787,9 +14144,18 @@ mod tests {
             fields::CONTAINER_END,
         ));
         let (_, _, old_row, new_row) = apply_item_world(&mut world, &mut index, BAG, &remote);
-        assert_eq!(index[&BAG], entity, "the container entity is not reparented");
-        assert_eq!(old_row.as_ref().and_then(|row| row.container_slot(0)), Some(0x11));
-        assert_eq!(new_row.as_ref().and_then(|row| row.container_slot(0)), Some(0x22));
+        assert_eq!(
+            index[&BAG], entity,
+            "the container entity is not reparented"
+        );
+        assert_eq!(
+            old_row.as_ref().and_then(|row| row.container_slot(0)),
+            Some(0x11)
+        );
+        assert_eq!(
+            new_row.as_ref().and_then(|row| row.container_slot(0)),
+            Some(0x22)
+        );
         assert!(world
             .get::<crate::wrath_item::WrathItemRow>(entity)
             .is_some_and(|row| row.container_slot(0) == Some(0x22)));
@@ -13797,10 +14163,15 @@ mod tests {
         // A generation change is a new object; the old entity and its row are gone.
         remote.generation = 2;
         let (_, _, old_row, _) = apply_item_world(&mut world, &mut index, BAG, &remote);
-        assert!(old_row.is_none(), "the replaced entity's row does not carry over");
+        assert!(
+            old_row.is_none(),
+            "the replaced entity's row does not carry over"
+        );
         let replacement = index[&BAG];
         assert_ne!(replacement, entity);
-        assert!(world.get::<crate::wrath_item::WrathItemRow>(entity).is_none());
+        assert!(world
+            .get::<crate::wrath_item::WrathItemRow>(entity)
+            .is_none());
         assert!(world
             .get::<crate::wrath_item::WrathItemRow>(replacement)
             .is_some());
@@ -13818,8 +14189,7 @@ mod tests {
         world.init_resource::<crate::wrath_inventory::WrathInventory>();
         {
             let mut raw = vec![0u32; usize::from(crate::wrath_inventory::PLAYER_WINDOW_END)];
-            let bank = benilla_protocol_wrath::fields::PLAYER_FIELD_BANK_SLOT_1
-                + 2 * 24;
+            let bank = benilla_protocol_wrath::fields::PLAYER_FIELD_BANK_SLOT_1 + 2 * 24;
             raw[usize::from(bank)] = 0x77;
             let mut inventory = crate::wrath_inventory::WrathInventory::default();
             inventory.apply(
@@ -13840,9 +14210,7 @@ mod tests {
         }])));
         world.insert_resource(WrathInput(Arc::clone(&outbox)));
 
-        let entity = world
-            .spawn((WrathStreamed, Guid(0xAA), SelfPlayer))
-            .id();
+        let entity = world.spawn((WrathStreamed, Guid(0xAA), SelfPlayer)).id();
         world.resource_mut::<GuidIndex>().0.insert(0xAA, entity);
         world.resource_mut::<SelfGuid>().0 = Some(0xAA);
         world.resource_mut::<crate::player::Player>().active = true;
@@ -13884,12 +14252,30 @@ mod tests {
 
         view.apply_rune_state(
             &[
-                RuneSlot { rune_type: 0, cooldown: 0 },
-                RuneSlot { rune_type: 0, cooldown: 128 },
-                RuneSlot { rune_type: 1, cooldown: 255 },
-                RuneSlot { rune_type: 1, cooldown: 0 },
-                RuneSlot { rune_type: 2, cooldown: 64 },
-                RuneSlot { rune_type: 2, cooldown: 255 },
+                RuneSlot {
+                    rune_type: 0,
+                    cooldown: 0,
+                },
+                RuneSlot {
+                    rune_type: 0,
+                    cooldown: 128,
+                },
+                RuneSlot {
+                    rune_type: 1,
+                    cooldown: 255,
+                },
+                RuneSlot {
+                    rune_type: 1,
+                    cooldown: 0,
+                },
+                RuneSlot {
+                    rune_type: 2,
+                    cooldown: 64,
+                },
+                RuneSlot {
+                    rune_type: 2,
+                    cooldown: 255,
+                },
             ],
             100.0,
         );
@@ -13922,7 +14308,10 @@ mod tests {
         let victim = 0xF130_0000_0000_0022;
         let mut view = WrathWorldView::default();
         view.apply_party_kill(killer, victim, 7, 9, 100.0);
-        let kill = *view.party_kills.front().expect("the decoded kill is retained");
+        let kill = *view
+            .party_kills
+            .front()
+            .expect("the decoded kill is retained");
         assert_eq!((kill.killer, kill.victim), (killer, victim));
         assert_eq!((kill.session_epoch, kill.world_generation), (7, 9));
         assert_eq!((kill.revision, kill.received_at), (1, 100.0));
@@ -13947,7 +14336,10 @@ mod tests {
         assert!(view.party_kills.is_empty());
         view.apply_party_kill(killer, victim, 10, 11, 101.0);
         assert_eq!(
-            view.party_kills.front().expect("a later kill is retained").revision,
+            view.party_kills
+                .front()
+                .expect("a later kill is retained")
+                .revision,
             3,
             "the sequence never rewinds across a scope clear"
         );
@@ -13963,7 +14355,10 @@ mod tests {
         assert_eq!(view.party_kills.len(), PARTY_KILL_CAPACITY);
         assert_eq!(view.party_kill_dropped, 3);
         assert_eq!(
-            view.party_kills.front().expect("the first three were dropped").received_at,
+            view.party_kills
+                .front()
+                .expect("the first three were dropped")
+                .received_at,
             3.0
         );
     }
@@ -14044,18 +14439,6 @@ mod tests {
         assert_eq!(view.calendar_revision, 0);
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
 
 #[cfg(test)]
 mod command_tap_tests {
@@ -14158,20 +14541,48 @@ mod command_tap_tests {
 
         let _ = world.run_system_once(wrath_tap_commands);
         let sent: Vec<_> = outbox.lock().unwrap().drain(..).collect();
-        assert_eq!(sent.len(), 7, "the tap carries the shared streamer's move as well");
-        assert_eq!(sent[0].opcode, benilla_protocol_wrath::opcode::CMSG_SET_SELECTION);
-        assert_eq!(sent[1].opcode, benilla_protocol_wrath::opcode::CMSG_ATTACKSWING);
-        assert_eq!(sent[2].opcode, benilla_protocol_wrath::opcode::CMSG_CAST_SPELL);
+        assert_eq!(
+            sent.len(),
+            7,
+            "the tap carries the shared streamer's move as well"
+        );
+        assert_eq!(
+            sent[0].opcode,
+            benilla_protocol_wrath::opcode::CMSG_SET_SELECTION
+        );
+        assert_eq!(
+            sent[1].opcode,
+            benilla_protocol_wrath::opcode::CMSG_ATTACKSWING
+        );
+        assert_eq!(
+            sent[2].opcode,
+            benilla_protocol_wrath::opcode::CMSG_CAST_SPELL
+        );
         assert_eq!(sent[2].payload[0], 1);
-        assert_eq!(u32::from_le_bytes(sent[2].payload[1..5].try_into().unwrap()), 133);
-        assert_eq!(sent[3].opcode, benilla_protocol_wrath::opcode::CMSG_GOSSIP_SELECT_OPTION);
-        assert_eq!(u32::from_le_bytes(sent[3].payload[8..12].try_into().unwrap()), 55);
-        assert_eq!(sent[4].opcode, benilla_protocol_wrath::opcode::CMSG_QUESTGIVER_ACCEPT_QUEST);
+        assert_eq!(
+            u32::from_le_bytes(sent[2].payload[1..5].try_into().unwrap()),
+            133
+        );
+        assert_eq!(
+            sent[3].opcode,
+            benilla_protocol_wrath::opcode::CMSG_GOSSIP_SELECT_OPTION
+        );
+        assert_eq!(
+            u32::from_le_bytes(sent[3].payload[8..12].try_into().unwrap()),
+            55
+        );
+        assert_eq!(
+            sent[4].opcode,
+            benilla_protocol_wrath::opcode::CMSG_QUESTGIVER_ACCEPT_QUEST
+        );
         assert_eq!(sent[4].payload.len(), 16);
         assert_eq!(sent[5].opcode, benilla_protocol_wrath::opcode::CMSG_LOOT);
         // The move is replaceable motion addressed to the session's mover (`view` names guid 1):
         // its packed guid, then a 30-byte `MovementInfo` with no optional tail.
-        assert_eq!(sent[6].opcode, benilla_protocol_wrath::opcode::MSG_MOVE_HEARTBEAT);
+        assert_eq!(
+            sent[6].opcode,
+            benilla_protocol_wrath::opcode::MSG_MOVE_HEARTBEAT
+        );
         assert!(sent[6].movement);
         assert!(sent[..6].iter().all(|entry| !entry.movement));
         assert_eq!(sent[6].payload[..2], [0x01, 0x01]);
@@ -14223,8 +14634,14 @@ mod command_tap_tests {
             xy_speed: 7.0,
         };
         // 1.12 FORWARD | FALLING.
-        let (opcode, body) =
-            move_body(crate::net::MoveKind::Heartbeat, 0x1 | 0x2000, 0.0, 321, Some(jump), None);
+        let (opcode, body) = move_body(
+            crate::net::MoveKind::Heartbeat,
+            0x1 | 0x2000,
+            0.0,
+            321,
+            Some(jump),
+            None,
+        );
         assert_eq!(opcode, benilla_protocol_wrath::opcode::MSG_MOVE_HEARTBEAT);
         assert_eq!(u32_at(&body, 0), 0x1001, "12340 FORWARD | FALLING");
         assert_eq!(u32_at(&body, 6), 1000, "the client clock");
@@ -14240,8 +14657,14 @@ mod command_tap_tests {
 
     #[test]
     fn a_swimming_move_carries_the_pitch() {
-        let (_, body) =
-            move_body(crate::net::MoveKind::SetPitch, 0x1 | 0x20_0000, -0.4, 0, None, None);
+        let (_, body) = move_body(
+            crate::net::MoveKind::SetPitch,
+            0x1 | 0x20_0000,
+            -0.4,
+            0,
+            None,
+            None,
+        );
         assert_eq!(u32_at(&body, 0), 0x20_0001);
         assert_eq!(f32_at(&body, 26), -0.4, "pitch precedes the fall time");
         assert_eq!(u32_at(&body, 30), 0);
@@ -14254,11 +14677,21 @@ mod command_tap_tests {
     fn a_boarded_move_carries_the_transport_block() {
         let deck = benilla_protocol::TransportPose {
             guid: 0x05,
-            pos: benilla_protocol::wire::Vector3d { x: 4.0, y: 5.0, z: 6.0 },
+            pos: benilla_protocol::wire::Vector3d {
+                x: 4.0,
+                y: 5.0,
+                z: 6.0,
+            },
             orientation: 1.5,
         };
-        let (_, body) =
-            move_body(crate::net::MoveKind::Heartbeat, 0x0200_0000, 0.0, 0, None, Some(deck));
+        let (_, body) = move_body(
+            crate::net::MoveKind::Heartbeat,
+            0x0200_0000,
+            0.0,
+            0,
+            None,
+            Some(deck),
+        );
         assert_eq!(u32_at(&body, 0), 0x200);
         assert_eq!(body[26..28], [0x01, 0x05], "the transport's packed guid");
         assert_eq!(f32_at(&body, 28), 4.0);
@@ -14272,8 +14705,14 @@ mod command_tap_tests {
     /// is not sent.
     #[test]
     fn a_flag_without_its_tail_is_cleared() {
-        let (_, body) =
-            move_body(crate::net::MoveKind::Heartbeat, 0x2000 | 0x0200_0000, 0.0, 0, None, None);
+        let (_, body) = move_body(
+            crate::net::MoveKind::Heartbeat,
+            0x2000 | 0x0200_0000,
+            0.0,
+            0,
+            None,
+            None,
+        );
         assert_eq!(u32_at(&body, 0), 0);
         assert_eq!(body.len(), 30);
     }
@@ -14338,7 +14777,11 @@ mod command_tap_tests {
         let moves = |outbox: &WrathOutbox| -> Vec<u32> {
             let queue = outbox.lock().unwrap();
             assert_eq!(queue.len(), WRATH_MOVEMENT_QUEUE_CAP);
-            queue.iter().filter(|entry| entry.movement).map(|entry| entry.opcode).collect()
+            queue
+                .iter()
+                .filter(|entry| entry.movement)
+                .map(|entry| entry.opcode)
+                .collect()
         };
         {
             let mut queue = outbox.lock().unwrap();
@@ -14365,7 +14808,10 @@ mod command_tap_tests {
         outbox.lock().unwrap().retain(|entry| !entry.movement);
         fill_with_actions(&outbox);
         admit_wrath_movement(&input, op::MSG_MOVE_HEARTBEAT, Vec::new(), None);
-        assert!(moves(&outbox).is_empty(), "a queue of actions refuses the move");
+        assert!(
+            moves(&outbox).is_empty(),
+            "a queue of actions refuses the move"
+        );
     }
 
     /// `OpenCalendar()` is the real empty `CMSG_CALENDAR_GET_CALENDAR`; a request written under a
@@ -14449,11 +14895,20 @@ mod command_tap_tests {
 
     #[test]
     fn interactive_restart_never_uses_the_boot_pick_during_logout_transition() {
-        assert!(matches!(WrathSessionStart::Auto.for_login_mode(true),
-            WrathSessionStart::Parked { roster_asked: false }));
-        assert!(matches!(WrathSessionStart::Auto.for_login_mode(false), WrathSessionStart::Auto));
-        assert!(matches!(WrathSessionStart::Parked { roster_asked: true }.for_login_mode(true),
-            WrathSessionStart::Parked { roster_asked: true }));
+        assert!(matches!(
+            WrathSessionStart::Auto.for_login_mode(true),
+            WrathSessionStart::Parked {
+                roster_asked: false
+            }
+        ));
+        assert!(matches!(
+            WrathSessionStart::Auto.for_login_mode(false),
+            WrathSessionStart::Auto
+        ));
+        assert!(matches!(
+            WrathSessionStart::Parked { roster_asked: true }.for_login_mode(true),
+            WrathSessionStart::Parked { roster_asked: true }
+        ));
     }
 
     /// The 3.3.5 record onto the 1.12 roster seam: the appearance bytes, position and the 19
@@ -14566,7 +15021,14 @@ mod reply_queue_tests {
     }
 
     fn reply(attacker: u64) -> WrathSessionEvent {
-        scoped(1, 1, SessionEvent::AttackStart { attacker, victim: 2 })
+        scoped(
+            1,
+            1,
+            SessionEvent::AttackStart {
+                attacker,
+                victim: 2,
+            },
+        )
     }
 
     fn clock(unix_time: u32) -> WrathSessionEvent {
@@ -14617,9 +15079,14 @@ mod reply_queue_tests {
         let drained = replies.take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET);
         assert_eq!(drained.len(), 2);
         assert!(matches!(drained[0].event, SessionEvent::LoggedOut));
-        assert!(matches!(drained[1].event, SessionEvent::Disconnected { .. }));
+        assert!(matches!(
+            drained[1].event,
+            SessionEvent::Disconnected { .. }
+        ));
         assert_eq!(replies.stats().dropped, 1, "the repeated LoggedOut");
-        assert!(replies.take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET).is_empty());
+        assert!(replies
+            .take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET)
+            .is_empty());
     }
 
     #[test]
@@ -14659,35 +15126,61 @@ mod reply_queue_tests {
         assert_eq!(replies.len(), 3, "the second clock replaced the first");
         let drained = replies.take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET);
         assert_eq!(drained.len(), 3);
-        assert!(matches!(drained[0].event, SessionEvent::AttackStart { attacker: 1, .. }));
-        assert_eq!(unix_time(&drained[1]), Some(20), "newest value, original position");
-        assert!(matches!(drained[2].event, SessionEvent::AttackStart { attacker: 3, .. }));
+        assert!(matches!(
+            drained[0].event,
+            SessionEvent::AttackStart { attacker: 1, .. }
+        ));
+        assert_eq!(
+            unix_time(&drained[1]),
+            Some(20),
+            "newest value, original position"
+        );
+        assert!(matches!(
+            drained[2].event,
+            SessionEvent::AttackStart { attacker: 3, .. }
+        ));
         assert_eq!(replies.stats().coalesced, 1);
     }
 
     #[test]
     fn gossip_and_vendor_observations_coalesce_per_npc_and_per_vendor() {
         let mut replies = SessionReplies::default();
-        replies.push(scoped(1, 1, SessionEvent::GossipMenu {
-            npc: 7,
-            text_id: 1,
-            options: Vec::new(),
-            quests: Vec::new(),
-        }));
-        replies.push(scoped(1, 1, SessionEvent::VendorInventory {
-            vendor: 9,
-            items: Vec::new(),
-        }));
-        replies.push(scoped(1, 1, SessionEvent::GossipMenu {
-            npc: 7,
-            text_id: 2,
-            options: Vec::new(),
-            quests: Vec::new(),
-        }));
-        replies.push(scoped(1, 1, SessionEvent::VendorInventory {
-            vendor: 9,
-            items: Vec::new(),
-        }));
+        replies.push(scoped(
+            1,
+            1,
+            SessionEvent::GossipMenu {
+                npc: 7,
+                text_id: 1,
+                options: Vec::new(),
+                quests: Vec::new(),
+            },
+        ));
+        replies.push(scoped(
+            1,
+            1,
+            SessionEvent::VendorInventory {
+                vendor: 9,
+                items: Vec::new(),
+            },
+        ));
+        replies.push(scoped(
+            1,
+            1,
+            SessionEvent::GossipMenu {
+                npc: 7,
+                text_id: 2,
+                options: Vec::new(),
+                quests: Vec::new(),
+            },
+        ));
+        replies.push(scoped(
+            1,
+            1,
+            SessionEvent::VendorInventory {
+                vendor: 9,
+                items: Vec::new(),
+            },
+        ));
         assert_eq!(replies.len(), 2);
         assert_eq!(replies.stats().coalesced, 2);
     }
@@ -14700,13 +15193,23 @@ mod reply_queue_tests {
         }
         assert!(!replies.overloaded());
         replies.push(reply(u64::MAX));
-        assert!(replies.overloaded(), "the worker turns this into a terminal");
-        assert_eq!(replies.len(), WRATH_SESSION_REPLY_CAP, "memory stays bounded");
+        assert!(
+            replies.overloaded(),
+            "the worker turns this into a terminal"
+        );
+        assert_eq!(
+            replies.len(),
+            WRATH_SESSION_REPLY_CAP,
+            "memory stays bounded"
+        );
         // The reserved terminal slots still fit at the cap and are delivered first.
         replies.push(disconnected());
         let drained = replies.take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET);
         assert_eq!(drained.len(), 1);
-        assert!(matches!(drained[0].event, SessionEvent::Disconnected { .. }));
+        assert!(matches!(
+            drained[0].event,
+            SessionEvent::Disconnected { .. }
+        ));
         assert!(replies.is_empty());
     }
 
@@ -14720,7 +15223,10 @@ mod reply_queue_tests {
         replies.push(disconnected());
         assert!(!replies.overloaded(), "teardown pushes are not an overload");
         assert!(replies.is_empty());
-        assert_eq!(replies.stats().closed_pushes, WRATH_SESSION_REPLY_CAP as u64 + 11);
+        assert_eq!(
+            replies.stats().closed_pushes,
+            WRATH_SESSION_REPLY_CAP as u64 + 11
+        );
     }
 
     #[test]
@@ -14745,22 +15251,49 @@ mod reply_queue_tests {
         while !replies.is_empty() {
             let _ = replies.take(WRATH_DRAIN_CEILING, WRATH_DRAIN_BUDGET);
         }
-        assert!(!replies.producer_should_pause(), "low water releases the latch");
+        assert!(
+            !replies.producer_should_pause(),
+            "low water releases the latch"
+        );
     }
 
     #[test]
     fn a_transfer_prunes_only_strictly_older_replies_and_keeps_forced_edges() {
         let mut replies = SessionReplies::default();
-        replies.push(scoped(1, 0, SessionEvent::AttackStart { attacker: 1, victim: 2 }));
-        replies.push(scoped(2, 0, SessionEvent::AttackStart { attacker: 2, victim: 2 }));
-        replies.push(scoped(2, 1, SessionEvent::AttackStart { attacker: 3, victim: 2 }));
+        replies.push(scoped(
+            1,
+            0,
+            SessionEvent::AttackStart {
+                attacker: 1,
+                victim: 2,
+            },
+        ));
+        replies.push(scoped(
+            2,
+            0,
+            SessionEvent::AttackStart {
+                attacker: 2,
+                victim: 2,
+            },
+        ));
+        replies.push(scoped(
+            2,
+            1,
+            SessionEvent::AttackStart {
+                attacker: 3,
+                victim: 2,
+            },
+        ));
         replies.push(forced(SessionEvent::LoginStage {
             stage: benilla_protocol::LoginStage::Connecting,
         }));
         replies.adopt_scope(2, 1);
         assert_eq!(replies.len(), 2, "the two older replies are gone");
         let drained = replies.take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET);
-        assert!(matches!(drained[0].event, SessionEvent::AttackStart { attacker: 3, .. }));
+        assert!(matches!(
+            drained[0].event,
+            SessionEvent::AttackStart { attacker: 3, .. }
+        ));
         assert!(matches!(drained[1].event, SessionEvent::LoginStage { .. }));
     }
 
@@ -14780,7 +15313,10 @@ mod reply_queue_tests {
 
     #[test]
     fn classification_names_every_terminal_kind_and_keeps_inventory_replies_ordered() {
-        assert_eq!(session_class(&SessionEvent::LoggedOut), SessionClass::Terminal);
+        assert_eq!(
+            session_class(&SessionEvent::LoggedOut),
+            SessionClass::Terminal
+        );
         assert_eq!(
             session_class(&SessionEvent::CharacterLoginFailed { result: 0x41 }),
             SessionClass::Terminal
@@ -14980,7 +15516,10 @@ mod scoped_delivery_tests {
         );
 
         assert_eq!(report.actions, 1);
-        assert!(actions.pending.is_empty(), "the intent is consumed, not replayed");
+        assert!(
+            actions.pending.is_empty(),
+            "the intent is consumed, not replayed"
+        );
         let answer = results.try_recv().expect("one terminal answer");
         assert_eq!(answer.request_id, "cast-1");
         assert_eq!(answer.status, ActionStatus::Unknown);
@@ -15030,7 +15569,10 @@ mod scoped_delivery_tests {
         );
         assert!(receipt.try_recv().is_err(), "not answered twice");
         assert_eq!(report.replies, 1, "the queued old-scope reply is discarded");
-        let drained = replies.lock().unwrap().take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET);
+        let drained = replies
+            .lock()
+            .unwrap()
+            .take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET);
         assert_eq!(drained.len(), 1);
         assert!(
             matches!(drained[0].event, SessionEvent::LoggedOut),
@@ -15058,7 +15600,10 @@ mod scoped_delivery_tests {
             "world scope changed before an authoritative result",
         );
         assert_eq!(first.actions, 1);
-        assert_eq!(results.try_recv().map(|a| a.request_id), Ok("cast-1".to_owned()));
+        assert_eq!(
+            results.try_recv().map(|a| a.request_id),
+            Ok("cast-1".to_owned())
+        );
 
         let second = control.retire_scoped_delivery(
             DeliveryScopeEnd::WorldTransfer {
@@ -15078,8 +15623,15 @@ mod scoped_delivery_tests {
             queue.push(scoped(1, 1));
             queue.push(scoped(1, 2));
         }
-        let drained = replies.lock().unwrap().take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET);
-        assert_eq!(drained.len(), 1, "only the adopted scope's reply is delivered");
+        let drained = replies
+            .lock()
+            .unwrap()
+            .take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET);
+        assert_eq!(
+            drained.len(),
+            1,
+            "only the adopted scope's reply is delivered"
+        );
         assert_eq!(drained[0].world_generation, 2);
     }
 
@@ -15173,18 +15725,16 @@ mod scoped_delivery_tests {
             Some(benilla_protocol::LoginRefusal::Logon(0x03))
         );
 
-        let proof_err = anyhow::Error::new(benilla_protocol_wrath::auth::LogonAuthError::Proof(
-            0x04,
-        ))
-        .context("reading proof reply");
+        let proof_err =
+            anyhow::Error::new(benilla_protocol_wrath::auth::LogonAuthError::Proof(0x04))
+                .context("reading proof reply");
         assert_eq!(
             extract_login_refusal(&proof_err),
             Some(benilla_protocol::LoginRefusal::LogonProof(0x04))
         );
 
-        let world_err = anyhow::Error::new(benilla_protocol_wrath::auth::LogonAuthError::World(
-            0x15,
-        ));
+        let world_err =
+            anyhow::Error::new(benilla_protocol_wrath::auth::LogonAuthError::World(0x15));
         assert_eq!(
             extract_login_refusal(&world_err),
             Some(benilla_protocol::LoginRefusal::World(0x15))

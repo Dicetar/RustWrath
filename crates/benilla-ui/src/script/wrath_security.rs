@@ -11,7 +11,10 @@ use mlua::Lua;
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let issecure = lua.create_function(|lua, _args: ()| {
-        Ok(matches!(super::taint::current(lua), super::taint::Context::Client))
+        Ok(matches!(
+            super::taint::current(lua),
+            super::taint::Context::Client
+        ))
     })?;
     lua.globals().set("issecure", issecure)?;
 

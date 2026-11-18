@@ -167,7 +167,9 @@ fn resolve(
         QuestLine::Item(entry) => match items.template(entry, 0, ask) {
             Some(t) => Resolved::Show(UiError::s(
                 "ERR_QUEST_REWARD_ITEM_S",
-                crate::ui_items::item_link_full_in_target(target, entry, 0, 0, 0, &t.name, t.quality),
+                crate::ui_items::item_link_full_in_target(
+                    target, entry, 0, 0, 0, &t.name, t.quality,
+                ),
             )),
             None if items.template_answered_unknown(entry) => Resolved::Drop,
             None => Resolved::Wait,

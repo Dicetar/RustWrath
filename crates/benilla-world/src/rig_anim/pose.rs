@@ -97,7 +97,8 @@ impl RigPose {
             let valid = local.translation.is_finite()
                 && local.rotation.is_finite()
                 && local.scale.is_finite()
-                && norm.is_finite() && norm > 1e-12;
+                && norm.is_finite()
+                && norm > 1e-12;
             if !valid {
                 if !self.non_finite_warned {
                     self.non_finite_warned = true;
@@ -876,14 +877,15 @@ mod tests {
         let mut rig = RigPose::new(root, &skeleton);
         rig.locals[0] = Transform::from_translation(Vec3::new(f32::NAN, 0.0, 0.0));
         rig.compose();
-        assert!(rig.locals[0].translation.is_finite(), "the world pass reads locals");
+        assert!(
+            rig.locals[0].translation.is_finite(),
+            "the world pass reads locals"
+        );
         assert!(
             (rig.locals[0].translation - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-5,
             "the sanitized local is the bind local"
         );
         assert!(rig.model[0].translation.is_finite());
-        assert!(
-            (rig.model[0].translation - bevy::math::Vec3A::new(1.0, 2.0, 3.0)).length() < 1e-5
-        );
+        assert!((rig.model[0].translation - bevy::math::Vec3A::new(1.0, 2.0, 3.0)).length() < 1e-5);
     }
 }

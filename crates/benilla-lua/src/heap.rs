@@ -6,7 +6,9 @@ use std::rc::Rc;
 use crate::pools::{Block, Pools, Tally};
 use crate::proto::Proto;
 use crate::table::{Account, Growth, Table};
-use crate::value::{FuncRef, StrRef, TableRef, ThreadRef, UserRef, Value, STR_HASH_MASK, STR_ID_BITS, V};
+use crate::value::{
+    FuncRef, StrRef, TableRef, ThreadRef, UserRef, Value, STR_HASH_MASK, STR_ID_BITS, V,
+};
 use crate::vm::ThreadObj;
 
 /// A native function. Its arguments are the `nargs` values below the top of the stack; it pushes
@@ -259,7 +261,10 @@ pub enum UpvalObj {
     /// Still a register: the absolute stack slot.
     Open(u32),
     /// A register on a suspended shared-heap execution stack.
-    Suspended { thread: ThreadRef, index: u32 },
+    Suspended {
+        thread: ThreadRef,
+        index: u32,
+    },
     Closed(Value),
 }
 
@@ -342,7 +347,9 @@ impl Dead for UserObj {
 }
 
 impl Dead for ThreadObj {
-    fn dead() -> Self { ThreadObj::dead() }
+    fn dead() -> Self {
+        ThreadObj::dead()
+    }
 }
 
 impl<T: Dead> Arena<T> {
@@ -986,12 +993,18 @@ impl Heap {
         ThreadRef(self.threads.alloc(thread))
     }
 
-    pub(crate) fn thread(&self, thread: ThreadRef) -> &ThreadObj { self.threads.get(thread.0) }
+    pub(crate) fn thread(&self, thread: ThreadRef) -> &ThreadObj {
+        self.threads.get(thread.0)
+    }
 
-    pub(crate) fn thread_mut(&mut self, thread: ThreadRef) -> &mut ThreadObj { self.threads.get_mut(thread.0) }
+    pub(crate) fn thread_mut(&mut self, thread: ThreadRef) -> &mut ThreadObj {
+        self.threads.get_mut(thread.0)
+    }
 
     pub(crate) fn suspended_frames(&self) -> bool {
-        self.threads.iter_live().any(|(_, thread)| thread.has_frames())
+        self.threads
+            .iter_live()
+            .any(|(_, thread)| thread.has_frames())
     }
 
     /// The metatable of a value: tables and userdata carry one; 1.12 has none for any other type.
@@ -1096,7 +1109,9 @@ impl Heap {
                         V::Str(s) => {
                             strs.mark(s.id);
                         }
-                        V::Table(_) | V::Func(_) | V::User(_) | V::Thread(_) if !weak => gray.push(v),
+                        V::Table(_) | V::Func(_) | V::User(_) | V::Thread(_) if !weak => {
+                            gray.push(v)
+                        }
                         _ => {}
                     };
                     for &v in &tab.array {
@@ -1217,11 +1232,18 @@ impl Heap {
         }
         // Sweep. Dead strings leave the intern chains.
         let mut live = 0usize;
-        live += sweep(&mut self.threads, |thread| {
-            tally.count_size(std::mem::size_of::<ThreadObj>());
-            for block in thread.blocks() { tally.count(block); }
-            thread.bytes()
-        }, |_| false, drop);
+        live += sweep(
+            &mut self.threads,
+            |thread| {
+                tally.count_size(std::mem::size_of::<ThreadObj>());
+                for block in thread.blocks() {
+                    tally.count(block);
+                }
+                thread.bytes()
+            },
+            |_| false,
+            drop,
+        );
         live += sweep(
             &mut self.tables,
             |t| {

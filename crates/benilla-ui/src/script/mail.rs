@@ -110,7 +110,10 @@ impl MailInboxRow {
             return (index.is_none_or(|i| i == 1) && self.item_id != 0).then_some(self);
         }
         let item = match index {
-            Some(i) => self.attachments.iter().find(|a| usize::from(a.index) + 1 == i),
+            Some(i) => self
+                .attachments
+                .iter()
+                .find(|a| usize::from(a.index) + 1 == i),
             None => self.attachments.iter().min_by_key(|a| a.index),
         }?;
         self.item_guid_low = item.guid_low;
@@ -455,7 +458,8 @@ impl MailRowVerb {
             // A body or a template to copy (`[rec+0x114]`, `[rec+0x25c]`, `0x4afae7`), not yet
             // copied (`& 4`, `0x4afafb`).
             MailRowVerb::TakeText => {
-                (row.item_text_id != 0 || row.mail_template_id != 0 || row.body.is_some()) && !row.text_created
+                (row.item_text_id != 0 || row.mail_template_id != 0 || row.body.is_some())
+                    && !row.text_created
             }
             // A player's mail (type 0, `0x4afc27`) with an item or money (`0x4afc30`), neither
             // returned nor a COD payment (`& 0xa`, `0x4afc44`).
@@ -844,12 +848,21 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "GetInboxItemLink",
         lua.create_function(|lua, (index, attachment): (Value, Value)| {
-            let index = binding_abi::index_arg(lua, index, "Usage: GetInboxItemLink(messageIndex, attachIndex)")?;
+            let index = binding_abi::index_arg(
+                lua,
+                index,
+                "Usage: GetInboxItemLink(messageIndex, attachIndex)",
+            )?;
             let attachment = attachment_index(lua, attachment)?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(row) = row_at(&model, index) else { return Ok(None::<String>) };
+            let Some(row) = row_at(&model, index) else {
+                return Ok(None::<String>);
+            };
             let item = match attachment {
-                Some(i) => row.attachments.iter().find(|a| usize::from(a.index) + 1 == i),
+                Some(i) => row
+                    .attachments
+                    .iter()
+                    .find(|a| usize::from(a.index) + 1 == i),
                 None => row.attachments.iter().min_by_key(|a| a.index),
             };
             Ok(item.and_then(|a| a.link.clone()))
@@ -885,10 +898,15 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     || target.is_empty()
                     || subject.is_empty()
                     || model.mail_stationery == 0
-                    || (model.target == super::UiTarget::Wrath335 && (
-                        [&target, &subject, &body].iter().any(|s| s.as_bytes().contains(&0))
-                        || target.len().saturating_add(subject.len()).saturating_add(body.len()) > 10189
-                    ))
+                    || (model.target == super::UiTarget::Wrath335
+                        && ([&target, &subject, &body]
+                            .iter()
+                            .any(|s| s.as_bytes().contains(&0))
+                            || target
+                                .len()
+                                .saturating_add(subject.len())
+                                .saturating_add(body.len())
+                                > 10189))
                 {
                     return None;
                 }

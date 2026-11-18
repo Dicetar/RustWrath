@@ -189,7 +189,12 @@ impl Player {
         }
     }
 
-    pub(crate) fn start_dodge(&mut self, now: Ticks, config: &CombatConfig, revision: ActionRevision) {
+    pub(crate) fn start_dodge(
+        &mut self,
+        now: Ticks,
+        config: &CombatConfig,
+        revision: ActionRevision,
+    ) {
         self.dodge = Some(ActiveDodge {
             revision,
             started_at: now,

@@ -182,7 +182,11 @@ impl<'a> Lexer<'a> {
         Self::with_dialect(src, chunkname, crate::Dialect::Vanilla50)
     }
 
-    pub(crate) fn with_dialect(src: &'a [u8], chunkname: &[u8], dialect: crate::Dialect) -> Result<Self, SyntaxError> {
+    pub(crate) fn with_dialect(
+        src: &'a [u8],
+        chunkname: &[u8],
+        dialect: crate::Dialect,
+    ) -> Result<Self, SyntaxError> {
         let mut lx = Lexer {
             dialect,
             src,
@@ -232,7 +236,11 @@ impl<'a> Lexer<'a> {
         out.extend_from_slice(format!(":{}: ", self.line).as_bytes());
         out.extend_from_slice(msg);
         if let Some(near) = near {
-            out.extend_from_slice(if self.dialect.is_51() { b" near '" } else { b" near `" });
+            out.extend_from_slice(if self.dialect.is_51() {
+                b" near '"
+            } else {
+                b" near `"
+            });
             out.extend_from_slice(cstr(near));
             out.push(b'\'');
         }
@@ -268,7 +276,9 @@ impl<'a> Lexer<'a> {
     fn newline(&mut self) -> Result<(), SyntaxError> {
         let previous = self.ch();
         self.pos += 1;
-        if self.dialect.is_51() && self.at_newline() && self.ch() != previous { self.pos += 1; }
+        if self.dialect.is_51() && self.at_newline() && self.ch() != previous {
+            self.pos += 1;
+        }
         self.line += 1;
         // `checklimit(LS, ++LS->linenumber, MAX_INT, "lines in a chunk")` never trips here.
         Ok(())
@@ -482,35 +492,71 @@ impl<'a> Lexer<'a> {
     }
 
     fn separator(&self, start: usize, bracket: u8) -> Option<(usize, usize)> {
-        if self.src.get(start) != Some(&bracket) { return None; }
+        if self.src.get(start) != Some(&bracket) {
+            return None;
+        }
         let mut end = start + 1;
-        while self.src.get(end) == Some(&b'=') { end += 1; }
+        while self.src.get(end) == Some(&b'=') {
+            end += 1;
+        }
         (self.src.get(end) == Some(&bracket)).then_some((end - start - 1, end - start + 1))
     }
 
     /// Lua 5.1 levelled delimiters; matching brackets close rather than nest. The default
     /// 5.1 compatibility setting diagnoses nested unlevelled [[...]] as deprecated.
-    fn long_string_51(&mut self, keep: bool, level: usize, length: usize) -> Result<Vec<u8>, SyntaxError> {
+    fn long_string_51(
+        &mut self,
+        keep: bool,
+        level: usize,
+        length: usize,
+    ) -> Result<Vec<u8>, SyntaxError> {
         self.buff.clear();
-        if keep { self.buff.extend_from_slice(&self.src[self.pos..self.pos + length]); }
+        if keep {
+            self.buff
+                .extend_from_slice(&self.src[self.pos..self.pos + length]);
+        }
         self.pos += length;
-        if self.at_newline() { self.newline()?; }
+        if self.at_newline() {
+            self.newline()?;
+        }
         loop {
             if self.ch() == EOZ {
-                return Err(self.lex_error(if keep { "unfinished long string" } else { "unfinished long comment" }, true));
+                return Err(self.lex_error(
+                    if keep {
+                        "unfinished long string"
+                    } else {
+                        "unfinished long comment"
+                    },
+                    true,
+                ));
             }
-            if self.ch() == b']' as i32 && self.separator(self.pos, b']').is_some_and(|(n, _)| n == level) {
+            if self.ch() == b']' as i32
+                && self
+                    .separator(self.pos, b']')
+                    .is_some_and(|(n, _)| n == level)
+            {
                 self.pos += length;
-                return Ok(if keep { self.buff[length..].to_vec() } else { Vec::new() });
+                return Ok(if keep {
+                    self.buff[length..].to_vec()
+                } else {
+                    Vec::new()
+                });
             }
-            if level == 0 && self.ch() == b'[' as i32 && self.separator(self.pos, b'[').is_some_and(|(n, _)| n == 0) {
+            if level == 0
+                && self.ch() == b'[' as i32
+                && self.separator(self.pos, b'[').is_some_and(|(n, _)| n == 0)
+            {
                 return Err(self.error("nesting of [[...]] is deprecated"));
             }
             if self.at_newline() {
-                if keep { self.buff.push(b'\n'); }
+                if keep {
+                    self.buff.push(b'\n');
+                }
                 self.newline()?;
             } else {
-                if keep { self.buff.push(self.ch() as u8); }
+                if keep {
+                    self.buff.push(self.ch() as u8);
+                }
                 self.pos += 1;
             }
         }
@@ -526,7 +572,9 @@ impl<'a> Lexer<'a> {
             match self.ch() {
                 EOZ => return Err(self.lex_error("unfinished string", true)),
                 0x0A => return Err(self.lex_error("unfinished string", false)),
-                0x0D if self.dialect.is_51() => return Err(self.lex_error("unfinished string", false)),
+                0x0D if self.dialect.is_51() => {
+                    return Err(self.lex_error("unfinished string", false))
+                }
                 0x5C => {
                     self.pos += 1;
                     let e = self.ch();
@@ -586,7 +634,9 @@ impl<'a> Lexer<'a> {
     /// right after it is its own error, `0x8721dc`), digits, then `e`/`E`, a sign and digits. A
     /// letter after a number starts the next token, so `0x10` is 0 then the name `x10`.
     fn numeral(&mut self, comma: bool) -> Result<Token, SyntaxError> {
-        if self.dialect.is_51() { return self.numeral_51(comma); }
+        if self.dialect.is_51() {
+            return self.numeral_51(comma);
+        }
         self.buff.clear();
         if comma {
             self.buff.push(b'.');
@@ -632,19 +682,30 @@ impl<'a> Lexer<'a> {
 
     fn numeral_51(&mut self, leading_dot: bool) -> Result<Token, SyntaxError> {
         self.buff.clear();
-        if leading_dot { self.buff.push(b'.'); }
+        if leading_dot {
+            self.buff.push(b'.');
+        }
         while is_digit(self.ch()) || self.ch() == b'.' as i32 {
-            self.buff.push(self.ch() as u8); self.pos += 1;
+            self.buff.push(self.ch() as u8);
+            self.pos += 1;
         }
         if matches!(self.ch(), 0x45 | 0x65) {
-            self.buff.push(self.ch() as u8); self.pos += 1;
-            if matches!(self.ch(), 0x2B | 0x2D) { self.buff.push(self.ch() as u8); self.pos += 1; }
+            self.buff.push(self.ch() as u8);
+            self.pos += 1;
+            if matches!(self.ch(), 0x2B | 0x2D) {
+                self.buff.push(self.ch() as u8);
+                self.pos += 1;
+            }
         }
         while is_alpha(self.ch()) || is_digit(self.ch()) || self.ch() == b'_' as i32 {
-            self.buff.push(self.ch() as u8); self.pos += 1;
+            self.buff.push(self.ch() as u8);
+            self.pos += 1;
         }
-        let number = crate::number::str2d_51(&self.buff).ok_or_else(|| self.lex_error("malformed number", false))?;
-        let mut token = Self::tok(Tok::Number); token.num = number; Ok(token)
+        let number = crate::number::str2d_51(&self.buff)
+            .ok_or_else(|| self.lex_error("malformed number", false))?;
+        let mut token = Self::tok(Tok::Number);
+        token.num = number;
+        Ok(token)
     }
 }
 

@@ -314,8 +314,10 @@ fn resolve_service(
         if let Some((classes, owned)) = books.multiclass {
             if let Some(line) = classes.skill(taught, owned, spells) {
                 group_key = line;
-                group_name = skill_lines.and_then(|catalog| catalog.line(line))
-                    .map(|line| line.name.clone()).unwrap_or_else(|| format!("Skill {line}"));
+                group_name = skill_lines
+                    .and_then(|catalog| catalog.line(line))
+                    .map(|line| line.name.clone())
+                    .unwrap_or_else(|| format!("Skill {line}"));
             }
         }
     }
@@ -552,7 +554,9 @@ pub(crate) fn feed_trainer(
         let Some(skill_lines) = skill_lines.as_deref() else {
             return;
         };
-        let owned_classes = multiclass.as_deref().map_or(0, crate::multiclass::MulticlassBridge::owned_classes);
+        let owned_classes = multiclass
+            .as_deref()
+            .map_or(0, crate::multiclass::MulticlassBridge::owned_classes);
         if owned_classes != 0 && trainer_classes.is_none() {
             *trainer_classes = Some(multiclass::TrainerClasses::new(&skill_lines.catalog));
         }
@@ -779,7 +783,9 @@ pub(crate) fn feed_trainer(
                     player: &actions.spells,
                     pet: pet_book.as_ref(),
                     race_class: store.map_or((0, 0), |s| s.race_class()),
-                    multiclass: trainer_classes.as_ref().map(|classes| (classes, owned_classes)),
+                    multiclass: trainer_classes
+                        .as_ref()
+                        .map(|classes| (classes, owned_classes)),
                 },
                 icons.as_deref(),
                 &items,

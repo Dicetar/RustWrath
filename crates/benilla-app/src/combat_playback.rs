@@ -43,13 +43,13 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use bevy::prelude::*;
 use benilla_assets::ModelAnimations;
 use benilla_combat_core::{
     dodge_action, ActionEngine, ActionId, ActionRefusal, ActionSpec, ActionTable, EngineEvent,
     ProfilePolicy, StaminaConfig, TickRate, Ticks, MAX_ADVANCE_SPAN_TICKS,
 };
 use benilla_world::schedule::WorldStage;
+use bevy::prelude::*;
 
 use crate::combat_kit::{
     clip_bindings, compile_kit, engine_stamina, load_player_kit, PlayerKit, Press,
@@ -243,8 +243,7 @@ fn fill_local_profiles(
         Some(player_kit) => match compile_kit(player_kit, PROFILE_REVISION, rate) {
             Ok(table) => {
                 let dodge_clip = rig_dodge_clip(anims, &anim_data.0).map(|clip| clip.anim_id);
-                let swing_clip =
-                    rig_swing_clip(main, anims, &anim_data.0).map(|clip| clip.anim_id);
+                let swing_clip = rig_swing_clip(main, anims, &anim_data.0).map(|clip| clip.anim_id);
                 Some((
                     table,
                     clip_bindings(player_kit, dodge_clip, swing_clip),
@@ -252,7 +251,10 @@ fn fill_local_profiles(
                 ))
             }
             Err(error) => {
-                problems.push(format!("kit `{}`: {error}; the stock profiles stand in", player_kit.label));
+                problems.push(format!(
+                    "kit `{}`: {error}; the stock profiles stand in",
+                    player_kit.label
+                ));
                 None
             }
         },
@@ -449,11 +451,7 @@ fn advance_playback(
     // A revival restarts the prediction: the engine has no revive/reset, so a fresh engine
     // anchored at the current tick over the same compiled table keeps playing. The predicted bar
     // refills, which a resurrection owns anyway.
-    if state
-        .engine
-        .as_ref()
-        .is_none_or(ActionEngine::is_dead)
-    {
+    if state.engine.as_ref().is_none_or(ActionEngine::is_dead) {
         state.engine = None;
         state.last_refusal = None;
         if let Some(table) = profiles.table.clone() {
@@ -475,7 +473,9 @@ fn advance_playback(
     let hits: Vec<SwingMessage> = swings.read().copied().collect();
     let landed = hits
         .iter()
-        .filter(|swing| swing.attacker != entity && swing.victim == Some(entity) && swing.victim_state == 1)
+        .filter(|swing| {
+            swing.attacker != entity && swing.victim == Some(entity) && swing.victim_state == 1
+        })
         .count();
     // The Souls defenses (written last frame, reset whenever Souls combat is off): a dodge's
     // i-frames ignore the hit, a raised guard absorbs it for stamina and holding poise for poise,
@@ -618,9 +618,9 @@ mod tests {
     use super::*;
     use benilla_assets::AnimClip;
     use benilla_combat_core::{ActionKind, TickWindow};
+    use benilla_formats::AnimDataCatalog;
     use bevy::animation::graph::AnimationNodeIndex;
     use bevy::prelude::{Handle, Vec3};
-    use benilla_formats::AnimDataCatalog;
 
     fn rate() -> TickRate {
         TickRate::new(PROFILE_TICK_RATE_HZ).expect("100 Hz")
@@ -690,12 +690,22 @@ mod tests {
 
         state.clock = Duration::from_millis(120);
         let now = state.ticks_at();
-        state.engine.as_mut().expect("engine").advance_to(now).expect("advance");
+        state
+            .engine
+            .as_mut()
+            .expect("engine")
+            .advance_to(now)
+            .expect("advance");
         assert_eq!(state.phase(&profiles), Some(ActionPhase::Active));
 
         state.clock = Duration::from_millis(500);
         let now = state.ticks_at();
-        state.engine.as_mut().expect("engine").advance_to(now).expect("advance");
+        state
+            .engine
+            .as_mut()
+            .expect("engine")
+            .advance_to(now)
+            .expect("advance");
         assert_eq!(state.phase(&profiles), None, "the dodge completed");
     }
 
@@ -768,10 +778,7 @@ mod tests {
         dodge_action(HOST_DODGE, &dodge.0)
             .validate()
             .expect("valid dodge");
-        assert_eq!(
-            dodge_action(HOST_DODGE, &dodge.0).kind,
-            ActionKind::Dodge
-        );
+        assert_eq!(dodge_action(HOST_DODGE, &dodge.0).kind, ActionKind::Dodge);
 
         let melee = player_melee_action(
             PLAYER_MELEE_MAIN,

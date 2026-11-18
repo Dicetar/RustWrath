@@ -452,7 +452,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     };
                     // No displayed/all-learned book slot: the ID is the key, which the Wrath
                     // spell queries accept with a book type for a spell on the action bar.
-                    slots.iter().position(|slot| slot.spell_id == id)
+                    slots
+                        .iter()
+                        .position(|slot| slot.spell_id == id)
                         .map_or(id, |index| index as u32 + 1)
                 } else {
                     id
@@ -517,12 +519,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 // mouse button; `button != nil` (from a click, not a keybind) places a held cursor
                 // payload unless the slot is a possession slot (`121..=132`).
                 let clicked = !matches!(rest.get(1), None | Some(Value::Nil));
-                let check_cursor =
-                    (clicked || !model.protected.events().binding) && !(121..=132).contains(&action);
+                let check_cursor = (clicked || !model.protected.events().binding)
+                    && !(121..=132).contains(&action);
                 let on_self = match rest.front() {
-                    Some(Value::String(s)) => s
-                        .to_str()
-                        .is_ok_and(|u| u.eq_ignore_ascii_case("player")),
+                    Some(Value::String(s)) => {
+                        s.to_str().is_ok_and(|u| u.eq_ignore_ascii_case("player"))
+                    }
                     _ => false,
                 };
                 (check_cursor, on_self)
@@ -542,9 +544,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 lua.coerce_string(rest.front().cloned().unwrap_or(Value::Nil))?
                     .map(|value| value.to_string_lossy())
                     .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("none"))
-            } else { None };
+            } else {
+                None
+            };
             let target_guid = match target_token.as_deref() {
-                Some(token) => match model.unit(token).filter(|unit| unit.exists && unit.guid != 0) {
+                Some(token) => match model
+                    .unit(token)
+                    .filter(|unit| unit.exists && unit.guid != 0)
+                {
                     Some(unit) => Some(unit.guid),
                     None => return Ok(()),
                 },
@@ -873,19 +880,23 @@ mod tests {
         s.set_action(3, Some(slot(super::ACTION_KIND_MACRO, 5)));
         s.set_action(4, Some(slot(super::ACTION_KIND_SPELL, 3009)));
         assert_eq!(
-            s.eval::<(String, i64, String)>("return GetActionInfo(1)").unwrap(),
+            s.eval::<(String, i64, String)>("return GetActionInfo(1)")
+                .unwrap(),
             ("spell".into(), 133, "spell".into())
         );
         assert_eq!(
-            s.eval::<(String, i64, String)>("return GetActionInfo(2)").unwrap(),
+            s.eval::<(String, i64, String)>("return GetActionInfo(2)")
+                .unwrap(),
             ("item".into(), 117, "".into())
         );
         assert_eq!(
-            s.eval::<(String, i64, String)>("return GetActionInfo(3)").unwrap(),
+            s.eval::<(String, i64, String)>("return GetActionInfo(3)")
+                .unwrap(),
             ("macro".into(), 5, "".into())
         );
         assert_eq!(
-            s.eval::<(String, i64, String)>("return GetActionInfo(4)").unwrap(),
+            s.eval::<(String, i64, String)>("return GetActionInfo(4)")
+                .unwrap(),
             ("spell".into(), 3009, "pet".into())
         );
         assert_eq!(
@@ -1255,8 +1266,9 @@ mod tests {
                 ..Default::default()
             }),
         );
-        let (start, duration, enabled) =
-            s.eval::<(f64, f64, i64)>("return GetActionCooldown(1)").unwrap();
+        let (start, duration, enabled) = s
+            .eval::<(f64, f64, i64)>("return GetActionCooldown(1)")
+            .unwrap();
         assert!((start - 100.0).abs() < 1e-3);
         assert_eq!(duration, 15.0);
         assert_eq!(enabled, 1);
@@ -1273,8 +1285,9 @@ mod tests {
                 ..Default::default()
             }),
         );
-        let (start, duration, enabled) =
-            s.eval::<(f64, f64, i64)>("return GetActionCooldown(1)").unwrap();
+        let (start, duration, enabled) = s
+            .eval::<(f64, f64, i64)>("return GetActionCooldown(1)")
+            .unwrap();
         assert_eq!((start, duration, enabled), (0.0, 0.0, 0));
     }
 }

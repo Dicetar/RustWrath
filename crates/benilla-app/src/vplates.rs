@@ -231,7 +231,10 @@ pub(crate) fn wrath_plate_gate(
     if !mode.enemies && !friendly || !mode.friends && friendly {
         return false;
     }
-    if matches!(unit.creature_type, CREATURE_TYPE_CRITTER | CREATURE_TYPE_NON_COMBAT_PET) {
+    if matches!(
+        unit.creature_type,
+        CREATURE_TYPE_CRITTER | CREATURE_TYPE_NON_COMBAT_PET
+    ) {
         return false;
     }
     if unit.dynflag_dead && !unit.raid_member_or_pet {

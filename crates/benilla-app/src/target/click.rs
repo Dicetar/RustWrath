@@ -1069,7 +1069,9 @@ impl Dispatch<'_, '_> {
                         // `ui_dispatch_id`, so a nearby retained click can never be read as its
                         // cause.
                         source.begin_with_npc_unlinked(
-                            self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+                            self.wrath_view
+                                .as_ref()
+                                .map(|v| (v.session_epoch, v.world_generation)),
                             None,
                             Some(guid),
                             crate::quest_trace::Operation::Open,
@@ -2974,7 +2976,9 @@ mod tests {
             let casts: Vec<_> = rx
                 .try_iter()
                 .filter_map(|c| match c {
-                    ClientCommand::CastSpell { spell_id, target, .. } => Some((spell_id, target)),
+                    ClientCommand::CastSpell {
+                        spell_id, target, ..
+                    } => Some((spell_id, target)),
                     _ => None,
                 })
                 .collect();

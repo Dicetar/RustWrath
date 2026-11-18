@@ -39,12 +39,7 @@ fn on_world_states(In(ev): In<SessionEvent>, mut states: ResMut<WorldStates>) {
 /// `SMSG_WEATHER`: the zone's weather change, `instant` on zone entry, a ramp otherwise. The wire
 /// carries a `Weather.dbc` id whose row names the effect type and the ambience kit, never a sound
 /// id; that field is a 1.12 layout.
-fn weather(
-    weather_id: u32,
-    grade: f32,
-    instant: bool,
-    out: &mut MessageWriter<WeatherMessage>,
-) {
+fn weather(weather_id: u32, grade: f32, instant: bool, out: &mut MessageWriter<WeatherMessage>) {
     out.write(WeatherMessage {
         weather_id,
         grade,

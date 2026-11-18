@@ -742,10 +742,7 @@ mod tests {
 
     #[test]
     fn literal_braces_and_punctuation_escapes_translate_like_pcre() {
-        let f = TextFilter::new(
-            &list(&[r"{性}交", r"\<a\/b\>", r"x{2,3}y", r"[\/z]+"]),
-            &[],
-        );
+        let f = TextFilter::new(&list(&[r"{性}交", r"\<a\/b\>", r"x{2,3}y", r"[\/z]+"]), &[]);
         assert_eq!(f.profanity_len(), 4);
         assert_eq!(f.profanity.set.len(), 4);
 

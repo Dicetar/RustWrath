@@ -109,7 +109,9 @@ fn on_complete(
             .template(c.quest_id, Ask::Event(&net_commands))
             .is_some_and(|t| t.next_quest_in_chain != 0);
         if let Some(trace) = &trace {
-            let scope = wrath.as_ref().map(|v| (v.session_epoch, v.world_generation));
+            let scope = wrath
+                .as_ref()
+                .map(|v| (v.session_epoch, v.world_generation));
             let reward_items = c
                 .items
                 .iter()

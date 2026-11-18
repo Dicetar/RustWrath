@@ -1040,7 +1040,10 @@ mod move_mode_tests {
         assert_eq!(player.pos, pos);
         assert_eq!(player.face_yaw, 0.75);
         assert_eq!(player.model_yaw, 0.75);
-        assert!(!player.reseat, "a correction must not re-read the old body pose");
+        assert!(
+            !player.reseat,
+            "a correction must not re-read the old body pose"
+        );
         assert_eq!(player.modes.wire_flags(), f::WATER_WALKING);
         // A real handover already requested elsewhere must still be honored.
         player.reseat = true;

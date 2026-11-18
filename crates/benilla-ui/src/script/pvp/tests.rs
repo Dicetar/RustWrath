@@ -2,8 +2,8 @@
 //! is written to fail against the natural reading.
 
 use super::*;
-use crate::script::{UiScript, UnitState};
 use crate::script::UiTarget;
+use crate::script::{UiScript, UnitState};
 
 /// Every number distinct, so a swapped return cannot pass: the tens digit is the block (session
 /// 1x to lifetime 5x), the units digit the position in it.
@@ -122,10 +122,8 @@ fn the_reference_destructuring_lands_every_value_in_the_right_slot() {
         (11, 13)
     );
     assert_eq!(
-        s.eval::<(i64, i64)>(
-            "local hk, honor = GetPVPYesterdayStats() return hk, honor"
-        )
-        .unwrap(),
+        s.eval::<(i64, i64)>("local hk, honor = GetPVPYesterdayStats() return hk, honor")
+            .unwrap(),
         (21, 23)
     );
     assert_eq!(
@@ -176,9 +174,7 @@ fn a_lifetime_rank_below_five_is_reported_as_zero() {
     }));
     assert_eq!(s.arity("GetPVPLifetimeStats()").unwrap(), 2);
     assert!(s
-        .eval::<bool>(
-            "local _, highest = GetPVPLifetimeStats() return type(highest) == 'number'"
-        )
+        .eval::<bool>("local _, highest = GetPVPLifetimeStats() return type(highest) == 'number'")
         .unwrap());
 }
 
@@ -990,7 +986,8 @@ fn a_vanilla_vm_keeps_the_donor_twelve_value_shape() {
     s.set_inspect_honor(Some(inspect_state()));
     assert_eq!(s.arity("GetInspectHonorData()").unwrap(), 12);
     assert_eq!(
-        s.eval::<Vec<i64>>("return {GetInspectHonorData()}").unwrap(),
+        s.eval::<Vec<i64>>("return {GetInspectHonorData()}")
+            .unwrap(),
         [61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 12]
     );
 }

@@ -900,11 +900,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // (donor) or +64 (3.3.5; `ContainerFrame_Scripts.cpp:48-63`). So the keyring -2 → 17, the
     // backpack 0 → 19, bags 1-4 → 20-23 and bank bags 5-10/5-11 → 64-69/68-74, with no special
     // case and no range check.
-    let wrath = lua
-        .app_data_ref::<Model>()
-        .expect("model app_data")
-        .target
-        == super::UiTarget::Wrath335;
+    let wrath =
+        lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335;
     lua.globals().set(
         "ContainerIDToInventoryID",
         lua.create_function(move |lua, id: Value| {
@@ -941,10 +938,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             lua.create_function(move |lua, (region, container): (Value, Value)| {
                 let rh = crate::script::region::this_texture(lua, &region)?;
                 let container = i64::from(binding_abi::number_arg(lua, container, usage)?);
-                let wrath = lua
-                    .app_data_ref::<Model>()
-                    .expect("model app_data")
-                    .target
+                let wrath = lua.app_data_ref::<Model>().expect("model app_data").target
                     == super::UiTarget::Wrath335;
                 if container >= (if wrath { 12 } else { 11 }) {
                     return Err(mlua::Error::runtime(invalid));
@@ -1103,7 +1097,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 for (i, slot) in free.into_iter().enumerate() {
                     out.set(i + 1, slot)?;
                 }
-                Ok(MultiValue::from_vec(vec![Value::Table(out), Value::Integer(0)]))
+                Ok(MultiValue::from_vec(vec![
+                    Value::Table(out),
+                    Value::Integer(0),
+                ]))
             })?,
         )?;
         lua.globals().set(
@@ -1205,7 +1202,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.globals().set(
             "GetContainerItemDurability",
             lua.create_function(|lua, (bag, slot): (Value, Value)| {
-                let key = container_key(lua, bag, slot, "Usage: GetContainerItemDurability(index, slot)")?;
+                let key = container_key(
+                    lua,
+                    bag,
+                    slot,
+                    "Usage: GetContainerItemDurability(index, slot)",
+                )?;
                 let pair = {
                     let model = lua.app_data_ref::<Model>().expect("model app_data");
                     key.and_then(|(bag, slot)| model.bag_slot(bag, slot)?.durability)
@@ -3162,7 +3164,10 @@ mod tests {
                 slots,
             }),
         );
-        assert_eq!(s.eval::<i64>("return GetContainerNumSlots(11)").unwrap(), 30);
+        assert_eq!(
+            s.eval::<i64>("return GetContainerNumSlots(11)").unwrap(),
+            30
+        );
         assert_eq!(
             s.eval::<String>("return GetBagName(11)").unwrap(),
             "Bank Bag 7"

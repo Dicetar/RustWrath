@@ -590,7 +590,10 @@ mod tests {
 
         let sorts_before = bar.book_sorts;
         assert!(pet_spell_learned(3010, &mut bar));
-        assert!(!pet_spell_learned(3010, &mut bar), "duplicate learn is ignored");
+        assert!(
+            !pet_spell_learned(3010, &mut bar),
+            "duplicate learn is ignored"
+        );
         assert_eq!(bar.book_sorts, sorts_before.wrapping_add(1));
         assert_eq!(bar.spells.spells.len(), 1);
         assert_eq!(bar.spells.spells[0].action(), 3010);
@@ -606,6 +609,9 @@ mod tests {
         assert_eq!(bar.bar_signals, signals_before.wrapping_add(1));
 
         bar.clear();
-        assert!(bar.pet_guids.is_empty(), "teardown clears controlled pet guids");
+        assert!(
+            bar.pet_guids.is_empty(),
+            "teardown clears controlled pet guids"
+        );
     }
 }

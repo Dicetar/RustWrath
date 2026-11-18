@@ -479,7 +479,12 @@ pub(super) fn item_link(item_id: u32, name: &str, quality: u32) -> String {
 }
 
 /// Template-only links have no instance fields, in the selected client's payload layout.
-pub(super) fn item_link_for_target(target: super::UiTarget, item_id: u32, name: &str, quality: u32) -> String {
+pub(super) fn item_link_for_target(
+    target: super::UiTarget,
+    item_id: u32,
+    name: &str,
+    quality: u32,
+) -> String {
     match target {
         super::UiTarget::Vanilla112 => item_link(item_id, name, quality),
         super::UiTarget::Wrath335 => wrath::ItemLink::template(item_id).hyperlink(name, quality),
@@ -1107,7 +1112,8 @@ mod get_item_info_tests {
         assert_eq!(s.eval::<i64>("return GetItemCount(0)").unwrap(), 0);
         assert_eq!(s.eval::<i64>("return GetItemCount(99999)").unwrap(), 0);
         assert_eq!(
-            s.eval::<i64>("return GetItemCount('Uncached Item')").unwrap(),
+            s.eval::<i64>("return GetItemCount('Uncached Item')")
+                .unwrap(),
             0
         );
     }

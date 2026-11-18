@@ -7,8 +7,8 @@
 //! The raw keys run through the binding dispatch's typing gate ([`UiKeyboardCapture`]): a focused
 //! EditBox eats every key and a shown keyboard frame eats the key it consumed.
 
-use bevy::prelude::*;
 use benilla_combat_core::{ActionId, ActionKind, ActionRefusal, EngineEvent, Kit};
+use bevy::prelude::*;
 
 use super::config::{SoulsBind, SoulsFeatures, SoulsKey};
 use super::{
@@ -19,8 +19,7 @@ use crate::bindings::{BindingsState, Input};
 use crate::combat_kit::{resolve_press, PlayerKit, Press, STAMINA_SCALE};
 use crate::combat_mode::CombatModeView;
 use crate::combat_playback::{
-    play_clip, play_starts, stock_press, submit_and_play, ActionPhase, CombatPlaybackState,
-    Defense,
+    play_clip, play_starts, stock_press, submit_and_play, ActionPhase, CombatPlaybackState, Defense,
 };
 use crate::combat_profiles::CombatProfiles;
 use crate::creature_anim::{move_flags, ActionAnim, PlaySeq};
@@ -274,7 +273,10 @@ pub(super) fn in_iframes(playback: &CombatPlaybackState, profiles: &CombatProfil
 /// there is deflected, and an enemy strike judged there is a parry ([`super::server`]).
 pub(super) fn in_parry_window(kit: &Kit, playback: &CombatPlaybackState) -> bool {
     running_action(kit, playback).is_some_and(|(_, action, frame)| {
-        action.name == "Parry" && action.iframes.is_some_and(|window| in_window(frame, window))
+        action.name == "Parry"
+            && action
+                .iframes
+                .is_some_and(|window| in_window(frame, window))
     })
 }
 
@@ -340,7 +342,9 @@ pub(super) fn souls_input(
     let guarded = std::mem::take(&mut playback.guarded_hits);
     if guarded > 0 {
         if let Some(engine) = playback.engine.as_mut() {
-            let cost = GUARD_HIT_POINTS.saturating_mul(scale).saturating_mul(guarded);
+            let cost = GUARD_HIT_POINTS
+                .saturating_mul(scale)
+                .saturating_mul(guarded);
             let stamina = engine.stamina();
             if stamina <= cost {
                 engine.set_stamina(0, now);
@@ -366,13 +370,23 @@ pub(super) fn souls_input(
     }
     if poised > 0 && features.poise {
         let armoured = kit_now.is_some_and(|kit| hyperarmor(kit, &playback));
-        let factor = if armoured { HYPERARMOR_POISE_FACTOR } else { 1.0 };
+        let factor = if armoured {
+            HYPERARMOR_POISE_FACTOR
+        } else {
+            1.0
+        };
         let left = souls.poise.unwrap_or(POISE_MAX) - POISE_DAMAGE_PER_HIT * factor * poised as f32;
         souls.poise_reset_at = t + POISE_RESET_SECONDS;
         if left <= 0.0 {
             souls.poise = None;
             info!("souls: poise broken");
-            stagger(&mut playback, entity, &profiles, &mut play_seq, &mut actions);
+            stagger(
+                &mut playback,
+                entity,
+                &profiles,
+                &mut play_seq,
+                &mut actions,
+            );
         } else {
             souls.poise = Some(left);
         }
@@ -489,7 +503,10 @@ pub(super) fn souls_input(
         souls.crouched = false;
     } else if input.just_pressed(binds.crouch) {
         souls.crouched = !souls.crouched;
-        info!("souls: {}", if souls.crouched { "crouched" } else { "stood" });
+        info!(
+            "souls: {}",
+            if souls.crouched { "crouched" } else { "stood" }
+        );
     }
 
     // The jump attack: a light, heavy or (paired) left press in the air is held until the body
@@ -502,7 +519,11 @@ pub(super) fn souls_input(
     if !features.jump_attacks || (!airborne && !landed) {
         souls.air_attack = None;
     }
-    let landing = if landed { souls.air_attack.take() } else { None };
+    let landing = if landed {
+        souls.air_attack.take()
+    } else {
+        None
+    };
 
     // The presses.
     let active = playback.engine.as_ref().and_then(|engine| engine.active());
@@ -549,8 +570,14 @@ pub(super) fn souls_input(
         None
     };
     if let Some(action) = request {
-        let events =
-            submit_and_play(&mut playback, action, entity, &profiles, &mut play_seq, &mut actions);
+        let events = submit_and_play(
+            &mut playback,
+            action,
+            entity,
+            &profiles,
+            &mut play_seq,
+            &mut actions,
+        );
         let refused = events.iter().any(|event| {
             matches!(
                 event,
@@ -648,7 +675,10 @@ fn release_charge(
     };
     match engine.interrupt(now) {
         Ok(_) if engine.active().is_none() => {
-            let refund = engine.table().get(charged).map_or(0, |spec| spec.stamina_cost);
+            let refund = engine
+                .table()
+                .get(charged)
+                .map_or(0, |spec| spec.stamina_cost);
             let bar = engine.stamina().saturating_add(refund);
             engine.set_stamina(bar, now);
         }
@@ -680,7 +710,9 @@ mod tests {
             airborne: false,
             stamina: Milli::ZERO,
             hits: Vec::new(),
-            charge: name.ends_with("Charge").then_some((Milli(5_000), Milli(24_000))),
+            charge: name
+                .ends_with("Charge")
+                .then_some((Milli(5_000), Milli(24_000))),
             no_turn: Vec::new(),
             turn: Vec::new(),
             motion: Vec::new(),
@@ -713,15 +745,30 @@ mod tests {
     fn heavy_press_resolves_like_elden_ring() {
         let kit = kit();
         let on = SoulsFeatures::default();
-        assert_eq!(heavy_action(&kit, None, false, false, &on), Some(ActionId(115)));
-        assert_eq!(heavy_action(&kit, Some(ActionId(115)), false, false, &on), Some(ActionId(117)));
-        assert_eq!(heavy_action(&kit, None, true, false, &on), Some(ActionId(111)));
-        assert_eq!(heavy_action(&kit, None, false, true, &on), Some(ActionId(119)));
+        assert_eq!(
+            heavy_action(&kit, None, false, false, &on),
+            Some(ActionId(115))
+        );
+        assert_eq!(
+            heavy_action(&kit, Some(ActionId(115)), false, false, &on),
+            Some(ActionId(117))
+        );
+        assert_eq!(
+            heavy_action(&kit, None, true, false, &on),
+            Some(ActionId(111))
+        );
+        assert_eq!(
+            heavy_action(&kit, None, false, true, &on),
+            Some(ActionId(119))
+        );
         let no_charge = SoulsFeatures {
             charge: false,
             ..on
         };
-        assert_eq!(heavy_action(&kit, None, false, false, &no_charge), Some(ActionId(116)));
+        assert_eq!(
+            heavy_action(&kit, None, false, false, &no_charge),
+            Some(ActionId(116))
+        );
         assert_eq!(
             heavy_action(&kit, Some(ActionId(116)), false, false, &no_charge),
             Some(ActionId(118))
@@ -731,7 +778,10 @@ mod tests {
             guard_counter: false,
             ..on
         };
-        assert_eq!(heavy_action(&kit, None, true, true, &no_run), Some(ActionId(115)));
+        assert_eq!(
+            heavy_action(&kit, None, true, true, &no_run),
+            Some(ActionId(115))
+        );
         assert_eq!(uncharged(&kit, ActionId(117)), Some(ActionId(118)));
         assert_eq!(uncharged(&kit, ActionId(118)), None);
     }

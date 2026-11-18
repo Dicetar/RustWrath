@@ -89,8 +89,12 @@ pub(super) fn mouse_over(
     scale: f32,
     [top, bottom, left, right]: [f64; 4],
 ) -> bool {
-    let Some(rect) = rect else { return false; };
-    if scale == 0.0 { return false; }
+    let Some(rect) = rect else {
+        return false;
+    };
+    if scale == 0.0 {
+        return false;
+    }
     let (x, y) = super::pointer::cursor_position(model);
     let (x, y) = (x / f64::from(scale), y / f64::from(scale));
     let units = model.layout_units();

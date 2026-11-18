@@ -93,9 +93,9 @@ fn catalog_from_bytes(bytes: &[u8], locale: crate::Locale) -> Result<LockTypeCat
     let (columns, cursor_column) = match field_count(bytes) {
         Some(LOCK_TYPE_FIELDS) => (LOCK_TYPE_FIELDS, CURSOR_NAME_FIELD),
         Some(WRATH_LOCK_TYPE_FIELDS) => (WRATH_LOCK_TYPE_FIELDS, WRATH_CURSOR_NAME_FIELD),
-        Some(columns) => bail!(
-            "unsupported LockType.dbc layout: {columns} fields (expected 29 or 53)"
-        ),
+        Some(columns) => {
+            bail!("unsupported LockType.dbc layout: {columns} fields (expected 29 or 53)")
+        }
         None => bail!("parsing LockType.dbc header: truncated field count"),
     };
     let rs = parse(bytes, schema(columns, cursor_column), "LockType.dbc")?;

@@ -2050,7 +2050,11 @@ mod tests {
         assert_eq!(resolve(&mut app, "boss4"), None);
 
         app.insert_resource(WrathUnitTokens::default());
-        assert_eq!(resolve(&mut app, "focus"), None, "vanilla refuses the token");
+        assert_eq!(
+            resolve(&mut app, "focus"),
+            None,
+            "vanilla refuses the token"
+        );
     }
 
     /// `partypetN` and `raidpetN` through the one resolver (`0x515970`): the pet the member's

@@ -57,9 +57,9 @@ pub fn load_spell_focus_catalog(chain: &mut Chain) -> Result<SpellFocusCatalog> 
     let columns = match field_count(&bytes) {
         Some(SPELL_FOCUS_FIELDS) => SPELL_FOCUS_FIELDS,
         Some(WRATH_SPELL_FOCUS_FIELDS) => WRATH_SPELL_FOCUS_FIELDS,
-        Some(columns) => bail!(
-            "unsupported SpellFocusObject.dbc layout: {columns} fields (expected 10 or 18)"
-        ),
+        Some(columns) => {
+            bail!("unsupported SpellFocusObject.dbc layout: {columns} fields (expected 10 or 18)")
+        }
         None => bail!("parsing SpellFocusObject.dbc header: truncated field count"),
     };
     let rs = parse(&bytes, schema(columns), "SpellFocusObject.dbc")?;

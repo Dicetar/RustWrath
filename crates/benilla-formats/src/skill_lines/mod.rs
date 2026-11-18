@@ -381,7 +381,13 @@ impl SkillLineCatalog {
     /// missing class mask from their line; armor/weapon skills (6/8) require an explicit mask.
     /// Race restrictions are intentionally absent from this extension's fallback.
     pub fn class_training_lines(&self) -> HashMap<u32, Vec<(u16, u32)>> {
-        let class_line = |id| id != 777 && self.lines.get(&id).is_some_and(|line| line.category_id == 7);
+        let class_line = |id| {
+            id != 777
+                && self
+                    .lines
+                    .get(&id)
+                    .is_some_and(|line| line.category_id == 7)
+        };
         let mut line_masks = HashMap::<u32, u16>::new();
         for row in self.sla_rows.values().flatten() {
             if class_line(row.info.skill_id) {
@@ -394,11 +400,19 @@ impl SkillLineCatalog {
                 let line = row.info.skill_id;
                 let mut mask = (row.class_mask & 1535) as u16;
                 if class_line(line) {
-                    if mask == 0 { mask = line_masks.get(&line).copied().unwrap_or(0); }
-                } else if !self.lines.get(&line).is_some_and(|line| matches!(line.category_id, 6 | 8)) {
+                    if mask == 0 {
+                        mask = line_masks.get(&line).copied().unwrap_or(0);
+                    }
+                } else if !self
+                    .lines
+                    .get(&line)
+                    .is_some_and(|line| matches!(line.category_id, 6 | 8))
+                {
                     continue;
                 }
-                if mask != 0 { candidates.entry(spell).or_default().push((mask, line)); }
+                if mask != 0 {
+                    candidates.entry(spell).or_default().push((mask, line));
+                }
             }
         }
         for rows in candidates.values_mut() {
@@ -704,12 +718,14 @@ pub fn load_skill_line_catalog(chain: &mut Chain) -> Result<SkillLineCatalog> {
     // AzerothCore DBCStructure.h::SkillLineEntry: names at 3, descriptions at 20, icon at 37.
     let (columns, description_column, icon_column) = match field_count(&sl_bytes) {
         Some(SKILL_LINE_FIELDS) => (SKILL_LINE_FIELDS, COL_SL_DESC, COL_SL_SPELL_ICON),
-        Some(WRATH_SKILL_LINE_FIELDS) => {
-            (WRATH_SKILL_LINE_FIELDS, WRATH_COL_SL_DESC, WRATH_COL_SL_SPELL_ICON)
-        }
-        Some(columns) => bail!(
-            "unsupported SkillLine.dbc layout: {columns} fields (expected 22 or 56)"
+        Some(WRATH_SKILL_LINE_FIELDS) => (
+            WRATH_SKILL_LINE_FIELDS,
+            WRATH_COL_SL_DESC,
+            WRATH_COL_SL_SPELL_ICON,
         ),
+        Some(columns) => {
+            bail!("unsupported SkillLine.dbc layout: {columns} fields (expected 22 or 56)")
+        }
         None => bail!("parsing SkillLine.dbc header: truncated field count"),
     };
     let sl_set = parse(
@@ -743,15 +759,14 @@ pub fn load_skill_line_catalog(chain: &mut Chain) -> Result<SkillLineCatalog> {
         .context("reading SkillLineAbility.dbc")?;
     // The 3.3.5 row retains the two CharacterPoints words at 12/13 after removing Abandonable.
     let (columns, train_points_column) = match field_count(&sla_bytes) {
-        Some(SKILL_LINE_ABILITY_FIELDS) => {
-            (SKILL_LINE_ABILITY_FIELDS, COL_SLA_REQ_TRAIN_POINTS)
-        }
-        Some(WRATH_SKILL_LINE_ABILITY_FIELDS) => {
-            (WRATH_SKILL_LINE_ABILITY_FIELDS, WRATH_COL_SLA_REQ_TRAIN_POINTS)
-        }
-        Some(columns) => bail!(
-            "unsupported SkillLineAbility.dbc layout: {columns} fields (expected 15 or 14)"
+        Some(SKILL_LINE_ABILITY_FIELDS) => (SKILL_LINE_ABILITY_FIELDS, COL_SLA_REQ_TRAIN_POINTS),
+        Some(WRATH_SKILL_LINE_ABILITY_FIELDS) => (
+            WRATH_SKILL_LINE_ABILITY_FIELDS,
+            WRATH_COL_SLA_REQ_TRAIN_POINTS,
         ),
+        Some(columns) => {
+            bail!("unsupported SkillLineAbility.dbc layout: {columns} fields (expected 15 or 14)")
+        }
         None => bail!("parsing SkillLineAbility.dbc header: truncated field count"),
     };
     let sla_set = parse(

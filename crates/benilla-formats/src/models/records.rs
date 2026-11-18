@@ -73,19 +73,24 @@ fn track_first_offset(bytes: &[u8], track: usize, stride: usize) -> Option<usize
             if bytes.u16_at(track + 2)? == u16::MAX {
                 let sequences = bytes.u32_at(0x20)? as usize;
                 if slot >= bytes.u32_at(0x1c)? as usize
-                    || bytes.u32_at(sequences.checked_add(slot.checked_mul(64)?)? + 12)? & 0x20 == 0 {
+                    || bytes.u32_at(sequences.checked_add(slot.checked_mul(64)?)? + 12)? & 0x20 == 0
+                {
                     continue;
                 }
             }
             let entry = table + slot * 8;
-            if bytes.u32_at(entry)? == 0 { continue; }
+            if bytes.u32_at(entry)? == 0 {
+                continue;
+            }
             let offset = bytes.u32_at(entry + 4)? as usize;
             bytes.get(offset..offset.checked_add(stride)?)?;
             return Some(offset);
         }
         None
     } else {
-        if bytes.u32_at(track + 0x14)? == 0 { return None; }
+        if bytes.u32_at(track + 0x14)? == 0 {
+            return None;
+        }
         let offset = bytes.u32_at(track + 0x18)? as usize;
         bytes.get(offset..offset.checked_add(stride)?)?;
         Some(offset)
@@ -135,8 +140,11 @@ fn track_first_quat(bytes: &[u8], track: usize) -> Option<[f32; 4]> {
         let mut q = [0.0f32; 4];
         for (i, value) in q.iter_mut().enumerate() {
             let raw = bytes.u16_at(ofs + i * 2)? as i16;
-            *value = (if raw < 0 { f32::from(raw) + 32768.0 }
-                else { f32::from(raw) - 32767.0 }) / 32767.0;
+            *value = (if raw < 0 {
+                f32::from(raw) + 32768.0
+            } else {
+                f32::from(raw) - 32767.0
+            }) / 32767.0;
         }
         let norm = q.iter().map(|v| v * v).sum::<f32>().sqrt();
         return (norm > 1e-8).then(|| q.map(|v| v / norm));
@@ -155,7 +163,11 @@ fn track_first_quat(bytes: &[u8], track: usize) -> Option<[f32; 4]> {
 /// root's orientation), parent `i16@8`, rotation `@0x28`. Rotation animation is not applied.
 fn bone_z_axis(bytes: &[u8], bone: i16) -> [f32; 3] {
     let wrath = bytes.u32_at(4) == Some(264);
-    let (header, stride, rotation) = if wrath { (0x2c, 88, 36) } else { (0x34, 0x6c, 0x28) };
+    let (header, stride, rotation) = if wrath {
+        (0x2c, 88, 36)
+    } else {
+        (0x34, 0x6c, 0x28)
+    };
     let (Some(count), Some(ofs)) = (bytes.u32_at(header), bytes.u32_at(header + 4)) else {
         return [0.0, 0.0, 1.0];
     };
@@ -168,7 +180,9 @@ fn bone_z_axis(bytes: &[u8], bone: i16) -> [f32; 3] {
         if idx < 0 || idx as usize >= count {
             break;
         }
-        let Some(rec) = ofs.checked_add(idx as usize * stride) else { break };
+        let Some(rec) = ofs.checked_add(idx as usize * stride) else {
+            break;
+        };
         if let Some(q) = track_first_quat(bytes, rec + rotation) {
             chain.push(q);
         }
@@ -202,7 +216,15 @@ fn read_m2_light(bytes: &[u8], rec: usize) -> Option<M2Light> {
             }
         }
     }
-    let clamp_rgb = |rgb: [f32; 3]| rgb.map(|c| if c.is_finite() { c.clamp(0.0, 1.0) } else { 1.0 });
+    let clamp_rgb = |rgb: [f32; 3]| {
+        rgb.map(|c| {
+            if c.is_finite() {
+                c.clamp(0.0, 1.0)
+            } else {
+                1.0
+            }
+        })
+    };
     let clamp_intensity = |v: f32, default: f32| {
         if v.is_finite() {
             v.clamp(0.0, 16.0)
@@ -227,16 +249,31 @@ fn read_m2_light(bytes: &[u8], rec: usize) -> Option<M2Light> {
         attenuation_end: track_first_f32(bytes, track(5)).unwrap_or(0.0),
         visibility_off: track_first_u8(bytes, track(6)) == Some(0),
     };
-    let finite = light.position.iter().chain(&light.ambient_color).chain(&light.diffuse_color)
-        .chain(&light.bone_z).copied().chain([light.ambient_intensity, light.diffuse_intensity,
-            light.attenuation_start, light.attenuation_end]).all(f32::is_finite);
+    let finite = light
+        .position
+        .iter()
+        .chain(&light.ambient_color)
+        .chain(&light.diffuse_color)
+        .chain(&light.bone_z)
+        .copied()
+        .chain([
+            light.ambient_intensity,
+            light.diffuse_intensity,
+            light.attenuation_start,
+            light.attenuation_end,
+        ])
+        .all(f32::is_finite);
     (finite && (!wrath || light.light_type <= 1)).then_some(light)
 }
 
 /// The M2 lights array (MD20 `count@0x11c`, `ofs@0x120`, stride `0xd4`).
 pub fn parse_m2_lights(bytes: &[u8]) -> Vec<M2Light> {
     // 12340 M2Data.h: lights @0x108, seven 20-byte tracks after the 16-byte light head.
-    let (header, stride) = if bytes.u32_at(4) == Some(264) { (0x108, 156) } else { (0x11c, 0xd4) };
+    let (header, stride) = if bytes.u32_at(4) == Some(264) {
+        (0x108, 156)
+    } else {
+        (0x11c, 0xd4)
+    };
     let (Some(count), Some(ofs)) = (bytes.u32_at(header), bytes.u32_at(header + 4)) else {
         return Vec::new();
     };
@@ -381,14 +418,27 @@ mod tests {
         for (i, value) in [1.0f32, 2.0, 3.0].iter().enumerate() {
             b[324 + i * 4..328 + i * 4].copy_from_slice(&value.to_le_bytes());
         }
-        for (i, values) in [[0.2f32, 0.3, 0.4], [0.5, 0.0, 0.0], [0.8, 0.7, 0.6],
-            [2.0, 0.0, 0.0], [3.0, 0.0, 0.0], [9.0, 0.0, 0.0], [0.0; 3]]
-            .iter().enumerate() {
+        for (i, values) in [
+            [0.2f32, 0.3, 0.4],
+            [0.5, 0.0, 0.0],
+            [0.8, 0.7, 0.6],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [9.0, 0.0, 0.0],
+            [0.0; 3],
+        ]
+        .iter()
+        .enumerate()
+        {
             let track = 336 + i * 20;
             let table = 512 + i * 8;
             let payload = 600 + i * 16;
-            for (at, value) in [(track + 12, 1), (track + 16, table as u32),
-                (table, 1), (table + 4, payload as u32)] {
+            for (at, value) in [
+                (track + 12, 1),
+                (track + 16, table as u32),
+                (table, 1),
+                (table + 4, payload as u32),
+            ] {
                 b[at..at + 4].copy_from_slice(&value.to_le_bytes());
             }
             for (component, value) in values.iter().enumerate() {
@@ -402,7 +452,10 @@ mod tests {
         assert_eq!(light.position, [1.0, 2.0, 3.0]);
         assert_eq!(light.ambient_color, [0.2, 0.3, 0.4]);
         assert_eq!(light.diffuse_color, [0.8, 0.7, 0.6]);
-        assert_eq!((light.ambient_intensity, light.diffuse_intensity), (0.5, 2.0));
+        assert_eq!(
+            (light.ambient_intensity, light.diffuse_intensity),
+            (0.5, 2.0)
+        );
         assert_eq!((light.attenuation_start, light.attenuation_end), (3.0, 9.0));
         assert!(light.visibility_off);
     }

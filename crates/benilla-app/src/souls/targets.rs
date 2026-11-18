@@ -16,8 +16,8 @@
 
 use std::time::Duration;
 
-use bevy::prelude::*;
 use benilla_combat_core::{KitHit, Milli};
+use bevy::prelude::*;
 
 use super::drive::yaw_toward;
 use super::input::KeyRead;
@@ -68,7 +68,12 @@ pub(super) struct SwingTrack {
 type Units<'w, 's> = Query<
     'w,
     's,
-    (Entity, &'static Guid, &'static ObjectStore, &'static GlobalTransform),
+    (
+        Entity,
+        &'static Guid,
+        &'static ObjectStore,
+        &'static GlobalTransform,
+    ),
     Without<SelfPlayer>,
 >;
 
@@ -140,12 +145,13 @@ pub(super) fn toggle_lock(
         info!("souls: lock-on released");
         return;
     }
-    let selected = selection.target.and_then(|entity| units.get(entity).ok()).filter(
-        |(_, guid, store, at)| {
+    let selected = selection
+        .target
+        .and_then(|entity| units.get(entity).ok())
+        .filter(|(_, guid, store, at)| {
             attackable(&relations, guid.0, store)
                 && horizontal(at.translation()) <= LOCK_ACQUIRE_YARDS
-        },
-    );
+        });
     let pick = selected.map(|(entity, ..)| entity).or_else(|| {
         let front = LOCK_FRONT_DEGREES.to_radians();
         units
@@ -225,7 +231,10 @@ pub(super) fn lock_follows_target(
         *memo = LockTargetMemo::default();
         return;
     }
-    let lock_guid = souls.lock.and_then(|entity| units.get(entity).ok()).map(|(guid, ..)| guid.0);
+    let lock_guid = souls
+        .lock
+        .and_then(|entity| units.get(entity).ok())
+        .map(|(guid, ..)| guid.0);
     let selected = select.selection().guid;
     match lock_sync(&memo, souls.lock, lock_guid, selected) {
         LockSync::Keep => {}
@@ -311,8 +320,7 @@ pub(super) fn resolve_hits(
         return;
     }
     let running = current_kit(&kit, &profiles).and_then(|kit| running_action(kit, &playback));
-    let Some((instance, action, frame)) =
-        running.filter(|(_, action, _)| !action.hits.is_empty())
+    let Some((instance, action, frame)) = running.filter(|(_, action, _)| !action.hits.is_empty())
     else {
         souls.swing = SwingTrack::default();
         return;
@@ -338,8 +346,8 @@ pub(super) fn resolve_hits(
                 continue;
             }
             let to = at.translation() - player.pos;
-            let distance = Vec2::new(to.x, to.z).length()
-                - store.0.unit_combat_reach().clamp(0.0, 3.0) * 0.5;
+            let distance =
+                Vec2::new(to.x, to.z).length() - store.0.unit_combat_reach().clamp(0.0, 3.0) * 0.5;
             if distance > reach
                 || to.y.abs() > HIT_HEIGHT_YARDS
                 || off_facing(yaw, to).abs() > arc
@@ -363,7 +371,9 @@ pub(super) fn resolve_hits(
             }
             if !link.reporting() && features.engage_on_hit && souls.engaged != Some(guid.0) {
                 if let Some(net) = net.as_deref() {
-                    let _ = net.0.send(crate::net::ClientCommand::AttackSwing { guid: guid.0 });
+                    let _ = net
+                        .0
+                        .send(crate::net::ClientCommand::AttackSwing { guid: guid.0 });
                     souls.engaged = Some(guid.0);
                 }
             }
@@ -429,24 +439,51 @@ mod tests {
 
     #[test]
     fn lock_and_target_follow_each_other() {
-        let (a, b) = (Entity::from_raw_u32(1).unwrap(), Entity::from_raw_u32(2).unwrap());
+        let (a, b) = (
+            Entity::from_raw_u32(1).unwrap(),
+            Entity::from_raw_u32(2).unwrap(),
+        );
         let step = |memo: (Option<Entity>, Option<u64>), lock, lock_guid, selected| {
-            let memo = LockTargetMemo { lock: memo.0, selected: memo.1 };
+            let memo = LockTargetMemo {
+                lock: memo.0,
+                selected: memo.1,
+            };
             lock_sync(&memo, lock, lock_guid, selected)
         };
         // A new lock on a unit that is not the target selects it; on the target, nothing to do.
-        assert_eq!(step((None, None), Some(a), Some(10), None), LockSync::Select);
-        assert_eq!(step((None, Some(10)), Some(a), Some(10), Some(10)), LockSync::Keep);
+        assert_eq!(
+            step((None, None), Some(a), Some(10), None),
+            LockSync::Select
+        );
+        assert_eq!(
+            step((None, Some(10)), Some(a), Some(10), Some(10)),
+            LockSync::Keep
+        );
         // A Tab while locked moves the lock; the same target standing does nothing.
-        assert_eq!(step((Some(a), Some(10)), Some(a), Some(10), Some(20)), LockSync::Follow);
-        assert_eq!(step((Some(a), Some(10)), Some(a), Some(10), Some(10)), LockSync::Keep);
+        assert_eq!(
+            step((Some(a), Some(10)), Some(a), Some(10), Some(20)),
+            LockSync::Follow
+        );
+        assert_eq!(
+            step((Some(a), Some(10)), Some(a), Some(10), Some(10)),
+            LockSync::Keep
+        );
         // A cleared target while locked releases (the system finds no unit to follow).
-        assert_eq!(step((Some(a), Some(10)), Some(a), Some(10), None), LockSync::Follow);
+        assert_eq!(
+            step((Some(a), Some(10)), Some(a), Some(10), None),
+            LockSync::Follow
+        );
         // A released lock leaves the target alone; no lock, a target change does nothing.
-        assert_eq!(step((Some(a), Some(10)), None, None, Some(10)), LockSync::Keep);
+        assert_eq!(
+            step((Some(a), Some(10)), None, None, Some(10)),
+            LockSync::Keep
+        );
         assert_eq!(step((None, Some(10)), None, None, Some(20)), LockSync::Keep);
         // A new lock and a new target in one frame: the lock wins.
-        assert_eq!(step((Some(a), Some(10)), Some(b), Some(30), Some(20)), LockSync::Select);
+        assert_eq!(
+            step((Some(a), Some(10)), Some(b), Some(30), Some(20)),
+            LockSync::Select
+        );
     }
 
     /// The blade's farthest end plus the capsule radius is the reach; its widest bearing, clamped,
@@ -469,12 +506,32 @@ mod tests {
     #[test]
     fn skipped_windows_are_caught_up() {
         let m = Milli;
-        assert!(window_reached(m(10_000), m(13_000), Some(m(9_000)), m(14_000)));
+        assert!(window_reached(
+            m(10_000),
+            m(13_000),
+            Some(m(9_000)),
+            m(14_000)
+        ));
         assert!(window_reached(m(10_000), m(13_000), None, m(11_000)));
         assert!(!window_reached(m(10_000), m(13_000), None, m(13_000)));
-        assert!(!window_reached(m(10_000), m(13_000), Some(m(13_000)), m(14_000)));
-        assert!(!window_reached(m(10_000), m(13_000), Some(m(8_000)), m(9_000)));
-        assert!(!window_reached(m(10_000), m(13_000), Some(m(11_000)), m(11_000)));
+        assert!(!window_reached(
+            m(10_000),
+            m(13_000),
+            Some(m(13_000)),
+            m(14_000)
+        ));
+        assert!(!window_reached(
+            m(10_000),
+            m(13_000),
+            Some(m(8_000)),
+            m(9_000)
+        ));
+        assert!(!window_reached(
+            m(10_000),
+            m(13_000),
+            Some(m(11_000)),
+            m(11_000)
+        ));
     }
 
     #[test]

@@ -235,7 +235,9 @@ fn read_mh2o(data: &[u8]) -> Result<Mh2oChunk> {
                     .bytes_at(exists_at, bytes.max(8))
                     .ok_or(Error::Truncated("MH2O exists bitmap"))?;
                 Some(u64::from_le_bytes(
-                    raw[..8].try_into().map_err(|_| Error::Truncated("MH2O exists bitmap"))?,
+                    raw[..8]
+                        .try_into()
+                        .map_err(|_| Error::Truncated("MH2O exists bitmap"))?,
                 ))
             };
             let vertex_count = (usize::from(width) + 1) * (usize::from(height) + 1);
@@ -246,8 +248,7 @@ fn read_mh2o(data: &[u8]) -> Result<Mh2oChunk> {
                 3 => 9,
                 _ => 0,
             };
-            let (mut heights, mut depths, mut uvs) =
-                (Vec::new(), Vec::new(), Vec::new());
+            let (mut heights, mut depths, mut uvs) = (Vec::new(), Vec::new(), Vec::new());
             if vertex_at != 0 && stride != 0 && vertex_count <= 81 {
                 let raw = data
                     .bytes_at(vertex_at, vertex_count * stride)
@@ -255,7 +256,11 @@ fn read_mh2o(data: &[u8]) -> Result<Mh2oChunk> {
                 // MH2O stores parallel arrays, not vertex structs: heights, optional UV pairs,
                 // then depths. TrinityCore 3.3.5 adt.h GetLiquidHeight/GetLiquidDepth.
                 let height_bytes = if lvf == 2 { 0 } else { vertex_count * 4 };
-                let uv_bytes = if matches!(lvf, 1 | 3) { vertex_count * 4 } else { 0 };
+                let uv_bytes = if matches!(lvf, 1 | 3) {
+                    vertex_count * 4
+                } else {
+                    0
+                };
                 for i in 0..vertex_count {
                     if height_bytes != 0 {
                         heights.push(raw.f32_at(i * 4).ok_or(Error::Truncated("MH2O height"))?);

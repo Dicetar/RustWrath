@@ -131,13 +131,8 @@ impl LootSteps<'_, '_> {
     pub(crate) fn close_for_stand(&mut self) {
         let scope = self.trace_scope();
         let trace = self.trace.as_deref();
-        let closed = super::close_on_move_start(
-            &mut self.loot,
-            &mut self.latch,
-            &self.net,
-            trace,
-            scope,
-        );
+        let closed =
+            super::close_on_move_start(&mut self.loot, &mut self.latch, &self.net, trace, scope);
         self.dead.after_close(closed);
     }
 
@@ -220,12 +215,7 @@ impl LootSteps<'_, '_> {
             .objects
             .object(open.guid)
             .and_then(|fields| fields.object_entry());
-        let trace = self.begin_loot(
-            Some(open.guid),
-            item,
-            Some(1),
-            Some(u32::from(open.slot)),
-        );
+        let trace = self.begin_loot(Some(open.guid), item, Some(1), Some(u32::from(open.slot)));
         self.latch.0 = Some(open.guid);
         if self.objects.object(open.guid).is_some_and(|f| f.is_item()) {
             script.lock_item(open.guid);
@@ -332,12 +322,8 @@ impl LootSteps<'_, '_> {
                 item_id,
                 slot_type,
             }) => {
-                let trace = self.begin_loot(
-                    source,
-                    Some(item_id),
-                    Some(1),
-                    Some(u32::from(wire_slot)),
-                );
+                let trace =
+                    self.begin_loot(source, Some(item_id), Some(1), Some(u32::from(wire_slot)));
                 // Bind on pickup and uncommon or better (`0x4c28f2`, `0x4c28fb`): the confirm,
                 // whose listeners run before the stash takes the row (`0x4c290f`, `0x4c2917`).
                 if wrath && self.items.template(item_id, 0, Ask::Read).is_none() {
@@ -361,7 +347,12 @@ impl LootSteps<'_, '_> {
 
     /// The item's sound and `CMSG_AUTOSTORE_LOOT_ITEM` with its wire slot (`0x4c2926`,
     /// `0x4c2936`), before any answer.
-    fn store(&mut self, wire_slot: u8, display_id: u32, interaction: Option<crate::quest_trace::Interaction>) {
+    fn store(
+        &mut self,
+        wire_slot: u8,
+        display_id: u32,
+        interaction: Option<crate::quest_trace::Interaction>,
+    ) {
         self.pickup
             .write(crate::sound::LootPickupSound { display_id });
         let command = Self::tracked(
@@ -604,12 +595,7 @@ impl LootSteps<'_, '_> {
                 return;
             }
             let source = self.loot.source();
-            let trace = self.begin_loot(
-                source,
-                Some(item_id),
-                Some(1),
-                Some(u32::from(wire_slot)),
-            );
+            let trace = self.begin_loot(source, Some(item_id), Some(1), Some(u32::from(wire_slot)));
             self.store(wire_slot, display_id, trace);
         }
         self.sweep_end(script, flag);

@@ -893,8 +893,11 @@ fn feed_auction(
 
         // The class tree needs no session: the stock `AuctionFrameBrowse_OnLoad` reads
         // `GetAuctionItemClasses()` when the addon loads (`Blizzard_AuctionUI.lua:174`).
-        let classes_now =
-            categories(script.target(), catalogs.0.as_deref(), catalogs.1.as_deref());
+        let classes_now = categories(
+            script.target(),
+            catalogs.0.as_deref(),
+            catalogs.1.as_deref(),
+        );
         let last_classes = last_classes.get(script);
         if *last_classes != classes_now {
             *last_classes = classes_now.clone();
@@ -1111,7 +1114,10 @@ mod tests {
             .map(|c| (c.class_id, c.has_subclass_filter))
             .collect();
         assert_eq!(ids, WRATH_AUCTION_CLASSES.to_vec());
-        assert!(tree[3].has_subclass_filter, "12340 offers Consumable's subclasses");
+        assert!(
+            tree[3].has_subclass_filter,
+            "12340 offers Consumable's subclasses"
+        );
         assert!(!tree[4].subclasses.is_empty(), "Glyph lists its classes");
     }
 

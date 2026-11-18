@@ -306,7 +306,9 @@ pub struct ParticleEmitterDef {
 impl ParticleEmitterDef {
     /// Sample the selected file version's authored age curves.
     pub fn sample_over_life(&self, age: f32) -> OverLifeSample {
-        self.wrath_curves.as_ref().map_or_else(|| self.over_life.sample(age), |e| e.sample_age(age))
+        self.wrath_curves
+            .as_ref()
+            .map_or_else(|| self.over_life.sample(age), |e| e.sample_age(age))
     }
     /// File flag 0x10 (runtime 0x100; the flag remap `0x70faf8`..`0x70fc44` is not the identity).
     /// Set, particles live emitter-local and the draw re-applies the live emitter matrix, so the

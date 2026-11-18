@@ -59,6 +59,7 @@ mod unserved;
 mod update_object;
 mod vendor;
 mod world_state;
+pub use crate::events::EntityKind;
 pub use action_bar::{
     set_action_button, set_actionbar_toggles, ActionButton, ACTION_KIND_ITEM, ACTION_KIND_MACRO,
     ACTION_KIND_SPELL,
@@ -66,7 +67,6 @@ pub use action_bar::{
 pub use addons::{
     pair_with_sent, AddonRecord, SecureAddon, STANDARD_MODULUS_CRC, STOCK_SECURE_ADDONS,
 };
-pub use crate::events::EntityKind;
 pub use area_trigger::area_trigger;
 pub use attack::{attack_swing, AttackSwingError, AttackerState};
 pub use auction::{
@@ -208,10 +208,11 @@ pub use quest::{
     dialog_status, push_quest_to_party, quest_confirm_accept, quest_flags, quest_push_result,
     quest_query, questgiver_accept_quest, questgiver_choose_reward, questgiver_complete_quest,
     questgiver_hello, questgiver_query_quest, questgiver_request_reward, questgiver_status_query,
-    questlog_remove_quest, questlog_swap_quest, QuestComplete, QuestConfirmAccept, QuestDetails, QuestPanelExtra,
-    QuestGiverList, QuestListEntry, QuestObjective, QuestOfferReward, QuestPushResult,
-    QuestRequestItems, QuestRequiredItem, QuestRewardItem, QuestShareMsg, QuestTemplate,
-    QUEST_EMOTE_COUNT, QUEST_OBJECTIVES_COUNT, QUEST_REWARDS_COUNT, QUEST_REWARD_CHOICES_COUNT,
+    questlog_remove_quest, questlog_swap_quest, QuestComplete, QuestConfirmAccept, QuestDetails,
+    QuestGiverList, QuestListEntry, QuestObjective, QuestOfferReward, QuestPanelExtra,
+    QuestPushResult, QuestRequestItems, QuestRequiredItem, QuestRewardItem, QuestShareMsg,
+    QuestTemplate, QUEST_EMOTE_COUNT, QUEST_OBJECTIVES_COUNT, QUEST_REWARDS_COUNT,
+    QUEST_REWARD_CHOICES_COUNT,
 };
 pub use reputation::{
     set_faction_at_war, set_faction_inactive, set_watched_faction, FACTION_LIST_LEN,

@@ -190,9 +190,7 @@ pub fn parse_unit_token_for(token: &str, wrath: bool) -> UnitTokenParse {
             .flatten()
     });
     let Some((base, len)) = found else {
-        return if token.eq_ignore_ascii_case("npc")
-            || (wrath && is_quest_unit_token(token))
-        {
+        return if token.eq_ignore_ascii_case("npc") || (wrath && is_quest_unit_token(token)) {
             UnitTokenParse::Unit {
                 base: UnitBase::Npc,
                 hops: 0,

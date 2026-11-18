@@ -16,8 +16,8 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use bevy::prelude::*;
 use benilla_protocol_wrath::updates::type_id;
+use bevy::prelude::*;
 use serde::Deserialize;
 
 use crate::wrath::{WrathChanges, WrathEntity};
@@ -65,14 +65,23 @@ impl FieldRule {
 
     fn validate(&self, section: &str) -> Result<(), String> {
         if self.shift >= 32 {
-            return Err(format!("[[{section}]] from = {}: shift must be below 32", self.from));
+            return Err(format!(
+                "[[{section}]] from = {}: shift must be below 32",
+                self.from
+            ));
         }
         if self.count == 0 {
-            return Err(format!("[[{section}]] from = {}: count must be at least 1", self.from));
+            return Err(format!(
+                "[[{section}]] from = {}: count must be at least 1",
+                self.from
+            ));
         }
         if self.from.checked_add(self.count).is_none() || self.to.checked_add(self.count).is_none()
         {
-            return Err(format!("[[{section}]] from = {}: range overflows", self.from));
+            return Err(format!(
+                "[[{section}]] from = {}: range overflows",
+                self.from
+            ));
         }
         Ok(())
     }
@@ -129,10 +138,14 @@ impl FieldTable {
                 entity.player_fields.as_ref(),
                 [self.unit.as_slice(), self.player.as_slice()],
             ),
-            type_id::GAMEOBJECT => (entity.raw_fields.as_ref(), [self.gameobject.as_slice(), none]),
-            type_id::DYNAMICOBJECT => {
-                (entity.raw_fields.as_ref(), [self.dynamicobject.as_slice(), none])
-            }
+            type_id::GAMEOBJECT => (
+                entity.raw_fields.as_ref(),
+                [self.gameobject.as_slice(), none],
+            ),
+            type_id::DYNAMICOBJECT => (
+                entity.raw_fields.as_ref(),
+                [self.dynamicobject.as_slice(), none],
+            ),
             type_id::CORPSE => (entity.raw_fields.as_ref(), [self.corpse.as_slice(), none]),
             _ => return,
         };
@@ -239,7 +252,10 @@ pub(crate) fn poll_overlay(mut map: ResMut<WrathFieldMap>) {
         FileChange::Unchanged => return,
         FileChange::Removed(path) => {
             if map.overlay.take().is_some() {
-                info!("wrath field map: {} removed; shipped table only", path.display());
+                info!(
+                    "wrath field map: {} removed; shipped table only",
+                    path.display()
+                );
                 map.reapply = true;
             }
             return;
@@ -315,10 +331,23 @@ mod tests {
         let mut delivered = vec![0u64; 1];
         delivered[0] |= 1 << 17;
         let window = WrathFieldWindow::new(values, delivered);
-        let rule = FieldRule { from: 17, to: 21, shift: 8, mask: 0xff, count: 1 };
+        let rule = FieldRule {
+            from: 17,
+            to: 21,
+            shift: 8,
+            mask: 0xff,
+            count: 1,
+        };
         let mut pairs = Vec::new();
         rule.push(&window, &mut pairs);
-        FieldRule { from: 16, to: 22, shift: 0, mask: u32::MAX, count: 1 }.push(&window, &mut pairs);
+        FieldRule {
+            from: 16,
+            to: 22,
+            shift: 0,
+            mask: u32::MAX,
+            count: 1,
+        }
+        .push(&window, &mut pairs);
         assert_eq!(pairs, vec![(21, 0x02)]);
     }
 }

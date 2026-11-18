@@ -478,7 +478,8 @@ fn edit_macro(
         } else {
             &model.spell_list
         };
-        let binding = bind::derive_with_slots(aliases, &view.body, player_slots, &model.pet_book, was);
+        let binding =
+            bind::derive_with_slots(aliases, &view.body, player_slots, &model.pet_book, was);
         model.macro_bindings.insert(id, binding);
         model.macros_dirty = true;
         model.macros_generation += 1;

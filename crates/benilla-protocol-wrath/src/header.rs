@@ -17,7 +17,10 @@ impl ClientHeader {
         if payload_len + 4 >= 10240 {
             return None;
         }
-        Some(Self { opcode, payload_len })
+        Some(Self {
+            opcode,
+            payload_len,
+        })
     }
 
     /// The wire size field: payload length plus the four size bytes of the u32 opcode slot.
@@ -39,7 +42,10 @@ impl ClientHeader {
         if !(4..10240).contains(&size) {
             return None;
         }
-        Some(Self { opcode, payload_len: (size - 4) as usize })
+        Some(Self {
+            opcode,
+            payload_len: (size - 4) as usize,
+        })
     }
 }
 
@@ -65,7 +71,10 @@ impl ServerHeader {
     /// Decode from decrypted prefix bytes (four or five as `server_header_len` reported).
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         let (size, large) = if bytes.len() >= 5 && bytes[0] & 0x80 != 0 {
-            (((bytes[0] & 0x7F) as usize) << 16 | (bytes[1] as usize) << 8 | bytes[2] as usize, true)
+            (
+                ((bytes[0] & 0x7F) as usize) << 16 | (bytes[1] as usize) << 8 | bytes[2] as usize,
+                true,
+            )
         } else if bytes.len() >= 4 && bytes[0] & 0x80 == 0 {
             ((bytes[0] as usize) << 8 | bytes[1] as usize, false)
         } else {
@@ -74,8 +83,15 @@ impl ServerHeader {
         if size < 2 {
             return None;
         }
-        let opcode = u16::from_le_bytes([bytes[if large { 3 } else { 2 }], bytes[if large { 4 } else { 3 }]]);
-        Some(Self { opcode, payload_len: size - 2, large })
+        let opcode = u16::from_le_bytes([
+            bytes[if large { 3 } else { 2 }],
+            bytes[if large { 4 } else { 3 }],
+        ]);
+        Some(Self {
+            opcode,
+            payload_len: size - 2,
+            large,
+        })
     }
 }
 
@@ -88,8 +104,14 @@ mod tests {
         let header = ClientHeader::new(0x1DC, 4).unwrap(); // CMSG_PING with a u32 payload
         assert_eq!(header.size_field(), 8);
         assert_eq!(ClientHeader::decode(&header.encode()), Some(header));
-        assert!(ClientHeader::decode(&ClientHeader::new(1, 0).unwrap().encode()).is_some(), "size 4 is legal");
-        assert!(ClientHeader::new(1, 10240).is_none(), "payload 10240 exceeds the client window");
+        assert!(
+            ClientHeader::decode(&ClientHeader::new(1, 0).unwrap().encode()).is_some(),
+            "size 4 is legal"
+        );
+        assert!(
+            ClientHeader::new(1, 10240).is_none(),
+            "payload 10240 exceeds the client window"
+        );
     }
 
     #[test]
@@ -97,7 +119,11 @@ mod tests {
         let normal = [0x00, 0x12, 0xA9, 0x00]; // size 18, opcode 0x00A9 little-endian
         assert_eq!(
             ServerHeader::decode(&normal),
-            Some(ServerHeader { opcode: 0x00A9, payload_len: 16, large: false })
+            Some(ServerHeader {
+                opcode: 0x00A9,
+                payload_len: 16,
+                large: false
+            })
         );
         let large = [0x82, 0x00, 0x10, 0x0B, 0x00]; // 0x80010 = 65552? decode as flagged
         let decoded = ServerHeader::decode(&large).expect("large form decodes");

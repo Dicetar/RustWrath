@@ -30,8 +30,10 @@ impl Logon {
 pub fn logon(addr: &str, account: &str, password: &str) -> Result<Logon> {
     let timeout = Duration::from_secs(10);
     let addresses = addr.to_socket_addrs().context("resolving auth server")?;
-    let mut stream = addresses.map(|a| TcpStream::connect_timeout(&a, timeout))
-        .find_map(Result::ok).with_context(|| format!("connecting to {addr}"))?;
+    let mut stream = addresses
+        .map(|a| TcpStream::connect_timeout(&a, timeout))
+        .find_map(Result::ok)
+        .with_context(|| format!("connecting to {addr}"))?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     let username_n = NormalizedString::new(account).context("normalizing account name")?;
@@ -69,5 +71,10 @@ pub fn logon(addr: &str, account: &str, password: &str) -> Result<Logon> {
 
     auth::write_realm_list_request(&mut stream).context("requesting realm list")?;
     let realms = auth::read_realm_list(&mut stream).context("reading realm list")?;
-    Ok(Logon { session_key, account: account_upper, realms, stream })
+    Ok(Logon {
+        session_key,
+        account: account_upper,
+        realms,
+        stream,
+    })
 }

@@ -19,44 +19,65 @@ pub(super) fn install_wrath(lua: &Lua) -> mlua::Result<()> {
     lua.set_named_registry_value(REG_SCRIPT_HOOKS, lua.create_table()?)?;
     // Installed IgnoreMore consumes frame varargs. The independent Wowless events module
     // confirms this unpacked view; use the host's existing ordered registration owner.
-    lua.globals().set("GetFramesRegisteredForEvent", lua.create_function(
-        |lua, name: String| {
+    lua.globals().set(
+        "GetFramesRegisteredForEvent",
+        lua.create_function(|lua, name: String| {
             let ids: Vec<u32> = {
                 let model = lua.app_data_ref::<Model>().expect("model");
-                model.target.event_key(model.vm, &name)
+                model
+                    .target
+                    .event_key(model.vm, &name)
                     .and_then(|event| model.event_to_frames.get(event))
-                    .into_iter().flatten()
+                    .into_iter()
+                    .flatten()
                     .filter(|handle| model.arena.frame(**handle).is_some())
                     .filter_map(|handle| model.frame_to_id.get(handle).copied())
                     .collect()
             };
             // Wrapper lookup can reach Lua globals/metamethods; retain no Model borrow.
-            let frames = ids.into_iter().map(|id| frame_wrapper(lua, id).map(Value::Table))
+            let frames = ids
+                .into_iter()
+                .map(|id| frame_wrapper(lua, id).map(Value::Table))
                 .collect::<mlua::Result<Vec<_>>>()?;
             Ok(MultiValue::from_vec(frames))
-        },
-    )?)
+        })?,
+    )
 }
 
 fn script_hooks(lua: &Lua, id: u32, script: &str) -> mlua::Result<Vec<Function>> {
     let Some(hooks) = lua.named_registry_value::<Option<Table>>(REG_SCRIPT_HOOKS)? else {
         return Ok(Vec::new());
     };
-    let Some(per) = hooks.raw_get::<Option<Table>>(id)? else { return Ok(Vec::new()) };
-    let Some(list) = per.raw_get::<Option<Table>>(script)? else { return Ok(Vec::new()) };
+    let Some(per) = hooks.raw_get::<Option<Table>>(id)? else {
+        return Ok(Vec::new());
+    };
+    let Some(list) = per.raw_get::<Option<Table>>(script)? else {
+        return Ok(Vec::new());
+    };
     list.sequence_values::<Function>().collect()
 }
 
 pub(crate) fn has_script_hooks(lua: &Lua, id: u32, script: &str) -> bool {
     let read = || -> mlua::Result<bool> {
-        let Some(hooks) = lua.named_registry_value::<Option<Table>>(REG_SCRIPT_HOOKS)? else { return Ok(false) };
-        let Some(per) = hooks.raw_get::<Option<Table>>(id)? else { return Ok(false) };
-        Ok(per.raw_get::<Option<Table>>(script)?.is_some_and(|list| list.raw_len() > 0))
+        let Some(hooks) = lua.named_registry_value::<Option<Table>>(REG_SCRIPT_HOOKS)? else {
+            return Ok(false);
+        };
+        let Some(per) = hooks.raw_get::<Option<Table>>(id)? else {
+            return Ok(false);
+        };
+        Ok(per
+            .raw_get::<Option<Table>>(script)?
+            .is_some_and(|list| list.raw_len() > 0))
     };
     read().unwrap_or(false)
 }
 
-pub(crate) fn append_script_hook(lua: &Lua, id: u32, script: &str, hook: Function) -> mlua::Result<()> {
+pub(crate) fn append_script_hook(
+    lua: &Lua,
+    id: u32,
+    script: &str,
+    hook: Function,
+) -> mlua::Result<()> {
     let hooks: Table = lua.named_registry_value(REG_SCRIPT_HOOKS)?;
     let per = match hooks.raw_get::<Option<Table>>(id)? {
         Some(per) => per,
@@ -83,7 +104,12 @@ pub(super) fn fire_global(lua: &Lua, event: &str, args: &[ScriptValue]) {
 }
 
 /// Fire a frame's `OnEvent` with the given args; the walk has set `event`.
-pub(super) fn fire_event_handler(lua: &Lua, id: u32, event: &str, args: &[ScriptValue]) -> mlua::Result<()> {
+pub(super) fn fire_event_handler(
+    lua: &Lua,
+    id: u32,
+    event: &str,
+    args: &[ScriptValue],
+) -> mlua::Result<()> {
     let mut extra: Vec<Value> = args
         .iter()
         .cloned()
@@ -165,7 +191,9 @@ fn fire(lua: &Lua, id: u32, script: &str, extra: Vec<Value>) -> mlua::Result<()>
         _ => None,
     };
     let hooks = script_hooks(lua, id, script)?;
-    if func.is_none() && hooks.is_empty() { return Ok(()); }
+    if func.is_none() && hooks.is_empty() {
+        return Ok(());
+    }
     if super::host::holding(lua) {
         let script = script.to_string();
         super::calls::hold(lua, super::calls::Held::Handler { id, script, extra });
@@ -177,7 +205,14 @@ fn fire(lua: &Lua, id: u32, script: &str, extra: Vec<Value>) -> mlua::Result<()>
     // when the guard drops, unwinds included.
     let _fire =
         super::handler_prof::armed().then(|| super::handler_prof::Fire::open(lua, id, script));
-    invoke_with_hooks(lua, wrapper, func.as_ref(), hooks, extra, script == "OnEvent")
+    invoke_with_hooks(
+        lua,
+        wrapper,
+        func.as_ref(),
+        hooks,
+        extra,
+        script == "OnEvent",
+    )
 }
 
 pub(crate) fn invoke_onload(lua: &Lua, wrapper: Table, func: &Function) -> mlua::Result<()> {
@@ -205,8 +240,12 @@ fn invoke_with_hooks(
         None => Ok(()),
     };
     for hook in hooks {
-        if let Err(error) = invoke_with_globals(lua, wrapper.clone(), &hook, extra.clone(), event_payload) {
-            lua.app_data_mut::<Model>().expect("model").record_lua_error(&error);
+        if let Err(error) =
+            invoke_with_globals(lua, wrapper.clone(), &hook, extra.clone(), event_payload)
+        {
+            lua.app_data_mut::<Model>()
+                .expect("model")
+                .record_lua_error(&error);
         }
     }
     result
@@ -242,8 +281,14 @@ pub(crate) fn invoke_with_globals(
         arguments.push(Value::Table(wrapper.clone()));
         arguments.extend(extra.iter().cloned());
         Some(mlua::MultiValue::from_vec(arguments))
-    } else { None };
-    let payload: Vec<Value> = if wrath && event_payload { extra.into_iter().skip(1).collect() } else { extra };
+    } else {
+        None
+    };
+    let payload: Vec<Value> = if wrath && event_payload {
+        extra.into_iter().skip(1).collect()
+    } else {
+        extra
+    };
     let mut globals: Vec<(&str, Value)> = Vec::with_capacity(2 + payload.len());
     globals.push(("this", Value::Table(wrapper)));
     let names: Vec<Cow<'static, str>> = (1..=payload.len()).map(arg_name).collect();

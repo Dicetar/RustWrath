@@ -47,7 +47,6 @@ pub enum GeosetVersion {
     Wrath335,
 }
 
-
 /// The customization → geoset tables, resolving an appearance to the set of visible geosets.
 pub struct CharacterGeosets {
     /// (race, sex, hairStyle) → hair `GeosetID` (group 0).
@@ -80,7 +79,6 @@ pub struct EquipGeosets {
     /// carry `0x4`; the caller supplies it.
     pub eye_glow: bool,
 }
-
 
 impl CharacterGeosets {
     /// The 1.12 geosets (`skinSectionId`s) this appearance draws, sorted and deduplicated: the
@@ -908,7 +906,10 @@ mod tests {
         let mut belt = EquipGeosets::default();
         belt.bodyslots[2] = Some([1, 0, 0]);
         let set = cg.visible_geosets_for(GeosetVersion::Wrath335, 1, 1, 0, 0, &belt);
-        assert!(set.contains(&1802) && !set.contains(&1801), "belt variant replaces the base");
+        assert!(
+            set.contains(&1802) && !set.contains(&1801),
+            "belt variant replaces the base"
+        );
 
         // The donor path is unchanged: every ID above 1700 remains visible.
         let set = cg.visible_geosets(1, 1, 0, 0, &base);

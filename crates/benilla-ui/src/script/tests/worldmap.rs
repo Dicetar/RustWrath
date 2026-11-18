@@ -801,10 +801,7 @@ fn a_normal_poi_is_not_painted_with_the_graveyard_cell() {
 fn a_gated_poi_keeps_its_intended_poi_icons_cell() {
     // AreaPOI 1768 (Northpass Tower): Flags 0x287 carries 0x80, Icon 11.
     assert_eq!(poi_texture_index(11, 0x287, WorldMapLevel::Zone), 11);
-    assert_eq!(
-        poi_texture_index(11, 0x287, WorldMapLevel::Continent),
-        11
-    );
+    assert_eq!(poi_texture_index(11, 0x287, WorldMapLevel::Continent), 11);
     // An Arathi Basin graveyard row carries its own cell, e.g. 15 at Flags 0x284.
     assert_eq!(poi_texture_index(15, 0x284, WorldMapLevel::Zone), 15);
     // An instance map is the Zone level; the same gate applies.

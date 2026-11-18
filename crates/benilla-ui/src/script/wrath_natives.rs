@@ -18,7 +18,9 @@ const SEAT_HAS_UI: u32 = 0x2000_0000;
 
 fn vehicle_seat_flag(model: &Model, flag: u32) -> bool {
     model.vehicle_guid.is_some()
-        && model.vehicle_seat_flags.is_some_and(|flags| flags & flag != 0)
+        && model
+            .vehicle_seat_flags
+            .is_some_and(|flags| flags & flag != 0)
 }
 
 fn local_vehicle_unit(model: &Model, token: Option<&str>) -> bool {
@@ -81,12 +83,7 @@ fn cursor_info(lua: &Lua) -> mlua::Result<MultiValue> {
                 .unwrap_or_else(|| {
                     // A held item exists as an object in the reference even when its template is
                     // unknown, so the arm still answers; the link's name is empty then.
-                    super::item_stats::item_link_for_target(
-                        model.target,
-                        item.item_id,
-                        "",
-                        1,
-                    )
+                    super::item_stats::item_link_for_target(model.target, item.item_id, "", 1)
                 });
             push(Value::String(lua.create_string("item")?));
             push(Value::Number(f64::from(item.item_id)));
@@ -103,7 +100,11 @@ fn cursor_info(lua: &Lua) -> mlua::Result<MultiValue> {
                     .position(|s| s.spell_id == spell.spell_id)
                     .map(|index| index + 1)
             };
-            let player_slots = if model.spell_list.is_empty() { &model.spellbook.slots } else { &model.spell_list };
+            let player_slots = if model.spell_list.is_empty() {
+                &model.spellbook.slots
+            } else {
+                &model.spell_list
+            };
             let (slot, book) = match slot(player_slots) {
                 Some(slot) => (slot, "spell"),
                 // `GetSpellSlot` falls through to the pet's book and flags the answer `"pet"`
@@ -141,7 +142,7 @@ fn cursor_info(lua: &Lua) -> mlua::Result<MultiValue> {
         Some(CursorPayload::Macro(mac)) => {
             push(Value::String(lua.create_string("macro")?));
             push(Value::Number(
-                model.macros.index_of_id(mac.id).unwrap_or(0) as f64,
+                model.macros.index_of_id(mac.id).unwrap_or(0) as f64
             ));
         }
         // No `GetCursorInfo` arm in the reference: a stable-pet grab and a pet-bar pickup fall
@@ -188,7 +189,12 @@ fn lfg_aura_expiration(lua: &Lua, spell_id: u32) -> mlua::Result<MultiValue> {
 /// A `None` list, a guid of zero, or no host answers no values, matching the reference's
 /// `guid == 0` / `state == nullptr` early returns; the party-state fallback has no separate
 /// owner here, so it is not synthesized.
-fn lfg_party_aura(lua: &Lua, token: Value, spell_id: u32, usage: &'static str) -> mlua::Result<MultiValue> {
+fn lfg_party_aura(
+    lua: &Lua,
+    token: Value,
+    spell_id: u32,
+    usage: &'static str,
+) -> mlua::Result<MultiValue> {
     let token = crate::script::binding_abi::string_arg(lua, token, usage)?;
     let guid = {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
@@ -249,8 +255,16 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             super::cvars::VIDEO_RESOLUTION_PAGE,
             true,
         ),
-        ("RestoreVideoEffectsDefaults", super::cvars::VIDEO_EFFECTS_PAGE, false),
-        ("RestoreVideoStereoDefaults", super::cvars::VIDEO_STEREO_PAGE, false),
+        (
+            "RestoreVideoEffectsDefaults",
+            super::cvars::VIDEO_EFFECTS_PAGE,
+            false,
+        ),
+        (
+            "RestoreVideoStereoDefaults",
+            super::cvars::VIDEO_STEREO_PAGE,
+            false,
+        ),
     ] {
         lua.globals().set(
             name,
@@ -299,9 +313,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
     lua.globals().set(
         "Sound_GameSystem_GetOutputDriverNameByIndex",
-        lua.create_function(|_, index: i64| {
-            Ok((index == 0).then_some("Primary Sound Driver"))
-        })?,
+        lua.create_function(|_, index: i64| Ok((index == 0).then_some("Primary Sound Driver")))?,
     )?;
     // `Sound_GameSystem_RestartSoundSystem()` (12340 `0x00985D30`: `SI2::ShutDown(1)`, a 200 ms
     // sleep, `SI2::Init(1)`), called by `AudioOptionsFrame.lua:29` when a control marked
@@ -383,16 +395,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 "Usage: IsTitleKnown(titleMaskID)",
             )? as u32;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let known = model
-                .unit("player")
-                .is_some_and(|u| {
-                    let bit = usize::try_from(mask).ok();
-                    bit.is_some_and(|bit| {
-                        u.known_titles
-                            .get(bit / 32)
-                            .is_some_and(|word| word & (1 << (bit % 32)) != 0)
-                    })
-                });
+            let known = model.unit("player").is_some_and(|u| {
+                let bit = usize::try_from(mask).ok();
+                bit.is_some_and(|bit| {
+                    u.known_titles
+                        .get(bit / 32)
+                        .is_some_and(|word| word & (1 << (bit % 32)) != 0)
+                })
+            });
             // The reference pushes the number 0 or 1, not a boolean or nil.
             Ok(Value::Integer(i64::from(known)))
         })?,
@@ -400,11 +410,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set(
         "GetTitleName",
         lua.create_function(|lua, mask: Value| {
-            crate::script::binding_abi::number_arg(
-                lua,
-                mask,
-                "Usage: GetTitleName(titleMaskID)",
-            )?;
+            crate::script::binding_abi::number_arg(lua, mask, "Usage: GetTitleName(titleMaskID)")?;
             // The CharTitles name table is app-side (`QuestTitleNames`); only the quest-text
             // path consumes it today. Nil is the reference's own no-record answer, never a
             // fabricated title.
@@ -455,14 +461,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             .wrapping_sub(1) as u32;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let attack = model.pet_bar.has_ui
-                && model
-                    .pet_bar
-                    .slots
-                    .get(index as usize)
-                    .is_some_and(|slot| {
-                        slot.view.packed & 0x3F00_0000 == 0x0700_0000
-                            && slot.view.packed & 0x00FF_FFFF == 2
-                    });
+                && model.pet_bar.slots.get(index as usize).is_some_and(|slot| {
+                    slot.view.packed & 0x3F00_0000 == 0x0700_0000
+                        && slot.view.packed & 0x00FF_FFFF == 2
+                });
             // `lua_pushboolean`: a boolean, not the 1/nil shape.
             Ok(Value::Boolean(attack))
         })?,
@@ -485,9 +487,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 )?;
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 Ok(match model.unit(&token) {
-                    Some(unit) if unit.player_flags & bit != 0 => {
-                        mlua::Value::Number(1.0)
-                    }
+                    Some(unit) if unit.player_flags & bit != 0 => mlua::Value::Number(1.0),
                     Some(_) => mlua::Value::Nil,
                     None => mlua::Value::Nil,
                 })
@@ -534,10 +534,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
     // The queue/arena/battleground list queries are empty until their subsystems populate them;
     // these are the reference's own empty shapes, not fabricated success.
-    lua.globals().set(
-        "GetNumArenaOpponents",
-        lua.create_function(|_, ()| Ok(0))?,
-    )?;
+    lua.globals()
+        .set("GetNumArenaOpponents", lua.create_function(|_, ()| Ok(0))?)?;
     lua.globals().set(
         "GetNumBattlegroundTypes",
         lua.create_function(|_, ()| Ok(0))?,
@@ -608,10 +606,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `BNFeaturesEnabled` (`InterfaceOptionsPanels.lua:820`, `:857`, `:1610`): Battle.net features
     // come with a Battle.net account connection benilla does not have, and the stock panels take
     // the same branch here as the real client on an account without them.
-    lua.globals().set(
-        "BNFeaturesEnabled",
-        lua.create_function(|_, ()| Ok(false))?,
-    )?;
+    lua.globals()
+        .set("BNFeaturesEnabled", lua.create_function(|_, ()| Ok(false))?)?;
     // `BNFeaturesEnabledAndConnected` (`InterfaceOptionsPanels.lua:868`): the same answer, with no
     // Battle.net connection to be connected, so the profanity-filter sync leaves the local value.
     lua.globals().set(
@@ -722,7 +718,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "CanExitVehicle",
         lua.create_function(|lua, ()| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(lua_seat_permission(vehicle_seat_flag(&model, SEAT_CAN_EXIT)))
+            Ok(lua_seat_permission(vehicle_seat_flag(
+                &model,
+                SEAT_CAN_EXIT,
+            )))
         })?,
     )?;
     lua.globals().set(
@@ -736,7 +735,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "CanSwitchVehicleSeats",
         lua.create_function(|lua, ()| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(lua_seat_permission(vehicle_seat_flag(&model, SEAT_CAN_SWITCH)))
+            Ok(lua_seat_permission(vehicle_seat_flag(
+                &model,
+                SEAT_CAN_SWITCH,
+            )))
         })?,
     )?;
     // The pitch controls are the other vehicle-only named handlers in VehicleMenuBar.xml. With
@@ -761,7 +763,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "UnitInVehicle",
         lua.create_function(|lua, unit: Option<String>| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let in_veh = local_vehicle_unit(&model, unit.as_deref()) && model.vehicle_guid.is_some();
+            let in_veh =
+                local_vehicle_unit(&model, unit.as_deref()) && model.vehicle_guid.is_some();
             Ok(in_veh)
         })?,
     )?;
@@ -825,7 +828,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .unwrap_or(0);
             let level = player.map_or(1, |u| u.level).clamp(1, 100) as usize;
             let slot = index as usize * 100 + (level - 1);
-            let scaler = model.combat_rating_scalers.get(slot).copied().unwrap_or(0.0);
+            let scaler = model
+                .combat_rating_scalers
+                .get(slot)
+                .copied()
+                .unwrap_or(0.0);
             if scaler > 0.0 && scaler.is_finite() {
                 Ok(f64::from(rating) / f64::from(scaler))
             } else {
@@ -869,13 +876,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     Some(Value::Table(tbl)) => tbl,
                     _ => lua.create_table()?,
                 };
-                let Some(slot_u8) = slot.and_then(|s| u8::try_from(s).ok()).filter(|&s| (1..=19).contains(&s)) else {
+                let Some(slot_u8) = slot
+                    .and_then(|s| u8::try_from(s).ok())
+                    .filter(|&s| (1..=19).contains(&s))
+                else {
                     return Ok(t);
                 };
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 // Player equipment slots (1..=19): ITEM_INVENTORY_LOCATION_PLAYER | slot
                 for inv_slot in 1..=19usize {
-                    if let Some(view) = model.inventory_slots.get(inv_slot).and_then(Option::as_ref) {
+                    if let Some(view) = model.inventory_slots.get(inv_slot).and_then(Option::as_ref)
+                    {
                         if view.item_id != 0 && view.equip_slots.contains(&slot_u8) {
                             let loc = 0x0010_0000i64 | (inv_slot as i64);
                             t.set(loc, view.item_id)?;
@@ -947,10 +958,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `PaperDollFrame.lua:2156`): the host has no equipment-set backend yet (`equipmentManager`
     // is an inert CVar), so the count is the reference's answer with none saved — zero — and the
     // load-time loop does not run.
-    lua.globals().set(
-        "GetNumEquipmentSets",
-        lua.create_function(|_, ()| Ok(0))?,
-    )?;
+    lua.globals()
+        .set("GetNumEquipmentSets", lua.create_function(|_, ()| Ok(0))?)?;
     lua.globals().set(
         "CanShowAchievementUI",
         lua.create_function(|lua, ()| {
@@ -1216,10 +1225,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // `IsListedInLFR` and `IsPartyLFG` (`UIParent.lua:3583`, `:3585`).
-    lua.globals().set(
-        "IsListedInLFR",
-        lua.create_function(|_, ()| Ok(false))?,
-    )?;
+    lua.globals()
+        .set("IsListedInLFR", lua.create_function(|_, ()| Ok(false))?)?;
     lua.globals().set(
         "IsPartyLFG",
         lua.create_function(|lua, ()| {
@@ -1240,10 +1247,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "VoiceChat_RecordLoopbackSound",
         "VoiceChat_StopRecordingLoopbackSound",
     ] {
-        lua.globals().set(
-            name,
-            lua.create_function(|_, _: mlua::MultiValue| Ok(()))?,
-        )?;
+        lua.globals()
+            .set(name, lua.create_function(|_, _: mlua::MultiValue| Ok(()))?)?;
     }
 
     // `IsVoiceChatEnabled` (`UnitPopup.lua:706`, the mute row): voice chat is permanently absent
@@ -1298,11 +1303,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "CalendarGetDate",
         lua.create_function(|lua, ()| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model
-                .calendar
-                .map_or((0i64, 0i64, 0i64, 0i64), |calendar| {
-                    calendar_date(calendar.zone_time)
-                }))
+            Ok(model.calendar.map_or((0i64, 0i64, 0i64, 0i64), |calendar| {
+                calendar_date(calendar.zone_time)
+            }))
         })?,
     )?;
 
@@ -1350,7 +1353,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set(
         "GetAccountExpansionLevel",
         lua.create_function(|lua, _: mlua::MultiValue| {
-            Ok(lua.app_data_ref::<Model>().expect("model").glue.account_expansion)
+            Ok(lua
+                .app_data_ref::<Model>()
+                .expect("model")
+                .glue
+                .account_expansion)
         })?,
     )?;
 
@@ -1485,11 +1492,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let Some(runes) = model.runes.as_deref() else {
                 return Ok(MultiValue::new());
             };
-            let slot = crate::script::binding_abi::number_arg(
-                lua,
-                slot,
-                "Usage: GetRuneType(slot)",
-            )?;
+            let slot =
+                crate::script::binding_abi::number_arg(lua, slot, "Usage: GetRuneType(slot)")?;
             let index = slot - 1;
             if !(0..=7).contains(&index) {
                 return Ok(MultiValue::new());
@@ -1509,11 +1513,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set(
         "GetRuneCooldown",
         lua.create_function(|lua, slot: Value| -> mlua::Result<MultiValue> {
-            let slot = crate::script::binding_abi::number_arg(
-                lua,
-                slot,
-                "Usage: GetRuneCooldown(slot)",
-            )?;
+            let slot =
+                crate::script::binding_abi::number_arg(lua, slot, "Usage: GetRuneCooldown(slot)")?;
             let index = slot - 1;
             if !(0..=7).contains(&index) {
                 return Err(mlua::Error::runtime("Invalid slot"));
@@ -1746,7 +1747,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "AcceptProposal",
         lua.create_function(|lua, arg: Option<u32>| {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let proposal_id = arg.or_else(|| model.wrath_lfg.proposal.as_ref().map(|p| p.proposal_id));
+            let proposal_id =
+                arg.or_else(|| model.wrath_lfg.proposal.as_ref().map(|p| p.proposal_id));
             if let (Some((session_epoch, world_generation)), Some(proposal_id)) =
                 (model.wrath_scope, proposal_id)
             {
@@ -1768,7 +1770,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "RejectProposal",
         lua.create_function(|lua, arg: Option<u32>| {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let proposal_id = arg.or_else(|| model.wrath_lfg.proposal.as_ref().map(|p| p.proposal_id));
+            let proposal_id =
+                arg.or_else(|| model.wrath_lfg.proposal.as_ref().map(|p| p.proposal_id));
             if let (Some((session_epoch, world_generation)), Some(proposal_id)) =
                 (model.wrath_scope, proposal_id)
             {
@@ -1844,19 +1847,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, index: mlua::Value| {
             // Reference gate: lua_tonumber(L, 1) == 0.0 (0x5D5820), read as a number before
             // truncation.
-            let n = crate::script::binding_abi::float_arg(
-                lua,
-                index,
-                "Usage: GetPossessInfo(index)",
-            )?;
+            let n =
+                crate::script::binding_abi::float_arg(lua, index, "Usage: GetPossessInfo(index)")?;
             if n == 0.0 {
                 return Err(mlua::Error::runtime("Usage: GetPossessInfo(index)"));
             }
-            Ok((
-                mlua::Value::Nil,
-                mlua::Value::Nil,
-                mlua::Value::Nil,
-            ))
+            Ok((mlua::Value::Nil, mlua::Value::Nil, mlua::Value::Nil))
         })?,
     )?;
 
@@ -1886,11 +1882,20 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
     lua.globals().set(
         "UnitHasLFGRandomCooldown",
-        lua.create_function(|lua, token: Value| lfg_party_aura(lua, token, 71328, "Usage: UnitHasLFGRandomCooldown(\"unit\")"))?,
+        lua.create_function(|lua, token: Value| {
+            lfg_party_aura(
+                lua,
+                token,
+                71328,
+                "Usage: UnitHasLFGRandomCooldown(\"unit\")",
+            )
+        })?,
     )?;
     lua.globals().set(
         "UnitHasLFGDeserter",
-        lua.create_function(|lua, token: Value| lfg_party_aura(lua, token, 71041, "Usage: UnitHasLFGDeserter(\"unit\")"))?,
+        lua.create_function(|lua, token: Value| {
+            lfg_party_aura(lua, token, 71041, "Usage: UnitHasLFGDeserter(\"unit\")")
+        })?,
     )?;
     lua.globals().set(
         "RequestLFDPlayerLockInfo",
@@ -1910,11 +1915,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 3 | 4 | 8 | 9 => 0x09_u8,
                 _ => 0_u8,
             };
-            Ok((
-                roles & 0x02 != 0,
-                roles & 0x04 != 0,
-                roles & 0x08 != 0,
-            ))
+            Ok((roles & 0x02 != 0, roles & 0x04 != 0, roles & 0x08 != 0))
         })?,
     )?;
 
@@ -1967,7 +1968,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 /// separate `QuestPOIFrame` unknown-frame-type warning and the missing
 /// `WorldMapBlobFrame:DrawQuestBlob` renderer are not fixed by this.
 fn install_quest_poi(lua: &Lua) -> mlua::Result<()> {
-    lua.globals().set("QuestPOIUpdateIcons", lua.create_function(|_, ()| Ok(()))?)?;
+    lua.globals()
+        .set("QuestPOIUpdateIcons", lua.create_function(|_, ()| Ok(()))?)?;
     lua.globals().set(
         "QuestPOIUpdateTexture",
         lua.create_function(|_, ()| Ok(()))?,
@@ -2177,7 +2179,8 @@ pub(super) fn install_multiclass(lua: &Lua) -> mlua::Result<()> {
 /// The imported map placeholder requires the frame factory and widget method tables.
 /// It does not implement quest-blob geometry or panning.
 pub(super) fn install_frame_fallbacks(lua: &Lua) -> mlua::Result<()> {
-    lua.load(r#"
+    lua.load(
+        r#"
         if not WorldMapBlobFrame then
             local f = CreateFrame("Frame", "WorldMapBlobFrame")
             if f then
@@ -2185,7 +2188,9 @@ pub(super) fn install_frame_fallbacks(lua: &Lua) -> mlua::Result<()> {
                 function f:EnablePanning() end
             end
         end
-    "#).exec()
+    "#,
+    )
+    .exec()
 }
 
 /// `GetLuaCompanionType` (`SpellBookFrame_Scripts.cpp:165`): `lua_tolstring` then a
@@ -2227,7 +2232,9 @@ impl super::UiScript {
         if model.multiclass_replies.len() >= 16 {
             model.multiclass_replies.pop_front();
         }
-        model.multiclass_replies.push_back((op, status, serial, payload));
+        model
+            .multiclass_replies
+            .push_back((op, status, serial, payload));
     }
 
     /// Clear queued multiclass requests and replies across world/character transitions.
@@ -2258,13 +2265,13 @@ impl super::UiScript {
         self.model_mut().runes = Some(
             slots
                 .iter()
-                .map(|&(rune_type, cooldown, received_at)| {
-                    super::model::RuneSlotState {
+                .map(
+                    |&(rune_type, cooldown, received_at)| super::model::RuneSlotState {
                         rune_type,
                         cooldown,
                         received_at,
-                    }
-                })
+                    },
+                )
                 .collect(),
         );
     }
@@ -2426,8 +2433,14 @@ mod tests {
         assert_eq!(s.eval::<u32>("return GetCurrentTitle()").unwrap(), 1);
         assert_eq!(s.eval::<bool>("return IsTitleKnown(1) == 1").unwrap(), true);
         assert_eq!(s.eval::<bool>("return IsTitleKnown(2) == 0").unwrap(), true);
-        assert_eq!(s.eval::<bool>("return UnitIsAFK('player') == 1").unwrap(), true);
-        assert_eq!(s.eval::<bool>("return UnitIsDND('player') == 1").unwrap(), true);
+        assert_eq!(
+            s.eval::<bool>("return UnitIsAFK('player') == 1").unwrap(),
+            true
+        );
+        assert_eq!(
+            s.eval::<bool>("return UnitIsDND('player') == 1").unwrap(),
+            true
+        );
         s.set_title_count(193);
         assert_eq!(s.eval::<u32>("return GetNumTitles()").unwrap(), 193);
         s.set_known_languages(vec!["Common".into(), "Dwarvish".into()]);
@@ -2464,15 +2477,20 @@ mod tests {
 
         // Companion usage gates match the reference; with no collection the in-range answer is
         // the empty list.
-        assert_eq!(s.eval::<u32>("return GetNumCompanions('CRITTER')").unwrap(), 0);
         assert_eq!(
-            s.eval::<i64>("return select('#', GetCompanionInfo('MOUNT', 1))").unwrap(),
+            s.eval::<u32>("return GetNumCompanions('CRITTER')").unwrap(),
+            0
+        );
+        assert_eq!(
+            s.eval::<i64>("return select('#', GetCompanionInfo('MOUNT', 1))")
+                .unwrap(),
             0
         );
         assert!(s.run("GetNumCompanions('PET')").is_err());
         assert!(s.run("GetCompanionInfo('CRITTER', 0)").is_err());
         assert_eq!(
-            s.eval::<i64>("return select('#', GetTrackedAchievements())").unwrap(),
+            s.eval::<i64>("return select('#', GetTrackedAchievements())")
+                .unwrap(),
             0
         );
         assert_eq!(
@@ -2480,10 +2498,8 @@ mod tests {
             "table"
         );
         assert_eq!(
-            s.eval::<bool>(
-                "local t = { stale = 1 }; GetLFGQueuedList(t); return t.stale == nil"
-            )
-            .unwrap(),
+            s.eval::<bool>("local t = { stale = 1 }; GetLFGQueuedList(t); return t.stale == nil")
+                .unwrap(),
             true
         );
         assert_eq!(s.eval::<u32>("return GetNumArenaOpponents()").unwrap(), 0);
@@ -2492,7 +2508,8 @@ mod tests {
             0
         );
         assert_eq!(
-            s.eval::<i64>("return select('#', GetArenaTeam(1))").unwrap(),
+            s.eval::<i64>("return select('#', GetArenaTeam(1))")
+                .unwrap(),
             22
         );
         assert_eq!(
@@ -2507,10 +2524,18 @@ mod tests {
         use crate::script::{ScriptCall, UiScript, UiTarget, UnitState};
         let mut script = UiScript::with_target(UiTarget::Wrath335).unwrap();
         script.keep_calls();
-        script.set_unit("mouseover", Some(UnitState {
-            exists: true, has_object: true, guid: 0x77, ..Default::default()
-        }));
-        assert!(script.eval::<bool>(r#"
+        script.set_unit(
+            "mouseover",
+            Some(UnitState {
+                exists: true,
+                has_object: true,
+                guid: 0x77,
+                ..Default::default()
+            }),
+        );
+        assert!(script
+            .eval::<bool>(
+                r#"
             local frame = CreateFrame('Button')
             frame:SetAttribute('type', 'spell')
             frame:SetAttribute('shift-type*', 'item')
@@ -2518,8 +2543,12 @@ mod tests {
                and frame:GetAttribute('shift-', 'type', nil) == 'item'
                and select('#', GetContainerItemPurchaseInfo(0, 1)) == 0
                and select('#', GetContainerItemPurchaseItem(0, 1, 1)) == 0
-        "#).unwrap());
-        script.run("UseAction(1, 'mouseover', 'LeftButton')").unwrap();
+        "#
+            )
+            .unwrap());
+        script
+            .run("UseAction(1, 'mouseover', 'LeftButton')")
+            .unwrap();
         assert!(matches!(script.take_script_calls().as_slice(),
             [ScriptCall::UseAction(press)] if press.target_guid == Some(0x77)));
         script.run("UseAction(1, 'focus', 'LeftButton')").unwrap();
@@ -2547,8 +2576,8 @@ mod tests {
     /// `<ModifiedClick>` rows (stock `STICKYCAMERA` is CTRL, `SELFCAST` ALT).
     #[test]
     fn options_panel_defaults_and_sound_restart_follow_the_reference() {
-        let mut script = crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335)
-            .expect("VM");
+        let mut script =
+            crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335).expect("VM");
         script.register_cvars([
             ("farclip", "1277"),
             ("groundEffectDist", "100"),
@@ -2569,31 +2598,55 @@ mod tests {
 
         script.run("RestoreVideoEffectsDefaults()").unwrap();
         assert_eq!(get(&script, "farclip"), "1277", "registered default");
-        assert_eq!(get(&script, "groundEffectDist"), "70.0", "CWorldParam's own 70.0");
-        assert_eq!(get(&script, "gamma"), "1.4", "the effects page leaves the display rows");
-        assert_eq!(script.take_restart_gx_asks(), 0, "page 1 does not restart the device");
+        assert_eq!(
+            get(&script, "groundEffectDist"),
+            "70.0",
+            "CWorldParam's own 70.0"
+        );
+        assert_eq!(
+            get(&script, "gamma"),
+            "1.4",
+            "the effects page leaves the display rows"
+        );
+        assert_eq!(
+            script.take_restart_gx_asks(),
+            0,
+            "page 1 does not restart the device"
+        );
 
         script.run("RestoreVideoResolutionDefaults()").unwrap();
         assert_eq!(get(&script, "gamma"), "1.0");
         assert_eq!(get(&script, "windowResizeLock"), "0");
         assert_eq!(get(&script, "gxWindow"), "0");
-        assert_eq!(script.take_restart_gx_asks(), 1, "page 0 ends in CCGxRestart");
+        assert_eq!(
+            script.take_restart_gx_asks(),
+            1,
+            "page 0 ends in CCGxRestart"
+        );
 
         script.run("RestoreVideoStereoDefaults()").unwrap();
-        assert_eq!(script.take_restart_gx_asks(), 0, "unregistered stereo rows are skipped");
+        assert_eq!(
+            script.take_restart_gx_asks(),
+            0,
+            "unregistered stereo rows are skipped"
+        );
 
         assert_eq!(script.take_restart_sound_asks(), 0);
         script
             .run("Sound_GameSystem_RestartSoundSystem() Sound_GameSystem_RestartSoundSystem()")
             .unwrap();
-        assert_eq!(script.take_restart_sound_asks(), 2, "counted for the host to drain");
+        assert_eq!(
+            script.take_restart_sound_asks(),
+            2,
+            "counted for the host to drain"
+        );
         assert_eq!(script.take_restart_sound_asks(), 0);
     }
 
     #[test]
     fn is_modified_click_reads_the_held_modifier() {
-        let mut script = crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335)
-            .expect("VM");
+        let mut script =
+            crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335).expect("VM");
         let row = |action: &str, default: &str| crate::bindings_xml::ModifiedClick {
             action: action.into(),
             default: Some(default.into()),
@@ -2640,12 +2693,24 @@ mod tests {
         );
         assert_eq!(read(&script, "SELFCAST"), None, "self-cast wants alt");
         script.set_modifiers(true, false, false);
-        assert_eq!(read(&script, "STICKYCAMERA"), None, "shift is not the stock chord");
-        assert_eq!(read(&script, "CHATLINK"), Some(1), "outside a click the button matches");
+        assert_eq!(
+            read(&script, "STICKYCAMERA"),
+            None,
+            "shift is not the stock chord"
+        );
+        assert_eq!(
+            read(&script, "CHATLINK"),
+            Some(1),
+            "outside a click the button matches"
+        );
         script.set_modifiers(false, false, true);
         assert_eq!(read(&script, "SELFCAST"), Some(1), "alt held");
         assert_eq!(read(&script, "NO_SUCH_ACTION"), None, "unknown actions");
-        assert_eq!(read(&script, "ALT"), Some(1), "a modifier name asks for that modifier");
+        assert_eq!(
+            read(&script, "ALT"),
+            Some(1),
+            "a modifier name asks for that modifier"
+        );
         assert_eq!(
             script
                 .eval::<Option<String>>("return GetModifiedClick(\"STICKYCAMERA\")")
@@ -2665,8 +2730,8 @@ mod tests {
         use crate::script::calls::ScriptCall;
         use crate::script::input_verbs::{BindingInput, FiredInput, HeldInput, PostureCall};
 
-        let mut script = crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335)
-            .expect("VM");
+        let mut script =
+            crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335).expect("VM");
         script.keep_calls();
         script
             .run("JumpOrAscendStart() AscendStop() DescendStop() MoveAndSteerStart() MoveAndSteerStop()")
@@ -2716,7 +2781,11 @@ mod tests {
 
         let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
         // The `local type, money = GetCursorInfo()` read needs a truthful count: nothing held.
-        assert_eq!(s.eval::<i64>("return select('#', GetCursorInfo())").unwrap(), 0);
+        assert_eq!(
+            s.eval::<i64>("return select('#', GetCursorInfo())")
+                .unwrap(),
+            0
+        );
 
         s.set_cursor_for_test(CursorPayload::Item(CursorItem {
             item_class: None,
@@ -2758,7 +2827,8 @@ mod tests {
             equip_slots: Vec::new(),
         }));
         assert_eq!(
-            s.eval::<i64>("return select('#', GetCursorInfo())").unwrap(),
+            s.eval::<i64>("return select('#', GetCursorInfo())")
+                .unwrap(),
             3,
             "the mismatched link is replaced, not the whole answer dropped"
         );
@@ -2769,19 +2839,41 @@ mod tests {
             "the stray link must not ride along: {link}"
         );
         s.set_cursor_for_test(CursorPayload::Item(CursorItem {
-            item_class: None, guid: 0x105, bar_placeable: true, consumable: false,
-            bag: 0, slot: 1, item_id: 117, texture: None, link: None,
-            count: None, quality: None, equip_slots: Vec::new(),
+            item_class: None,
+            guid: 0x105,
+            bar_placeable: true,
+            consumable: false,
+            bag: 0,
+            slot: 1,
+            item_id: 117,
+            texture: None,
+            link: None,
+            count: None,
+            quality: None,
+            equip_slots: Vec::new(),
         }));
         let (kind, id, link): (String, f64, String) = s.eval("return GetCursorInfo()").unwrap();
         assert_eq!((kind.as_str(), id), ("item", 117.0));
-        assert!(link.contains("Hitem:117:"), "a link-less item still answers: {link}");
-        s.set_item_template(117, crate::script::ItemTemplateView {
-            name: "Tough Jerky".into(), quality: 1, ..Default::default()
-        });
+        assert!(
+            link.contains("Hitem:117:"),
+            "a link-less item still answers: {link}"
+        );
+        s.set_item_template(
+            117,
+            crate::script::ItemTemplateView {
+                name: "Tough Jerky".into(),
+                quality: 1,
+                ..Default::default()
+            },
+        );
         assert_eq!(
-            s.eval::<(String, f64, String)>("return GetCursorInfo()").unwrap(),
-            ("item".into(), 117.0, s.template_item_link(117, "Tough Jerky", 1))
+            s.eval::<(String, f64, String)>("return GetCursorInfo()")
+                .unwrap(),
+            (
+                "item".into(),
+                117.0,
+                s.template_item_link(117, "Tough Jerky", 1)
+            )
         );
 
         s.set_cursor_for_test(CursorPayload::Money(CursorMoney { copper: 1_234 }));
@@ -2886,13 +2978,27 @@ mod tests {
             consumable: true,
             state: None,
         }));
-        assert_eq!(s.eval::<i64>("return select('#', GetCursorInfo())").unwrap(), 0);
-        s.set_item_template(159, crate::script::ItemTemplateView {
-            name: "Water".into(), quality: 1, ..Default::default()
-        });
         assert_eq!(
-            s.eval::<(String, f64, String)>("return GetCursorInfo()").unwrap(),
-            ("item".to_string(), 159.0, s.template_item_link(159, "Water", 1)),
+            s.eval::<i64>("return select('#', GetCursorInfo())")
+                .unwrap(),
+            0
+        );
+        s.set_item_template(
+            159,
+            crate::script::ItemTemplateView {
+                name: "Water".into(),
+                quality: 1,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            s.eval::<(String, f64, String)>("return GetCursorInfo()")
+                .unwrap(),
+            (
+                "item".to_string(),
+                159.0,
+                s.template_item_link(159, "Water", 1)
+            ),
             "an item lifted off the bar names its entry id"
         );
     }
@@ -2974,9 +3080,20 @@ mod tests {
         let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
         s.set_glue_account_expansion(1);
         assert_eq!(s.eval::<i64>("return GetExpansionLevel()").unwrap(), 2);
-        assert_eq!(s.eval::<i64>("return GetAccountExpansionLevel()").unwrap(), 1);
-        assert_eq!(s.eval::<String>("return UnitGroupRolesAssigned('player')").unwrap(), "NONE");
-        assert_eq!(s.eval::<i64>("return GetNumTrackedAchievements(false)").unwrap(), 0);
+        assert_eq!(
+            s.eval::<i64>("return GetAccountExpansionLevel()").unwrap(),
+            1
+        );
+        assert_eq!(
+            s.eval::<String>("return UnitGroupRolesAssigned('player')")
+                .unwrap(),
+            "NONE"
+        );
+        assert_eq!(
+            s.eval::<i64>("return GetNumTrackedAchievements(false)")
+                .unwrap(),
+            0
+        );
         // No rune state has arrived: the reference answers no values, not a guessed class layout.
         assert_eq!(s.arity("GetRuneType(1)").unwrap(), 0);
         // The owner test comes before the argument (`ScriptEvents_Scripts.cpp:3035`-`:3038`), so a
@@ -3062,11 +3179,15 @@ mod tests {
 
         // The random-dungeon cooldown, hidden from the bar, is still in the native list; the
         // unrelated aura after it is not a match.
-        host.auras = Some(vec![aura(33, 71328, Some(1_234.5)), aura(34, 1243, Some(99.0))]);
+        host.auras = Some(vec![
+            aura(33, 71328, Some(1_234.5)),
+            aura(34, 1243, Some(99.0)),
+        ]);
         host::lend(s.lua(), &mut host, || {
             assert_eq!(s.arity("GetLFGRandomCooldownExpiration()").unwrap(), 1);
             assert_eq!(
-                s.eval::<f64>("return GetLFGRandomCooldownExpiration()").unwrap(),
+                s.eval::<f64>("return GetLFGRandomCooldownExpiration()")
+                    .unwrap(),
                 1_234.5
             );
             assert_eq!(
@@ -3096,7 +3217,8 @@ mod tests {
         host::lend(s.lua(), &mut host, || {
             assert_eq!(s.arity("GetLFGRandomCooldownExpiration()").unwrap(), 1);
             assert_eq!(
-                s.eval::<f64>("return GetLFGRandomCooldownExpiration()").unwrap(),
+                s.eval::<f64>("return GetLFGRandomCooldownExpiration()")
+                    .unwrap(),
                 0.0
             );
         });
@@ -3117,8 +3239,8 @@ mod tests {
     /// presence for the named unit, zero values for a missing unit/host/list.
     #[test]
     fn wrath_lfg_party_auras_are_boolean_predicates() {
-        use crate::script::{UiScript, UiTarget, UnitGuids};
         use crate::script::host;
+        use crate::script::{UiScript, UiTarget, UnitGuids};
 
         const PLAYER: u64 = 0x10;
         const PARTY1: u64 = 0x20;
@@ -3208,11 +3330,13 @@ mod tests {
         host.auras = Some(vec![aura(71328)]);
         host::lend(s.lua(), &mut host, || {
             assert_eq!(
-                s.eval::<bool>("return UnitHasLFGRandomCooldown('player')").unwrap(),
+                s.eval::<bool>("return UnitHasLFGRandomCooldown('player')")
+                    .unwrap(),
                 true
             );
             assert_eq!(
-                s.eval::<bool>("return UnitHasLFGDeserter('player')").unwrap(),
+                s.eval::<bool>("return UnitHasLFGDeserter('player')")
+                    .unwrap(),
                 false
             );
         });
@@ -3221,7 +3345,8 @@ mod tests {
         host.auras = Some(vec![aura(1243)]);
         host::lend(s.lua(), &mut host, || {
             assert_eq!(
-                s.eval::<bool>("return UnitHasLFGRandomCooldown('player')").unwrap(),
+                s.eval::<bool>("return UnitHasLFGRandomCooldown('player')")
+                    .unwrap(),
                 false
             );
         });
@@ -3231,11 +3356,13 @@ mod tests {
         host.auras = Some(vec![aura(71041)]);
         host::lend(s.lua(), &mut host, || {
             assert_eq!(
-                s.eval::<bool>("return UnitHasLFGDeserter('party1')").unwrap(),
+                s.eval::<bool>("return UnitHasLFGDeserter('party1')")
+                    .unwrap(),
                 true
             );
             assert_eq!(
-                s.eval::<bool>("return UnitHasLFGRandomCooldown('party1')").unwrap(),
+                s.eval::<bool>("return UnitHasLFGRandomCooldown('party1')")
+                    .unwrap(),
                 false
             );
         });
@@ -3261,7 +3388,10 @@ mod tests {
             .eval("return MulticlassRequest(4, 7, 0, 1, 0, 0)")
             .expect("MulticlassRequest in world VM");
         assert_eq!(accepted, 1, "the addon tests `~= 1`");
-        assert_eq!(s.arity("MulticlassRequest(5, 8, 1234, 6, 3, 0)").unwrap(), 1);
+        assert_eq!(
+            s.arity("MulticlassRequest(5, 8, 1234, 6, 3, 0)").unwrap(),
+            1
+        );
         assert_eq!(
             s.take_multiclass_requests(),
             vec![
@@ -3371,12 +3501,12 @@ mod tests {
     fn wrath_multiclass_request_refuses_and_empty_poll_stays_nil() {
         let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
         for call in [
-            "MulticlassRequest(0, 0, 0, 0, 0, 0)",  // the native startup probe
-            "MulticlassRequest(9, 1, 0, 1, 0, 0)",  // operation outside 1..=5
-            "MulticlassRequest(4, 0, 0, 1, 0, 0)",  // no caller serial to correlate
+            "MulticlassRequest(0, 0, 0, 0, 0, 0)", // the native startup probe
+            "MulticlassRequest(9, 1, 0, 1, 0, 0)", // operation outside 1..=5
+            "MulticlassRequest(4, 0, 0, 1, 0, 0)", // no caller serial to correlate
             "MulticlassRequest(4, 1, 0, 12, 0, 0)", // class id beyond the wire mask
             "MulticlassRequest(2, 1, 42, 6, 7, 0)", // preview carries no token
-            "MulticlassRequest(1, 1, 1, 0, 0, 0)",  // list carries no guid
+            "MulticlassRequest(1, 1, 1, 0, 0, 0)", // list carries no guid
             "MulticlassRequest('x', 1, 0, 1, 0, 0)", // non-number is a refusal, not a raise
             "MulticlassRequest(4, 1, 0, 1, 0, -1)", // negative token
         ] {
@@ -3437,12 +3567,18 @@ mod tests {
 
         let (start, duration, ready): (f64, f64, bool) =
             s.eval("return GetRuneCooldown(1)").unwrap();
-        assert!((start - 100.0).abs() < 1e-9, "fresh rune starts now: {start}");
+        assert!(
+            (start - 100.0).abs() < 1e-9,
+            "fresh rune starts now: {start}"
+        );
         assert_eq!(duration, 10.0);
         assert!(!ready, "a just-used rune is not ready");
         let (start, duration, ready): (f64, f64, bool) =
             s.eval("return GetRuneCooldown(2)").unwrap();
-        assert!((start - 90.0).abs() < 1e-9, "full progress is ready: {start}");
+        assert!(
+            (start - 90.0).abs() < 1e-9,
+            "full progress is ready: {start}"
+        );
         assert_eq!(duration, 10.0);
         assert!(ready);
 
@@ -3451,7 +3587,10 @@ mod tests {
         s.apply_rune_convert(0, 3, 110.0);
         assert_eq!(s.eval::<f64>("return GetRuneType(1)").unwrap(), 4.0);
         let (start, _, ready): (f64, f64, bool) = s.eval("return GetRuneCooldown(1)").unwrap();
-        assert!((start - 100.0).abs() < 1e-9, "convert must not reset the cooldown");
+        assert!(
+            (start - 100.0).abs() < 1e-9,
+            "convert must not reset the cooldown"
+        );
         assert!(ready, "a fully elapsed ten-second recharge is ready");
 
         // `SMSG_ADD_RUNE_POWER`: slot 3 (index 2) becomes ready at the decode clock.
@@ -3479,7 +3618,8 @@ mod tests {
             (0, 0, 0, 0)
         );
         assert_eq!(
-            s.eval::<i64>("return CalendarGetNumPendingInvites()").unwrap(),
+            s.eval::<i64>("return CalendarGetNumPendingInvites()")
+                .unwrap(),
             0
         );
 
@@ -3491,14 +3631,16 @@ mod tests {
             (6, 11, 6, 2026)
         );
         assert_eq!(
-            s.eval::<i64>("return CalendarGetNumPendingInvites()").unwrap(),
+            s.eval::<i64>("return CalendarGetNumPendingInvites()")
+                .unwrap(),
             2
         );
 
         // A later fetch replaces the snapshot: the count is not added to the previous one.
         s.set_calendar(1_700_100_000, 0x1AA1_6B9E, 0, 2);
         assert_eq!(
-            s.eval::<i64>("return CalendarGetNumPendingInvites()").unwrap(),
+            s.eval::<i64>("return CalendarGetNumPendingInvites()")
+                .unwrap(),
             0
         );
 
@@ -3570,7 +3712,10 @@ mod tests {
     fn wrath_quest_poi_getters_gate_on_lua_isnumber() {
         let s = UiScript::with_target(UiTarget::Wrath335).unwrap();
         for (name, usage) in [
-            ("QuestPOIGetQuestIDByIndex", "Usage: QuestPOIGetQuestIDByIndex(index)"),
+            (
+                "QuestPOIGetQuestIDByIndex",
+                "Usage: QuestPOIGetQuestIDByIndex(index)",
+            ),
             (
                 "QuestPOIGetQuestIDByVisibleIndex",
                 "Usage: Script_QuestPOIGetQuestIDByVisibleIndex(index)",
@@ -3674,25 +3819,30 @@ mod tests {
         assert_eq!(s.eval::<i64>("return GetNumTalentGroups()").unwrap(), 2);
         assert_eq!(s.eval::<i64>("return GetActiveTalentGroup()").unwrap(), 2);
         assert_eq!(
-            s.eval::<i64>("return GetUnspentTalentPoints(false, false, 1)").unwrap(),
+            s.eval::<i64>("return GetUnspentTalentPoints(false, false, 1)")
+                .unwrap(),
             4
         );
         assert_eq!(
-            s.eval::<i64>("return GetUnspentTalentPoints(false, false, 2)").unwrap(),
+            s.eval::<i64>("return GetUnspentTalentPoints(false, false, 2)")
+                .unwrap(),
             9
         );
         assert_eq!(
-            s.eval::<i64>("return GetUnspentTalentPoints(false, true, 1)").unwrap(),
+            s.eval::<i64>("return GetUnspentTalentPoints(false, true, 1)")
+                .unwrap(),
             3
         );
 
-        let (tab1_name, _, tab1_spent): (String, String, u32) =
-            s.eval("return GetTalentTabInfo(1, false, false, 1)").unwrap();
+        let (tab1_name, _, tab1_spent): (String, String, u32) = s
+            .eval("return GetTalentTabInfo(1, false, false, 1)")
+            .unwrap();
         assert_eq!(tab1_name, "Arms");
         assert_eq!(tab1_spent, 5);
 
-        let (tab2_name, _, tab2_spent): (String, String, u32) =
-            s.eval("return GetTalentTabInfo(1, false, false, 2)").unwrap();
+        let (tab2_name, _, tab2_spent): (String, String, u32) = s
+            .eval("return GetTalentTabInfo(1, false, false, 2)")
+            .unwrap();
         assert_eq!(tab2_name, "Protection");
         assert_eq!(tab2_spent, 11);
 
@@ -3726,9 +3876,7 @@ mod tests {
             .eval::<bool>("return CanSwitchVehicleSeat() and UnitHasVehicleUI('player')")
             .unwrap());
         assert!(!s
-            .eval::<bool>(
-                "return UnitInVehicleControlSeat('player') or UnitHasVehicleUI('target')"
-            )
+            .eval::<bool>("return UnitInVehicleControlSeat('player') or UnitHasVehicleUI('target')")
             .unwrap());
 
         s.set_wrath_lfg_server_state(
@@ -3870,14 +4018,26 @@ mod tests {
     fn wrath_multiclass_request_matches_installed_addon_contract() {
         let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
         // Op 1 (list), Op 2 (preview), Op 3 (commit with token), Op 4 (active), Op 5 (learn rank).
-        assert_eq!(s.eval::<i64>("return MulticlassRequest(1, 10, 0, 0, 0, 0)").unwrap(), 1);
-        assert_eq!(s.eval::<i64>("return MulticlassRequest(2, 11, 42, 8, 0, 0)").unwrap(), 1);
+        assert_eq!(
+            s.eval::<i64>("return MulticlassRequest(1, 10, 0, 0, 0, 0)")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            s.eval::<i64>("return MulticlassRequest(2, 11, 42, 8, 0, 0)")
+                .unwrap(),
+            1
+        );
         assert_eq!(
             s.eval::<i64>("return MulticlassRequest(3, 12, 42, 8, 0x11223344, 0x55667788)")
                 .unwrap(),
             1
         );
-        assert_eq!(s.eval::<i64>("return MulticlassRequest(5, 13, 301, 2, 3, 0)").unwrap(), 1);
+        assert_eq!(
+            s.eval::<i64>("return MulticlassRequest(5, 13, 301, 2, 3, 0)")
+                .unwrap(),
+            1
+        );
 
         let reqs = s.take_multiclass_requests();
         assert_eq!(
@@ -3893,7 +4053,10 @@ mod tests {
         s.push_multiclass_reply(1, 0, 10, vec![0x01, 0x00, 0x08]);
         let hex: String = s.eval("return MulticlassPoll(10)").unwrap();
         assert!(hex.starts_with("574d4331030001000a0000000000010008"));
-        assert!(s.eval::<Option<String>>("return MulticlassPoll(10)").unwrap().is_none());
+        assert!(s
+            .eval::<Option<String>>("return MulticlassPoll(10)")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -4014,7 +4177,10 @@ mod tests {
         assert_eq!(quality, 1);
         assert_eq!(readable, Some(1));
         assert_eq!(lootable, Some(1));
-        assert_eq!(link, "|cffffffff|Hitem:6948:0:0:0:0:0:0:0:1|h[Hearthstone]|h|r");
+        assert_eq!(
+            link,
+            "|cffffffff|Hitem:6948:0:0:0:0:0:0:0:1|h[Hearthstone]|h|r"
+        );
     }
 
     #[test]
@@ -4060,7 +4226,8 @@ mod tests {
             (6, 11, 6, 2026)
         );
         assert_eq!(
-            s.eval::<i64>("return CalendarGetNumPendingInvites()").unwrap(),
+            s.eval::<i64>("return CalendarGetNumPendingInvites()")
+                .unwrap(),
             3
         );
     }
@@ -4126,7 +4293,8 @@ mod tests {
         let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
         // Default max health modifier is 1.0 before any snapshot so PaperDollFrame doesn't divide by 0.
         assert_eq!(
-            s.eval::<f64>("return GetUnitMaxHealthModifier('player')").unwrap(),
+            s.eval::<f64>("return GetUnitMaxHealthModifier('player')")
+                .unwrap(),
             1.0
         );
         s.set_unit(
@@ -4137,7 +4305,10 @@ mod tests {
             }),
         );
         assert!(
-            (s.eval::<f64>("return GetUnitMaxHealthModifier('player')").unwrap() - 1.15).abs()
+            (s.eval::<f64>("return GetUnitMaxHealthModifier('player')")
+                .unwrap()
+                - 1.15)
+                .abs()
                 < 1e-6
         );
 
@@ -4229,8 +4400,14 @@ mod tests {
         assert!(s.run("GetCombatRatingBonus(26)").is_err());
 
         let _ = s.take_warnings();
-        assert_eq!(s.eval::<f64>("return GetCombatRatingBonus(5)").unwrap(), 0.0);
-        assert_eq!(s.eval::<f64>("return GetCombatRatingBonus(6)").unwrap(), 0.0);
+        assert_eq!(
+            s.eval::<f64>("return GetCombatRatingBonus(5)").unwrap(),
+            0.0
+        );
+        assert_eq!(
+            s.eval::<f64>("return GetCombatRatingBonus(6)").unwrap(),
+            0.0
+        );
         assert!(!s.eval::<bool>("return CanShowAchievementUI()").unwrap());
         assert_eq!(s.eval::<i64>("return GetCurrentArenaSeason()").unwrap(), 0);
         let warns = s.take_warnings();

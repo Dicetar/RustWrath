@@ -314,7 +314,11 @@ pub(super) fn drive_link(
     playback: Res<CombatPlaybackState>,
     souls: Res<SoulsState>,
     player: Res<Player>,
-    ids: (Res<SelfGuid>, Option<Res<NameCache>>, Option<Res<NetCommands>>),
+    ids: (
+        Res<SelfGuid>,
+        Option<Res<NameCache>>,
+        Option<Res<NetCommands>>,
+    ),
     bodies: Bodies,
     me: Query<Entity, With<SelfPlayer>>,
     mut link: ResMut<SoulsLink>,
@@ -449,7 +453,10 @@ pub(super) fn drive_link(
                 info!("souls: stance of {creature:#x} broken; riposte open {riposte_ms} ms");
                 link.riposte = Some((creature, t + riposte_ms as f32 / 1000.0));
             }
-            Inbound::Swing { player: guid, action } => {
+            Inbound::Swing {
+                player: guid,
+                action,
+            } => {
                 let Some((entity, ..)) = bodies.iter().find(|(_, g, ..)| g.0 == guid) else {
                     continue;
                 };
@@ -509,8 +516,8 @@ pub(super) fn drive_link(
         let from = at.translation();
         let to_me = player.pos - from;
         let size = store.0.unit_combat_reach().clamp(0.0, 3.0);
-        let in_reach = Vec2::new(to_me.x, to_me.z).length() - size
-            <= strike.reach + STRIKE_SLACK_YARDS;
+        let in_reach =
+            Vec2::new(to_me.x, to_me.z).length() - size <= strike.reach + STRIKE_SLACK_YARDS;
         let facing = at.compute_transform().rotation.to_euler(EulerRot::YXZ).0;
         let in_cone = off_facing(facing, to_me).abs() <= STRIKE_HALF_CONE_DEGREES.to_radians();
         let said = verdict(in_reach, in_cone, defence);
@@ -615,11 +622,25 @@ mod tests {
         assert_eq!(verdict(true, false, all), "miss");
         assert_eq!(verdict(true, true, all), "parry");
         assert_eq!(
-            verdict(true, true, Defence { parrying: false, ..all }),
+            verdict(
+                true,
+                true,
+                Defence {
+                    parrying: false,
+                    ..all
+                }
+            ),
             "dodge"
         );
         assert_eq!(
-            verdict(true, true, Defence { guarding: true, ..none }),
+            verdict(
+                true,
+                true,
+                Defence {
+                    guarding: true,
+                    ..none
+                }
+            ),
             "guard"
         );
         assert_eq!(verdict(true, true, none), "hit");

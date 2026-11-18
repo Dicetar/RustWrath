@@ -632,17 +632,22 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 let h = frame_handle_of(lua, &this)?;
                 let subject = {
                     let model = lua.app_data_ref::<Model>().expect("model app_data");
-                    let frame = model.arena.frame(h)
+                    let frame = model
+                        .arena
+                        .frame(h)
                         .ok_or_else(|| mlua::Error::runtime("not a GameTooltip"))?;
                     let KindState::Tooltip(t) = &frame.kind_state else {
                         return Err(mlua::Error::runtime("not a GameTooltip"));
                     };
                     if frame.shown {
-                        t.unit_guid.zip(t.unit_token.as_ref()).and_then(|(guid, token)| {
-                            model.unit(token)
-                                .filter(|u| u.exists && u.guid == guid)
-                                .map(|u| (u.name.clone(), token.clone()))
-                        })
+                        t.unit_guid
+                            .zip(t.unit_token.as_ref())
+                            .and_then(|(guid, token)| {
+                                model
+                                    .unit(token)
+                                    .filter(|u| u.exists && u.guid == guid)
+                                    .map(|u| (u.name.clone(), token.clone()))
+                            })
                     } else {
                         None
                     }
@@ -673,11 +678,13 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     return Err(mlua::Error::runtime("not a GameTooltip"));
                 };
                 let live = frame.shown
-                    && t.unit_guid.zip(t.unit_token.as_ref()).is_some_and(|(guid, token)| {
-                        model
-                            .unit(token)
-                            .is_some_and(|u| u.exists && u.guid == guid)
-                    });
+                    && t.unit_guid
+                        .zip(t.unit_token.as_ref())
+                        .is_some_and(|(guid, token)| {
+                            model
+                                .unit(token)
+                                .is_some_and(|u| u.exists && u.guid == guid)
+                        });
                 Ok(if live {
                     mlua::Value::Integer(1)
                 } else {

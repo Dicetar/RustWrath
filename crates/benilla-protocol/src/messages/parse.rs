@@ -1716,7 +1716,10 @@ mod tests {
         donor.push(0);
         let (packet, tail) =
             parse_server_with_tail(opcode::SMSG_WEATHER, &donor).expect("decodes what it reads");
-        assert_eq!(tail, 4, "a donor body leaves its spare sound-id bytes unread");
+        assert_eq!(
+            tail, 4,
+            "a donor body leaves its spare sound-id bytes unread"
+        );
         assert!(matches!(
             packet,
             ServerPacket::Weather {

@@ -999,7 +999,10 @@ fn setup_entities(
     // `ItemRandomProperties`: a random suffix's name and its enchant slots 2..6.
     match benilla_formats::load_random_property_catalog(&mut chain) {
         Ok(props) => {
-            info!("random-property catalog: {} positive-property rows", props.len());
+            info!(
+                "random-property catalog: {} positive-property rows",
+                props.len()
+            );
             if let Some(error) = props.suffix_load_error() {
                 warn!("random suffixes unavailable; positive properties remain available: {error}");
             }
@@ -1336,8 +1339,8 @@ mod world_unit_tests {
         let manifest = std::path::PathBuf::from(manifest);
         let profile = std::env::var("WM_ASSET_PROFILE").expect("WM_ASSET_PROFILE");
         let data = benilla_formats::wow_data_or_skip!();
-        let mut chain = benilla_assets::open_profile_chain(&data, &manifest, &profile)
-            .expect("profile chain");
+        let mut chain =
+            benilla_assets::open_profile_chain(&data, &manifest, &profile).expect("profile chain");
         let bytes = chain
             .read_file("DBFilesClient\\ItemDisplayInfo.dbc")
             .expect("ItemDisplayInfo");

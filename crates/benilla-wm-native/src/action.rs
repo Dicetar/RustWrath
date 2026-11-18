@@ -107,9 +107,9 @@ impl ActionIntent {
                 }
                 Ok(())
             }
-            Self::LootTake { source, .. } | Self::LootMoney { source } | Self::LootRelease { source } => {
-                nonzero(*source, "source")
-            }
+            Self::LootTake { source, .. }
+            | Self::LootMoney { source }
+            | Self::LootRelease { source } => nonzero(*source, "source"),
             Self::MoveStart { .. } => Ok(()),
         }
     }

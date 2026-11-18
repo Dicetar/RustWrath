@@ -150,12 +150,13 @@ pub(in crate::entities) fn redress_player_looks(
             worn.helm,
             worn.tabard_preview,
             look.as_ref().is_some_and(|l| {
-                l.class == 6 || match &l.body {
-                    super::char_skin::BodySkin::Composite { face } => sections.as_deref().is_some_and(|s| {
-                        s.tables.face_eye_glow(l.race, l.sex, *face, l.skin)
-                    }),
-                    super::char_skin::BodySkin::Baked(_) => false,
-                }
+                l.class == 6
+                    || match &l.body {
+                        super::char_skin::BodySkin::Composite { face } => sections
+                            .as_deref()
+                            .is_some_and(|s| s.tables.face_eye_glow(l.race, l.sex, *face, l.skin)),
+                        super::char_skin::BodySkin::Baked(_) => false,
+                    }
             }),
         );
         let version = if crate::wrath::selected_from_env() {
@@ -165,14 +166,7 @@ pub(in crate::entities) fn redress_player_looks(
         };
         let visible = look.as_ref().and_then(|l| {
             let cg = characters.as_deref()?;
-            Some(cg.0.visible_geosets_for(
-                version,
-                l.race,
-                l.sex,
-                l.hair_style,
-                l.facial_hair,
-                &eg,
-            ))
+            Some(cg.0.visible_geosets_for(version, l.race, l.sex, l.hair_style, l.facial_hair, &eg))
         });
         // Cached per (appearance, worn set), so a swap back costs a lookup.
         let char_mats: CharSkinMaterials = match look.as_ref() {
@@ -513,7 +507,11 @@ mod tests {
 
     /// Like `stand`, but with no creature model for display 42 present initially, so the first
     /// re-dress pass is not ready and must retry. The caller can insert a model later.
-    fn stand_missing(geosets: &[u16], showing: &[usize], characters: Option<CharacterGeosets>) -> Standing {
+    fn stand_missing(
+        geosets: &[u16],
+        showing: &[usize],
+        characters: Option<CharacterGeosets>,
+    ) -> Standing {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Mesh>()
@@ -803,7 +801,10 @@ mod tests {
             gear,
             "not ready: stamp left unchanged"
         );
-        assert!(s.showing().is_empty(), "nothing dressed while model missing");
+        assert!(
+            s.showing().is_empty(),
+            "nothing dressed while model missing"
+        );
 
         // Now the model arrives with parts.
         let mut dm = empty_display();
@@ -819,7 +820,11 @@ mod tests {
             equipment: [0; 10],
             bake_name: None,
         });
-        s.app.world_mut().resource_mut::<Creatures>().models.insert(42, dm);
+        s.app
+            .world_mut()
+            .resource_mut::<Creatures>()
+            .models
+            .insert(42, dm);
         s.app.update();
         assert_eq!(
             s.app.world().get::<AppliedEquipment>(s.player).unwrap().0,
@@ -867,7 +872,11 @@ mod tests {
             settled,
             "the settled set differs from the sentinel and is stamped"
         );
-        assert_eq!(s.showing(), vec![0], "the body is dressed from the settled set");
+        assert_eq!(
+            s.showing(),
+            vec![0],
+            "the body is dressed from the settled set"
+        );
     }
 
     /// A model present but without parts is a static model-less display: stamp the refusal once
@@ -884,7 +893,11 @@ mod tests {
 
         let mut dm = empty_display();
         dm.parts = None;
-        s.app.world_mut().resource_mut::<Creatures>().models.insert(42, dm);
+        s.app
+            .world_mut()
+            .resource_mut::<Creatures>()
+            .models
+            .insert(42, dm);
 
         s.app.update();
         assert_eq!(
@@ -892,7 +905,10 @@ mod tests {
             gear,
             "refusal stamped on first pass"
         );
-        assert!(s.showing().is_empty(), "nothing dressed for a parts-less model");
+        assert!(
+            s.showing().is_empty(),
+            "nothing dressed for a parts-less model"
+        );
 
         // A second pass must not retry (no unbounded loop): stamp stays and nothing changes.
         s.app.update();

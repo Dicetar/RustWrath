@@ -1260,7 +1260,12 @@ mod tests {
         assert!(matches!(&sess.source, ReadSource::Pages { visited } if visited.is_empty()));
     }
 
-    fn wrath_text(guid: u64, has_text: bool, text: &str, scope: (u64, u64)) -> crate::wrath_native::WrathItemText {
+    fn wrath_text(
+        guid: u64,
+        has_text: bool,
+        text: &str,
+        scope: (u64, u64),
+    ) -> crate::wrath_native::WrathItemText {
         crate::wrath_native::WrathItemText {
             scope: crate::wrath_native::WrathScope {
                 session_epoch: scope.0,
@@ -1305,7 +1310,10 @@ mod tests {
         // The absent form retires the oldest in-flight request with a clean NoText.
         assert!(texts.read(0x22, Ask::Event(&commands)).is_none());
         assert!(texts.apply(&wrath_text(0, false, "", (1, 1)), (1, 1)));
-        assert!(matches!(texts.read(0x22, Ask::Read), Some(ItemTextReply::NoText)));
+        assert!(matches!(
+            texts.read(0x22, Ask::Read),
+            Some(ItemTextReply::NoText)
+        ));
 
         // A packet from another session/world is not adopted.
         assert!(!texts.apply(&wrath_text(0x33, true, "elsewhere", (2, 2)), (1, 1)));

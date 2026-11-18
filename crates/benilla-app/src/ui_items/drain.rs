@@ -106,7 +106,9 @@ impl ScriptItemUse<'_, '_> {
         let (guid, start_quest, spell_index, use_spell, entry, is_charter) = self_q
             .iter()
             .next()
-            .and_then(|store| super::slot_guid_donor(&store.0, EQUIPMENT_BAG, slot, &ladder.objects))
+            .and_then(|store| {
+                super::slot_guid_donor(&store.0, EQUIPMENT_BAG, slot, &ladder.objects)
+            })
             .and_then(|guid| {
                 let entry = ladder.objects.object(guid)?.object_entry()?;
                 // The use only reads (`0x5d8d57`).
@@ -2620,8 +2622,15 @@ mod bind_confirm_tests {
     #[test]
     fn a_335_instance_text_bit_forks_to_the_reader() {
         let t = crate::items::test_template("Inscription");
-        assert_eq!(dispatch_fork(&t, INSTANCE_HAS_ITEM_TEXT, 0), UseFork::Letter);
-        assert_eq!(dispatch_fork(&t, 0, 77), UseFork::Letter, "the 1.12 text id");
+        assert_eq!(
+            dispatch_fork(&t, INSTANCE_HAS_ITEM_TEXT, 0),
+            UseFork::Letter
+        );
+        assert_eq!(
+            dispatch_fork(&t, 0, 77),
+            UseFork::Letter,
+            "the 1.12 text id"
+        );
         assert_eq!(dispatch_fork(&t, 0, 0), UseFork::Plain);
     }
 

@@ -3053,7 +3053,10 @@ mod tests {
         esc(&mut s);
         assert!(matches!(
             s.sent()[..],
-            [ClientCommand::CancelCast { spell_id: FIREBALL, .. }]
+            [ClientCommand::CancelCast {
+                spell_id: FIREBALL,
+                ..
+            }]
         ));
         assert_eq!(s.stream(), ["CHANGED", "STOP"]);
         assert_eq!(queued(&s), (Some(HEROIC_STRIKE), Some(HEROIC_STRIKE)));
@@ -4450,7 +4453,10 @@ mod tests {
 
         assert_eq!(slots.buttons.len(), 1);
         assert_eq!(slots.buttons.get(&3), Some(&action(3, 6673)));
-        assert!(!slots.dirty, "state 2 must not make the feed rebuild the bar");
+        assert!(
+            !slots.dirty,
+            "state 2 must not make the feed rebuild the bar"
+        );
         assert!(pending.pending);
     }
 
@@ -4472,7 +4478,10 @@ mod tests {
 
         assert_eq!(slots.buttons.len(), 1);
         assert_eq!(slots.buttons.get(&3), Some(&action(3, 6673)));
-        assert!(!slots.dirty, "state 0 must not make the feed rebuild the bar");
+        assert!(
+            !slots.dirty,
+            "state 0 must not make the feed rebuild the bar"
+        );
         assert_eq!(pending.held, Some(held), "the parsed array is retained");
         assert!(!pending.pending, "state 0 leaves the pending flag alone");
     }
@@ -4505,7 +4514,10 @@ mod tests {
             Some(&action(143, 117)),
             "the last slot applies"
         );
-        assert!(!slots.buttons.contains_key(&3), "the previous bar is replaced");
+        assert!(
+            !slots.buttons.contains_key(&3),
+            "the previous bar is replaced"
+        );
         assert_eq!(slots.buttons.len(), 2);
         assert!(slots.dirty);
         assert!(!pending.pending, "state 1 clears the pending flag");

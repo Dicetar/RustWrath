@@ -191,7 +191,10 @@ mod tests {
     #[test]
     fn a_zero_stored_orientation_is_identity_not_nan() {
         let q = wow_rotation_to_bevy([0.0; 4]);
-        assert!(q.is_finite(), "a zero MODD orientation must not normalize to NaN");
+        assert!(
+            q.is_finite(),
+            "a zero MODD orientation must not normalize to NaN"
+        );
         assert!(q.dot(Quat::IDENTITY).abs() > 0.9999);
     }
 

@@ -14,7 +14,10 @@ pub fn load_item_limit_quantities(chain: &mut Chain) -> Result<HashMap<u32, u32>
         .context("reading ItemLimitCategory.dbc")?;
     let mut schema = Schema::new("ItemLimitCategory");
     for column in 0..20 {
-        schema.add_field(SchemaField::new(format!("Column{column}"), FieldType::UInt32));
+        schema.add_field(SchemaField::new(
+            format!("Column{column}"),
+            FieldType::UInt32,
+        ));
     }
     let rows = parse(&bytes, schema, "ItemLimitCategory.dbc")?;
     // ID, 16 locale columns, locale flags, quantity, limit flags.

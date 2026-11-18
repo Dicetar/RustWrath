@@ -530,7 +530,9 @@ impl CallHost for ScriptCallHost<'_, '_> {
     }
 
     fn item_category_would_exceed(&mut self, category: u32, incoming: u32) -> Option<bool> {
-        self.appliers.items().item_category_would_exceed(category, incoming)
+        self.appliers
+            .items()
+            .item_category_would_exceed(category, incoming)
     }
 
     fn item_family(&mut self, id: u32) -> Option<u32> {
@@ -1383,7 +1385,9 @@ mod tests {
     fn casts(f: &Frame) -> Vec<(u32, Option<u64>)> {
         f.rx.try_iter()
             .filter_map(|c| match c {
-                ClientCommand::CastSpell { spell_id, target, .. } => Some((spell_id, target)),
+                ClientCommand::CastSpell {
+                    spell_id, target, ..
+                } => Some((spell_id, target)),
                 _ => None,
             })
             .collect()
@@ -3614,7 +3618,9 @@ mod tests {
     fn casts_of(sent: &[ClientCommand]) -> Vec<(u32, Option<u64>)> {
         sent.iter()
             .filter_map(|c| match c {
-                ClientCommand::CastSpell { spell_id, target, .. } => Some((*spell_id, *target)),
+                ClientCommand::CastSpell {
+                    spell_id, target, ..
+                } => Some((*spell_id, *target)),
                 _ => None,
             })
             .collect()

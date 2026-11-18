@@ -93,15 +93,9 @@ impl QuestVerbs<'_, '_> {
     /// transport-identity envelope so the tap applies the scope check and records outbox, socket
     /// and refusal delivery against the same interaction. A world without a Wrath view keeps the
     /// donor command exactly as it was.
-    fn send_traced(
-        &self,
-        trace: Option<&crate::quest_trace::Interaction>,
-        command: ClientCommand,
-    ) {
+    fn send_traced(&self, trace: Option<&crate::quest_trace::Interaction>, command: ClientCommand) {
         let command = match (trace, self.wrath.as_ref()) {
-            (Some(trace), Some(_)) => {
-                ClientCommand::tracked(Some((*trace).clone()), true, command)
-            }
+            (Some(trace), Some(_)) => ClientCommand::tracked(Some((*trace).clone()), true, command),
             _ => command,
         };
         let result = self.net.0.send(command);
@@ -182,7 +176,9 @@ impl QuestVerbs<'_, '_> {
         let npc_for_trace = self.giver.as_ref().and_then(|giver| giver.npc);
         let trace = self.trace.as_ref().map(|source| {
             source.begin_with_npc(
-                self.wrath.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+                self.wrath
+                    .as_ref()
+                    .map(|v| (v.session_epoch, v.world_generation)),
                 quest,
                 npc_for_trace,
                 Operation::Select,
@@ -258,7 +254,8 @@ impl QuestVerbs<'_, '_> {
         let command = if let (Some(trace), Some(view)) = (&trace, self.wrath.as_ref()) {
             if giver.pending_selection.is_some() {
                 record(Stage::AlreadyPending);
-                giver.delivery_error = Some("The previous quest selection is still being sent.".into());
+                giver.delivery_error =
+                    Some("The previous quest selection is still being sent.".into());
                 return;
             }
             let (results, receiver) = crossbeam_channel::bounded(2);
@@ -293,7 +290,8 @@ impl QuestVerbs<'_, '_> {
             Stage::ChannelDisconnected
         });
         if result.is_err() && pending.is_some() {
-            giver.delivery_error = Some("Quest selection could not be sent. Check your connection and retry.".into());
+            giver.delivery_error =
+                Some("Quest selection could not be sent. Check your connection and retry.".into());
             return;
         }
         giver.pending_selection = pending;
@@ -313,7 +311,9 @@ impl QuestVerbs<'_, '_> {
             });
             let npc_for_trace = self.giver.as_ref().and_then(|giver| giver.npc);
             source.begin_with_npc(
-                self.wrath.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+                self.wrath
+                    .as_ref()
+                    .map(|v| (v.session_epoch, v.world_generation)),
                 quest,
                 npc_for_trace,
                 crate::quest_trace::Operation::Accept,
@@ -357,7 +357,9 @@ impl QuestVerbs<'_, '_> {
                 } else {
                     Stage::AlreadyPending
                 });
-                giver.delivery_error = Some("Quest delivery is still pending. Check your journal before retrying.".into());
+                giver.delivery_error = Some(
+                    "Quest delivery is still pending. Check your journal before retrying.".into(),
+                );
                 return None;
             }
             let (results, receiver) = crossbeam_channel::bounded(2);
@@ -395,7 +397,10 @@ impl QuestVerbs<'_, '_> {
             });
         } else {
             // Keep the donor command and its synchronous UI behavior unchanged.
-            let _ = self.net.0.send(ClientCommand::QuestgiverAccept { npc, quest });
+            let _ = self
+                .net
+                .0
+                .send(ClientCommand::QuestgiverAccept { npc, quest });
         }
         giver.acted = true;
         let closed = self.teardown(false);
@@ -460,7 +465,9 @@ impl QuestVerbs<'_, '_> {
         let npc_for_trace = self.giver.as_ref().and_then(|giver| giver.npc);
         let trace = self.trace.as_ref().map(|source| {
             source.begin_with_npc(
-                self.wrath.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+                self.wrath
+                    .as_ref()
+                    .map(|v| (v.session_epoch, v.world_generation)),
                 quest,
                 npc_for_trace,
                 Operation::RequestReward,
@@ -525,7 +532,9 @@ impl QuestVerbs<'_, '_> {
         let npc_for_trace = self.giver.as_ref().and_then(|giver| giver.npc);
         let trace = self.trace.as_ref().map(|source| {
             source.begin_with_npc(
-                self.wrath.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+                self.wrath
+                    .as_ref()
+                    .map(|v| (v.session_epoch, v.world_generation)),
                 quest,
                 npc_for_trace,
                 Operation::ChooseReward,

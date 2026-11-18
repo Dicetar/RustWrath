@@ -170,7 +170,10 @@ pub(crate) fn render_emitters(bytes: &[u8]) -> Result<Vec<crate::ParticleEmitter
             .and_then(|t| t.filename.string.to_str().ok())
             .map(str::to_owned)
             .unwrap_or_default();
-        if texture.is_empty() && record.geometry_model.is_empty() && record.recursion_model.is_empty() {
+        if texture.is_empty()
+            && record.geometry_model.is_empty()
+            && record.recursion_model.is_empty()
+        {
             continue;
         }
         let tracks = record.tracks.each_ref().map(scalar_track);
@@ -197,8 +200,10 @@ pub(crate) fn render_emitters(bytes: &[u8]) -> Result<Vec<crate::ParticleEmitter
         } else {
             None
         };
-        let geometry_model = (!record.geometry_model.is_empty()).then(|| record.geometry_model.clone());
-        let recursion_model = (!record.recursion_model.is_empty()).then(|| record.recursion_model.clone());
+        let geometry_model =
+            (!record.geometry_model.is_empty()).then(|| record.geometry_model.clone());
+        let recursion_model =
+            (!record.recursion_model.is_empty()).then(|| record.recursion_model.clone());
         let sampled = record.sample_age(0.0);
         output.push(ParticleEmitterDef {
             flags: record.flags,

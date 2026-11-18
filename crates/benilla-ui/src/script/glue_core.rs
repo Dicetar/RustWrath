@@ -1090,10 +1090,18 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 Value::Boolean(b) => b,
                 Value::Integer(i) => i != 0,
                 Value::Number(n) => n != 0.0,
-                _ => return Err(mlua::Error::RuntimeError("Usage: SetUsesToken( 0 | 1 )".into())),
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "Usage: SetUsesToken( 0 | 1 )".into(),
+                    ))
+                }
             };
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            super::cvars::write_cvar(&mut model, "g_accountUsesToken", if on { "1".to_string() } else { "0".to_string() });
+            super::cvars::write_cvar(
+                &mut model,
+                "g_accountUsesToken",
+                if on { "1".to_string() } else { "0".to_string() },
+            );
             Ok(())
         })?,
     )?;
@@ -1146,7 +1154,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "GetAccountExpansionLevel",
         lua.create_function(|lua, ()| {
-            Ok(lua.app_data_ref::<Model>().expect("model").glue.account_expansion)
+            Ok(lua
+                .app_data_ref::<Model>()
+                .expect("model")
+                .glue
+                .account_expansion)
         })?,
     )?;
 
@@ -1168,10 +1180,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
     // 12340 0x004DD440 reads SFile's trial mode. This host mounts full local MPQs;
     // it has no streaming/trial archive source, independently of account entitlement.
-    g.set(
-        "IsStreamingTrial",
-        lua.create_function(|_, ()| Ok(false))?,
-    )?;
+    g.set("IsStreamingTrial", lua.create_function(|_, ()| Ok(false))?)?;
 
     g.set(
         "SurveyNotificationDone",
@@ -1183,10 +1192,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, ()| Ok(flag(true)))?,
     )?;
 
-    g.set(
-        "IsMacClient",
-        lua.create_function(|_, ()| Ok(flag(false)))?,
-    )?;
+    g.set("IsMacClient", lua.create_function(|_, ()| Ok(flag(false)))?)?;
 
     g.set(
         "IsLinuxClient",
@@ -1251,10 +1257,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, _: MultiValue| Ok(Value::Nil))?,
     )?;
 
-    g.set(
-        "GetNumGameAccounts",
-        lua.create_function(|_, ()| Ok(0))?,
-    )?;
+    g.set("GetNumGameAccounts", lua.create_function(|_, ()| Ok(0))?)?;
 
     g.set(
         "GetGameAccountInfo",
@@ -1276,15 +1279,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, ()| Ok(0))?,
     )?;
 
-    g.set(
-        "GetBillingPlan",
-        lua.create_function(|_, ()| Ok(0))?,
-    )?;
+    g.set("GetBillingPlan", lua.create_function(|_, ()| Ok(0))?)?;
 
-    g.set(
-        "GetBillingTimeRested",
-        lua.create_function(|_, ()| Ok(0))?,
-    )?;
+    g.set("GetBillingTimeRested", lua.create_function(|_, ()| Ok(0))?)?;
 
     g.set(
         "StopAllSFX",
@@ -1563,7 +1560,8 @@ mod tests {
             .unwrap()
         };
         assert_eq!(read(&s), (None, Some(1), Some(1), None, None));
-        s.run("AcceptEULA() AcceptTerminationWithoutNotice()").unwrap();
+        s.run("AcceptEULA() AcceptTerminationWithoutNotice()")
+            .unwrap();
         assert_eq!(s.cvar("readEULA").as_deref(), Some("1"));
         assert_eq!(s.cvar("readTerminationWithoutNotice").as_deref(), Some("1"));
         assert_eq!(

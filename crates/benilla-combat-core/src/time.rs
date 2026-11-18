@@ -76,7 +76,9 @@ impl TickRate {
     pub const MAX_HZ: u16 = 1000;
 
     pub fn new(hz: u16) -> Option<Self> {
-        (Self::MIN_HZ..=Self::MAX_HZ).contains(&hz).then_some(Self(hz))
+        (Self::MIN_HZ..=Self::MAX_HZ)
+            .contains(&hz)
+            .then_some(Self(hz))
     }
 
     pub const fn hz(self) -> u16 {

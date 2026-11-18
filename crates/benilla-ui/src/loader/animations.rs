@@ -77,14 +77,14 @@ impl Loader<'_> {
         for scripts in children_named(el, "Scripts") {
             for handler in &scripts.children {
                 let handler_name = handler.tag.clone();
-                if let Some(func) =
-                    self.compile_handler(handler, &handler_name, chunk_owner, dbg)
-                {
-                    if let Err(error) = animation
-                        .call_method::<()>("SetScript", (handler_name.clone(), Some(func)))
+                if let Some(func) = self.compile_handler(handler, &handler_name, chunk_owner, dbg) {
+                    if let Err(error) =
+                        animation.call_method::<()>("SetScript", (handler_name.clone(), Some(func)))
                     {
-                        self.report
-                            .raise(format!("{dbg}: SetScript({handler_name:?}): {error}"), &error);
+                        self.report.raise(
+                            format!("{dbg}: SetScript({handler_name:?}): {error}"),
+                            &error,
+                        );
                     }
                 }
             }
@@ -96,7 +96,8 @@ impl Loader<'_> {
             let children = match self.lua().create_table() {
                 Ok(children) => children,
                 Err(error) => {
-                    self.report.raise(format!("{dbg}: animation children: {error}"), &error);
+                    self.report
+                        .raise(format!("{dbg}: animation children: {error}"), &error);
                     return Some(animation);
                 }
             };

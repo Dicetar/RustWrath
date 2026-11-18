@@ -716,17 +716,16 @@ mod tests {
     const DEFAULTS: &str = "bind W MOVEFORWARD\r\nbind UP MOVEFORWARD\r\nbind SPACE JUMP\r\n\
                             bind NUMPAD0 JUMP\r\nbind MOUSEWHEELUP CAMERAZOOMIN\r\n";
 
-pub(super) fn wrath_script() -> UiScript {
-    let mut s =
-        UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
-    s.set_default_bindings(parse_bindings_wtf(DEFAULTS));
-    s.load_binding_set(1);
-    s.register_bindings(&parse(CORE).unwrap());
-    s
-}
+    pub(super) fn wrath_script() -> UiScript {
+        let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        s.set_default_bindings(parse_bindings_wtf(DEFAULTS));
+        s.load_binding_set(1);
+        s.register_bindings(&parse(CORE).unwrap());
+        s
+    }
 
-fn script() -> UiScript {
-    let mut s = UiScript::new().unwrap();
+    fn script() -> UiScript {
+        let mut s = UiScript::new().unwrap();
         s.set_default_bindings(parse_bindings_wtf(DEFAULTS));
         s.load_binding_set(1);
         s.register_bindings(&parse(CORE).unwrap());
@@ -1348,28 +1347,46 @@ mod addon_persistence_tests {
             (2, "SELFCAST".into(), "ALT".into(), None),
             "the repeated SELFCAST keeps its first default"
         );
-        assert_eq!(s.eval::<Option<String>>("return GetModifiedClick('NOPE')").unwrap(), None);
+        assert_eq!(
+            s.eval::<Option<String>>("return GetModifiedClick('NOPE')")
+                .unwrap(),
+            None
+        );
 
-        s.eval::<()>("SetModifiedClick('CHATLINK', 'ctrl-button1')").unwrap();
-        for bad in ["SetModifiedClick('NOPE', 'ALT')", "SetModifiedClick('CHATLINK', 'SHIFT-Q')"] {
+        s.eval::<()>("SetModifiedClick('CHATLINK', 'ctrl-button1')")
+            .unwrap();
+        for bad in [
+            "SetModifiedClick('NOPE', 'ALT')",
+            "SetModifiedClick('CHATLINK', 'SHIFT-Q')",
+        ] {
             let e = s.run(bad).unwrap_err().to_string();
-            assert!(e.contains("SetModifiedClick(): Unknown action"), "{bad}: {e}");
+            assert!(
+                e.contains("SetModifiedClick(): Unknown action"),
+                "{bad}: {e}"
+            );
         }
         assert_eq!(
-            s.eval::<String>("return GetModifiedClick('CHATLINK')").unwrap(),
+            s.eval::<String>("return GetModifiedClick('CHATLINK')")
+                .unwrap(),
             "CTRL-BUTTON1"
         );
 
         s.set_modifiers(false, true, false);
         let during = |button: &str| {
             super::clicks::with_click_button(s.lua(), button, || {
-                s.eval::<Option<i64>>("return IsModifiedClick('CHATLINK')").unwrap()
+                s.eval::<Option<i64>>("return IsModifiedClick('CHATLINK')")
+                    .unwrap()
             })
         };
         assert_eq!(during("LeftButton"), Some(1), "ctrl-left click");
-        assert_eq!(during("RightButton"), None, "the chord names the left button");
         assert_eq!(
-            s.eval::<Option<i64>>("return IsModifiedClick('CHATLINK')").unwrap(),
+            during("RightButton"),
+            None,
+            "the chord names the left button"
+        );
+        assert_eq!(
+            s.eval::<Option<i64>>("return IsModifiedClick('CHATLINK')")
+                .unwrap(),
             Some(1),
             "outside a click the button is not asked"
         );
@@ -1382,7 +1399,8 @@ mod addon_persistence_tests {
         );
         s.eval::<()>("LoadBindings(0)").unwrap();
         assert_eq!(
-            s.eval::<String>("return GetModifiedClick('CHATLINK')").unwrap(),
+            s.eval::<String>("return GetModifiedClick('CHATLINK')")
+                .unwrap(),
             "SHIFT-BUTTON1",
             "set 0 is the rows' defaults"
         );
@@ -1398,7 +1416,8 @@ mod addon_persistence_tests {
         );
         s.eval::<()>("LoadBindings(1)").unwrap();
         assert_eq!(
-            s.eval::<String>("return GetModifiedClick('CHATLINK')").unwrap(),
+            s.eval::<String>("return GetModifiedClick('CHATLINK')")
+                .unwrap(),
             "CTRL-BUTTON1"
         );
     }

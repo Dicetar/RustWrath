@@ -66,12 +66,22 @@ impl NoticeFiring<'_, '_> {
                 let projected = crate::ui_quest_log::slot_views_of(&store.0, slots);
                 script.quest_log_changed(projected);
                 if let Some(trace) = &self.quest_trace {
-                    let scope = self.wrath_view.as_ref()
+                    let scope = self
+                        .wrath_view
+                        .as_ref()
                         .map(|v| (v.session_epoch, v.world_generation));
                     for slot in projected.iter().filter(|slot| slot.quest_id != 0) {
-                        trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::JournalProjection);
+                        trace.observe(
+                            scope,
+                            Some(slot.quest_id),
+                            crate::quest_trace::Stage::JournalProjection,
+                        );
                         if script.quest_log_index(slot.quest_id) != 0 {
-                            trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::JournalRowInModel);
+                            trace.observe(
+                                scope,
+                                Some(slot.quest_id),
+                                crate::quest_trace::Stage::JournalRowInModel,
+                            );
                         }
                     }
                 }
@@ -420,7 +430,8 @@ pub(crate) fn fire(
     match notice {
         // A unit with no token flags carries no bridge (`0x60c4a0`).
         FieldNotice::Unit { guid, id } => {
-            if matches!(id, 41 | 107) && script.target() == benilla_ui::script::UiTarget::Wrath335
+            if matches!(id, 41 | 107)
+                && script.target() == benilla_ui::script::UiTarget::Wrath335
                 && script.unit_is_held(guid)
             {
                 // Native slots own Wrath aura-list changes. Explicit Signal notices (including

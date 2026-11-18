@@ -468,10 +468,7 @@ pub fn adt_to_tile_mesh(adt_bytes: &[u8]) -> Result<TileMesh> {
         }
         for (grid, liquid) in crate::liquid::build_mh2o_meshes(mh2o, &positions) {
             let (x, y) = ((grid % 16) as u32, (grid / 16) as u32);
-            if let Some(chunk) = chunks
-                .iter_mut()
-                .find(|c| c.index_x == x && c.index_y == y)
-            {
+            if let Some(chunk) = chunks.iter_mut().find(|c| c.index_x == x && c.index_y == y) {
                 chunk.liquids.push(liquid);
             }
         }

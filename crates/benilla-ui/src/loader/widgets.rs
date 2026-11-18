@@ -596,7 +596,13 @@ impl Loader<'_> {
     /// booleans per level through the widget's own setters, the instance's level last. The
     /// template's `setAllPoints`, `hidden`, strata and anchors are the generic frame attributes
     /// every LoadXML reads ([`Loader::apply_geometry`]).
-    pub(super) fn apply_cooldown(&mut self, el: &Element, levels: &Levels, wrapper: &Table, dbg: &str) {
+    pub(super) fn apply_cooldown(
+        &mut self,
+        el: &Element,
+        levels: &Levels,
+        wrapper: &Table,
+        dbg: &str,
+    ) {
         if !el.tag.eq_ignore_ascii_case("Cooldown") {
             return;
         }

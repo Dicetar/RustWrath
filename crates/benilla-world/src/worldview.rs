@@ -79,17 +79,12 @@ pub fn run(build: BuildId) -> AppExit {
     // 1.12 discovery chain is the default (its archives do not carry WotLK common-2 WMOs).
     match benilla_formats::wow_data() {
         Some(data_dir) => {
-            let source = match std::env::var_os("WM_ASSET_MANIFEST")
-                .map(std::path::PathBuf::from)
-            {
+            let source = match std::env::var_os("WM_ASSET_MANIFEST").map(std::path::PathBuf::from) {
                 Some(manifest) => {
                     let profile =
                         std::env::var("WM_ASSET_PROFILE").unwrap_or_else(|_| "base".to_owned());
                     benilla_assets::register_profile_source(
-                        &mut app,
-                        &data_dir,
-                        &manifest,
-                        &profile,
+                        &mut app, &data_dir, &manifest, &profile,
                     )
                 }
                 None => benilla_assets::register_mpq_source(&mut app, &data_dir),

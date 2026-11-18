@@ -89,7 +89,11 @@ fn seq_record(bytes: &[u8], idx: usize) -> Option<usize> {
 }
 
 fn seq_box_min(bytes: &[u8], rec: usize) -> usize {
-    rec + if bytes.u32_at(4) == Some(264) { 0x20 } else { 0x24 }
+    rec + if bytes.u32_at(4) == Some(264) {
+        0x20
+    } else {
+        0x24
+    }
 }
 
 /// The Stand record: animation id 0 through [`seq_index`], else record 0; `None` only when the

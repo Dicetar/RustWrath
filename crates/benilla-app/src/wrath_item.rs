@@ -189,7 +189,10 @@ impl WrathItemRow {
 
     pub(crate) fn spell_charges(&self, i: u8) -> Option<i32> {
         (i < WRATH_SPELL_CHARGES)
-            .then(|| self.window.get(fields::ITEM_FIELD_SPELL_CHARGES + u16::from(i)))
+            .then(|| {
+                self.window
+                    .get(fields::ITEM_FIELD_SPELL_CHARGES + u16::from(i))
+            })
             .flatten()
             .map(|value| value as i32)
     }
@@ -232,7 +235,8 @@ impl WrathItemRow {
     /// The 3.3.5 "carries text" instance flag; 1.12's `ITEM_FIELD_ITEM_TEXT_ID` has no 3.3.5
     /// descriptor field, so this bit is the readable signal the bag fork and the reader use.
     pub(crate) fn has_item_text(&self) -> bool {
-        self.flags().is_some_and(|flags| flags & ITEM_FLAG_HAS_TEXT != 0)
+        self.flags()
+            .is_some_and(|flags| flags & ITEM_FLAG_HAS_TEXT != 0)
     }
 }
 
@@ -404,7 +408,8 @@ impl<'a> ItemRead<'a> {
     /// Whether the instance is readable: the 1.12 owner-only text id, or 3.3.5's
     /// `ITEM_FIELD_FLAGS & 0x200`.
     pub(crate) fn has_text(&self) -> bool {
-        self.item_text_id().is_some_and(|id| id != 0) || self.row.is_some_and(WrathItemRow::has_item_text)
+        self.item_text_id().is_some_and(|id| id != 0)
+            || self.row.is_some_and(WrathItemRow::has_item_text)
     }
 }
 
@@ -480,7 +485,11 @@ mod tests {
         assert_eq!(row.container_slot(0), Some(0x11));
         assert_eq!(row.container_slot(1), Some(0x22));
         // An item row never reads a slot array, even if its window carries bytes there.
-        let item = WrathItemRow::new(window(&[(fields::CONTAINER_FIELD_SLOT_1, 0x33)]), false, (1, 2));
+        let item = WrathItemRow::new(
+            window(&[(fields::CONTAINER_FIELD_SLOT_1, 0x33)]),
+            false,
+            (1, 2),
+        );
         assert_eq!(item.container_slot(0), None);
         assert_eq!(item.container_num_slots(), None);
     }

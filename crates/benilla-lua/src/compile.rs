@@ -35,7 +35,12 @@ pub fn compile(src: &[u8], chunkname: &[u8], heap: &mut Heap) -> R<Rc<Proto>> {
     crate::parse::parse(src, chunkname, heap)
 }
 
-pub fn compile_with_dialect(src: &[u8], chunkname: &[u8], heap: &mut Heap, dialect: crate::Dialect) -> R<Rc<Proto>> {
+pub fn compile_with_dialect(
+    src: &[u8],
+    chunkname: &[u8],
+    heap: &mut Heap,
+    dialect: crate::Dialect,
+) -> R<Rc<Proto>> {
     crate::parse::parse_with_dialect(src, chunkname, heap, dialect)
 }
 
@@ -57,13 +62,24 @@ pub fn fb2int(x: u32) -> u32 {
 
 pub(crate) fn int2fb_51(mut value: u32) -> u32 {
     let mut exponent = 0;
-    while value >= 16 { value = value.div_ceil(2); exponent += 1; }
-    if value < 8 { value } else { ((exponent + 1) << 3) | (value - 8) }
+    while value >= 16 {
+        value = value.div_ceil(2);
+        exponent += 1;
+    }
+    if value < 8 {
+        value
+    } else {
+        ((exponent + 1) << 3) | (value - 8)
+    }
 }
 
 pub(crate) fn fb2int_51(value: u32) -> u32 {
     let exponent = (value >> 3) & 31;
-    if exponent == 0 { value } else { ((value & 7) + 8) << (exponent - 1) }
+    if exponent == 0 {
+        value
+    } else {
+        ((value & 7) + 8) << (exponent - 1)
+    }
 }
 
 /// 5.1's `expkind`, with each kind's `info` in it.
@@ -886,8 +902,16 @@ impl<'a> Parser<'a> {
     /// `luaK_setreturns`: an open call keeps `nresults` values (-1: all).
     pub(crate) fn setreturns(&mut self, e: &Exp, nresults: i32) {
         match e.k {
-            Kind::Call(pc) => if let Op::Call(_, _, c) = &mut self.fs().code[pc] { *c = (nresults + 1) as u8; },
-            Kind::Vararg(pc) => if let Op::Vararg(_, count) = &mut self.fs().code[pc] { *count = (nresults + 1) as u8; },
+            Kind::Call(pc) => {
+                if let Op::Call(_, _, c) = &mut self.fs().code[pc] {
+                    *c = (nresults + 1) as u8;
+                }
+            }
+            Kind::Vararg(pc) => {
+                if let Op::Vararg(_, count) = &mut self.fs().code[pc] {
+                    *count = (nresults + 1) as u8;
+                }
+            }
             _ => {}
         }
     }
@@ -905,7 +929,9 @@ impl<'a> Parser<'a> {
             e.k = Kind::NonReloc(a);
         }
         if let Kind::Vararg(pc) = e.k {
-            let Op::Vararg(a, count) = &mut self.fs().code[pc] else { unreachable!() };
+            let Op::Vararg(a, count) = &mut self.fs().code[pc] else {
+                unreachable!()
+            };
             *count = 2;
             e.k = Kind::NonReloc(*a);
         }
@@ -1461,7 +1487,11 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn fields_per_flush(&self) -> u32 {
-        if self.lx.dialect.is_51() { 50 } else { FIELDS_PER_FLUSH }
+        if self.lx.dialect.is_51() {
+            50
+        } else {
+            FIELDS_PER_FLUSH
+        }
     }
 
     // ── functions ────────────────────────────────────────────────────────────────────────────

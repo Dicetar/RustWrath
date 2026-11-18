@@ -3930,10 +3930,10 @@ fn a_combat_word_follows_its_line_and_only_a_written_one() {
 
 #[test]
 fn wrath_combat_text_uses_the_unit_selected_by_lua() {
-    use benilla_ui::script::{UiScript, UiTarget, UnitGuids};
     use super::combat::{
         spell_kind, Fills, LineWord, Named, PendingCombat, UnitClass, Variant, HEALED,
     };
+    use benilla_ui::script::{UiScript, UiTarget, UnitGuids};
 
     let mut script = UiScript::with_target(UiTarget::Wrath335).unwrap();
     script.set_unit_guids(&UnitGuids {

@@ -111,7 +111,11 @@ impl Dbc {
 
     fn row(&self, id: u32) -> Option<Vec<u32>> {
         let at = *self.rows.get(&id)?;
-        Some((0..self.fields).map(|field| le_word(&self.bytes, at + 4 * field)).collect())
+        Some(
+            (0..self.fields)
+                .map(|field| le_word(&self.bytes, at + 4 * field))
+                .collect(),
+        )
     }
 
     fn string(&self, offset: u32) -> Option<String> {
@@ -132,7 +136,11 @@ struct Dbcs {
 
 impl Dbcs {
     fn attach(&mut self, chain: &Arc<Mutex<benilla_formats::Chain>>) {
-        if self.chain.as_ref().is_some_and(|held| Arc::ptr_eq(held, chain)) {
+        if self
+            .chain
+            .as_ref()
+            .is_some_and(|held| Arc::ptr_eq(held, chain))
+        {
             return;
         }
         self.chain = Some(chain.clone());
@@ -255,13 +263,21 @@ impl WrathTranslateScript {
     }
 }
 
-fn install(lua: &Lua, current: &Rc<RefCell<Current>>, dbcs: &Rc<RefCell<Dbcs>>) -> mlua::Result<()> {
+fn install(
+    lua: &Lua,
+    current: &Rc<RefCell<Current>>,
+    dbcs: &Rc<RefCell<Dbcs>>,
+) -> mlua::Result<()> {
     let globals = lua.globals();
     let held = current.clone();
     globals.set(
         "Raw",
         lua.create_function(move |_, index: u16| {
-            Ok(held.borrow().window.as_ref().and_then(|window| window.get(index)))
+            Ok(held
+                .borrow()
+                .window
+                .as_ref()
+                .and_then(|window| window.get(index)))
         })?,
     )?;
     let held = current.clone();
@@ -274,7 +290,9 @@ fn install(lua: &Lua, current: &Rc<RefCell<Current>>, dbcs: &Rc<RefCell<Dbcs>>) 
         "Set",
         lua.create_function(move |_, (index, value): (u16, f64)| {
             if !value.is_finite() {
-                return Err(mlua::Error::runtime(format!("Set({index}, {value}): not a number")));
+                return Err(mlua::Error::runtime(format!(
+                    "Set({index}, {value}): not a number"
+                )));
             }
             // Through i64 so a negative value keeps its two's-complement bits.
             held.borrow_mut().sets.push((index, value as i64 as u32));
@@ -334,7 +352,10 @@ pub(crate) fn poll_script(
             if overlay.is_some() {
                 info!("wrath translate: loaded {}", path.display());
             } else {
-                info!("wrath translate: {} removed; shipped script only", path.display());
+                info!(
+                    "wrath translate: {} removed; shipped script only",
+                    path.display()
+                );
             }
         }
         Err(error) => warn!(

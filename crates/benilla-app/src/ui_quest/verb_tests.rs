@@ -129,7 +129,8 @@ impl Client {
 
 fn row(quest_id: u32, icon: u32) -> QuestListEntry {
     QuestListEntry {
-        flags: 0, repeatable: false,
+        flags: 0,
+        repeatable: false,
         quest_id,
         icon,
         level: 1,

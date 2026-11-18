@@ -522,9 +522,16 @@ fn a_nan_offset_settles_instead_of_running_the_round_cap() {
         );
         (m.layout_rounds, m.layout_solves)
     };
-    assert!(rounds <= 4, "a NaN edge must settle in a few rounds, took {rounds}");
+    assert!(
+        rounds <= 4,
+        "a NaN edge must settle in a few rounds, took {rounds}"
+    );
     s.resolve();
-    assert_eq!(solves(&s), solved, "a settled NaN layout must close the gate");
+    assert_eq!(
+        solves(&s),
+        solved,
+        "a settled NaN layout must close the gate"
+    );
 }
 
 /// 12340's `SetPoint` refuses no anchor cycle, so an addon can close one over nodes that already
@@ -561,7 +568,11 @@ fn an_anchor_cycle_bails_early_and_stays_bailed_until_a_write() {
     )
     .expect("close the cycle");
 
-    let rounds_before = s.lua().app_data_ref::<Model>().expect("model").layout_rounds;
+    let rounds_before = s
+        .lua()
+        .app_data_ref::<Model>()
+        .expect("model")
+        .layout_rounds;
     s.resolve();
     let (rounds, solved) = {
         let m = s.lua().app_data_ref::<Model>().expect("model app_data");
@@ -574,12 +585,23 @@ fn an_anchor_cycle_bails_early_and_stays_bailed_until_a_write() {
         );
         (m.layout_rounds - rounds_before, m.layout_solves)
     };
-    assert!(rounds <= 70, "a cycle must bail on repetition, took {rounds} rounds");
+    assert!(
+        rounds <= 70,
+        "a cycle must bail on repetition, took {rounds} rounds"
+    );
 
     s.resolve();
-    assert_eq!(solves(&s), solved, "a bailed cycle must not re-run on an unmutated read");
+    assert_eq!(
+        solves(&s),
+        solved,
+        "a bailed cycle must not re-run on an unmutated read"
+    );
 
     s.run("b:SetWidth(30)").expect("write");
     s.resolve();
-    assert_eq!(solves(&s), solved + 1, "a write must re-open the gate on a bailed cycle");
+    assert_eq!(
+        solves(&s),
+        solved + 1,
+        "a write must re-open the gate on a bailed cycle"
+    );
 }

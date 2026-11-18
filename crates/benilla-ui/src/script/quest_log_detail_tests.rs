@@ -4,14 +4,16 @@
 
 use super::fixture::{collect, record, seat, slot};
 use super::QuestRecordView;
-use crate::script::{ItemTemplateView, PlayerReqState, QuestSlotView, UiScript, UnitState, QUEST_LOG_SLOTS};
+use crate::script::{
+    ItemTemplateView, PlayerReqState, QuestSlotView, UiScript, UnitState, QUEST_LOG_SLOTS,
+};
 
 /// A Wrath quest with a long description and a short objective line, seated in row 2.
 fn detailed_wrath_quest() -> UiScript {
     let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
     let mut q = record("Skirmish at Echo Ridge", 5, 9, "Northshire Valley");
-    q.description = "Your previous investigations are proof that the Echo Ridge Mine needs purging."
-        .into();
+    q.description =
+        "Your previous investigations are proof that the Echo Ridge Mine needs purging.".into();
     q.objectives_text = "Kill 12 Kobold Laborers, then return to Marshal McBride.".into();
     q.objectives[0] = super::fixture::kill(80, 12);
     seat(&mut s, &[(21, q, slot(21, 0, 0))]);
@@ -89,7 +91,9 @@ fn the_wrath_watch_helpers_answer_real_records_or_nothing() {
         )
         .unwrap());
     assert_eq!(s.eval::<i64>("return GetQuestSortIndex(2)").unwrap(), 1);
-    assert!(s.eval::<bool>("return SortQuestWatches() == false").unwrap());
+    assert!(s
+        .eval::<bool>("return SortQuestWatches() == false")
+        .unwrap());
 }
 
 /// `WatchFrame.lua:820` asks for the quest's special item: 12340's `m_startingItemId`
@@ -171,12 +175,11 @@ fn a_reward_list_answers_each_reward_once_in_index_order() {
             ))
             .unwrap());
     }
-    assert!(s
-        .eval::<bool>(
-            "local n = GetQuestLogChoiceInfo(4) return n == nil",
-        )
-        .unwrap(),
-        "there is no fourth choice");
+    assert!(
+        s.eval::<bool>("local n = GetQuestLogChoiceInfo(4) return n == nil",)
+            .unwrap(),
+        "there is no fourth choice"
+    );
 }
 
 /// 3.3.5's watch list holds up to 25 quests (`QuestLogFrame.lua:5`) where 1.12's holds five; add,
@@ -225,7 +228,11 @@ fn the_wrath_watch_list_holds_a_quest_once_however_often_it_is_armed() {
     let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
     seat(
         &mut s,
-        &[(145, record("The Gnoll's Paw", 12, 12, "Westfall"), slot(145, 0, 0))],
+        &[(
+            145,
+            record("The Gnoll's Paw", 12, 12, "Westfall"),
+            slot(145, 0, 0),
+        )],
     );
     // Row 1 is the zone header and row 2 the quest; the stock handlers pass the row.
     assert_eq!(
@@ -243,7 +250,8 @@ fn the_wrath_watch_list_holds_a_quest_once_however_often_it_is_armed() {
     assert_eq!(s.quest_log_watched(), vec![145]);
     assert_eq!(s.eval::<i64>("return GetQuestIndexForWatch(1)").unwrap(), 2);
     assert!(
-        s.eval::<bool>("return GetQuestIndexForWatch(2) == nil").unwrap(),
+        s.eval::<bool>("return GetQuestIndexForWatch(2) == nil")
+            .unwrap(),
         "no second watch resolves to the row"
     );
     assert!(s.eval::<bool>("return IsQuestWatched(2)").unwrap());
@@ -262,7 +270,11 @@ fn a_header_row_is_never_watched_on_either_target() {
         let mut s = UiScript::with_target(target).unwrap();
         seat(
             &mut s,
-            &[(145, record("The Gnoll's Paw", 12, 12, "Westfall"), slot(145, 0, 0))],
+            &[(
+                145,
+                record("The Gnoll's Paw", 12, 12, "Westfall"),
+                slot(145, 0, 0),
+            )],
         );
         s.run("AddQuestWatch(1) AddQuestWatch(99)").unwrap();
         assert_eq!(
@@ -282,7 +294,6 @@ fn a_header_row_is_never_watched_on_either_target() {
         assert!(s.quest_log_watched().is_empty(), "{target:?}");
     }
 }
-
 
 /// The log's rows by title, top to bottom.
 fn titles(s: &UiScript) -> Vec<String> {

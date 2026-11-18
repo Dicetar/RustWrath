@@ -151,9 +151,7 @@ pub(crate) fn wire_pos_in_target(target: UiTarget, bag: i64, slot1: u32) -> Opti
                 BAG_PLAYER_INVENTORY,
                 crate::wrath_inventory::WRATH_KEYRING_SLOT_FIRST + slot0,
             )),
-            EQUIPMENT_BAG if (1..=23).contains(&slot1) => {
-                Some((BAG_PLAYER_INVENTORY, slot0))
-            }
+            EQUIPMENT_BAG if (1..=23).contains(&slot1) => Some((BAG_PLAYER_INVENTORY, slot0)),
             EQUIPMENT_BAG
                 if (u32::from(crate::wrath_inventory::WRATH_BANK_BAG_SLOT_FIRST) + 1
                     ..=u32::from(crate::wrath_inventory::WRATH_BANK_BAG_SLOT_FIRST)
@@ -205,9 +203,7 @@ pub(crate) fn slot_guid(
             if slot0 < 23 {
                 return (inv.equipment(slot0) != 0).then(|| inv.equipment(slot0));
             }
-            let first = if inv.bank_bag_capacity()
-                == crate::wrath_inventory::WRATH_BANK_BAG_SLOTS
-            {
+            let first = if inv.bank_bag_capacity() == crate::wrath_inventory::WRATH_BANK_BAG_SLOTS {
                 crate::wrath_inventory::WRATH_BANK_BAG_SLOT_FIRST
             } else {
                 BANK_BAG_SLOT_FIRST
@@ -431,9 +427,7 @@ fn walk_inventory_filtered<T>(
         for i in 0..keyring_slots {
             let guid = inv.keyring(i);
             if guid != 0 {
-                if let Some(hit) =
-                    visit(BAG_PLAYER_INVENTORY, inv.keyring_slot_first() + i, guid)
-                {
+                if let Some(hit) = visit(BAG_PLAYER_INVENTORY, inv.keyring_slot_first() + i, guid) {
                     return Some(hit);
                 }
             }
@@ -573,11 +567,8 @@ pub(crate) fn action_count_in_target(
     entry: u32,
     template: Option<&benilla_protocol::ItemInfo>,
 ) -> u32 {
-    let inv = crate::wrath_inventory::PlayerInventory::new(
-        store,
-        None,
-        target == UiTarget::Wrath335,
-    );
+    let inv =
+        crate::wrath_inventory::PlayerInventory::new(store, None, target == UiTarget::Wrath335);
     action_count_in_player(&inv, objects, entry, template)
 }
 
@@ -658,11 +649,8 @@ pub(crate) fn find_item_in_target(
     entry: u32,
     search: ItemSearch,
 ) -> Option<(u8, u8, u64)> {
-    let inv = crate::wrath_inventory::PlayerInventory::new(
-        store,
-        None,
-        target == UiTarget::Wrath335,
-    );
+    let inv =
+        crate::wrath_inventory::PlayerInventory::new(store, None, target == UiTarget::Wrath335);
     find_item_in_player(&inv, objects, entry, search)
 }
 
@@ -782,15 +770,13 @@ pub(crate) fn has_key_in_player(
             return false;
         };
         // The bag family getter only reads (`0x5da08d`).
-        items
-            .template(entry, guid, Ask::Read)
-            .is_some_and(|t| {
-                if wrath {
-                    t.bag_family & 0x100 != 0
-                } else {
-                    t.bag_family == BAG_FAMILY_KEYS
-                }
-            })
+        items.template(entry, guid, Ask::Read).is_some_and(|t| {
+            if wrath {
+                t.bag_family & 0x100 != 0
+            } else {
+                t.bag_family == BAG_FAMILY_KEYS
+            }
+        })
     })
 }
 /// A test's object index: a world to seed with items, and the [`Objects`] lookup over it. Seed
@@ -1149,7 +1135,10 @@ pub(crate) fn object_name_item(
     template: &benilla_protocol::messages::ItemInfo,
     rolls: crate::items::RollCatalogs,
 ) -> String {
-    rolls.name(&template.name, object_link_numbers_item(read, Some(template)).1)
+    rolls.name(
+        &template.name,
+        object_link_numbers_item(read, Some(template)).1,
+    )
 }
 
 /// The three numbers `0x52ae00` passes `0x52adb0` for an item object: the permanent enchant
@@ -1160,10 +1149,7 @@ pub(crate) fn object_link_numbers(
     fields: &ObjectFields,
     template: Option<&benilla_protocol::messages::ItemInfo>,
 ) -> (u32, u32, u32) {
-    object_link_numbers_item(
-        crate::wrath_item::ItemRead::new(fields, None),
-        template,
-    )
+    object_link_numbers_item(crate::wrath_item::ItemRead::new(fields, None), template)
 }
 
 /// [`object_link_numbers`] over the typed item read.
@@ -1174,8 +1160,7 @@ pub(crate) fn object_link_numbers_item(
     // No record reads flags 0 (`0x5da2a0`): no charter.
     let charter =
         template.is_some_and(|t| t.flags & benilla_protocol::messages::ITEM_FLAG_CHARTER != 0);
-    let wrapped =
-        read.flags().unwrap_or(0) & benilla_protocol::messages::ITEM_DYNFLAG_WRAPPED != 0;
+    let wrapped = read.flags().unwrap_or(0) & benilla_protocol::messages::ITEM_DYNFLAG_WRAPPED != 0;
     if wrapped {
         return (0, 0, 0);
     }
@@ -1184,11 +1169,7 @@ pub(crate) fn object_link_numbers_item(
     } else {
         read.enchant(0).unwrap_or(0) as u32
     };
-    (
-        enchant,
-        read.random_properties_id(),
-        read.property_seed(),
-    )
+    (enchant, read.random_properties_id(), read.property_seed())
 }
 
 /// `0x52ae00`, the link of an item object: its record's quality and [`object_name`], with
@@ -1504,7 +1485,7 @@ mod tests {
         KEYRING_CONTAINER,
     };
     use benilla_protocol::ObjectFields;
-    use benilla_ui::script::{EQUIPMENT_BAG, UiTarget};
+    use benilla_ui::script::{UiTarget, EQUIPMENT_BAG};
 
     /// The 3.3.5 direct player-array bands: 28 bank slots, seven bank bags, 32 keyring slots.
     #[test]
@@ -1569,10 +1550,7 @@ mod tests {
             guid,
             ObjectFields::from_pairs(&[(2, 0x3), (3, 1234)]).into_created(ObjectType::Item),
         );
-        let store = ObjectFields::from_pairs(&[
-            (648, guid as u32),
-            (649, (guid >> 32) as u32),
-        ]);
+        let store = ObjectFields::from_pairs(&[(648, guid as u32), (649, (guid >> 32) as u32)]);
         let mut objects = objs.get();
         assert_eq!(
             find_item_in_target(
@@ -2475,13 +2453,19 @@ mod wrath_read_tests {
             "2 + 1 + 4, all three tail bands"
         );
         let seen = collect_inventory_in_player(&view, &objects, InventoryScope::QUEST_ITEMS);
-        assert!(seen.contains(&(255, 39 + 25, 0xB1)), "bank slot 25: {seen:?}");
+        assert!(
+            seen.contains(&(255, 39 + 25, 0xB1)),
+            "bank slot 25: {seen:?}"
+        );
         assert!(seen.contains(&(255, 67 + 6, 0xBA)), "bank bag 7: {seen:?}");
         assert!(
             seen.contains(&(255, 67 + 6, 0xB2)),
             "bank bag 7's contents: {seen:?}"
         );
-        assert!(seen.contains(&(255, 86 + 31, 0xB3)), "keyring slot 32: {seen:?}");
+        assert!(
+            seen.contains(&(255, 86 + 31, 0xB3)),
+            "keyring slot 32: {seen:?}"
+        );
     }
 
     /// The action count and the stack map keep mask 0 but still walk all 32 keyring slots.

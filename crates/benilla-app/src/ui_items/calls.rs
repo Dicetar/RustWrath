@@ -46,13 +46,16 @@ impl ItemSteps<'_, '_> {
     }
 
     pub(crate) fn item_suffix_name(&self, property: i32) -> Option<String> {
-        self.rolls.as_ref()?.catalog.suffix_name(property).map(str::to_owned)
+        self.rolls
+            .as_ref()?
+            .catalog
+            .suffix_name(property)
+            .map(str::to_owned)
     }
 
     pub(crate) fn item_count(&self, id: u32, bank: bool, uses: bool) -> Option<u32> {
         let store = &self.self_q.iter().next()?.0;
-        let wrath_target =
-            self.inventory.is_some() || crate::wrath::selected_from_env();
+        let wrath_target = self.inventory.is_some() || crate::wrath::selected_from_env();
         let inv = crate::wrath_inventory::PlayerInventory::new(
             store,
             self.inventory.as_deref(),
@@ -80,7 +83,9 @@ impl ItemSteps<'_, '_> {
             |_, _, guid| {
                 let amount = (|| {
                     let item = self.objects.object(guid)?;
-                    let info = self.items.template(item.object_entry()?, guid, Ask::New(&self.net))?;
+                    let info =
+                        self.items
+                            .template(item.object_entry()?, guid, Ask::New(&self.net))?;
                     if info.wrath_roll?.item_limit_category? == category {
                         item.item_stack_count()
                     } else {
@@ -103,7 +108,9 @@ impl ItemSteps<'_, '_> {
     }
 
     pub(crate) fn item_family(&self, id: u32) -> Option<u32> {
-        self.items.template(id, 0, Ask::Read).map(|item| item.bag_family)
+        self.items
+            .template(id, 0, Ask::Read)
+            .map(|item| item.bag_family)
     }
 
     /// Count raw GUID seats, so an occupied item whose object is still loading stays occupied.
@@ -115,8 +122,7 @@ impl ItemSteps<'_, '_> {
         }
 
         let store = &self.self_q.iter().next()?.0;
-        let wrath_target =
-            self.inventory.is_some() || crate::wrath::selected_from_env();
+        let wrath_target = self.inventory.is_some() || crate::wrath::selected_from_env();
         let inv = crate::wrath_inventory::PlayerInventory::new(
             store,
             self.inventory.as_deref(),
@@ -133,9 +139,7 @@ impl ItemSteps<'_, '_> {
                 0,
             )),
             super::KEYRING_CONTAINER => Some((
-                free_seats(u32::from(inv.keyring_capacity()), |i| {
-                    seat(inv.keyring(i))
-                })?,
+                free_seats(u32::from(inv.keyring_capacity()), |i| seat(inv.keyring(i)))?,
                 0x100, // AzerothCore ItemTemplate.h: BAG_FAMILY_MASK_KEYS.
             )),
             1..=11 => {
@@ -148,7 +152,9 @@ impl ItemSteps<'_, '_> {
                     return Some((0, 0));
                 }
                 let fields = self.objects.object(guid)?;
-                let template = self.items.template(fields.object_entry()?, guid, Ask::Read)?;
+                let template = self
+                    .items
+                    .template(fields.object_entry()?, guid, Ask::Read)?;
                 Some((
                     free_seats(fields.container_num_slots()?, |i| fields.container_slot(i))?,
                     template.bag_family,
@@ -291,11 +297,16 @@ impl ItemSteps<'_, '_> {
                     return;
                 };
                 let item_guid = match call {
-                    ItemCall::Repair { bag, slot } => u8::try_from(slot.saturating_sub(1))
-                        .ok()
-                        .and_then(|slot0| {
-                            slot_guid(&player_inv(me, typed_inventory, wrath_target), bag, slot0, objects)
-                        }),
+                    ItemCall::Repair { bag, slot } => {
+                        u8::try_from(slot.saturating_sub(1)).ok().and_then(|slot0| {
+                            slot_guid(
+                                &player_inv(me, typed_inventory, wrath_target),
+                                bag,
+                                slot0,
+                                objects,
+                            )
+                        })
+                    }
                     ItemCall::RepairWorn(id) => (1..=19)
                         .contains(&id)
                         .then(|| u8::try_from(id - 1).ok())
@@ -334,7 +345,9 @@ impl ItemSteps<'_, '_> {
                         trace_scope,
                         None,
                         Some(vendor),
-                        objects.object(guid).and_then(|fields| fields.object_entry()),
+                        objects
+                            .object(guid)
+                            .and_then(|fields| fields.object_entry()),
                         Some(1),
                         slot,
                         crate::quest_trace::Operation::Buy,
@@ -394,7 +407,12 @@ impl ItemSteps<'_, '_> {
                 };
                 let slot0 = u8::try_from(slot.saturating_sub(1)).unwrap_or(0);
                 let guid = store.and_then(|s| {
-                    slot_guid(&player_inv(s, typed_inventory, wrath_target), bag, slot0, objects)
+                    slot_guid(
+                        &player_inv(s, typed_inventory, wrath_target),
+                        bag,
+                        slot0,
+                        objects,
+                    )
                 });
                 let item = guid
                     .and_then(|guid| objects.object(guid))
@@ -410,7 +428,16 @@ impl ItemSteps<'_, '_> {
                         crate::quest_trace::Operation::Equip,
                     )
                 });
-                send_auto_equip(script, objects, items, net, bag_index, wire_slot, guid, interaction);
+                send_auto_equip(
+                    script,
+                    objects,
+                    items,
+                    net,
+                    bag_index,
+                    wire_slot,
+                    guid,
+                    interaction,
+                );
             }
             // The question the call raised (`0x5e16c6`), filed though the slot moved since: the
             // item is on the cursor, and the answer re-judges the slot.
@@ -549,7 +576,8 @@ fn answer_pending_equip(
             else {
                 return;
             };
-            let Some((bag_index, wire_slot)) = wire_pos_in_target(script.target(), bag, slot) else {
+            let Some((bag_index, wire_slot)) = wire_pos_in_target(script.target(), bag, slot)
+            else {
                 return;
             };
             send_auto_equip(

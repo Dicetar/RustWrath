@@ -644,33 +644,41 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         // they live inside this target branch: a Wrath glue VM is built with the Wrath target
         // (`ui_script::lifecycle`'s `glue_with_target`), and a vanilla one must not grow them.
         for (verb, maximum) in [("GetCVarMin", false), ("GetCVarMax", true)] {
-            lua.globals().set(verb, lua.create_function(move |lua, args: mlua::MultiValue| {
-                let name = cvar_arg(args.front()).ok_or_else(|| {
-                    mlua::Error::runtime(format!("Usage: {verb}(\"cvar\")"))
-                })?;
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                let key = name.to_ascii_lowercase();
-                if !model.cvars.contains_key(&key) {
-                    return Err(unknown_cvar(&name));
-                }
-                // 12340 0x004DDEA0 / 0x004DDF80. Shadow maximum needs a host capability
-                // projection; leave that limit absent until the renderer supplies it.
-                Ok(match key.as_str() {
-                    "farclip" => Some(if maximum { 1277.0 } else { 177.0 }),
-                    "extshadowquality" if !maximum => Some(0.0),
-                    _ => None,
-                })
-            })?)?;
+            lua.globals().set(
+                verb,
+                lua.create_function(move |lua, args: mlua::MultiValue| {
+                    let name = cvar_arg(args.front())
+                        .ok_or_else(|| mlua::Error::runtime(format!("Usage: {verb}(\"cvar\")")))?;
+                    let model = lua.app_data_ref::<Model>().expect("model app_data");
+                    let key = name.to_ascii_lowercase();
+                    if !model.cvars.contains_key(&key) {
+                        return Err(unknown_cvar(&name));
+                    }
+                    // 12340 0x004DDEA0 / 0x004DDF80. Shadow maximum needs a host capability
+                    // projection; leave that limit absent until the renderer supplies it.
+                    Ok(match key.as_str() {
+                        "farclip" => Some(if maximum { 1277.0 } else { 177.0 }),
+                        "extshadowquality" if !maximum => Some(0.0),
+                        _ => None,
+                    })
+                })?,
+            )?;
         }
         // Read the applied row, as GetCVar does; no default/pending value or second registry.
         // Behavioral reference: wowless/modules/cvars.lua C_CVar.GetCVarBool (string == "1").
-        lua.globals().set("GetCVarBool", lua.create_function(|lua, args: mlua::MultiValue| {
-            let Some(name) = cvar_arg(args.front()) else {
-                return Err(mlua::Error::runtime("Usage: GetCVarBool(\"cvar\")"));
-            };
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.cvars.get(&name.to_ascii_lowercase()).map(|slot| slot.value == "1"))
-        })?)?;
+        lua.globals().set(
+            "GetCVarBool",
+            lua.create_function(|lua, args: mlua::MultiValue| {
+                let Some(name) = cvar_arg(args.front()) else {
+                    return Err(mlua::Error::runtime("Usage: GetCVarBool(\"cvar\")"));
+                };
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                Ok(model
+                    .cvars
+                    .get(&name.to_ascii_lowercase())
+                    .map(|slot| slot.value == "1"))
+            })?,
+        )?;
     }
     // ── The Video options Multisampling dropdown ──────────────────────────────────────────────
     // As `OptionsFrame.lua` drives it: `_OnLoad` seeds the selection from

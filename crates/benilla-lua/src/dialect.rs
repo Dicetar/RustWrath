@@ -8,5 +8,7 @@ pub enum Dialect {
 }
 
 impl Dialect {
-    pub(crate) fn is_51(self) -> bool { self == Self::Wrath51 }
+    pub(crate) fn is_51(self) -> bool {
+        self == Self::Wrath51
+    }
 }

@@ -1495,7 +1495,11 @@ fn a_wrath_button_clears_its_label_with_an_absent_text() {
             .unwrap()
     };
 
-    assert_eq!(text_of("WrathButton"), None, "nil clears the existing label");
+    assert_eq!(
+        text_of("WrathButton"),
+        None,
+        "nil clears the existing label"
+    );
     assert!(
         s.eval::<bool>("return WrathButton:GetFontString() ~= nil")
             .unwrap(),
@@ -1511,7 +1515,11 @@ fn a_wrath_button_clears_its_label_with_an_absent_text() {
         None,
         "a boolean is NULL and clears"
     );
-    assert_eq!(text_of("WrathTableButton"), None, "a table is NULL and clears");
+    assert_eq!(
+        text_of("WrathTableButton"),
+        None,
+        "a table is NULL and clears"
+    );
     assert_eq!(
         text_of("WrathEmptiedButton"),
         None,

@@ -86,13 +86,15 @@ impl ProfilePolicy {
             self.dodge_iframe_len_ms,
         ];
         if windows.iter().any(|&value| value == 0) {
-            return Err(CombatError::InvalidConfig("policy ms windows must be non-zero"));
+            return Err(CombatError::InvalidConfig(
+                "policy ms windows must be non-zero",
+            ));
         }
-        if self.melee_light_stamina == 0
-            || self.melee_heavy_stamina == 0
-            || self.dodge_stamina == 0
+        if self.melee_light_stamina == 0 || self.melee_heavy_stamina == 0 || self.dodge_stamina == 0
         {
-            return Err(CombatError::InvalidConfig("policy stamina costs must be non-zero"));
+            return Err(CombatError::InvalidConfig(
+                "policy stamina costs must be non-zero",
+            ));
         }
         Ok(())
     }

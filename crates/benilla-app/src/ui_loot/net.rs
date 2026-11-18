@@ -197,13 +197,8 @@ impl WindowPacket<'_, '_> {
             return;
         }
         let owed = self.loot.owed_unlocks();
-        let closed = super::close_interaction(
-            &mut self.loot,
-            &mut self.latch,
-            Some(&self.net),
-            None,
-            None,
-        );
+        let closed =
+            super::close_interaction(&mut self.loot, &mut self.latch, Some(&self.net), None, None);
         if let Some(guid) = closed {
             debug!("net: loot emptied — release {guid:#x}");
         }

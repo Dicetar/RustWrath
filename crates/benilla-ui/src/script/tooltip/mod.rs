@@ -255,11 +255,15 @@ pub(super) fn fire_cleared(lua: &Lua, h: FrameHandle) {
 pub(super) fn fire_content(lua: &Lua, h: FrameHandle, script: &str) {
     let id = {
         let mut model = lua.app_data_mut::<Model>().expect("model");
-        if model.target != super::UiTarget::Wrath335 { return; }
+        if model.target != super::UiTarget::Wrath335 {
+            return;
+        }
         model.frame_id(h)
     };
     if let Err(error) = event::fire_widget_handler(lua, id, script, Vec::new()) {
-        lua.app_data_mut::<Model>().expect("model").record_lua_error(&error);
+        lua.app_data_mut::<Model>()
+            .expect("model")
+            .record_lua_error(&error);
     }
 }
 

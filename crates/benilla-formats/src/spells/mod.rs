@@ -52,9 +52,9 @@ use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{parse, u32_at};
 #[cfg(test)]
 use crate::dbc::f32_at;
+use crate::dbc::{parse, u32_at};
 
 const SPELL: &str = "DBFilesClient\\Spell.dbc";
 
@@ -392,10 +392,10 @@ impl SpellCatalog {
     /// The complete school mask. `SpellDisplay::school` remains the primary index for legacy
     /// consumers; WotLK hybrid-school decisions must use the mask.
     pub fn school_mask(&self, id: u32) -> Option<u32> {
-        self.school_masks
-            .get(&id)
-            .copied()
-            .or_else(|| self.get(id).and_then(|spell| 1u32.checked_shl(spell.school)))
+        self.school_masks.get(&id).copied().or_else(|| {
+            self.get(id)
+                .and_then(|spell| 1u32.checked_shl(spell.school))
+        })
     }
 
     /// All three WotLK family-flag words, low first; vanilla has only the first two.

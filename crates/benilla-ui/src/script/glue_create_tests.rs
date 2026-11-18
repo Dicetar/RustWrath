@@ -809,4 +809,3 @@ fn wrath_reset_and_set_selected_race_rehome_invalid_class() {
     assert_eq!(look(&s).race, 10);
     assert_eq!(look(&s).class, 2);
 }
-

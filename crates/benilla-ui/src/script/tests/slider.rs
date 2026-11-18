@@ -20,8 +20,7 @@ fn thumb_rect(quads: &[crate::script::ExtractedQuad], needle: &str) -> (f32, f32
 /// enabling it lets the same press jump the value. 1.12 has neither method.
 #[test]
 fn wrath_slider_enable_gates_a_thumb_press() {
-    let mut s =
-        crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    let mut s = crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
     s.set_screen_size(1024.0, 768.0);
     s.run(
         r#"

@@ -606,7 +606,9 @@ impl Proto {
                 }
                 Op::TailCall(x, nb) => reg(x as usize + (nb as usize).saturating_sub(1)),
                 Op::Vararg(x, count) => {
-                    if !self.vararg { fail(pc, "vararg read in a fixed-argument function"); }
+                    if !self.vararg {
+                        fail(pc, "vararg read in a fixed-argument function");
+                    }
                     reg(x as usize + (count as usize).saturating_sub(2));
                 }
                 // `Return(a, 1)` returns nothing, and its `a` may be the first free register.
@@ -621,8 +623,14 @@ impl Proto {
                     reg(x as usize + 2);
                     to(0, off);
                 }
-                Op::ForPrep51(x, off) => { reg(x as usize + 2); to(0, off); }
-                Op::ForLoop51(x, off) => { reg(x as usize + 3); to(0, off); }
+                Op::ForPrep51(x, off) => {
+                    reg(x as usize + 2);
+                    to(0, off);
+                }
+                Op::ForLoop51(x, off) => {
+                    reg(x as usize + 3);
+                    to(0, off);
+                }
                 Op::TForPrep(x, off) => {
                     reg(x as usize + 2);
                     to(0, off);
@@ -635,10 +643,14 @@ impl Proto {
                     to(1, 0);
                 }
                 Op::TForLoop51(x, nb) => {
-                    if nb == 0 { fail(pc, "generic for without variables"); }
+                    if nb == 0 {
+                        fail(pc, "generic for without variables");
+                    }
                     reg(x as usize + 2 + (nb as usize).max(3));
                     to(1, 0);
-                    if !matches!(self.code.get(pc + 1), Some(Op::Jmp(_))) { fail(pc, "generic for missing its back jump"); }
+                    if !matches!(self.code.get(pc + 1), Some(Op::Jmp(_))) {
+                        fail(pc, "generic for missing its back jump");
+                    }
                 }
                 Op::SetList(x, _, cnt) => reg(x as usize + cnt as usize),
                 Op::Closure(x, i) => {

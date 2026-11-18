@@ -20,8 +20,8 @@
 //!
 //! Off (the switch, the mode or the world), nothing is claimed and the cursor is the stock one.
 
-use bevy::prelude::*;
 use benilla_protocol::messages::ObjectType;
+use bevy::prelude::*;
 
 use super::config::SoulsKey;
 use super::targets::{attackable, off_facing};
@@ -191,7 +191,11 @@ pub(super) fn claim_inputs(
     let souls = souls_on(&view) && in_world;
     let active = souls && config.features.er_controls;
     if !active {
-        let shifted = if souls { shifted_keys(&config) } else { Vec::new() };
+        let shifted = if souls {
+            shifted_keys(&config)
+        } else {
+            Vec::new()
+        };
         if er.active || er.orbit || er.shifted != shifted {
             *er = ErControls {
                 shifted,
@@ -264,7 +268,12 @@ pub(super) fn claim_inputs(
 type Things<'w, 's> = Query<
     'w,
     's,
-    (Entity, &'static Guid, &'static ObjectStore, &'static GlobalTransform),
+    (
+        Entity,
+        &'static Guid,
+        &'static ObjectStore,
+        &'static GlobalTransform,
+    ),
     Without<SelfPlayer>,
 >;
 
@@ -336,8 +345,10 @@ pub(super) fn interact_key(
         let off = off_facing(facing, to).abs();
         (off <= front).then_some(flat + off * INTERACT_ANGLE_COST)
     };
-    let selected = selection.target.and_then(|entity| things.get(entity).ok()).and_then(
-        |(entity, guid, store, at)| {
+    let selected = selection
+        .target
+        .and_then(|entity| things.get(entity).ok())
+        .and_then(|(entity, guid, store, at)| {
             let to = at.translation() - player.pos;
             let near = Vec2::new(to.x, to.z).length() <= INTERACT_YARDS
                 && to.y.abs() <= INTERACT_HEIGHT_YARDS;
@@ -345,8 +356,7 @@ pub(super) fn interact_key(
                 return None;
             }
             usable(&relations, guid.0, store).map(|window| (entity, window))
-        },
-    );
+        });
     let pick = selected.or_else(|| {
         things
             .iter()
@@ -383,7 +393,13 @@ mod tests {
         assert!(!er.claims_key(KeyCode::Space), "inactive claims nothing");
         er.active = true;
         er.orbit = true;
-        for key in [KeyCode::Space, KeyCode::KeyQ, KeyCode::KeyE, KeyCode::KeyF, KeyCode::KeyR] {
+        for key in [
+            KeyCode::Space,
+            KeyCode::KeyQ,
+            KeyCode::KeyE,
+            KeyCode::KeyF,
+            KeyCode::KeyR,
+        ] {
             assert!(er.claims_key(key), "{key:?}");
         }
         assert!(!er.claims_key(KeyCode::Digit1), "the hotbar keeps its keys");
@@ -394,7 +410,10 @@ mod tests {
         assert!(er.claims_mouse(MouseButton::Left) && er.claims_mouse(MouseButton::Middle));
         assert!(er.hides_cursor());
         er.summon_cursor();
-        assert!(!er.claims_mouse(MouseButton::Left), "the cursor gives the buttons back");
+        assert!(
+            !er.claims_mouse(MouseButton::Left),
+            "the cursor gives the buttons back"
+        );
         assert!(er.claims_mouse(MouseButton::Back));
         assert!(!er.hides_cursor());
         assert!(er.shifted.contains(&SoulsKey::Mouse(MouseButton::Left)));

@@ -479,10 +479,10 @@ fn cannot_be_resurrected(store: &benilla_protocol::ObjectFields, spells: Option<
         return false;
     };
     store.unit_aura_ids().any(|id| {
-        spells
-            .catalog
-            .get(id)
-            .is_some_and(|d| d.effect_apply_aura.contains(&SPELL_AURA_PREVENT_RESURRECTION))
+        spells.catalog.get(id).is_some_and(|d| {
+            d.effect_apply_aura
+                .contains(&SPELL_AURA_PREVENT_RESURRECTION)
+        })
     })
 }
 
@@ -1302,7 +1302,10 @@ mod tests {
         assert!(
             matches!(
                 sent.first(),
-                Some(ClientCommand::CancelCast { spell_id: FIREBALL, .. })
+                Some(ClientCommand::CancelCast {
+                    spell_id: FIREBALL,
+                    ..
+                })
             ),
             "the cancel leads the use: {sent:?}"
         );
@@ -1531,7 +1534,13 @@ mod tests {
         press_soulstone(&mut app);
         let sent: Vec<_> = rx.try_iter().collect();
         assert!(
-            matches!(sent[..], [ClientCommand::CancelCast { spell_id: FIREBALL, .. }]),
+            matches!(
+                sent[..],
+                [ClientCommand::CancelCast {
+                    spell_id: FIREBALL,
+                    ..
+                }]
+            ),
             "only the cancel goes out: {sent:?}"
         );
     }
@@ -1656,7 +1665,10 @@ mod self_res_tests {
     use benilla_protocol::ObjectFields;
     use bevy::prelude::*;
 
-    use super::{death_screen_target, drive_death_look, resolve_self_res, SelfRes, SPELL_EFFECT_SELF_RESURRECT};
+    use super::{
+        death_screen_target, drive_death_look, resolve_self_res, SelfRes,
+        SPELL_EFFECT_SELF_RESURRECT,
+    };
     use crate::items::Items;
     use crate::net::{ObjectStore, SelfPlayer};
     use crate::ui_action::Spells;
@@ -1922,7 +1934,9 @@ mod self_res_tests {
 
         // Leaving the world while a ghost drops the pass, as the shutdown's
         // `CGWorldFrame::SetScreenEffect(0)` does (`Client.cpp:911`, `0x4f7020`).
-        app.world_mut().resource_mut::<crate::net::NetStatus>().connected = false;
+        app.world_mut()
+            .resource_mut::<crate::net::NetStatus>()
+            .connected = false;
         app.update();
         assert_eq!(
             app.world()

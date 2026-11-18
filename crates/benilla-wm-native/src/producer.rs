@@ -6,7 +6,9 @@
 
 use crate::error::Result;
 use crate::observation::{
-    AurasObservation, CastObservation, ChannelObservation, CombatObservation, DeathObservation, LastCastEndObservation, Observation, Position, ResourceObservation, TargetObservation, Visibility,
+    AurasObservation, CastObservation, ChannelObservation, CombatObservation, DeathObservation,
+    LastCastEndObservation, Observation, Position, ResourceObservation, TargetObservation,
+    Visibility,
 };
 
 /// Producer position with bridge-facing orientation naming. GLM's `PositionSnapshot::o` maps here.
@@ -89,10 +91,7 @@ pub trait ProducerSnapshot {
 }
 
 /// Converts one source snapshot into the bridge's versioned observation.
-pub fn observation_from_producer<P>(
-    source: &P,
-    exported_at_unix_ms: i64,
-) -> Result<Observation>
+pub fn observation_from_producer<P>(source: &P, exported_at_unix_ms: i64) -> Result<Observation>
 where
     P: ProducerSnapshot + ?Sized,
 {
@@ -110,12 +109,7 @@ where
         source.zone_id(),
         source.area_id(),
         source.position_observed_at_unix_ms(),
-        Position::new(
-            position.x,
-            position.y,
-            position.z,
-            position.orientation,
-        )?,
+        Position::new(position.x, position.y, position.z, position.orientation)?,
         source.target()?,
         source.combat(),
         source.resources()?,

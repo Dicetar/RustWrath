@@ -89,7 +89,9 @@ pub fn unpack_moves(opcode: u16, payload: &[u8]) -> Result<Option<Vec<Packet>>> 
     Ok(Some(packets))
 }
 
-fn head_bytes(v: &[u8]) -> Vec<u8> { v.to_vec() }
+fn head_bytes(v: &[u8]) -> Vec<u8> {
+    v.to_vec()
+}
 
 /// Read exactly `n` bytes, having already consumed at least one byte of this packet. A
 /// timeout here is FATAL: bytes are lost and the stream boundary is unknowable, so the error
@@ -98,7 +100,12 @@ fn read_exact(r: &mut TcpStream, n: usize) -> Result<Vec<u8>> {
     let mut buf = vec![0u8; n];
     match r.read_exact(&mut buf) {
         Ok(()) => Ok(buf),
-        Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) =>
+        {
             anyhow::bail!("timed out mid-packet: framing lost, connection unusable (fatal)")
         }
         Err(_) => anyhow::bail!("world stream ended mid-packet (fatal)"),
@@ -122,8 +129,11 @@ impl WorldConnection {
     pub fn connect(addr: &str) -> Result<(Self, [u8; 4])> {
         use std::net::ToSocketAddrs;
         let timeout = std::time::Duration::from_secs(10);
-        let mut stream = addr.to_socket_addrs()?.map(|a| TcpStream::connect_timeout(&a, timeout))
-            .find_map(Result::ok).with_context(|| format!("connecting to {addr}"))?;
+        let mut stream = addr
+            .to_socket_addrs()?
+            .map(|a| TcpStream::connect_timeout(&a, timeout))
+            .find_map(Result::ok)
+            .with_context(|| format!("connecting to {addr}"))?;
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(timeout))?;
         let head = read_exact(&mut stream, 4)?;
@@ -136,7 +146,15 @@ impl WorldConnection {
         // Layout (`WorldSocket.cpp:222-230`): u32(1), seed[4], 32 random bytes.
         let mut seed = [0u8; 4];
         seed.copy_from_slice(&payload[4..8]);
-        Ok((Self { stream, crypt: None, recording: None, unpacked: VecDeque::new() }, seed))
+        Ok((
+            Self {
+                stream,
+                crypt: None,
+                recording: None,
+                unpacked: VecDeque::new(),
+            },
+            seed,
+        ))
     }
 
     /// Send `CMSG_AUTH_SESSION` (plaintext header) with the digest proof, then arm the header
@@ -167,8 +185,12 @@ impl WorldConnection {
         let header = ClientHeader::new(opcode::CMSG_AUTH_SESSION, p.len())
             .context("AUTH_SESSION payload out of range")?
             .encode();
-        self.stream.write_all(&header).context("sending AUTH_SESSION header")?;
-        self.stream.write_all(&p).context("sending AUTH_SESSION payload")?;
+        self.stream
+            .write_all(&header)
+            .context("sending AUTH_SESSION header")?;
+        self.stream
+            .write_all(&p)
+            .context("sending AUTH_SESSION payload")?;
         self.crypt = Some(AuthCrypt::new(session_key));
         Ok(())
     }
@@ -232,7 +254,12 @@ impl WorldConnection {
         match self.stream.read(&mut first) {
             Ok(1) => {}
             Ok(_) => anyhow::bail!("world stream closed"),
-            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
                 return Err(anyhow::Error::new(Idle))
             }
             Err(e) => return Err(anyhow::Error::new(e).context("world stream read error")),
@@ -265,7 +292,10 @@ impl WorldConnection {
         }
         let header = crate::ServerHeader::decode(&head).context("decoding server header")?;
         if std::env::var("WRATH_DEBUG").is_ok() {
-            println!("[recv] opcode={:#06x} len={}", header.opcode, header.payload_len);
+            println!(
+                "[recv] opcode={:#06x} len={}",
+                header.opcode, header.payload_len
+            );
         }
         let payload = if header.payload_len > 0 {
             read_exact(&mut self.stream, header.payload_len)?
@@ -275,7 +305,10 @@ impl WorldConnection {
         if let Some(rec) = self.recording.as_mut() {
             rec.push((header.opcode, payload.clone()));
         }
-        Ok(Packet { opcode: header.opcode, payload })
+        Ok(Packet {
+            opcode: header.opcode,
+            payload,
+        })
     }
 }
 
@@ -297,7 +330,10 @@ mod tests {
     /// guid `0x05` (mask 0x01), counters 7 and 8, each record `u8 (2 + 2 + 4)`.
     fn login_compound() -> Vec<u8> {
         let mut records = Vec::new();
-        let orders = [(opcode::SMSG_FORCE_MOVE_ROOT, 7u32), (opcode::SMSG_MOVE_SET_HOVER, 8)];
+        let orders = [
+            (opcode::SMSG_FORCE_MOVE_ROOT, 7u32),
+            (opcode::SMSG_MOVE_SET_HOVER, 8),
+        ];
         for (op, counter) in orders {
             records.push(8u8);
             records.extend_from_slice(&op.to_le_bytes());
@@ -338,7 +374,10 @@ mod tests {
         );
 
         // Any other opcode passes through; a record running past the end is refused.
-        assert_eq!(unpack_moves(opcode::SMSG_FORCE_MOVE_ROOT, &plain).unwrap(), None);
+        assert_eq!(
+            unpack_moves(opcode::SMSG_FORCE_MOVE_ROOT, &plain).unwrap(),
+            None
+        );
         plain.truncate(plain.len() - 1);
         assert!(unpack_moves(opcode::SMSG_MULTIPLE_MOVES, &plain).is_err());
     }
