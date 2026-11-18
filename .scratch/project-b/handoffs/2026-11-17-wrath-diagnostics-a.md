@@ -54,7 +54,8 @@ Started from the owner's runtime diagnostics rather than a report. The latest po
    `default_of` for the five names.
 3. `wrath_natives::tests::wrath_ui_contracts_read_real_player_pet_and_title_state` now checks
    `IsPVPTimerRunning` nil without the bit and 1 with `0x40000`, plus `GetPVPTimer`: 301000 with
-   the flag off, 301000 at the first true observation, and 291000 after ten UI seconds.
+   the flag off, 301000 at the first true observation, 291000 after ten UI seconds, 999 once
+   the window expires, and a reset to 301000 when the flag clears.
 
 Three focused cases (two extended); nothing else was added or run.
 

@@ -2507,6 +2507,21 @@ mod tests {
         assert_eq!(s.eval::<f64>("return GetPVPTimer()").unwrap(), 301_000.0);
         s.set_now(110.0);
         assert_eq!(s.eval::<f64>("return GetPVPTimer()").unwrap(), 291_000.0);
+        s.set_unit("player", Some(UnitState::default()));
+        assert!(s.eval::<bool>("return IsPVPTimerRunning() == nil").unwrap());
+        assert_eq!(s.eval::<f64>("return GetPVPTimer()").unwrap(), 301_000.0);
+        s.set_unit(
+            "player",
+            Some(UnitState {
+                exists: true,
+                player_flags: 0x0004_0006,
+                ..Default::default()
+            }),
+        );
+        s.set_now(200.0);
+        assert!(s.eval::<bool>("return IsPVPTimerRunning() == 1").unwrap());
+        s.set_now(600.0);
+        assert_eq!(s.eval::<f64>("return GetPVPTimer()").unwrap(), 999.0);
         s.set_title_count(193);
         assert_eq!(s.eval::<u32>("return GetNumTitles()").unwrap(), 193);
         s.set_known_languages(vec!["Common".into(), "Dwarvish".into()]);
