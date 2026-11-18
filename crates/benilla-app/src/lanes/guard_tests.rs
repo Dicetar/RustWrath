@@ -699,6 +699,9 @@ const READ_ONLY_TO_HANDLERS: &[&str] = &[
     "::OwnControlLost",
     "::Player",
     "::player::state::StandPending",
+    // The Souls bodies whose stock swing the attacker-state handler skips; `souls::server`'s link
+    // system fills it in `Update`.
+    "::souls::server::SwingMute",
     // The page cache the host's page turns read.
     "::ui_item_text::PageTexts",
     // The streamed terrain the host's minimap ground cast traces.
