@@ -85,7 +85,8 @@ parry = "F12"
 | Jump attacks (light/heavy in the air) | done; needs `JumpLight`/`JumpHeavy` rows, which the owner's kit lacks | `souls/input.rs` | `jump_attacks` |
 | Left-hand chain | done; needs `LeftLight1…` or `PairedLight1…` rows (the importer's opt-in) | `souls/input.rs` | `left_hand` |
 | Parry: the `Parry` row's `iframes` window deflects a hit | done; needs a `Parry` row; with the server script a parried strike opens a ×3 riposte on that creature for 1.5 s | `souls/input.rs` | `parry` |
-| Clip retarget (ER motion on the WoW rig) | not done (step F) | — | — |
+| Clip retarget: each kit action plays the ER clip it was read from on our own rig (spine, head, arms, legs by role; pelvis height) | done (local player only); needs `benilla-config/combat/player_anims.bin` | `souls/retarget.rs` | `retarget` |
+| ER locomotion: idle, guard, walk/run/sprint by direction, crouch idle/walk/run, airborne | done (local player only; clip rates are estimates) | `souls/retarget.rs` | `retarget_locomotion` |
 
 ## The server half (ALE Lua, no rebuild)
 
@@ -99,7 +100,9 @@ Install and side effects: `.scratch/project-b/server-rebuild-batch.md` item 2.
 
 ## Still open
 
-- Clip retarget (ER motion on the WoW rig) (step F).
+- Retarget checks in game: the bone roles are found from the bind pivots and attachments, not
+  checked against the HumanMale skeleton; hand roll and the weapon's angle come from the forearm
+  aim; the locomotion clip speeds are estimates. Other players still show stock clips.
 - Kit rows for jumps, the left hand and the parry (`kit_import` options), then tuning.
 - Creature-specific strike animations (the server plays the generic one-hand attack emote).
 - The client reads the stealth CREEP flag from `UNIT_FIELD_BYTES_1` byte 3 (`unit_is_stealthed`),

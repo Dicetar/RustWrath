@@ -27,11 +27,15 @@
 //! - [`targets`]: lock-on, and the hit test of the kit's blade against attackable units.
 //! - [`server`]: the link to the server script: mode, hit reports, sprint, enemy strikes.
 //! - [`hud`]: the stamina bar, the mode chip, the lock-on marker and the strike bars.
+//! - [`retarget`]: the Elden Ring clips on the player's own rig: each kit action plays the clip it
+//!   was read from, and (on its own switch) locomotion plays the ER idle, walk, run, sprint,
+//!   crouch and airborne loops.
 
 mod config;
 mod drive;
 mod hud;
 mod input;
+mod retarget;
 mod server;
 mod targets;
 
@@ -81,6 +85,7 @@ impl Plugin for SoulsPlugin {
                     .chain()
                     .after(PlaybackSet),
             );
+        retarget::plugin(app);
     }
 }
 

@@ -47,6 +47,11 @@ impl RigPose {
         self.has_billboard
     }
 
+    /// The bind-pose local translations, one per bone in skeleton order.
+    pub fn binds(&self) -> &[Vec3] {
+        &self.binds
+    }
+
     /// The rig at bind pose, composed; anchors come from [`Self::anchor_for`].
     pub fn new(joints_root: Entity, skeleton: &ModelSkeleton) -> Self {
         let locals: Vec<Transform> = skeleton

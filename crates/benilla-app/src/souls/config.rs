@@ -26,6 +26,10 @@
 //! server = true       # talk to the server script (integrations/ale/rustwrath_souls.lua): hits
 //!                     # are reported for Souls damage, sprint raises the run speed
 //! enemy_strikes = true # judge the server's telegraphed enemy strikes (dodge, guard, parry)
+//! retarget = true     # kit actions pose the player's rig from the Elden Ring clip each row was
+//!                     # read from (benilla-config/combat/player_anims.bin)
+//! retarget_locomotion = true # idle, guard, walk, run, sprint, crouch and airborne play the
+//!                     # Elden Ring locomotion clips too
 //!
 //! [binds]             # key names: A-Z, 0-9, F1-F12, Space, Tab, Backquote, LeftShift,
 //! light = "F9"        # LeftCtrl, LeftAlt, CapsLock, MouseLeft, MouseRight, MouseMiddle,
@@ -72,6 +76,8 @@ pub(crate) struct SoulsFeatures {
     pub(crate) parry: bool,
     pub(crate) server: bool,
     pub(crate) enemy_strikes: bool,
+    pub(crate) retarget: bool,
+    pub(crate) retarget_locomotion: bool,
 }
 
 impl Default for SoulsFeatures {
@@ -99,6 +105,8 @@ impl Default for SoulsFeatures {
             parry: true,
             server: true,
             enemy_strikes: true,
+            retarget: true,
+            retarget_locomotion: true,
         }
     }
 }

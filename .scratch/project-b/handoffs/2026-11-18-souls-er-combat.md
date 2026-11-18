@@ -73,6 +73,26 @@ choices made are below. Status table: [the roadmap](../../../docs/architecture/s
 - Found, not fixed: `unit_is_stealthed` reads byte 3 of `UNIT_FIELD_BYTES_1`; AzerothCore's CREEP
   flag is byte 2 (roadmap, Still open).
 
+## Fifth slice: the Elden Ring clips on our rig (same day)
+
+- `souls/retarget.rs` reads the reference's bake `player_anims.bin` (model-space joint positions
+  at 30 fps plus head axes, root motion stripped) from `benilla-config/combat/`, on a worker
+  thread when F10 turns the mode on with a retarget switch set (and again when the file is newer).
+- It maps the ER skeleton onto the player's M2 rig by role, from the bind pivots (identity bind
+  rotations), the Head key bone and the hand/elbow attachments: the spine (pelvis to head) gets
+  whole frames with the side blended from hips to shoulders; the head takes the bake's axes; arm
+  and leg bones turn along the shortest arc from their parent's frame to the ER limb direction;
+  the pelvis drops with the ER pelvis. Other bones keep the stock clip.
+- It runs in `PosePost` before the strafe twist. A running kit action plays the ER clip named by
+  its `source`, at the action's frame; otherwise (switch `retarget_locomotion`) idle, guard,
+  walk/run by direction, sprint, crouch idle/walk/run and the airborne loop, the rate following
+  the real speed. It stands down for casts, emotes, swims and mounts (any stock clip outside the
+  gait set) and for a masked overlay.
+- Hot toggle: clip changes blend over the clip's blend frames; F10 off, both switches off or no
+  file fade back to stock in 0.2 s and then write nothing.
+- New switches `retarget` and `retarget_locomotion`; new accessors `RigPose::binds`,
+  `BodyTwist::key_bones`/`last_written`; `apply_body_twist` is `pub(crate)` for the ordering.
+
 ## Choices made without the owner
 
 - Default binds: light `F9`, heavy `F8`, dodge `V`, guard `F7`, lock-on middle mouse.
@@ -105,6 +125,10 @@ Set-Content D:\Projects\wow\client\benilla-config\combat\souls.toml "[features]`
   `souls/drive.rs` (1), `souls/targets.rs` (3), `souls.rs` (1). CI result: see the branch's run.
 - The server script is not installed or run. Until the owner copies it into `run\lua_scripts`,
   damage is the stock auto-attack the hit engages. New unit cases in `souls/server.rs` (3).
-- WoW stand-in clips still play (no retarget); the crouch has no pose.
+- The retarget is not seen in game: the bone roles are found geometrically, not checked against
+  the HumanMale skeleton; hand roll and the weapon angle follow the forearm; the locomotion
+  clip speeds are estimates. It poses only our own body; others see stock clips. It needs
+  `player_anims.bin` copied in (the log says where when it is missing). New unit cases in
+  `souls/retarget.rs` (2).
 - Jump, left-hand and parry presses wait for kit rows; poise numbers are authored stand-ins
   until the server sends poise damage.
