@@ -1,15 +1,15 @@
 # Live code: patch every workspace crate the client links
 
-Status: landed on `main`. The sixth dx commit (Windows TLS and exe-static reach) is not
-compiled or run.
+Status: landed on `main`. With the sixth dx commit (Windows TLS and exe-static reach), a
+nine-crate patch landed in the running client and the client kept running.
 Owner: Claude Code (Opus 5.5)
 Branch: fix/live-code-dx-workspace (landed `fa707857`), fix/live-code-dx-chkstk (landed
 `84ef7600`), then live-dx3, live-dx4, live-dx5, fix/live-code-dx-windows-tls
 Issue: none. Owner session 2026-11-17: the trainer/game-object fix did not patch into the
 running client, and the first patch that did land crashed it.
-Next: the owner reinstalls dx (`tools/install-live-dx.ps1`) and relaunches with `-LiveCode`;
-apply `eb410dd7` live and check that the patch lands and the client keeps running. dx.log
-records `patch image base: 0x…` for each patch.
+Next: the owner presses `r` in dx (or relaunches) and checks the trainer, a chest and an ore
+vein; then a later Wrath decoder edit should patch into the session thread. Commit the
+`-LiveCode` `Cargo.lock` change on a branch.
 
 Date 2026-11-17. Worktree `D:/Projects/wow/worktrees/live-dx`, cut from `origin/main` `7114694f`.
 
@@ -189,6 +189,50 @@ Not covered:
 
 - A cross-crate patch landed (23:24:27) but crashed 11 s later on Windows TLS. No patch has
   yet run to completion.
-- The sixth dx commit is not compiled. Whether the loader honours the chosen base in the
-  client, and whether link.exe accepts the TLS objects without warnings, are unverified.
+- The trainer, chest and ore-vein behaviour after the live patch is not yet checked in game.
+
+## The sixth commit ran (2026-11-18)
+
+The owner installed it (marker `D7E9D3B4…`) and relaunched at 02:20:56. The client connected,
+and `eb410dd7` was applied in the live worktree at 02:23:29. dx replayed the same nine crates
+(201 s) and linked the patch at `patch image base: 0x7ff67b460000`. The client logged "live
+code: patch 1 landed" at 02:27:07, re-derived the spell catalog and kept running and logging:
+item enchants at 02:27:34, and the process still responding at 02:28:05. The previous patch
+died 11 s after landing.
 - The trainer, chest and ore-vein behaviour of `eb410dd7` has not been checked in game.
+
+## The patched client still could not open a chest (2026-11-18)
+
+The owner reported that a chest still did not open in the patched client. Two things kept
+`eb410dd7` out of it although the patch landed:
+
+- **The Wrath session thread had no live-code boundary.** `wrath.rs` `run_session_with_cancel`
+  is entered once, before any patch, and called `session.reduce`, `gameplay::parse` and
+  `translate_gameplay` directly. The 1.12 stream wraps its read in `live_code::call`
+  (`net::io`); the Wrath loop did not. So the session kept the old `read_gameobject`, which
+  zeroed the data block, and every new template still came out with `lock_id` 0, which
+  `resolve_go_action` turns into a plain use.
+- **The Wrath answers' bytes were not kept.** Only `net::io::inbound` emits
+  `SessionEvent::SavedAnswer`, so the Wrath session's template stores had no bodies and
+  `wdb` `redecode` had nothing to re-derive. Templates cached before the patch kept `lock_id` 0.
+
+Branch `fix/live-code-wrath-session` changes:
+
+- The session loop calls the reducer, the 3.3.5 decoder, the shared 1.12 fallback decode and
+  each translation through `crate::live_code::call` (`translate_live`; under `live_code` it
+  clones each event, since the boundary may re-run its closure).
+- The loop emits `SavedAnswer` ahead of the record for the saved-store opcodes, gated on a
+  player like the record.
+- `wdb` decodes a Wrath session's bodies with `wrath::decode_saved_answer` (the 3.3.5 decoder
+  and translation, or the 1.12 one for shared opcodes), at load and at re-derive. Wrath store
+  files carry header build 12340, so neither target loads the other's files. Wrath template
+  stores now also persist across runs.
+
+Risks: `session.reduce` is stateful; if a patch unwinds it mid-call, the boundary runs it again
+on the same packet. Without `live_code` every boundary is a direct call and nothing is cloned.
+
+The running client cannot get this change by patch: its session loop is the old code. A full
+rebuild (`r` in dx) or a relaunch includes `eb410dd7` and this change.
+
+Unverified: not compiled, not run. The trainer, chest and ore vein are not checked in game, nor
+is a later Wrath decoder patch reaching the session thread.
