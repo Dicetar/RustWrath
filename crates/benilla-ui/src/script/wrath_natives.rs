@@ -10,6 +10,12 @@ use mlua::{Lua, MultiValue, Value};
 
 use super::{CursorPayload, Model};
 
+// `PLAYER_FLAGS_PVP_TIMER` (`Player.h:477`) and the reference's five-minute toggle window
+// (`Player_C.cpp:2220-2241`); `GetPVPTimer` adds the reference's one-second pad.
+const PLAYER_FLAGS_PVP_TIMER: u32 = 0x0004_0000;
+const PVP_TOGGLE_MS: f64 = 300_000.0;
+const PVP_TIMER_PAD_MS: f64 = 1_000.0;
+
 // VehicleSeatRec::m_flags, as read by the 12340 input and unit queries.
 const SEAT_CONTROLS_VEHICLE: u32 = 0x0000_0800;
 const SEAT_CAN_EXIT: u32 = 0x0200_0000;
@@ -496,15 +502,57 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     }
     // `IsPVPTimerRunning()` (`GameUI_Scripts.cpp:1001`): 1 while the active player's
     // `PLAYER_FLAGS` carries `PLAYER_FLAGS_PVP_TIMER` (0x40000), nil otherwise; nil with no
-    // player, as the reference's missing-object arm pushes.
+    // player, as the reference's missing-object arm pushes. The first true observation starts
+    // the client-side five-minute window (`Player_C.cpp:2220-2241`).
     lua.globals().set(
         "IsPVPTimerRunning",
         lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(match model.unit("player") {
-                Some(unit) if unit.player_flags & 0x0004_0000 != 0 => Value::Number(1.0),
-                _ => Value::Nil,
+            let running = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                model
+                    .unit("player")
+                    .is_some_and(|unit| unit.player_flags & PLAYER_FLAGS_PVP_TIMER != 0)
+            };
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            if running {
+                if !model.pvp_timer_was_running || model.pvp_timer_start.is_none() {
+                    let now = model.now;
+                    model.pvp_timer_start = Some(now);
+                }
+                model.pvp_timer_was_running = true;
+            } else {
+                model.pvp_timer_was_running = false;
+                model.pvp_timer_start = None;
+            }
+            Ok(if running {
+                Value::Number(1.0)
+            } else {
+                Value::Nil
             })
+        })?,
+    )?;
+    // `GetPVPTimer()` (`GameUI_Scripts.cpp:834`): `GetPVPToggleTimer() + 1000`, 0 without a
+    // player. The toggle timer is 300000 ms with the flag off, the remaining window while it is
+    // set, and -1 once that window expires; the stock `PlayerFrame` then decrements the value
+    // itself (`PlayerFrame.lua:413`).
+    lua.globals().set(
+        "GetPVPTimer",
+        lua.create_function(|lua, ()| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let Some(flags) = model.unit("player").map(|unit| unit.player_flags) else {
+                return Ok(Value::Number(0.0));
+            };
+            if flags & PLAYER_FLAGS_PVP_TIMER == 0 {
+                return Ok(Value::Number(PVP_TOGGLE_MS + PVP_TIMER_PAD_MS));
+            }
+            let now = model.now;
+            let start = *model.pvp_timer_start.get_or_insert(now);
+            let remaining = (start + PVP_TOGGLE_MS / 1000.0 - now) * 1000.0;
+            Ok(Value::Number(if remaining > 0.0 {
+                remaining + PVP_TIMER_PAD_MS
+            } else {
+                PVP_TIMER_PAD_MS - 1.0
+            }))
         })?,
     )?;
     // `UnitIsTalking(unit)` (`ComSatClient_Scripts.cpp` 0x007DF0B0): non-string -> no values;
@@ -2442,6 +2490,7 @@ mod tests {
         assert_eq!(s.eval::<bool>("return UnitIsAFK('player') == 1").unwrap(), true);
         assert_eq!(s.eval::<bool>("return UnitIsDND('player') == 1").unwrap(), true);
         assert!(s.eval::<bool>("return IsPVPTimerRunning() == nil").unwrap());
+        assert_eq!(s.eval::<f64>("return GetPVPTimer()").unwrap(), 301_000.0);
         s.set_unit(
             "player",
             Some(UnitState {
@@ -2450,10 +2499,14 @@ mod tests {
                 ..Default::default()
             }),
         );
+        s.set_now(100.0);
         assert_eq!(
             s.eval::<bool>("return IsPVPTimerRunning() == 1").unwrap(),
             true
         );
+        assert_eq!(s.eval::<f64>("return GetPVPTimer()").unwrap(), 301_000.0);
+        s.set_now(110.0);
+        assert_eq!(s.eval::<f64>("return GetPVPTimer()").unwrap(), 291_000.0);
         s.set_title_count(193);
         assert_eq!(s.eval::<u32>("return GetNumTitles()").unwrap(), 193);
         s.set_known_languages(vec!["Common".into(), "Dwarvish".into()]);

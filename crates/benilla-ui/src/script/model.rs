@@ -621,6 +621,12 @@ pub(crate) struct Model {
     /// `GetTime()`'s session seconds, which only the host moves ([`super::UiScript::tick`],
     /// [`super::UiScript::set_now`]); off `_G`, as the reference's clock is the OS tick count.
     pub(crate) now: f64,
+    /// The PvP toggle timer's `now` when `PLAYER_FLAGS_PVP_TIMER` was first seen set, and whether
+    /// the last `IsPVPTimerRunning` saw it set. The stock `PlayerFrame` seeds its five-minute
+    /// countdown from `GetPVPTimer` and decrements it itself (`PlayerFrame.lua:413`); the
+    /// reference's timestamp lives in `CGPlayer_C::m_pvpCooldownTimestamp` (`Player_C.cpp:2230`).
+    pub(crate) pvp_timer_start: Option<f64>,
+    pub(crate) pvp_timer_was_running: bool,
     /// `GetGameTime()`'s `(hour, minute)`, pushed by the host as the game clock ticks; `None`
     /// until the server sets it.
     pub(crate) game_time: Option<(i32, i32)>,
@@ -1758,6 +1764,8 @@ impl Model {
             saved_instances: Vec::new(),
             raid_selection: 0,
             now: 0.0,
+            pvp_timer_start: None,
+            pvp_timer_was_running: false,
             game_time: None,
             zone: Default::default(),
             realm_pvp: false,

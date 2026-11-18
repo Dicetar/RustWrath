@@ -1346,6 +1346,11 @@ mod tests {
             assert_eq!(cvars.get(name), Some(default), "{name}");
             assert_eq!(cvars.default_of(name), Some(default), "{name}");
         }
+        assert_eq!(
+            registered_default("timeMgrUseMilitaryTime", 2),
+            Some("1"),
+            "frFR registers the 24-hour default"
+        );
     }
 
     /// The three register sites that pick their default by locale (`0x603368`, `0x63a738`), at
