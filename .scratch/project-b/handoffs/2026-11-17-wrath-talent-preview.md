@@ -58,8 +58,8 @@ implements the client-side preview map and the learn batch. The CVar stays off b
 
 - `wrath_preview_points_feed_the_tuples_and_the_learn_batch`
   (`crates/benilla-ui/src/script/tests/talent.rs`): add/reset totals, the 5th/9th values, the
-  4th prereq value with a required rank of 2 (one preview point is not enough), and the one
-  `(talentId, previewRank)` call.
+  4th prereq value with a required rank of 3 (one preview point is not enough, the second is),
+  and the one `(talentId, previewRank)` call.
 - `an_identical_talent_snapshot_still_clears_previews` (`crates/benilla-app/src/ui_talent.rs`):
   the view-equality gate alone would skip `set_wrath_talents`; a new `snapshot_seq` forces the
   push and therefore the preview clear.

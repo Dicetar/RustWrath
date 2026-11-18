@@ -200,7 +200,7 @@ fn wrath_preview_points_feed_the_tuples_and_the_learn_batch() {
                 prereqs: vec![TalentPrereqView {
                     tier: 1,
                     column: 1,
-                    required_rank: 2,
+                    required_rank: 3,
                     learnable: false,
                 }],
                 ..Default::default()
@@ -219,10 +219,16 @@ fn wrath_preview_points_feed_the_tuples_and_the_learn_batch() {
         assert(GetGroupPreviewTalentPointsSpent(false, 1) == 1)
         local name, _, _, _, rank, _, _, _, preview, meetsPreview = GetTalentInfo(1, 1, false, false, 1)
         assert(name == "Improved Fireball" and rank == 1 and preview == 2 and meetsPreview == 1)
-        local _, _, _, _, tabPreview = GetTalentTabInfo(1, false, false, 1)
-        assert(tabPreview == 1)
+        local pt1, pc1, pl1, pp1 = GetTalentPrereqs(1, 2)
+        assert(pt1 == 1 and pc1 == 1 and pl1 == nil and pp1 == nil)
+        AddPreviewTalentPoints(1, 1, 1, false, 1)
+        assert(GetGroupPreviewTalentPointsSpent(false, 1) == 2)
         local pt2, pc2, pl2, pp2 = GetTalentPrereqs(1, 2)
         assert(pt2 == 1 and pc2 == 1 and pl2 == nil and pp2 == 1)
+        local _, _, _, _, tabPreview = GetTalentTabInfo(1, false, false, 1)
+        assert(tabPreview == 2)
+        local name2, _, _, _, _, _, _, _, preview2 = GetTalentInfo(1, 1, false, false, 1)
+        assert(name2 == "Improved Fireball" and preview2 == 3)
         LearnPreviewTalents(false)
         ResetPreviewTalentPoints(1, false, 1)
         assert(GetGroupPreviewTalentPointsSpent(false, 1) == 0)
@@ -233,7 +239,7 @@ fn wrath_preview_points_feed_the_tuples_and_the_learn_batch() {
         s.take_talent_calls(),
         [crate::script::TalentCall::LearnPreview {
             pet: false,
-            entries: vec![(100, 2)]
+            entries: vec![(100, 3)]
         }]
     );
     assert!(s.take_errors().is_empty());
