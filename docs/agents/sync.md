@@ -73,6 +73,10 @@ first place an agent's tests are compiled and run, and it uses no local Cargo sl
   failures` or `CI: not run yet`. Do not write "tests pass" from CI while `main`'s baseline is
   red; say "no new failures".
 - A branch whose code does not compile in CI is not `ready to merge`.
+- A run costs about 20 minutes on Windows, and every ref a commit is pushed to starts its own run.
+  When landing, push `HEAD:main` alone, not the task branch in the same push.
+- Where the Windows build's time goes: the run's `windows-build-timings` artifact (Cargo's
+  `--timings` report). `gh run download <id> -n windows-build-timings`.
 
 ## Taking over a branch
 
