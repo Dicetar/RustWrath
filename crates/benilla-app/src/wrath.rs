@@ -1661,11 +1661,6 @@ impl WrathControl {
             .as_ref()
             .map_or(0, |f| f.account_expansion.load(Ordering::SeqCst))
     }
-    /// Whether a worker is currently running.
-    pub fn running(&self) -> bool {
-        self.worker.as_ref().is_some_and(|w| !w.is_finished())
-    }
-
     /// One select-screen ask, in the order it was made: served at once by the running parked
     /// session, or it starts that session and carries the ask in. `roster_asked` records
     /// whether the ask was an enumeration, so the first fresh roster publishes as the screen's
@@ -1700,10 +1695,8 @@ impl WrathControl {
         if !self.session_events_empty() {
             return;
         }
-        if self.ended {
-            if !self.restart_allowed || self.restart_attempts == 0 {
-                return;
-            }
+        if self.ended && (!self.restart_allowed || self.restart_attempts == 0) {
+            return;
         }
         if self.retry_at.is_some_and(|at| Instant::now() < at) {
             return;
@@ -1839,14 +1832,8 @@ impl WrathControl {
         true
     }
 
-    /// Bounded app-owned stop: signal the loop and join for a short grace period. A worker still
-    /// inside a blocking socket read remains in `retiring`; no replacement can overlap it.
-    pub fn stop(&mut self) {
-        self.stop_with_delivery(None);
-    }
-
-    /// [`Self::stop`] with the typed action seam, so a shutdown retires pending intents and
-    /// proposals instead of leaving them for a follower that never comes.
+    /// Bounded app-owned stop with the typed action seam, so a shutdown retires pending
+    /// intents and proposals instead of leaving them for a follower that never comes.
     fn stop_with_delivery(&mut self, actions: Option<&mut WrathWmActions>) {
         self.shutdown = true;
         self.restart_allowed = false;
@@ -2489,6 +2476,9 @@ impl WrathWorldView {
     }
 }
 
+/// guid -> (object generation, slot -> (receipt revision, GetTime seconds)).
+type AuraAnchorRows = BTreeMap<u64, (u32, BTreeMap<u8, (u64, f64)>)>;
+
 /// Presentation-side `GetTime` anchor for each observed aura application, keyed by object and
 /// slot. The anchor is stamped once when a receipt revision is first seen (from the frame's
 /// `UiClock`, the same GetTime domain `UnitAura` callers use) and is replaced only when a newer
@@ -2496,8 +2486,7 @@ impl WrathWorldView {
 /// read-only owner; the aura slot keeps the wire's remaining duration.
 #[derive(Resource, Default)]
 pub struct WrathAuraAnchors {
-    /// guid -> (object generation, slot -> (receipt revision, GetTime seconds)).
-    by_guid: BTreeMap<u64, (u32, BTreeMap<u8, (u64, f64)>)>,
+    by_guid: AuraAnchorRows,
 }
 
 impl WrathAuraAnchors {
@@ -3158,13 +3147,13 @@ fn wrath_wm_action_intake(
                         "the client already observes cast attempt {} of spell {}; wait for its terminal edge or cancel it",
                         cast.attempt_serial, cast.identity.spell_id
                     ))
-                } else if let Some(channel) = view.channeling(view.player_guid) {
-                    Some(format!(
-                        "the client already observes channel spell {}",
-                        channel.spell_id
-                    ))
                 } else {
-                    None
+                    view.channeling(view.player_guid).map(|channel| {
+                        format!(
+                            "the client already observes channel spell {}",
+                            channel.spell_id
+                        )
+                    })
                 }
             }
             ActionIntent::CastCancel => {
@@ -5409,9 +5398,9 @@ fn wrath_group_member_flags(sub_group: u8, member_flags: u8) -> u8 {
         }
 }
 
-fn wrath_partition_party_auras(
-    auras: &[gameplay::social::PartyAura],
-) -> (Vec<(u8, u32)>, Vec<(u8, u32)>) {
+type PartyAuraRows = (Vec<(u8, u32)>, Vec<(u8, u32)>);
+
+fn wrath_partition_party_auras(auras: &[gameplay::social::PartyAura]) -> PartyAuraRows {
     // 3.3.5a `SMSG_PARTY_MEMBER_STATS` sends a 64-bit aura mask (`MAX_AURAS = 64`) with `u32`
     // spell IDs and `u8` aura flags (`AFLAG_POSITIVE = 0x10`, `AFLAG_NEGATIVE = 0x20`). When the
     // server sets `AFLAG_NEGATIVE` (or neither positive/negative bit is set and the slot is in the
@@ -8147,12 +8136,12 @@ fn wrath_dispatch_events(world: &mut World) {
     let (current_epoch, current_world) = world
         .get_resource::<WrathWorldView>()
         .map_or((0, 0), |view| (view.session_epoch, view.world_generation));
-    let Some(mut control) = world.get_resource_mut::<WrathControl>() else {
-        return;
+    let (ended, tagged) = {
+        let Some(mut control) = world.get_resource_mut::<WrathControl>() else {
+            return;
+        };
+        (control.ended, control.take_session_events())
     };
-    let ended = control.ended;
-    let tagged = control.take_session_events();
-    drop(control);
 
     let mut deliver = Vec::with_capacity(tagged.len());
     for event in tagged {
@@ -8623,7 +8612,6 @@ fn wrath_net_drain(
         .as_ref()
         .map(|feed| (feed.take_native(), feed.take_native_dropped()))
         .unwrap_or_default();
-    let mut drained = 0usize;
     if native_dropped > 0 {
         if let Some(trace) = &trace {
             trace.observe(
@@ -8635,11 +8623,10 @@ fn wrath_net_drain(
             );
         }
     }
-    for event in control.take_events() {
+    for (drained, event) in control.take_events().into_iter().enumerate() {
         if drained >= WRATH_DRAIN_LIMIT {
             break;
         }
-        drained += 1;
         if let Some(trace) = &trace {
             use crate::quest_trace::{SessionEndKind, SessionPhase, Stage};
             let stage = match &event {
@@ -8810,7 +8797,7 @@ fn wrath_net_drain(
                     "world scope changed before an authoritative result",
                 );
                 for event in crate::wrath_native::invalidate_presentation(
-                    &mut *view,
+                    &mut view,
                     crate::wrath_native::WrathScopeLoss::WorldTransfer,
                     now_ms(),
                     ui_now_seconds,
@@ -9121,8 +9108,8 @@ fn wrath_net_drain(
             WrathFeedEvent::SessionEnded {
                 result,
                 end: _,
-                session_epoch,
-                world_generation,
+                session_epoch: _,
+                world_generation: _,
             } => {
                 control.ended = true;
                 control.terminal_ready = true;
@@ -9173,7 +9160,7 @@ fn wrath_net_drain(
                 }
                 control.entered_world = false;
                 for event in crate::wrath_native::invalidate_presentation(
-                    &mut *view,
+                    &mut view,
                     crate::wrath_native::WrathScopeLoss::SessionEnded,
                     now_ms(),
                     ui_now_seconds,
@@ -9360,7 +9347,7 @@ fn wrath_net_drain(
             "wrath: native presentation feed dropped {native_dropped} resolved edges; resynchronizing the mirror"
         );
         for event in crate::wrath_native::invalidate_presentation(
-            &mut *view,
+            &mut view,
             crate::wrath_native::WrathScopeLoss::FeedOverflow,
             now_ms(),
             ui_now_seconds,
@@ -9384,7 +9371,7 @@ fn wrath_net_drain(
             control.ended_retirement_done = true;
         }
         for event in crate::wrath_native::invalidate_presentation(
-            &mut *view,
+            &mut view,
             crate::wrath_native::WrathScopeLoss::SessionEnded,
             now_ms(),
             ui_now_seconds,
@@ -9435,7 +9422,7 @@ fn wrath_net_drain(
             "world scope changed before an authoritative result",
         );
         for event in crate::wrath_native::invalidate_presentation(
-            &mut *view,
+            &mut view,
             crate::wrath_native::WrathScopeLoss::SessionReplaced,
             now_ms(),
             ui_now_seconds,
@@ -9466,7 +9453,7 @@ fn wrath_net_drain(
                 "world scope changed before an authoritative result",
             );
             for event in crate::wrath_native::invalidate_presentation(
-                &mut *view,
+                &mut view,
                 crate::wrath_native::WrathScopeLoss::WorldTransfer,
                 now_ms(),
                 ui_now_seconds,
@@ -9952,7 +9939,7 @@ fn apply_item_world(
                 .get_resource::<NetCommands>()
                 .map(|n| NetCommands(n.0.clone()))
             {
-                if let Some(mut items) = world.get_resource_mut::<crate::items::Items>() {
+                if let Some(items) = world.get_resource_mut::<crate::items::Items>() {
                     if items
                         .template(entry, guid, crate::query_cache::Ask::Event(&net))
                         .is_none()
@@ -10015,6 +10002,9 @@ fn apply_item_world(
 fn donor_unit_bytes_1(bytes_1: u32, bytes_2: u32) -> u32 {
     (bytes_1 & 0x0000_ffff) | ((bytes_2 >> 24) << 16) | (((bytes_1 >> 16) & 0xff) << 24)
 }
+
+/// One 3.3.5 field delta: (guid, object type, [(field, value, mask)]).
+type FieldDiff = (u64, ObjectType, Vec<(u16, u32, u32)>);
 
 fn wrath_apply_world(world: &mut World) {
     let (mut changes, entities, entered, phase, player_guid, map_id) = {
@@ -10175,7 +10165,7 @@ fn wrath_apply_world(world: &mut World) {
         Option<crate::wrath_item::WrathItemRow>,
         Option<crate::wrath_item::WrathItemRow>,
     )> = Vec::new();
-    let mut field_diffs: Vec<(u64, ObjectType, Vec<(u16, u32, u32)>)> = Vec::new();
+    let mut field_diffs: Vec<FieldDiff> = Vec::new();
     let mut unit_name_lookups: Vec<(u64, ObjectFields)> = Vec::new();
     let mut go_template_requests: Vec<(u64, ObjectFields)> = Vec::new();
     let mut self_player_created = false;
@@ -10378,8 +10368,7 @@ fn wrath_apply_world(world: &mut World) {
                 // durable fields the stock quest/loot/player frames read. The descriptor keeps
                 // the 1.12 twenty-slot projection; the full twenty-five go beside it.
                 let slots = wrath_quest_slots(raw);
-                for slot in 0..20usize {
-                    let s = slots[slot];
+                for (slot, s) in slots.iter().take(20).enumerate() {
                     if s.quest_id == 0 {
                         continue;
                     }
@@ -11411,7 +11400,7 @@ fn wrath_apply_world(world: &mut World) {
                     .iter()
                     .filter_map(|&(idx, _, _)| {
                         let base = benilla_protocol::field::FIELD_PLAYER_INV_SLOT_HEAD;
-                        ((base..base + 38).contains(&idx) && (idx - base) % 2 == 0)
+                        ((base..base + 38).contains(&idx) && (idx - base).is_multiple_of(2))
                             .then(|| ((idx - base) / 2) as u8)
                             .filter(|slot| *slot < 19)
                     })
@@ -12036,8 +12025,7 @@ pub fn run_session_with_cancel(
         )?;
         // auth_session sends the proof; only the server's AUTH_OK accepts the world link.
         let mut auth_deadline = Instant::now() + Duration::from_secs(30);
-        let mut world_authed = false;
-        while !world_authed {
+        loop {
             if cancel.load(Ordering::SeqCst) {
                 return Ok(());
             }
@@ -12087,7 +12075,6 @@ pub fn run_session_with_cancel(
                         feed.account_expansion.store(*expansion, Ordering::SeqCst);
                     }
                     if code == benilla_protocol_wrath::opcode::AUTH_OK {
-                        world_authed = true;
                         break;
                     }
                     if code == 0x1b {
@@ -12472,16 +12459,14 @@ pub fn run_session_with_cancel(
                 }
                 _ => benilla_wm_native::SourceSessionState::Disconnected,
             };
-            Some(
-                benilla_wm_native::SourceHealth::new(
-                    self.session.epoch(),
-                    self.session.world_generation(),
-                    self.session.player_guid().unwrap_or(0),
-                    state,
-                    self.session.last_server_packet_at_unix_ms(),
-                )
-                .ok()?,
+            benilla_wm_native::SourceHealth::new(
+                self.session.epoch(),
+                self.session.world_generation(),
+                self.session.player_guid().unwrap_or(0),
+                state,
+                self.session.last_server_packet_at_unix_ms(),
             )
+            .ok()
         }
         fn export_due(&self) -> bool {
             self.session.export_due()

@@ -3461,7 +3461,7 @@ fn read_message_chat(b: &[u8], gm: bool) -> Result<ServerEvent> {
     let sender_guid = r.u64()?;
     let _unknown = r.u32()?; // 2.1.0
     let mut sender_name = None;
-    let mut target_guid = 0u64;
+    let target_guid;
     let mut channel = None;
     match chat_type {
         0x08 | 0x0C..=0x10 | 0x29 | 0x2A | 0x2F => {
@@ -4454,7 +4454,7 @@ fn read_transfer_aborted(b: &[u8]) -> Result<ServerEvent> {
     let map_id = r.u32()?;
     let reason = r.u8()?;
     let argument = match reason {
-        7 | 8 | 9 => Some(r.u8()?),
+        7..=9 => Some(r.u8()?),
         _ => None,
     };
     if r.remaining() != 0 {

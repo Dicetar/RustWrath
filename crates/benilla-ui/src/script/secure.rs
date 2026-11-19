@@ -14,8 +14,6 @@
 //! handlers and a controller tick that evaluates the macro condition. None of those exist here,
 //! so callers must not treat the stored rows as enforcement.
 
-use std::collections::HashMap;
-
 use mlua::{Lua, ObjectLike, Table, Value};
 
 use super::{Model, REG_FRAME_METHODS};
@@ -321,7 +319,7 @@ fn lua_bool_call<A: mlua::IntoLuaMulti>(lua: &Lua, func: &str, args: A) -> bool 
     match f.call::<Value>(args) {
         Ok(Value::Nil) | Ok(Value::Boolean(false)) => false,
         Ok(Value::Integer(0)) => false,
-        Ok(Value::Number(n)) if n == 0.0 => false,
+        Ok(Value::Number(n)) => n != 0.0,
         Ok(_) => true,
         Err(_) => false,
     }
