@@ -3,7 +3,9 @@
 //! snapshot: the view keeps a bounded pending queue and this feed removes each row only after it
 //! has been signalled. The decoded packet proves the event; both endpoint names still come from
 //! the VM's own unit views or the existing name-query cache, never from a guess. A swing keeps
-//! 12340's raw hit word, school mask and victim state; `SWING_MISSED` rows are a later slice.
+//! 12340's raw hit word, school mask and victim state; a wounded or blocked swing posts
+//! `SWING_DAMAGE` and every other shown swing outcome posts `SWING_MISSED` with the reference's
+//! own miss string.
 
 use benilla_ui::script::{ScriptValue, UiScript, UiTarget};
 use bevy::prelude::*;
@@ -147,9 +149,10 @@ pub(crate) fn feed(
                 world.swings.remove(index);
                 continue;
             }
-            if !swing_reports_damage(&swing) {
-                // SWING_MISSED is a later slice. An intact/miss/parry/dodge row retires here
-                // without inventing a damage event.
+            let outcome = swing_outcome(&swing);
+            if matches!(outcome, SwingOutcome::Retired) {
+                // An intact hit, a wound without damage, or an absorb/resist row has no event
+                // yet; it retires here without inventing one.
                 world.swings.remove(index);
                 continue;
             }
@@ -167,14 +170,15 @@ pub(crate) fn feed(
                     0.0
                 };
                 if age > COMBAT_LOG_NAME_RETRY_SECONDS {
-                    // The retry window is spent. Deliver the damage with a visible unknown
-                    // marker for the side(s) that did not resolve, then retire the row so a
-                    // later feed cannot replay it. The known endpoint keeps its real name.
+                    // The retry window is spent. Deliver the swing event with a visible
+                    // unknown marker for the side(s) that did not resolve, then retire the row
+                    // so a later feed cannot replay it. The known endpoint keeps its real name.
                     fires.post(
                         "COMBAT_LOG_EVENT_UNFILTERED",
-                        swing_damage_args(
+                        swing_event_args(
                             timestamp,
                             &swing,
+                            outcome,
                             source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
                             target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
                         ),
@@ -189,7 +193,7 @@ pub(crate) fn feed(
             let (source, target) = (source.unwrap_or_default(), target.unwrap_or_default());
             fires.post(
                 "COMBAT_LOG_EVENT_UNFILTERED",
-                swing_damage_args(timestamp, &swing, &source, &target),
+                swing_event_args(timestamp, &swing, outcome, &source, &target),
             );
             world.swings.remove(index);
         }
@@ -228,14 +232,95 @@ fn endpoint_name(
         .map(str::to_owned)
 }
 
+/// What one decoded swing posts to the combat log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SwingOutcome {
+    Damage,
+    Missed(MissKind),
+    /// No event: the row is retired without being replayed.
+    Retired,
+}
+
+/// One `SWING_MISSED` outcome, named by the reference's own miss string. `RESIST` and `ABSORB`
+/// are the next slice, so they are not representable here yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MissKind {
+    Miss,
+    Dodge,
+    Parry,
+    Block,
+    Evade,
+    Immune,
+    Deflect,
+}
+
+impl MissKind {
+    /// 12340's own `g_spellMissStrings` spelling.
+    fn name(self) -> &'static str {
+        match self {
+            MissKind::Miss => "MISS",
+            MissKind::Dodge => "DODGE",
+            MissKind::Parry => "PARRY",
+            MissKind::Block => "BLOCK",
+            MissKind::Evade => "EVADE",
+            MissKind::Immune => "IMMUNE",
+            MissKind::Deflect => "DEFLECT",
+        }
+    }
+
+    /// `PushEvent` appends the amount only for RESIST and BLOCK; of the kinds this slice emits,
+    /// only BLOCK carries one.
+    fn carries_amount(self) -> bool {
+        matches!(self, MissKind::Block)
+    }
+}
+
 /// 12340's `UnitCombatLog` first drops feedback for a melee-spell round unless the victim
 /// state is a wound (`ShouldShowFeedback`, `UnitCombatLog_C.cpp:933-950`), then builds the
 /// `SWING_DAMAGE` row only for a wound (1) or block (4) with non-zero damage
-/// (`UnitCombatLog_C.cpp:952-980`). 12340's victim states are intact=0, hit=1 and blocks=4.
-fn swing_reports_damage(swing: &WrathSwing) -> bool {
-    swing.hit.damage != 0
-        && matches!(swing.hit.victim_state, 1 | 4)
-        && (swing.hit.melee_spell_id == 0 || swing.hit.victim_state == 1)
+/// (`UnitCombatLog_C.cpp:952-980`). After that it tests `hit_info` in order and only then names
+/// the victim state (`:982-1073`). 12340's victim states are intact=0, hit=1 and blocks=4.
+fn swing_outcome(swing: &WrathSwing) -> SwingOutcome {
+    let hit = swing.hit;
+    if hit.melee_spell_id != 0 && hit.victim_state != 1 {
+        return SwingOutcome::Retired;
+    }
+    if hit.damage != 0 && matches!(hit.victim_state, 1 | 4) {
+        return SwingOutcome::Damage;
+    }
+    if hit.hit_info & 0x10 != 0 {
+        return SwingOutcome::Missed(MissKind::Miss);
+    }
+    if hit.hit_info & (0x20 | 0x80) != 0 {
+        // Absorbed and resisted swings are the next slice; retired for now, not guessed at.
+        return SwingOutcome::Retired;
+    }
+    match hit.victim_state {
+        2 => SwingOutcome::Missed(MissKind::Dodge),
+        3 => SwingOutcome::Missed(MissKind::Parry),
+        4 => SwingOutcome::Missed(MissKind::Block),
+        6 => SwingOutcome::Missed(MissKind::Evade),
+        7 => SwingOutcome::Missed(MissKind::Immune),
+        8 => SwingOutcome::Missed(MissKind::Deflect),
+        _ => SwingOutcome::Retired,
+    }
+}
+
+/// The event-specific values for whichever event this swing posts.
+fn swing_event_args(
+    timestamp: f64,
+    swing: &WrathSwing,
+    outcome: SwingOutcome,
+    source_name: &str,
+    target_name: &str,
+) -> Vec<ScriptValue> {
+    match outcome {
+        SwingOutcome::Damage => swing_damage_args(timestamp, swing, source_name, target_name),
+        SwingOutcome::Missed(kind) => {
+            swing_missed_args(timestamp, swing, source_name, target_name, kind)
+        }
+        SwingOutcome::Retired => Vec::new(),
+    }
 }
 
 /// The exactly eight values `CombatLogEntry::PushEvent` sends before an event-specific block
@@ -310,6 +395,33 @@ fn swing_damage_args(
     args
 }
 
+/// The values `CombatLogEntry::PushEvent` appends for `SWING_MISSED`
+/// (`UnitCombatLog_C.cpp:982-1073`, info flags `0x4`/`0x4000`/`0x8000`): the miss-type string
+/// from `SetMissInfo`, then the amount only for RESIST and BLOCK. Of the kinds this slice emits
+/// only a block has an amount, and it carries the blocked total as the row's tenth value.
+fn swing_missed_args(
+    timestamp: f64,
+    swing: &WrathSwing,
+    source_name: &str,
+    target_name: &str,
+    kind: MissKind,
+) -> Vec<ScriptValue> {
+    let hit = swing.hit;
+    let mut args = combat_log_header(
+        timestamp,
+        "SWING_MISSED",
+        hit.attacker,
+        source_name,
+        hit.victim,
+        target_name,
+    );
+    args.push(ScriptValue::Str(kind.name().to_owned()));
+    if kind.carries_amount() {
+        args.push(ScriptValue::Number(f64::from(hit.blocked)));
+    }
+    args
+}
+
 /// The reference pushes nil, not zero, for an absent resisted/blocked/absorbed amount.
 fn nonzero(value: i64) -> ScriptValue {
     if value == 0 {
@@ -367,6 +479,11 @@ mod tests {
         script.set_unit("party1", Some(unit("Teammate", 0x22)));
         script.set_unit_by_guid(0x22, Some(unit("Teammate", 0x22)));
         script
+    }
+
+    /// True when the row posts `SWING_DAMAGE` rather than a miss.
+    fn shows_damage(swing: &WrathSwing) -> bool {
+        matches!(swing_outcome(swing), SwingOutcome::Damage)
     }
 
     fn world(player_guid: u64) -> WrathWorldView {
@@ -555,7 +672,7 @@ mod tests {
             revision: 3,
             received_at: 10.0,
         };
-        assert!(swing_reports_damage(&swing), "a blocked wound is shown");
+        assert!(shows_damage(&swing), "a blocked wound is shown");
         assert_eq!(
             swing_damage_args(10.0, &swing, "Firna", "Kobold Vermin")[8..].to_vec(),
             vec![
@@ -583,21 +700,154 @@ mod tests {
             revision: 3,
             received_at: 10.0,
         };
-        assert!(swing_reports_damage(&swing), "a plain blocked swing shows");
+        assert!(shows_damage(&swing), "a plain blocked swing shows");
         swing.hit.melee_spell_id = 78;
         assert!(
-            !swing_reports_damage(&swing),
+            !shows_damage(&swing),
             "a blocked melee-spell round is dropped by ShouldShowFeedback"
         );
         swing.hit.victim_state = 1;
         assert!(
-            swing_reports_damage(&swing),
+            shows_damage(&swing),
             "a wounded melee-spell round is still shown"
         );
     }
 
-    /// The feed drains the swing queue with the same name retry as kills; only a WOUND/BLOCK row
-    /// with damage is signalled, and every other row is retired without an event.
+    /// The reference tests `hit_info` before the victim-state switch, so a miss bit wins over
+    /// the state, absorb/resist stay retired, and each remaining state posts `SWING_MISSED` with
+    /// its own miss string. Only a block appends the blocked amount.
+    #[test]
+    fn swing_missed_names_each_victim_state() {
+        let row = |victim_state: u32, hit_info: u32| WrathSwing {
+            hit: crate::wrath::WrathSwingHit {
+                hit_info,
+                blocked: 9,
+                ..swing_hit(0, victim_state)
+            },
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 3,
+            received_at: 10.0,
+        };
+        let posted = |swing: &WrathSwing| {
+            swing_event_args(10.0, swing, swing_outcome(swing), "Firna", "Kobold Vermin")
+        };
+        let named = |swing: &WrathSwing| {
+            let args = posted(swing);
+            assert_eq!(args[1], ScriptValue::Str("SWING_MISSED".to_owned()));
+            (args.len(), args[8].clone())
+        };
+
+        for (victim_state, name) in [
+            (2, "DODGE"),
+            (3, "PARRY"),
+            (6, "EVADE"),
+            (7, "IMMUNE"),
+            (8, "DEFLECT"),
+        ] {
+            assert_eq!(
+                named(&row(victim_state, 0x2)),
+                (9, ScriptValue::Str(name.to_owned())),
+                "victim state {victim_state} names {name} and appends no amount"
+            );
+        }
+
+        // A plain miss is the `hit_info & 0x10` case, whatever the victim state says.
+        assert_eq!(
+            named(&row(0, 0x12)),
+            (9, ScriptValue::Str("MISS".to_owned()))
+        );
+
+        // A blocked row with no damage reaches the switch and carries the blocked total.
+        let block = posted(&row(4, 0x2));
+        assert_eq!(
+            (block.len(), block[8].clone(), block[9].clone()),
+            (
+                10,
+                ScriptValue::Str("BLOCK".to_owned()),
+                ScriptValue::Number(9.0)
+            )
+        );
+
+        // Out of scope this slice: absorb and resist are retired, not misnamed.
+        assert_eq!(swing_outcome(&row(0, 0x22)), SwingOutcome::Retired);
+        assert_eq!(swing_outcome(&row(0, 0x82)), SwingOutcome::Retired);
+        // No matching outcome: an intact hit and a wound without damage emit nothing.
+        assert_eq!(swing_outcome(&row(0, 0x2)), SwingOutcome::Retired);
+        assert_eq!(swing_outcome(&row(1, 0x2)), SwingOutcome::Retired);
+    }
+
+    /// A melee-spell round that is not a wound is dropped by `ShouldShowFeedback` before the
+    /// miss bits are consulted, so it emits neither SWING_DAMAGE nor SWING_MISSED.
+    #[test]
+    fn a_missed_melee_spell_round_is_dropped_by_should_show_feedback() {
+        let mut swing = WrathSwing {
+            hit: crate::wrath::WrathSwingHit {
+                hit_info: 0x12, // a plain miss
+                ..swing_hit(0, 2)
+            },
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 3,
+            received_at: 10.0,
+        };
+        assert_eq!(
+            swing_outcome(&swing),
+            SwingOutcome::Missed(MissKind::Miss),
+            "a plain melee miss is shown"
+        );
+        swing.hit.melee_spell_id = 78;
+        assert_eq!(
+            swing_outcome(&swing),
+            SwingOutcome::Retired,
+            "the same miss inside a melee-spell round is dropped by ShouldShowFeedback"
+        );
+        assert!(!shows_damage(&swing), "and it is not a damage event");
+    }
+
+    /// A block that stopped every point of damage is `SWING_MISSED` / `BLOCK` carrying the
+    /// blocked total; the damaged block is still a `SWING_DAMAGE` row.
+    #[test]
+    fn a_zero_damage_block_is_swing_missed_block_with_the_blocked_amount() {
+        let blocked = |damage: u32| WrathSwing {
+            hit: crate::wrath::WrathSwingHit {
+                hit_info: 0x2002,
+                blocked: 9,
+                ..swing_hit(damage, 4)
+            },
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 3,
+            received_at: 10.0,
+        };
+
+        let args = |swing: &WrathSwing| {
+            swing_event_args(10.0, swing, swing_outcome(swing), "Firna", "Kobold Vermin")
+        };
+
+        let stopped = args(&blocked(0));
+        assert_eq!(
+            stopped.len(),
+            10,
+            "the miss string and the blocked amount only"
+        );
+        assert_eq!(stopped[1], ScriptValue::Str("SWING_MISSED".to_owned()));
+        assert_eq!(stopped[8], ScriptValue::Str("BLOCK".to_owned()));
+        assert_eq!(stopped[9], ScriptValue::Number(9.0));
+
+        assert!(
+            shows_damage(&blocked(20)),
+            "a damaged block still shows damage"
+        );
+        assert_eq!(
+            args(&blocked(20))[1],
+            ScriptValue::Str("SWING_DAMAGE".to_owned())
+        );
+    }
+
+    /// The feed drains the swing queue with the same name retry as kills; a WOUND/BLOCK row
+    /// with damage posts SWING_DAMAGE, while a wound without damage and an intact hit post
+    /// nothing at all (a dodge or parry is no longer retired — it posts SWING_MISSED instead).
     #[test]
     fn feed_delivers_a_wounded_swing_and_silently_retires_the_rest() {
         use crate::ui_script::UiClock;
@@ -625,8 +875,12 @@ mod tests {
             .run(
                 r#"
                 SEEN = 0
+                SUBEVENT = nil
                 local listener = CreateFrame("Frame", "WrathSwingFeedTest")
-                listener:SetScript("OnEvent", function() SEEN = SEEN + 1 end)
+                listener:SetScript("OnEvent", function(_, _, _, subevent)
+                    SEEN = SEEN + 1
+                    SUBEVENT = subevent
+                end)
                 listener:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
                 "#,
             )
@@ -637,7 +891,7 @@ mod tests {
         world.player_guid = 0x11;
         world.session_epoch = 4;
         world.world_generation = 5;
-        for (damage, victim_state) in [(12, 1), (0, 1), (12, 2)] {
+        for (damage, victim_state) in [(12, 1), (0, 1), (0, 0)] {
             world.apply_swing(swing_hit(damage, victim_state), 4, 5, 97.0);
         }
 
@@ -662,6 +916,14 @@ mod tests {
             app.world().resource::<WrathWorldView>().swings.is_empty(),
             "delivered and silently retired rows leave nothing to replay"
         );
+        assert_eq!(
+            app.world()
+                .non_send_resource::<UiScript>()
+                .eval::<String>("return SUBEVENT")
+                .unwrap(),
+            "SWING_DAMAGE",
+            "the painful row is the damage event, not a miss"
+        );
 
         app.world_mut().run_system_once(feed).unwrap();
         assert_eq!(
@@ -671,6 +933,94 @@ mod tests {
                 .unwrap(),
             1,
             "a later feed cannot replay a retired swing"
+        );
+    }
+
+    /// A dodged swing is one `SWING_MISSED` carrying the reference's `DODGE` string after the
+    /// eight header values, with no amount and nothing to replay on the next feed.
+    #[test]
+    fn feed_delivers_a_dodged_swing_as_swing_missed() {
+        use crate::ui_script::UiClock;
+        use bevy::ecs::system::RunSystemOnce;
+        use bevy::prelude::App;
+
+        let mut script = script_with_units();
+        script
+            .run(
+                r#"
+                SEEN = 0
+                Fired = nil
+                local listener = CreateFrame("Frame", "WrathSwingMissTest")
+                listener:SetScript("OnEvent", function(_, event, ...)
+                    SEEN = SEEN + 1
+                    Fired = { event, ... }
+                end)
+                listener:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+                "#,
+            )
+            .unwrap();
+
+        let mut world = WrathWorldView::default();
+        world.phase = Some(benilla_protocol_wrath::session::Phase::InWorld);
+        world.player_guid = 0x11;
+        world.session_epoch = 4;
+        world.world_generation = 5;
+        // The teammate is the victim seat `script_with_units` already knows by guid.
+        world.apply_swing(
+            crate::wrath::WrathSwingHit {
+                victim: 0x22,
+                ..swing_hit(0, 2)
+            },
+            4,
+            5,
+            97.0,
+        );
+
+        let mut app = App::new();
+        app.insert_resource(world)
+            .insert_resource(UiClock {
+                ui_now: 100.0,
+                ..Default::default()
+            })
+            .init_resource::<NameCache>()
+            .insert_non_send_resource(script);
+        app.world_mut().run_system_once(feed).unwrap();
+
+        {
+            let script = app.world().non_send_resource::<UiScript>();
+            assert_eq!(
+                script.eval::<i64>("return SEEN").unwrap(),
+                1,
+                "one dodge is exactly one event"
+            );
+            assert_eq!(
+                script.eval::<String>("return Fired[3]").unwrap(),
+                "SWING_MISSED"
+            );
+            assert_eq!(
+                script.eval::<String>("return Fired[4]").unwrap(),
+                "0x0000000000000011",
+                "the header keeps the attacker guid"
+            );
+            assert_eq!(
+                script.eval::<String>("return Fired[7]").unwrap(),
+                "0x0000000000000022",
+                "and the victim guid"
+            );
+            assert_eq!(
+                script.eval::<String>("return Fired[10]").unwrap(),
+                "DODGE",
+                "the reference's own miss string"
+            );
+            assert_eq!(
+                script.eval::<Option<f64>>("return Fired[11]").unwrap(),
+                None,
+                "a dodge appends no amount"
+            );
+        }
+        assert!(
+            app.world().resource::<WrathWorldView>().swings.is_empty(),
+            "the delivered row is retired"
         );
     }
 
