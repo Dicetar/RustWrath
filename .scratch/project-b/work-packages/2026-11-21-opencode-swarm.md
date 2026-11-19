@@ -35,6 +35,8 @@ code the free models had written).
 landing; gates failed only on `player-clippy`, except four runs where its `test-build` hit a
 missing `wayland-sys` system library (Windows still passed and the branch landed on that plus
 source review). No local Cargo, client or server was run, no `target` was created, and main
-received no credentials, game data or extracted interface files. Not proven: any in-game swing,
+received no credentials, game data or extracted interface files. One process slip: the
+`oc/clippy-proto-session` branch was force-pushed once to apply rustfmt two minutes after it was
+created and before any other agent could have fetched it; no other branch was rewritten. Not proven: any in-game swing,
 block, absorb or resist row in the stock combat-log frame; any live-only gap row; and a green
 gates job.
