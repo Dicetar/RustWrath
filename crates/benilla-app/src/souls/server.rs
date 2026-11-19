@@ -327,6 +327,7 @@ pub(super) fn drive_link(
         Option<Res<NameCache>>,
         Option<Res<NetCommands>>,
     ),
+    mut commands: Commands,
     bodies: Bodies,
     models: Query<&benilla_assets::ModelAnimations>,
     me: Query<Entity, With<SelfPlayer>>,
@@ -482,6 +483,21 @@ pub(super) fn drive_link(
                 let Some((entity, ..)) = bodies.iter().find(|(_, g, ..)| g.0 == guid) else {
                     continue;
                 };
+                if let Some(row) = super::retarget::relayed_row(kit_now, &action) {
+                    commands
+                        .entity(entity)
+                        .insert(super::retarget::RemoteAction {
+                            source: row.source.clone(),
+                            started: t,
+                            duration: row.total.0 as f32
+                                / 1000.0
+                                / f32::from(kit_now.map_or(30, |kit| kit.frame_rate_hz).max(1)),
+                        });
+                } else {
+                    commands
+                        .entity(entity)
+                        .remove::<super::retarget::RemoteAction>();
+                }
                 play_clip(
                     relayed_anim(kit_now, &action),
                     entity,
