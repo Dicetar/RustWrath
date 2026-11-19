@@ -4597,9 +4597,7 @@ fn read_pre_resurrect(b: &[u8]) -> Result<ServerEvent> {
 /// `UnitCombat_C.cpp:860`: one raw u64 guid whose selection is forcibly cleared.
 fn read_clear_target(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
-    Ok(ServerEvent::ClearTarget {
-        guid: r.u64()?,
-    })
+    Ok(ServerEvent::ClearTarget { guid: r.u64()? })
 }
 
 /// `SMSG_AREA_SPIRIT_HEALER_TIME` (`BattlegroundMgr.cpp:667-674`): raw healer guid, then the

@@ -14413,7 +14413,10 @@ mod tests {
             std::time::Instant::now(),
         );
         assert_eq!(translated.len(), 1);
-        assert_eq!(translated[0], SessionEvent::ClearTarget { guid });
+        match translated.as_slice() {
+            [SessionEvent::ClearTarget { guid: seen }] => assert_eq!(*seen, guid),
+            other => panic!("one clear-target event expected, got {other:?}"),
+        }
     }
 
     /// The pending queue is bounded and reports overflow instead of silently losing a burst.
