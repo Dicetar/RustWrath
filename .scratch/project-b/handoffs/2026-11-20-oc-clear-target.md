@@ -19,9 +19,11 @@ The existing clear_target_requests drain already ignores a guid that is not the 
 - benilla-app: wrath::tests::clear_target_translates_to_the_stock_event
 - benilla-app: death::net::tests::clear_target_writes_a_guid_scoped_deselect
 
-## CI not run yet
+## CI
 
-No Cargo build/test or client run was made in this session. Compilation and tests are deferred to GitHub CI.
+CI 44479269404: the Windows check (and clippy, which compiles tests) failed on this branch's own
+test — `DeselectGuid` had no `PartialEq`. The derive was added; the follow-up push re-runs CI.
+No Cargo build, test or client run was made in this session.
 
 ## What is not proven in game
 
