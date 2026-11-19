@@ -85,7 +85,7 @@ impl ProfilePolicy {
             self.enemy_contact_window_ms,
             self.dodge_iframe_len_ms,
         ];
-        if windows.iter().any(|&value| value == 0) {
+        if windows.contains(&0) {
             return Err(CombatError::InvalidConfig(
                 "policy ms windows must be non-zero",
             ));
@@ -103,7 +103,7 @@ impl ProfilePolicy {
 /// `permille` of `total` ticks, rounded up, so a policy-placed window never starts earlier than
 /// the authored fraction.
 pub(crate) fn permille_of(permille: u32, total: u64) -> u64 {
-    (total * permille as u64 + 999) / 1000
+    (total * u64::from(permille)).div_ceil(1000)
 }
 
 #[cfg(test)]

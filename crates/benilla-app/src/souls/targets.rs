@@ -243,12 +243,13 @@ pub(super) struct LockTargetMemo {
     selected: Option<u64>,
 }
 
-/// The step for this frame: a new lock wins over a new target in the same frame.
+/// Only an explicit switch input may move a standing lock. Selection writes alone are not intent.
 fn lock_sync(
     memo: &LockTargetMemo,
     lock: Option<Entity>,
     lock_guid: Option<u64>,
     selected: Option<u64>,
+    switch_pressed: bool,
 ) -> LockSync {
     if lock != memo.lock {
         return if lock.is_some() && lock_guid.is_some() && lock_guid != selected {
@@ -257,7 +258,7 @@ fn lock_sync(
             LockSync::Keep
         };
     }
-    if lock.is_some() && selected != memo.selected && selected != lock_guid {
+    if switch_pressed && lock.is_some() && selected != memo.selected && selected != lock_guid {
         return LockSync::Follow;
     }
     LockSync::Keep
@@ -265,11 +266,14 @@ fn lock_sync(
 
 /// The lock is the WoW target (`lock_targets`): a new lock selects its unit through the one
 /// `SetSelection` path, so the target frame, the server's selection and `/target`-reading macros
-/// follow it. A target change the lock did not make (Tab, a click, a macro) moves the lock to the
-/// new target when it is attackable and within [`LOCK_ACQUIRE_YARDS`], else releases it.
+/// follow it. A Tab or world click can move the lock to another attackable unit within
+/// [`LOCK_ACQUIRE_YARDS`]. Automatic target writes and invalid picks leave it alone.
 /// Releasing or breaking the lock leaves the WoW target alone.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn lock_follows_target(
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    capture: Res<UiKeyboardCapture>,
     view: Res<CombatModeView>,
     config: Res<SoulsConfig>,
     player: Res<Player>,
@@ -289,7 +293,13 @@ pub(super) fn lock_follows_target(
         .and_then(|entity| units.get(entity).ok())
         .map(|(guid, ..)| guid.0);
     let selected = select.selection().guid;
-    match lock_sync(&memo, souls.lock, lock_guid, selected) {
+    let switch_pressed = (!capture.typing
+        && !capture.consumed.contains(&KeyCode::Tab)
+        && keys.just_pressed(KeyCode::Tab))
+        || [MouseButton::Left, MouseButton::Right]
+            .into_iter()
+            .any(|button| mouse.just_pressed(button) || mouse.just_released(button));
+    match lock_sync(&memo, souls.lock, lock_guid, selected, switch_pressed) {
         LockSync::Keep => {}
         LockSync::Select => {
             if let Some(guid) = lock_guid {
@@ -304,10 +314,9 @@ pub(super) fn lock_follows_target(
                         && Vec2::new(to.x, to.z).length() <= LOCK_ACQUIRE_YARDS
                 })
             });
-            souls.lock = follow;
-            match follow {
-                Some(entity) => info!("souls: lock-on follows the target to {entity:?}"),
-                None => info!("souls: lock-on released, the target is not attackable"),
+            if let Some(entity) = follow {
+                souls.lock = Some(entity);
+                info!("souls: lock-on follows the target to {entity:?}");
             }
         }
     }
@@ -522,7 +531,7 @@ mod tests {
                 lock: memo.0,
                 selected: memo.1,
             };
-            lock_sync(&memo, lock, lock_guid, selected)
+            lock_sync(&memo, lock, lock_guid, selected, true)
         };
         // A new lock on a unit that is not the target selects it; on the target, nothing to do.
         assert_eq!(
@@ -542,7 +551,7 @@ mod tests {
             step((Some(a), Some(10)), Some(a), Some(10), Some(10)),
             LockSync::Keep
         );
-        // A cleared target while locked releases (the system finds no unit to follow).
+        // A cleared target is considered, but cannot supply an entity to follow.
         assert_eq!(
             step((Some(a), Some(10)), Some(a), Some(10), None),
             LockSync::Follow
@@ -558,6 +567,32 @@ mod tests {
             step((Some(a), Some(10)), Some(b), Some(30), Some(20)),
             LockSync::Select
         );
+    }
+
+    #[test]
+    fn background_selection_changes_do_not_switch_the_lock() {
+        let unit = Entity::from_raw_u32(1).unwrap();
+        let mut memo = LockTargetMemo {
+            lock: Some(unit),
+            selected: Some(10),
+        };
+        for selected in [Some(20), None, Some(10)].into_iter().cycle().take(90) {
+            assert_eq!(
+                lock_sync(&memo, Some(unit), Some(10), selected, false),
+                LockSync::Keep
+            );
+            memo.selected = selected;
+        }
+        assert_eq!(
+            lock_sync(&memo, Some(unit), Some(10), Some(20), true),
+            LockSync::Follow
+        );
+        memo.selected = Some(20);
+        assert_eq!(
+            lock_sync(&memo, Some(unit), Some(10), Some(20), true),
+            LockSync::Keep
+        );
+        assert_eq!(lock_sync(&memo, None, None, Some(20), true), LockSync::Keep);
     }
 
     /// The blade's farthest end plus the capsule radius is the reach; its widest bearing, clamped,

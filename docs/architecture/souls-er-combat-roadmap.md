@@ -116,6 +116,7 @@ cursor_keys = ["Escape", "B", "C", "P", "M", "L", "N", "O", "I", "K", "U", "H", 
 | Enemy stance break: hits cost the creature stance (30 + 2/level, ×2 elite; 10 per 100 % motion value), at zero it is stunned 3 s, its strike and casts cancelled, and a ×3 riposte opens | done (server script; the client shows the gold riposte marker) | `rustwrath_souls.lua`, `souls/server.rs` | `server` |
 | Stance-break critical | light from the front in melee range plays Critical or Heavy1; the server consumes the opening once and applies defended critical damage | `souls/targets.rs`, `souls/server.rs`, `rustwrath_souls.lua` | `server` |
 | Backstab | light in melee reach from the rear 90° of a creature not targeting the player; server rechecks the opening | `souls/targets.rs`, `rustwrath_souls.lua` | `server` |
+| Creature hit reactions: light flinches, heavy stance damage interrupts a windup, stance break takes priority | per-creature cooldowns; interrupted strikes deal no damage | `rustwrath_souls.lua` | `server` |
 | Other Souls players' swings, parries and dodges use the local kit's ER clips; unknown ids or missing bake/rig fall back to generic | done; at most 16 bodies, 512 bones each | `souls/server.rs`, `souls/retarget.rs` | `server` |
 | Stamina bar, mode chip (teal while the server answers), lock-on marker (gold while a riposte is open) | done | `souls/hud.rs` | `hud` |
 | Turn-rate caps (`turn` windows, degrees a second) | done | `souls/drive.rs`, `player/controller.rs` | `turn_rate` |
