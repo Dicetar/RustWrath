@@ -378,7 +378,7 @@ local function managed_creature(m)
 end
 
 -- Defined below, beside the strike code; the hit report calls it.
-local break_stance
+local break_stance, react_to_hit
 
 -- The player's own hit report.
 local function on_hit(player, state, fields)
@@ -444,6 +444,8 @@ local function on_hit(player, state, fields)
             m.stance_refill_at = now + STANCE_REFILL_MS
             if m.stance <= 0 then
                 break_stance(unit, key(unit:GetGUID()), m, now)
+            elseif cost > 0 then
+                react_to_hit(unit, m, cost, now)
             end
         end
     end
@@ -641,6 +643,28 @@ local function resolve_strike(creature, ck, m, now)
     end
     trace("strike %d from %s resolved %s; next in %d ms", strike.id, ck, outcome, m.next_at - now)
     creature:SetRooted(false)
+end
+
+-- A hit reaction cannot chain-lock a creature: separate, per-creature cooldowns.
+local FLINCH_COOLDOWN_MS = 450
+local INTERRUPT_COOLDOWN_MS = 1800
+react_to_hit = function(creature, m, cost, now)
+    if m.strike and cost >= m.stance_max / 3 and now >= (m.can_interrupt_at or 0) then
+        local strike = m.strike
+        m.strike = nil
+        m.can_interrupt_at = now + INTERRUPT_COOLDOWN_MS
+        m.can_flinch_at = now + FLINCH_COOLDOWN_MS
+        for _, watcher in ipairs(strike_watchers(creature, strike)) do
+            send(watcher, "RESOLVE\t" .. strike.id .. "\tinterrupted")
+        end
+        creature:SetRooted(false)
+        creature:PerformEmote(EMOTE_ONESHOT_WOUND_CRITICAL)
+        trace("strike %d interrupted: %.1f stance damage", strike.id, cost)
+    elseif now >= (m.can_flinch_at or 0) then
+        m.can_flinch_at = now + FLINCH_COOLDOWN_MS
+        creature:PerformEmote(EMOTE_ONESHOT_WOUND)
+        trace("flinch %s: %.1f stance damage", key(creature:GetGUID()), cost)
+    end
 end
 
 -- A broken stance: the strike in progress is cancelled, casts are interrupted, and the creature
