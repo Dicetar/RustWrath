@@ -111,7 +111,7 @@ cursor_keys = ["Escape", "B", "C", "P", "M", "L", "N", "O", "I", "K", "U", "H", 
 | Hit-stop and camera jolt; the player's clips pause for the stop | done | `souls/targets.rs`, `camera_shake.rs` | `hit_stop` |
 | Damage: weapon roll × motion value, cleave falloff, blob share | done by the server script; without it a landed hit starts stock melee | `souls/targets.rs`, `souls/server.rs`, `integrations/ale/rustwrath_souls.lua` | `server` (`engage_on_hit` without it) |
 | Stock auto-attack off while the mode is on | done by the server script (blocks `CMSG_ATTACKSWING`) | `rustwrath_souls.lua` | `server` |
-| Enemy telegraphs: model-authored attack sequences scaled to land their impact at windup end; creatures stop melee and wind up strikes (40 % of attack time, 0.6–1.5 s), a windup bar over them, the client judges reach/cone/i-frames/parry/guard | done (server script + client) | `souls/server.rs`, `souls/hud.rs`, `rustwrath_souls.lua` | `enemy_strikes`, `server` |
+| Enemy telegraphs: sweep (90° half-cone), thrust (20°, +2 yd), slam (circle, ×1.5 windup), orange/blue/purple bars; model-authored attack sequences scaled to land their impact at windup end; creatures stop melee and wind up strikes (40 % of attack time, 0.6–1.5 s), a windup bar over them, the client judges reach/cone/i-frames/parry/guard | done (server script + client) | `souls/server.rs`, `souls/hud.rs`, `rustwrath_souls.lua` | `enemy_strikes`, `server` |
 | Enemy stance break: hits cost the creature stance (30 + 2/level, ×2 elite; 10 per 100 % motion value), at zero it is stunned 3 s, its strike and casts cancelled, and a ×3 riposte opens | done (server script; the client shows the gold riposte marker) | `rustwrath_souls.lua`, `souls/server.rs` | `server` |
 | Other Souls players' swings shown (generic attack/parry/dodge anims) | done | `souls/server.rs` | `server` |
 | Stamina bar, mode chip (teal while the server answers), lock-on marker (gold while a riposte is open) | done | `souls/hud.rs` | `hud` |
@@ -134,7 +134,7 @@ cursor_keys = ["Escape", "B", "C", "P", "M", "L", "N", "O", "I", "K", "U", "H", 
 by itself; deleting it turns it off). The client talks to it over addon self-whispers with the
 prefix `RWSOULS` (`souls/server.rs`): `HELLO`, `MODE 1|0` every 10 s while F10 is on, `SPRINT`,
 `CROUCH`, `HIT <mv%> <guids>`, `SWING <action>`, `VERDICT <id> <outcome>`; the server answers
-`STRIKE`, `RESOLVE`, `PARRIED`, `BROKEN`, `SWING`. F10 off sends `MODE 0` and the server hands every creature back to
+`STRIKE <id> <creature> <windup-ms> <base-reach> <mine> [sweep|thrust|slam]`, `RESOLVE`, `PARRIED`, `BROKEN`, `SWING`. The optional trailing shape preserves old-client parsing; absent or unknown means the legacy 60° half-cone. Entry policy is in `STRIKE_KIND_BY_ENTRY`; unspecified creatures sweep. F10 off sends `MODE 0` and the server hands every creature back to
 stock AI. Without the script the client stays on the stock-melee fallback (`engage_on_hit`).
 Install and side effects: `.scratch/project-b/server-rebuild-batch.md` item 2.
 
