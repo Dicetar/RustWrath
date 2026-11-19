@@ -1304,7 +1304,7 @@ pub(super) fn click_button(
         event::has_widget_handler(lua, id, "OnClick")
     };
     let mut take_loot = None;
-    let mut is_check = false;
+    let is_check;
     let fire = {
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         let Some(&h) = model.id_to_frame.get(&id) else {
