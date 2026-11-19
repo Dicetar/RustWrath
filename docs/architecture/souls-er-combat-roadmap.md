@@ -92,6 +92,7 @@ cursor_keys = ["Escape", "B", "C", "P", "M", "L", "N", "O", "I", "K", "U", "H", 
 
 | ER feature | Status | Where | Switch |
 |---|---|---|---|
+| Equipped main-hand kit (dagger, swords, axes, maces, polearm, staff, fist, spear), re-picked on weapon change; missing file → player.kit → stock | done; owner runs `scripts/import-kits.ps1` | `combat_kit.rs`, `scripts/combat-kits.csv` | — |
 | Light chain (Light1–5), roll/backstep follow-ups | done (kit slice) | `combat_kit::resolve_press` | — |
 | Dodge on release, direction from held keys, backstep standing | done | `souls/input.rs` | — |
 | Sprint (hold dodge while moving), stamina drain | done; ×1.4 run speed from the server script | `souls/input.rs` | `sprint` |
@@ -144,6 +145,3 @@ Install and side effects: `.scratch/project-b/server-rebuild-batch.md` item 2.
   checked against the HumanMale skeleton; hand roll and the weapon's angle come from the forearm
   aim; the locomotion clip speeds are estimates. Other players still show stock clips.
 - Kit rows for jumps, the left hand and the parry (`kit_import` options), then tuning.
-- The client reads the stealth CREEP flag from `UNIT_FIELD_BYTES_1` byte 3 (`unit_is_stealthed`),
-  where AzerothCore keeps it in byte 2 (byte 3 is the anim tier, `0x02` = hover): other players'
-  crouch and real stealth poses may not show, and a hovering unit may show crouched.
