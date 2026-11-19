@@ -19,11 +19,21 @@ pub const LIST: usize = 0;
 pub const BIDDER: usize = 1;
 pub const OWNER: usize = 2;
 
-/// The eight sort columns by number, as `SortAuctionItems` names them (`0x4cfc4b`-`0x4cfd1d`)
+/// The sort columns by number, as `SortAuctionItems` names them (`0x4cfc4b`-`0x4cfd1d`)
 /// and the comparator `0x4cd940` numbers its modes: level 0, quality 1, bid 2, duration 3,
-/// buyout 4, status 5, name 6, seller 7.
-pub const SORT_KEYS: [&str; 8] = [
-    "level", "quality", "bid", "duration", "buyout", "status", "name", "seller",
+/// buyout 4, status 5, name 6, seller 7; then Wrath's quantity 8 and minbidbuyout 9, which the
+/// 12340 `SortAuctionSetSort` names.
+pub const SORT_KEYS: [&str; crate::auction_sort::COLUMNS] = [
+    "level",
+    "quality",
+    "bid",
+    "duration",
+    "buyout",
+    "status",
+    "name",
+    "seller",
+    "quantity",
+    "minbidbuyout",
 ];
 
 /// A list type's snapshot index, for the other modules (the tooltip's `SetAuctionItem`).
@@ -362,6 +372,12 @@ pub enum AuctionCall {
     /// `SortAuctionItems` past its names (`0x4cfc00`): list `list`'s driver promotes `column` in
     /// the engine's stack, with a session or without (`0x4cd850`).
     Sort { list: usize, column: u8 },
+    /// Wrath's `SortAuctionApplySort(type)`: list `list`'s stack as the VM now holds it, which the
+    /// app's copy takes whole.
+    SetSort {
+        list: usize,
+        stack: AuctionSortStack,
+    },
     /// `CloseAuctionHouse()` (`0x4ce160`): the close core `0x4cd5f0`.
     Close,
 }
@@ -614,6 +630,13 @@ fn merge_list(list: &mut AuctionListState, held: AuctionListState) {
         list.rows.retain(|r| !removed.contains(&r.auction_id));
         list.rows = in_held_order(&held.rows, std::mem::take(&mut list.rows));
     }
+}
+
+/// The auction snapshot, made with its world-entry stacks when the app has pushed none yet: the
+/// 12340 frame sets its sorts in `OnLoad`, before any session, and the app's first push keeps
+/// the VM's stacks ([`merge_list`]).
+fn held_auction(model: &mut Model) -> &mut AuctionState {
+    model.auction.get_or_insert_with(AuctionState::default)
 }
 
 /// The sort tails `0x4cd8b0`, `0x4cdcd0` and `0x4cddc0`: `qsort` by the list's stack, then the
@@ -1061,6 +1084,108 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .unwrap_or(false);
             Ok(MultiValue::from_vec(vec![flag(rev)]))
         })?,
+    )?;
+
+    // Wrath's sort verbs (12340 `Blizzard_AuctionUI.lua` `AuctionFrame_SetSort`): the stock code
+    // clears a list's sort, names its keys least significant first, each one becoming the
+    // primary, then applies it. The keys land on the same stack `SortAuctionItems` promotes, so
+    // the sort tail orders by them; the Browse tab re-queries instead of applying.
+    g.set(
+        "SortAuctionClearSort",
+        lua.create_function(|lua, kind: Value| {
+            let kind =
+                binding_abi::string_arg(lua, kind, r#"Usage: SortAuctionClearSort("type")"#)?;
+            if let Some(list) = list_index(&kind) {
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                held_auction(&mut model).lists[list].sort = AuctionSortStack::seeded(list);
+            }
+            Ok(())
+        })?,
+    )?;
+    g.set(
+        "SortAuctionSetSort",
+        lua.create_function(|lua, (kind, sort, reversed): (Value, Value, Value)| {
+            let (kind, sort) = type_and_sort(
+                lua,
+                kind,
+                sort,
+                r#"Usage: SortAuctionSetSort("type", "column", reversed)"#,
+            )?;
+            let (Some(list), Some(column)) = (list_index(&kind), sort_column(&sort)) else {
+                return Ok(());
+            };
+            let reversed = !matches!(reversed, Value::Nil | Value::Boolean(false));
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            held_auction(&mut model).lists[list]
+                .sort
+                .set_front(column, reversed);
+            Ok(())
+        })?,
+    )?;
+    g.set(
+        "SortAuctionApplySort",
+        lua.create_function(|lua, kind: Value| {
+            let kind =
+                binding_abi::string_arg(lua, kind, r#"Usage: SortAuctionApplySort("type")"#)?;
+            let Some(list) = list_index(&kind) else {
+                return Ok(());
+            };
+            let stack = {
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                held_auction(&mut model).lists[list].sort
+            };
+            submit(lua, AuctionCall::SetSort { list, stack })?;
+            super::tick::verb(lua, |model| sort_tail(model, list));
+            Ok(())
+        })?,
+    )?;
+    // GetAuctionSort(type, index) → column, reversed: the stack's `index`th key, 1 the primary;
+    // nothing past the stack or for an unknown type.
+    g.set(
+        "GetAuctionSort",
+        lua.create_function(|lua, (kind, index): (Value, Value)| {
+            let kind =
+                binding_abi::string_arg(lua, kind, r#"Usage: GetAuctionSort("type", index)"#)?;
+            let index = binding_abi::is_number(lua, index).map_or(0, binding_abi::ftol);
+            let Some(list) = list_index(&kind) else {
+                return Ok(MultiValue::new());
+            };
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let slots = held_auction(&mut model).lists[list].sort.slots();
+            let Some(&(column, reversed)) =
+                usize::try_from(index - 1).ok().and_then(|i| slots.get(i))
+            else {
+                return Ok(MultiValue::new());
+            };
+            let name = lua.create_string(SORT_KEYS[usize::from(column)])?;
+            Ok(MultiValue::from_vec(vec![
+                Value::String(name),
+                Value::Boolean(reversed),
+            ]))
+        })?,
+    )?;
+    // CanCancelAuction(index) → 1/nil: an owner row the player can still cancel. The rows carry
+    // no sale state (a sold auction leaves the owner list when its mail goes out), so any row is.
+    g.set(
+        "CanCancelAuction",
+        lua.create_function(|lua, index: Value| {
+            let index = binding_abi::is_number(lua, index).map_or(0, binding_abi::ftol);
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let held = usize::try_from(index - 1).ok().is_some_and(|i| {
+                model
+                    .auction
+                    .as_ref()
+                    .is_some_and(|a| i < a.lists[OWNER].rows.len())
+            });
+            Ok(flag(held))
+        })?,
+    )?;
+    // SetAuctionsTabShowing(showing): the 12340 frame tells the client when the Auctions tab
+    // shows, so it re-asks the owner list on a sale. The app already re-asks on every owner
+    // notification, so the flag has no reader here.
+    g.set(
+        "SetAuctionsTabShowing",
+        lua.create_function(|_, _showing: Value| Ok(()))?,
     )?;
 
     // CanSendAuctionQuery() → 1/nil; a throttled query is dropped silently.

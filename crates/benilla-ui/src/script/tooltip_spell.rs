@@ -120,6 +120,12 @@ impl super::UiScript {
             let (views, asks) = spell_store(&mut model, alt_caster);
             asks.remove(&spell_id);
             views.insert(spell_id, view);
+            if !alt_caster && spell_id != 0 && model.trade_skill_description_wait == spell_id {
+                model.trade_skill_description_wait = 0;
+                if model.trade_skill_open {
+                    model.raise("TRADE_SKILL_UPDATE", Vec::new());
+                }
+            }
             model
                 .spell_tooltip_waits
                 .iter()
@@ -193,7 +199,15 @@ impl super::UiScript {
                 CraftTooltip::Spell(id) => Some(id),
                 CraftTooltip::Item(_) => None,
             });
-        rewards.chain(craft).filter(|&id| id != 0).collect()
+        // The selected recipe, whose description `GetTradeSkillDescription` reads.
+        let recipe = model
+            .trade_skill_open
+            .then_some(model.trade_skill_selected_spell);
+        rewards
+            .chain(craft)
+            .chain(recipe)
+            .filter(|&id| id != 0)
+            .collect()
     }
 }
 

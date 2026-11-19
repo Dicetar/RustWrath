@@ -640,6 +640,12 @@ pub(super) fn control(
                 0
             },
         );
+        // A Souls roll moves at its root motion's own pace (`SoulsDrive::speed`).
+        let speed = player
+            .souls
+            .speed
+            .filter(|s| s.is_finite() && *s >= 0.0)
+            .unwrap_or(speed);
         // `Jump` (`0x513bd0`) inlines `0x5144e0` and `0x514560`, which is `may_translate` term for
         // term: health, root and stand state 7. Hover's refusal is the movement handler's
         // (`0x7c623a`), which keeps the mounted flourish reachable while hovering.

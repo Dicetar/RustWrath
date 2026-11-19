@@ -25,7 +25,7 @@ Client -> server
   VERDICT <id> <hit|guard|parry|dodge|miss>   the client's judgement of strike <id>
 
 Server -> client
-  STRIKE <id> <creature guid> <windup ms> <reach yd> <1 if you judge it|0>
+  STRIKE <id> <creature guid> <windup ms> <reach yd, centre to centre> <1 if you judge it|0>
   RESOLVE <id> <outcome>
   PARRIED <creature guid> <riposte ms>
   BROKEN <creature guid> <riposte ms>   its stance broke (to every Souls player nearby)
@@ -85,7 +85,7 @@ local ROLL_RATE_MIN, ROLL_RATE_MAX = 0.5, 3.0   -- the client's roll rate, kept 
 local WINDUP_SHARE = 0.4            -- decision 16: 40 % of the attack time...
 local WINDUP_MIN_MS = 600           -- ...clamped 0.6-1.5 s
 local WINDUP_MAX_MS = 1500
-local START_SLACK_YARDS = 1.0       -- a strike starts this far past reach: where the stock chase parks
+local START_SLACK_YARDS = 0.3       -- a strike starts (and reaches) this far past the melee range
 local VERDICT_GRACE_MS = 500        -- wait this long past the windup for the client's verdict
 local CONE_HALF_RADIANS = math.pi / 3   -- decision 16: a 120 degree frontal cone
 local GUARD_TAKEN_NO_SHIELD = 0.4   -- ESTIMATE: a weapon guard lets 40 % through; a shield none
@@ -246,10 +246,17 @@ local function defended(attacker, victim, damage)
     return damage * share, share
 end
 
+-- Unit::GetMeleeRange: centre to centre, both bodies' reach already in it. Measure it with
+-- centre_distance, not GetDistance or IsWithinDist, which add both bodies' sizes again.
 local function melee_reach(attacker, victim)
     local a = attacker:GetFloatValue(UNIT_FIELD_COMBATREACH) or 1.5
     local b = victim:GetFloatValue(UNIT_FIELD_COMBATREACH) or 1.5
     return math.max(5.0, a + b + 4.0 / 3.0)
+end
+
+local function centre_distance(a, b)
+    local dx, dy = a:GetX() - b:GetX(), a:GetY() - b:GetY()
+    return math.sqrt(dx * dx + dy * dy)
 end
 
 local function has_shield(player)
@@ -654,7 +661,7 @@ end
 local STRIKE_KIND_BY_ENTRY = { [6] = "thrust", [257] = "thrust", [36] = "slam", [114] = "slam" }
 local STRIKE_SHAPES = {
     sweep = { half_cone = math.rad(90), extra_reach = 0, windup_scale = 1 },
-    thrust = { half_cone = math.rad(20), extra_reach = 2, windup_scale = 1 },
+    thrust = { half_cone = math.rad(20), extra_reach = 1, windup_scale = 1 },
     slam = { half_cone = math.pi, extra_reach = 0, windup_scale = 1.5 },
 }
 
@@ -670,9 +677,10 @@ local function start_strike(creature, ck, m, victim, now)
     local windup = math.floor(math.max(WINDUP_MIN_MS, math.min(WINDUP_MAX_MS, attack_ms * WINDUP_SHARE)) * shape.windup_scale)
     local id = next_strike_id
     next_strike_id = next_strike_id + 1
-    -- The stock chase parks a little outside the nominal reach; a strike started from there must
-    -- still be able to land, so it reaches just past where the victim stands now.
-    local reach = math.max(melee_reach(creature, victim), creature:GetDistance(victim) + 0.5)
+    -- The stock chase stops inside the melee range; a strike reaches as far as it may start, so a
+    -- victim who stays put is hit and one who steps back out of it is missed. It does not stretch
+    -- to where the victim stands.
+    local reach = melee_reach(creature, victim) + START_SLACK_YARDS
     -- Decision 9: the creature stops and its facing locks for the windup. A root, not MoveIdle:
     -- MoveIdle leaves a running chase on top of the motion master, and the stock chase resumes
     -- by itself once the root is lifted.
@@ -699,7 +707,7 @@ end
 -- The server's own judgement: inside reach and the frontal cone.
 local function area_check(creature, victim, strike)
     local shape = STRIKE_SHAPES[strike.kind]
-    if not creature:IsWithinDist(victim, strike.reach + shape.extra_reach) then
+    if centre_distance(creature, victim) > strike.reach + shape.extra_reach then
         return "miss"
     end
     if angle_diff(creature:GetO(), creature:GetAngle(victim)) > shape.half_cone then
@@ -900,12 +908,12 @@ local function tick()
             elseif now >= m.next_at then
                 local casting = creature:IsCasting()
                 local reach = melee_reach(creature, victim)
-                if not casting and creature:IsWithinDist(victim, reach + START_SLACK_YARDS) then
+                if not casting and centre_distance(creature, victim) <= reach + START_SLACK_YARDS then
                     start_strike(creature, ck, m, victim, now)
                 elseif not m.held_traced_at or now >= m.held_traced_at + TRACE_HELD_MS then
                     m.held_traced_at = now
                     trace("held %s: casting %s, %.1f yd from %s (reach %.1f)", ck, tostring(casting),
-                        creature:GetDistance(victim), key(victim:GetGUID()), reach)
+                        centre_distance(creature, victim), key(victim:GetGUID()), reach)
                 end
             end
         end

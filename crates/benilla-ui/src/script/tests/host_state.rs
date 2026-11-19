@@ -185,6 +185,8 @@ fn the_getters_answer_the_pushed_state_in_their_1_12_shapes() {
             faction_name: "Alliance".into(),
         }),
         is_arena: true,
+        leaf_flags: 0x80,
+        leaf_is_subzone: false,
     });
     // An Alliance template: friend Alliance (2), enemy Horde (4).
     s.set_player_faction_masks(Some((2, 4)));

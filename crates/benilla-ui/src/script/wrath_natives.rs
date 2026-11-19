@@ -615,31 +615,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // `GetNumCompanions(type)` / `GetCompanionInfo(type, index)` (`SpellBookFrame_Scripts.cpp:369`,
-    // `:206`): the 3.3.5 companion collections are built from summon-critter spells. benilla
-    // does not project that collection; the character-controlled companion list is empty, which
-    // is the reference's answer for a character with none. The usage gates still raise.
-    lua.globals().set(
-        "GetNumCompanions",
-        lua.create_function(|lua, kind: Value| {
-            companion_type(lua, kind, "Usage: GetNumCompanions(type)")?;
-            Ok(0)
-        })?,
-    )?;
-    lua.globals().set(
-        "GetCompanionInfo",
-        lua.create_function(|lua, (kind, index): (Value, Option<Value>)| {
-            companion_type(lua, kind, "Usage: GetCompanionInfo(type, index)")?;
-            let index = index
-                .and_then(|index| lua.coerce_number(index).ok().flatten())
-                .ok_or_else(|| mlua::Error::runtime("Usage: GetCompanionInfo(type, index)"))?;
-            if index == 0.0 {
-                return Err(mlua::Error::runtime("Usage: GetCompanionInfo(type, index)"));
-            }
-            // No companions projected: every valid 1-based index is past the collection.
-            Ok(mlua::MultiValue::new())
-        })?,
-    )?;
+    // The companion collections (`SpellBookFrame_Scripts.cpp`), [`super::companions`].
+    super::companions::install(lua)?;
     // `IsPlayerResolutionAvailable()` (`VideoOptionsPanels.lua:435`): the resolution list is
     // host-driven; no per-player resolution check exists here.
     lua.globals().set(
@@ -903,22 +880,95 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 );
                 return Ok(0.0);
             }
-            let player = model.unit("player");
-            let rating = player
-                .and_then(|u| u.combat_ratings.get(index as usize).copied())
-                .unwrap_or(0);
-            let level = player.map_or(1, |u| u.level).clamp(1, 100) as usize;
-            let slot = index as usize * 100 + (level - 1);
-            let scaler = model
-                .combat_rating_scalers
-                .get(slot)
-                .copied()
-                .unwrap_or(0.0);
-            if scaler > 0.0 && scaler.is_finite() {
-                Ok(f64::from(rating) / f64::from(scaler))
-            } else {
-                Ok(0.0)
+            Ok(combat_rating_pct(&model, index as usize))
+        })?,
+    )?;
+    // `GetArmorPenetration()` (`ScriptEvents_Scripts.cpp`): the armor penetration rating's
+    // percent (`GetCombatRatingPct(24)`), capped at 100; 0 with no active player.
+    lua.globals().set(
+        "GetArmorPenetration",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            if model.unit("player").is_none() {
+                return Ok(0.0);
             }
+            Ok(combat_rating_pct(&model, 24).min(100.0))
+        })?,
+    )?;
+    // `GetSpellPenetration()` (`ScriptEvents_Scripts.cpp`): minus
+    // `PLAYER_FIELD_MOD_TARGET_RESISTANCE`, 0 with no active player.
+    lua.globals().set(
+        "GetSpellPenetration",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(model
+                .player_combat_stats
+                .as_ref()
+                .map_or(0, |s| -i64::from(s.spell_penetration_field)))
+        })?,
+    )?;
+    // `GetUnitHealthRegenRateFromSpirit("unit")` (`ScriptEvents_Scripts.cpp`, the rate from
+    // `CGUnit_C::GetHealthRegenRateFromSpirit`): the first 50 spirit at `gtOCTRegenHP`'s
+    // class-by-level ratio, the rest at `gtRegenHPPerSpt`'s; the player and pets only, else 0.
+    lua.globals().set(
+        "GetUnitHealthRegenRateFromSpirit",
+        lua.create_function(|lua, unit: Value| {
+            let Some(token) = super::binding_abi::optional_string(lua, &unit) else {
+                return Err(mlua::Error::runtime(
+                    "Usage: GetUnitHealthRegenRateFromSpirit(\"unit\")",
+                ));
+            };
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(health_regen_from_spirit(&model, &token).unwrap_or(0.0))
+        })?,
+    )?;
+    // `SetSendMailShowing(bool)` (`MailInfo_Scripts.cpp`): `CGMailInfo::m_sendMailShowing`,
+    // which routes a bag item's right-click to the send-mail attachments.
+    lua.globals().set(
+        "SetSendMailShowing",
+        lua.create_function(|lua, showing: Value| {
+            let Value::Boolean(showing) = showing else {
+                return Err(mlua::Error::runtime("Usage: SetSendMailShowing(bool)"));
+            };
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .send_mail_showing = showing;
+            Ok(())
+        })?,
+    )?;
+    // `SetUIVisibility(visible)` (`GameUI_Scripts.cpp`): `CGGameUI::m_visible`, Alt-Z's world
+    // half (unit highlights and interact icons); a missing argument reads as shown. Missing
+    // consumer: the world renderer does not read `ui_visible` yet.
+    lua.globals().set(
+        "SetUIVisibility",
+        lua.create_function(|lua, visible: Value| {
+            let visible = match visible {
+                Value::Nil => true,
+                Value::Boolean(b) => b,
+                Value::Integer(n) => n != 0,
+                Value::Number(n) => n != 0.0,
+                Value::String(s) => {
+                    let s = s.to_string_lossy().to_ascii_lowercase();
+                    !matches!(s.as_str(), "0" | "false" | "no" | "off" | "")
+                }
+                _ => true,
+            };
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .ui_visible = visible;
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set(
+        "GetPreviousArenaSeason",
+        lua.create_function(|lua, ()| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .record_unsupported_native_once(
+                    "GetPreviousArenaSeason",
+                    "world state 3901 is not projected from the server session",
+                );
+            Ok(0)
         })?,
     )?;
     lua.globals().set(
@@ -2282,18 +2332,6 @@ pub(super) fn install_frame_fallbacks(lua: &Lua) -> mlua::Result<()> {
 /// `GetLuaCompanionType` (`SpellBookFrame_Scripts.cpp:165`): `lua_tolstring` then a
 /// case-insensitive match against `CRITTER` (0) and `MOUNT` (1). A non-string or an unknown
 /// token is the binding's usage error.
-fn companion_type(lua: &Lua, value: Value, usage: &'static str) -> mlua::Result<u32> {
-    let token = crate::script::binding_abi::optional_string(lua, &value)
-        .ok_or_else(|| mlua::Error::runtime(usage))?;
-    if token.eq_ignore_ascii_case("CRITTER") {
-        Ok(0)
-    } else if token.eq_ignore_ascii_case("MOUNT") {
-        Ok(1)
-    } else {
-        Err(mlua::Error::runtime(usage))
-    }
-}
-
 impl super::UiScript {
     /// Seed `GetNumTitles`: `CharTitles.dbc`'s record-id ceiling plus one, as
     /// `g_charTitlesDB.m_maxID + 1` (`0x005165E0`).
@@ -2499,6 +2537,72 @@ impl super::UiScript {
     pub fn take_wrath_scoped_commands(&mut self) -> Vec<super::model::WrathScopedCommand> {
         self.model_mut().wrath_scoped_commands.drain(..).collect()
     }
+}
+
+/// `CGPlayer_C::GetCombatRatingPct(index)`, 0-based: the player's rating over
+/// `gtCombatRatings.dbc`'s scaler at its level; 0 with no table row or player.
+fn combat_rating_pct(model: &Model, index: usize) -> f64 {
+    let player = model.unit("player");
+    let rating = player
+        .and_then(|u| u.combat_ratings.get(index).copied())
+        .unwrap_or(0);
+    let level = player.map_or(1, |u| u.level).clamp(1, 100) as usize;
+    let scaler = model
+        .combat_rating_scalers
+        .get(index * 100 + (level - 1))
+        .copied()
+        .unwrap_or(0.0);
+    if scaler > 0.0 && scaler.is_finite() {
+        f64::from(rating) / f64::from(scaler)
+    } else {
+        0.0
+    }
+}
+
+/// `ChrClasses.dbc` id of a class file token, the game tables' class row (`class - 1`).
+fn class_id(class_file: &str) -> Option<usize> {
+    Some(match class_file {
+        "WARRIOR" => 1,
+        "PALADIN" => 2,
+        "HUNTER" => 3,
+        "ROGUE" => 4,
+        "PRIEST" => 5,
+        "DEATHKNIGHT" => 6,
+        "SHAMAN" => 7,
+        "MAGE" => 8,
+        "WARLOCK" => 9,
+        "DRUID" => 11,
+        _ => return None,
+    })
+}
+
+/// `CGUnit_C::GetHealthRegenRateFromSpirit`: spirit up to 50 at `gtOCTRegenHP`, the rest at
+/// `gtRegenHPPerSpt`, both at the unit's class and level. `None` for a unit that is neither the
+/// player nor a pet, or with the tables unloaded.
+fn health_regen_from_spirit(model: &Model, token: &str) -> Option<f64> {
+    const BASE_SPIRIT_REGEN_CAP: i32 = 50;
+    let unit = model.unit(token)?;
+    let player_guid = model.unit("player").map(|u| u.guid);
+    let is_player = Some(unit.guid) == player_guid;
+    let is_pet = model.unit("pet").is_some_and(|p| p.guid == unit.guid);
+    if !is_player && !is_pet {
+        return None;
+    }
+    let (base, per) = model.regen_hp_tables.as_ref()?;
+    // A pet with no class token takes the warrior row, the class byte pets carry.
+    let class = unit.class_file.as_deref().and_then(class_id).unwrap_or(1);
+    let level = unit.level.clamp(1, 100) as usize;
+    let at = (class - 1) * 100 + (level - 1);
+    let stats = if is_player {
+        model.player_combat_stats.as_ref().unwrap_or(&unit.combat)
+    } else {
+        &unit.combat
+    };
+    let spirit = stats.stats[4].max(0);
+    let base_spirit = spirit.min(BASE_SPIRIT_REGEN_CAP);
+    let base_ratio = f64::from(*base.get(at)?);
+    let ratio = f64::from(*per.get(at)?);
+    Some(ratio * f64::from(spirit - base_spirit) + f64::from(base_spirit) * base_ratio)
 }
 
 #[cfg(test)]

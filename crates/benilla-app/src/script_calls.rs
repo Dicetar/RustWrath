@@ -812,6 +812,7 @@ impl CallHost for ScriptCallHost<'_, '_> {
                 }
             }
             ScriptCall::Posture(PostureCall::SitOrStand) => self.sit_or_stand(),
+            ScriptCall::Posture(PostureCall::StopAttack) => self.appliers.attack().stop_attack(),
             ScriptCall::ConfirmPetUnlearn => appliers.pet_unlearn().confirm(script),
         }
         self.settle_selection(script, &mut at, owed);

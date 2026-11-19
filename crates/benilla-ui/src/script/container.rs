@@ -227,6 +227,10 @@ pub struct RandomPropertyView {
     pub suffix: String,
     /// The roll's five enchants, named, in slots 2-6 (`0x52b7e0`..`0x52b7fb`); always white.
     pub enchants: Vec<EnchantView>,
+    /// An `ItemRandomSuffix` row's `AllocationPct` per enchant (12340 `0x707650`): the `$i` an
+    /// enchant name carries is `allocation × 0.0001 × points`, truncated. Zero for a positive
+    /// `ItemRandomProperties` row, whose names hold their own numbers.
+    pub allocation: [u32; 5],
 }
 
 /// One bag's snapshot: its name, capacity, and occupied slots (1-based).

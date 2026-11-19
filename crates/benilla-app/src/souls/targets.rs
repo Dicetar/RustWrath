@@ -370,7 +370,14 @@ pub(super) fn resolve_hits(
     mut playback: ResMut<CombatPlaybackState>,
     mut souls: ResMut<SoulsState>,
     mut link: ResMut<SoulsLink>,
+    me: Query<Option<&crate::creature_anim::Engaged>, With<crate::net::SelfPlayer>>,
 ) {
+    // The attack the last hit started can end (the sheath key's StopAttack, the target's death):
+    // a later hit on the same unit starts it again.
+    let attacking = me.iter().next().flatten().map(|e| e.0);
+    if souls.engaged.is_some() && attacking != souls.engaged {
+        souls.engaged = None;
+    }
     let features = config.features;
     if !souls_on(&view) || !features.hits {
         if souls.swing != SwingTrack::default() {

@@ -182,18 +182,25 @@ pub(super) fn load_core(script: &UiScript) -> Vec<String> {
         return failures;
     };
     let mut toc = benilla_ui::status::Status::default();
-    // The Wrath host drops the stock voice chat (see [`reference_ui::WRATH_SKIPPED_FILES`]).
-    let files: Vec<String> = if script.target() == benilla_ui::script::UiTarget::Wrath335 {
-        core.toc
-            .files
-            .iter()
-            .filter(|file| !reference_ui::wrath_skipped(file))
-            .cloned()
-            .collect()
+    // The Wrath host drops the stock voice chat (see [`reference_ui::WRATH_SKIPPED_FILES`]), but
+    // registers a dropped file's templates at its place in the toc: other stock frames inherit
+    // them, and a missing template leaves their named regions nil.
+    let mut failures = Vec::new();
+    if script.target() == benilla_ui::script::UiTarget::Wrath335 {
+        let mut run: Vec<String> = Vec::new();
+        for file in &core.toc.files {
+            if reference_ui::wrath_skipped(file) {
+                failures.extend(core.load_files_into(script, &run, &mut toc));
+                run.clear();
+                failures.extend(core.register_templates_of(script, file));
+            } else {
+                run.push(file.clone());
+            }
+        }
+        failures.extend(core.load_files_into(script, &run, &mut toc));
     } else {
-        core.toc.files.clone()
-    };
-    let mut failures = core.load_files_into(script, &files, &mut toc);
+        failures.extend(core.load_files_into(script, &core.toc.files, &mut toc));
+    }
     let mut log = benilla_ui::status::Status::default();
     let banner = benilla_ui::status::toc_banner(reference_ui::TOC);
     toc.close_into(&mut log, script.framexml_debug(), banner);

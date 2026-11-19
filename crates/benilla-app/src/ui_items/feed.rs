@@ -936,16 +936,20 @@ fn resolve_slot(
         // Every instance enchant slot with charges and countdowns: twelve with the typed Wrath
         // row, the donor seven otherwise. The countdown cells stay seven (the 1.12 array); a
         // Wrath slot past the seventh has no `SMSG_ITEM_ENCHANT_TIME_UPDATE` cell here.
-        crate::items::enchant_lines(
-            (0..read.enchant_slots()).map(|s| {
-                (
-                    s,
-                    read.enchant(s).unwrap_or(0),
-                    read.enchant_charges(s),
-                    enchant_ms.get(usize::from(s)).copied().flatten(),
-                )
-            }),
-            rolls.enchants,
+        crate::items::with_object_amounts(
+            crate::items::enchant_lines(
+                (0..read.enchant_slots()).map(|s| {
+                    (
+                        s,
+                        read.enchant(s).unwrap_or(0),
+                        read.enchant_charges(s),
+                        enchant_ms.get(usize::from(s)).copied().flatten(),
+                    )
+                }),
+                rolls.enchants,
+            ),
+            read,
+            rolls,
         ),
     );
     let gift_creator = crate::items::gift_creator_name_item(read, names);

@@ -320,6 +320,10 @@ pub(crate) struct SoulsDrive {
     /// Replace the movement keys' forward and strafe axes (each `-1`, `0` or `1`; strafe right is
     /// positive): root motion, or `(0, 0)` while an action holds the body still.
     pub(crate) axes: Option<(i32, i32)>,
+    /// Move [`Self::axes`] at this many yards a second instead of the server's run speed: a roll
+    /// covers its root motion at the clip's own pace, from its first frame, without waiting for
+    /// a speed change from the server.
+    pub(crate) speed: Option<f32>,
     /// Hold the facing at this yaw (Bevy radians) over the keyboard and mouse turns: a turn-lock
     /// window, or the bearing to the lock-on target.
     pub(crate) face: Option<f32>,
@@ -337,6 +341,8 @@ pub(crate) struct SoulsDrive {
     pub(crate) orbit: bool,
     /// Ease the camera's yaw toward this bearing (Bevy radians): the lock-on camera.
     pub(crate) cam_yaw: Option<f32>,
+    /// Souls mode is on this frame.
+    pub(crate) active: bool,
 }
 
 /// Our avatar: until `active` the camera free-flies, then we drive the body the server placed.
@@ -478,6 +484,9 @@ pub(crate) struct Player {
     /// The Souls combat drive ([`crate::souls`]), rewritten every frame before `control` reads
     /// it; the default leaves the stock controller untouched.
     pub(crate) souls: SoulsDrive,
+    /// Souls mode: frames left to stow once the attack the sheath key stopped is echoed off
+    /// ([`super::posture`]); 0 is none pending.
+    pub(crate) sheath_after_stop: u8,
     /// Swimming (`MOVEFLAG_SWIMMING`): the water over the feet crossed the swim-enter depth,
     /// latched with hysteresis ([`super::swim::update_swimming`]).
     pub(crate) swimming: bool,

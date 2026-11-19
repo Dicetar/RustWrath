@@ -473,19 +473,88 @@ pub(crate) fn random_property_views(
     props: &RandomProperties,
     enchants: Option<&Enchants>,
 ) -> std::collections::HashMap<u32, benilla_ui::script::RandomPropertyView> {
-    props
+    let positive = props.catalog.iter().map(|(id, row)| {
+        (
+            id,
+            benilla_ui::script::RandomPropertyView {
+                suffix: row.suffix.clone(),
+                enchants: random_property_lines(row, enchants),
+                allocation: [0; 5],
+            },
+        )
+    });
+    // `ItemRandomSuffix` rows under the negative id's two's complement (`-id as u32`), the
+    // link's signed field cast as it is: the 12340 enchant slots 7..11 (`0x707650`'s
+    // `slot - 7`), names left with their `$i` for the amount the source's factor sets.
+    let suffixes = props
         .catalog
-        .iter()
-        .map(|(id, row)| {
+        .iter_suffixes()
+        .map(|(id, name, ids, allocation)| {
+            let slots = ids
+                .iter()
+                .enumerate()
+                .map(|(i, &e)| (SUFFIX_FIRST_SLOT + i as u8, e as i32, 0, None));
             (
-                id,
+                (id as i32).wrapping_neg() as u32,
                 benilla_ui::script::RandomPropertyView {
-                    suffix: row.suffix.clone(),
-                    enchants: random_property_lines(row, enchants),
+                    suffix: name.unwrap_or_default().to_string(),
+                    enchants: enchant_lines_quiet(slots, enchants),
+                    allocation,
                 },
             )
-        })
-        .collect()
+        });
+    positive.chain(suffixes).collect()
+}
+
+/// The first 12340 property enchant slot (`PROP_ENCHANTMENT_SLOT_0`): `0x707650` reads
+/// `AllocationPct[slot - 7]`.
+pub(crate) const SUFFIX_FIRST_SLOT: u8 = 7;
+
+/// `CGItem_C::GetRandomPropertyValue` (12340 `0x707650`): a suffix id's amount in property slot
+/// `slot`, `trunc(AllocationPct × 0.0001 × points)`; 0 for a positive id or another slot.
+pub(crate) fn suffix_amount(
+    props: Option<&RandomProperties>,
+    random_property_id: i32,
+    points: u32,
+    slot: u8,
+) -> i32 {
+    let Some(index) = slot.checked_sub(SUFFIX_FIRST_SLOT).map(usize::from) else {
+        return 0;
+    };
+    props
+        .and_then(|p| p.catalog.scaled_suffix(random_property_id, points))
+        .and_then(|rows| rows.get(index).map(|&(_, amount)| amount as i32))
+        .unwrap_or(0)
+}
+
+/// An item object's enchant lines with each `$i` filled (12340 `CGItem_C::GetRandomPropertyValue`,
+/// over `0x707650`): the points are `ITEM_FIELD_PROPERTY_SEED`, which AzerothCore
+/// sets to the suffix factor (`Item::SetItemRandomProperties`), the value the reference derives
+/// from `RandPropPoints.dbc`.
+pub(crate) fn with_object_amounts(
+    mut lines: Vec<benilla_ui::script::EnchantView>,
+    read: crate::wrath_item::ItemRead<'_>,
+    rolls: RollCatalogs<'_>,
+) -> Vec<benilla_ui::script::EnchantView> {
+    let id = read.random_properties_id() as i32;
+    let points = read.property_seed();
+    fill_enchant_amounts(&mut lines, |slot| {
+        suffix_amount(rolls.props, id, points, slot)
+    });
+    lines
+}
+
+/// 12340 `SpellItemEnchantmentParseText` (`QuestTextParser.cpp`): each `$i` in an
+/// enchant name becomes the slot's random-property amount as `"%d"`; any other `$` stays.
+pub(crate) fn fill_enchant_amounts(
+    lines: &mut [benilla_ui::script::EnchantView],
+    amount: impl Fn(u8) -> i32,
+) {
+    for line in lines {
+        if line.name.contains("$i") {
+            line.name = line.name.replace("$i", &amount(line.slot).to_string());
+        }
+    }
 }
 
 /// The two catalogs a random-suffix roll resolves through: the roll table and the enchant names.

@@ -44,6 +44,17 @@ pub fn load_gt_combat_ratings(chain: &mut Chain) -> Result<Vec<f32>> {
     parse_gt_combat_ratings_bytes(&bytes)
 }
 
+/// Load any one-column 3.3.5a game table, `DBFilesClient\gt<name>.dbc`, in row order: the
+/// class-by-level tables (`gtOCTRegenHP`, `gtRegenHPPerSpt`, ...) index it
+/// `(class - 1) * 100 + (level - 1)`, as `GetGameTableValue` (`tables.cpp`) evaluates them.
+pub fn load_game_table(chain: &mut Chain, name: &str) -> Result<Vec<f32>> {
+    let path = format!("DBFilesClient\\gt{name}.dbc");
+    let bytes = chain
+        .read_file(&path)
+        .with_context(|| format!("reading {path}"))?;
+    parse_gt_combat_ratings_bytes(&bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_gt_combat_ratings_bytes;

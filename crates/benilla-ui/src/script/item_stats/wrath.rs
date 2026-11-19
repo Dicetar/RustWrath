@@ -20,6 +20,11 @@ pub(in crate::script) struct ItemLink {
 }
 
 impl ItemLink {
+    /// The link's suffix factor (field 7): the points a negative random property scales by.
+    pub fn suffix_factor(&self) -> u32 {
+        self.suffix_factor
+    }
+
     pub(super) fn template(id: u32) -> Self {
         Self {
             id,

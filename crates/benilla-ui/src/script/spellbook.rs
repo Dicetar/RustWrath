@@ -466,6 +466,25 @@ fn pickup_spell(lua: &Lua, id: u32, book_type: &str) -> bool {
     payload.is_some_and(|payload| set_cursor(lua, true, |_| Some(payload)))
 }
 
+/// `PickupCompanion`'s cursor (`CGSpellBook::PickupCompanion`): the companion's spell, with
+/// [`pickup_spell`]'s clear and put-down rules, for a spell outside the book.
+pub(super) fn pickup_spell_id(lua: &Lua, spell_id: u32, texture: Option<String>) -> bool {
+    let held = match &lua.app_data_ref::<Model>().expect("model app_data").cursor {
+        Some(CursorPayload::Spell(s)) => s.spell_id,
+        _ => 0,
+    };
+    verb(lua, clear_cursor);
+    if spell_id == held || held != 0 {
+        return false;
+    }
+    let payload = CursorPayload::Spell(CursorSpell {
+        spell_id,
+        texture,
+        passive: false,
+    });
+    set_cursor(lua, true, |_| Some(payload))
+}
+
 /// Register the spellbook globals.
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();

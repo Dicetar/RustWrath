@@ -461,6 +461,17 @@ fn load_combat_ratings(
                 warn!("ui_unit: gtCombatRatings.dbc unavailable: {e:#}");
             }
         }
+        let regen = {
+            use benilla_assets::LockRecover;
+            let mut chain = assets.chain.lock_recover();
+            benilla_formats::load_game_table(&mut chain, "OCTRegenHP").and_then(|base| {
+                benilla_formats::load_game_table(&mut chain, "RegenHPPerSpt").map(|per| (base, per))
+            })
+        };
+        match regen {
+            Ok((base, per)) => script.set_regen_hp_tables(base, per),
+            Err(e) => warn!("ui_unit: health regen game tables unavailable: {e:#}"),
+        }
     })
 }
 

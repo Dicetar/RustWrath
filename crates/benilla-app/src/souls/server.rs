@@ -15,8 +15,8 @@
 //!   bonus and the defense curve. The action's start goes out as `SWING <action>`, which the
 //!   server relays to other Souls players, who play it on our body.
 //! - **Sprint and crouch.** `SPRINT 1|0` and `CROUCH 1|0` follow them; the server raises or
-//!   lowers the run speed, and shows the crouch to other players as the stealth pose.
-//!   `ROLL <rate>` runs the body at a roll's speed for the equipment load (`ROLL 0` ends it).
+//!   lowers the run speed, and shows the crouch to other players as the stealth pose. A roll
+//!   moves at its own pace on this side ([`super::drive`]); the server's speed is left alone.
 //! - **Enemy strikes.** `STRIKE` telegraphs a creature's blow: a bar over it fills for the windup.
 //!   A strike on us is judged at the end of the windup, from the creature's rendered facing (which
 //!   the server locked) and our own state: out of reach or the cone a miss, inside a parry window
@@ -52,8 +52,17 @@ use benilla_combat_core::ActionKind;
 pub(crate) const PREFIX: &str = "RWSOULS";
 /// `MODE 1` (and `HELLO` until answered) goes out again this often.
 const KEEPALIVE_SECONDS: f32 = 10.0;
-/// Reach slack for the creature's own size and the rendered position's lag, yards.
-const STRIKE_SLACK_YARDS: f32 = 0.5;
+/// Reach slack for the rendered position's lag, yards. The server's reach is centre to centre
+/// (`Unit::GetMeleeRange`), so neither body's size is added again here.
+const STRIKE_SLACK_YARDS: f32 = 0.25;
+/// A dodge's i-frames count when they ran within this long of a strike's moment, either side:
+/// a frame or two of input and render lag, and a creature clip whose contact key is estimated.
+/// The strike is judged this long after its moment, so a roll pressed just late is seen.
+const DODGE_TOLERANCE_SECONDS: f32 = 0.1;
+/// How long before a strike lands a roll pressed still covers it: the kit rolls' i-frames run
+/// about 0.4 s from the press, and the judge allows [`DODGE_TOLERANCE_SECONDS`] either side. The
+/// strike bar marks this stretch as its dodge zone.
+pub(crate) const DODGE_LEAD_SECONDS: f32 = 0.45;
 /// A strike whose `RESOLVE` never comes is dropped this long past its windup.
 const STRIKE_FORGET_SECONDS: f32 = 2.0;
 /// A remote body's network swing stays muted this long after its last relayed `SWING`.
@@ -115,7 +124,7 @@ impl StrikeKind {
     }
 
     fn reach(self, base: f32) -> f32 {
-        base + if self == Self::Thrust { 2.0 } else { 0.0 }
+        base + if self == Self::Thrust { 1.0 } else { 0.0 }
     }
 
     fn contains_angle(self, angle: f32) -> bool {
@@ -230,6 +239,9 @@ pub(crate) struct StrikeShown {
     pub(crate) unit: Entity,
     /// How far through the windup, `0..=1`.
     pub(crate) progress: f32,
+    /// Where the dodge window opens, as a fraction of the windup: a roll pressed from here to the
+    /// end covers the strike ([`DODGE_LEAD_SECONDS`]).
+    pub(crate) dodge_from: f32,
     pub(crate) mine: bool,
     pub(crate) kind: StrikeKind,
 }
@@ -245,8 +257,6 @@ pub(crate) struct SoulsLink {
     sprint_sent: bool,
     /// The crouch state the server was last told.
     crouch_sent: bool,
-    /// The roll's run speed the server was last told, in hundredths; `None` while not rolling.
-    roll_sent: Option<u16>,
     /// The action run last reported as `SWING`.
     swing_sent: Option<Instance>,
     /// Messages waiting to go out this frame.
@@ -264,6 +274,11 @@ pub(crate) struct SoulsLink {
     striking: Vec<(Entity, f32)>,
     /// Our equipment load score as the server last sent it.
     pub(crate) load: Option<u8>,
+    /// The latest dodge's i-frames (app seconds, first and last frame inside), kept after they
+    /// end so a strike is judged against the window rather than the one frame of its deadline.
+    iframes_span: Option<(f32, f32)>,
+    /// The latest parry's active window, kept the same way as the i-frames.
+    parry_span: Option<(f32, f32)>,
 }
 
 impl SoulsLink {
@@ -297,7 +312,6 @@ impl SoulsLink {
             && self.announced_at.is_none()
             && !self.sprint_sent
             && !self.crouch_sent
-            && self.roll_sent.is_none()
             && self.swing_sent.is_none()
             && self.outbox.is_empty()
             && self.strikes.is_empty()
@@ -328,6 +342,32 @@ struct Defence {
     parrying: bool,
     dodging: bool,
     guarding: bool,
+}
+
+/// Where the dodge zone opens on a strike bar of `windup` seconds, as a fraction of it.
+fn dodge_from(windup: f32) -> f32 {
+    if windup > 0.0 {
+        (1.0 - DODGE_LEAD_SECONDS / windup).clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+/// The latest i-frame span after this frame: extended while the i-frames run (a chained dodge
+/// within the tolerance continues it), restarted by a new dodge, kept as it was otherwise.
+fn track_iframes(span: Option<(f32, f32)>, active: bool, t: f32) -> Option<(f32, f32)> {
+    match (active, span) {
+        (false, span) => span,
+        (true, Some((from, to))) if t - to <= DODGE_TOLERANCE_SECONDS => Some((from, t)),
+        (true, _) => Some((t, t)),
+    }
+}
+
+/// Whether the i-frames covered a strike landing at `moment`, within the tolerance either side.
+fn dodged(span: Option<(f32, f32)>, moment: f32) -> bool {
+    span.is_some_and(|(from, to)| {
+        from - DODGE_TOLERANCE_SECONDS <= moment && moment <= to + DODGE_TOLERANCE_SECONDS
+    })
 }
 
 fn verdict(in_reach: bool, in_cone: bool, defence: Defence) -> &'static str {
@@ -618,11 +658,17 @@ pub(super) fn drive_link(
         link.riposte = None;
     }
 
-    // Judge our strikes at the end of their windup, and lay out the HUD's bars.
+    // Judge our strikes just after the end of their windup, and lay out the HUD's bars.
+    let dodging_now = config.features.iframes && in_iframes(&playback, &profiles);
+    link.iframes_span = track_iframes(link.iframes_span, dodging_now, t);
+    let iframes_span = link.iframes_span;
+    let parrying_now =
+        config.features.parry && kit_now.is_some_and(|kit| in_parry_window(kit, &playback));
+    link.parry_span = track_iframes(link.parry_span, parrying_now, t);
+    let parry_span = link.parry_span;
     let defence = Defence {
-        parrying: config.features.parry
-            && kit_now.is_some_and(|kit| in_parry_window(kit, &playback)),
-        dodging: config.features.iframes && in_iframes(&playback, &profiles),
+        parrying: false,
+        dodging: false,
         guarding: config.features.guard && souls.guarding,
     };
     let mut verdicts = Vec::new();
@@ -642,27 +688,42 @@ pub(super) fn drive_link(
                 shown.push(StrikeShown {
                     unit,
                     progress: progress.clamp(0.0, 1.0),
+                    dodge_from: dodge_from(strike.windup),
                     mine: strike.mine,
                     kind: strike.kind,
                 });
             }
         }
-        if !strike.mine || strike.verdict.is_some() || t < strike.deadline {
+        if !strike.mine || strike.verdict.is_some() || t < strike.deadline + DODGE_TOLERANCE_SECONDS
+        {
             continue;
         }
         // A creature we cannot see is left to the server's area check.
-        let Some((_, _, store, at)) = body else {
+        let Some((_, _, _, at)) = body else {
             strike.verdict = Some("unseen");
             continue;
         };
         let from = at.translation();
         let to_me = player.pos - from;
-        let size = store.0.unit_combat_reach().clamp(0.0, 3.0);
-        let in_reach = Vec2::new(to_me.x, to_me.z).length() - size
+        let in_reach = Vec2::new(to_me.x, to_me.z).length()
             <= strike.kind.reach(strike.reach) + STRIKE_SLACK_YARDS;
         let facing = at.compute_transform().rotation.to_euler(EulerRot::YXZ).0;
         let in_cone = strike.kind.contains_angle(off_facing(facing, to_me));
+        let defence = Defence {
+            parrying: dodged(parry_span, strike.deadline),
+            dodging: dodged(iframes_span, strike.deadline),
+            ..defence
+        };
         let said = verdict(in_reach, in_cone, defence);
+        let around = |span: Option<(f32, f32)>| {
+            span.map(|(from, to)| (from - strike.deadline, to - strike.deadline))
+        };
+        info!(
+            "souls: strike {} judged {said}; last i-frames {:?} s, last parry {:?} s around its moment",
+            strike.id,
+            around(iframes_span),
+            around(parry_span)
+        );
         strike.verdict = Some(said);
         verdicts.push(format!("VERDICT\t{}\t{said}", strike.id));
     }
@@ -683,20 +744,6 @@ pub(super) fn drive_link(
     if sprint != link.sprint_sent {
         link.outbox.push(format!("SPRINT\t{}", u8::from(sprint)));
         link.sprint_sent = sprint;
-    }
-    // The roll: root motion presses the movement keys, so the server runs the body at the roll's
-    // speed for the equipment load until the roll ends (or the movement cancel releases it).
-    let roll = running
-        .filter(|(_, action, _)| {
-            config.features.root_motion
-                && action.kind == ActionKind::Dodge
-                && action.name.contains("Roll")
-        })
-        .map(|_| (crate::combat_kit::roll_load(link.load).speed * 100.0).round() as u16);
-    if roll != link.roll_sent {
-        let rate = roll.map_or(0.0, |hundredths| f32::from(hundredths) / 100.0);
-        link.outbox.push(format!("ROLL	{rate:.2}"));
-        link.roll_sent = roll;
     }
     // The crouch: slower, and the crouch pose for other players.
     let crouch = souls.crouched && config.features.crouch;
@@ -782,8 +829,43 @@ mod tests {
         assert_eq!(parse("WHAT\t1"), None);
     }
 
-    /// Out of the swing is a miss whatever we do; inside it the parry beats the dodge beats the
-    /// guard.
+    /// The strike bar's dodge zone is the windup's last [`DODGE_LEAD_SECONDS`], the whole bar
+    /// for a windup shorter than that.
+    #[test]
+    fn the_dodge_zone_is_the_windups_last_lead() {
+        assert!((dodge_from(1.8) - 0.75).abs() < 1e-6);
+        assert_eq!(dodge_from(0.3), 0.0);
+        assert_eq!(dodge_from(0.0), 0.0);
+    }
+
+    /// A roll's i-frames count for a strike landing inside them or within the tolerance either
+    /// side, even though the strike is judged after they ended; a strike well outside is a hit.
+    #[test]
+    fn a_roll_dodges_a_strike_its_iframes_covered() {
+        let frame = 1.0 / 60.0;
+        let mut span = None;
+        // A 13-frame (30 fps) window from t = 1.0, then frames without i-frames.
+        let mut t = 1.0;
+        while t < 1.0 + 13.0 / 30.0 {
+            span = track_iframes(span, true, t);
+            t += frame;
+        }
+        for _ in 0..30 {
+            span = track_iframes(span, false, t);
+            t += frame;
+        }
+        let (from, to) = span.expect("the span is kept after the i-frames");
+        assert!((from - 1.0).abs() < 1e-4 && to > 1.4 && to < 1.44);
+        assert!(dodged(span, 1.2), "inside");
+        assert!(dodged(span, 0.95), "pressed just late");
+        assert!(dodged(span, 1.5), "just after they ended");
+        assert!(!dodged(span, 0.8), "pressed far too late");
+        assert!(!dodged(span, 1.7), "rolled far too early");
+        assert!(!dodged(None, 1.0), "no roll");
+        // The next roll starts a new span.
+        assert_eq!(track_iframes(span, true, 3.0), Some((3.0, 3.0)));
+    }
+
     #[test]
     fn verdict_order() {
         let none = Defence {
@@ -838,7 +920,7 @@ mod tests {
         }
         assert!(StrikeKind::Sweep.contains_angle(80f32.to_radians()));
         assert!(!StrikeKind::Sweep.contains_angle(100f32.to_radians()));
-        assert_eq!(StrikeKind::Thrust.reach(5.0), 7.0);
+        assert_eq!(StrikeKind::Thrust.reach(5.0), 6.0);
         assert!(!StrikeKind::Thrust.contains_angle(30f32.to_radians()));
         assert!(StrikeKind::Slam.contains_angle(std::f32::consts::PI));
         assert_eq!(StrikeKind::Slam.reach(5.0), 5.0);

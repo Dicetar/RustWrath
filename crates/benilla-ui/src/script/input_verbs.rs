@@ -83,6 +83,9 @@ pub enum PostureCall {
     /// `SitOrStand()` (`0x48b920`): `SetStandState(1)` on the active player when its stand state
     /// byte is 0, else `SetStandState(0)` (`0x5ed430`).
     SitOrStand,
+    /// `StopAttack()` (`GameUI_Scripts.cpp` `Script_StopAttack`): leaves combat mode when the
+    /// active player is in melee and has control, the same stop a stand change makes.
+    StopAttack,
 }
 
 /// A one-shot command, fired as its key fires it.
@@ -517,6 +520,16 @@ pub(super) fn install_wrath(lua: &Lua) -> mlua::Result<()> {
                 push_look(lua, LookCall::MouseRelease { sticky: false });
             }
             Ok(())
+        })?,
+    )?;
+
+    // `StopAttack` (`GameUI_Scripts.cpp`, `Script_StopAttack`): the `/stopattack` slash command
+    // and macros, unprotected; the host's stop is a no-op while not attacking, as `IsInMelee`
+    // gates it.
+    g.set(
+        "StopAttack",
+        lua.create_function(|lua, _: MultiValue| {
+            push_call(lua, ScriptCall::Posture(PostureCall::StopAttack))
         })?,
     )?;
 

@@ -133,6 +133,11 @@ impl AuctionVerbs<'_, '_> {
                     stack.promote(column);
                 }
             }
+            AuctionCall::SetSort { list, stack } => {
+                if let Some(held) = auction.sorts.0.get_mut(list) {
+                    *held = stack;
+                }
+            }
             // The close core needs the latch, which the host lends beside this.
             AuctionCall::Close => {}
         }

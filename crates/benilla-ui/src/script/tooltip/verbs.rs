@@ -211,6 +211,47 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
             },
         )?,
     )?;
+    // AddTexture("file" [, minx, maxx, miny, maxy]) (12340 `0x61D810`): a non-string file is
+    // nil; a number third argument needs all four coordinates (the usage error), else the full
+    // square. The icon itself is `CGTooltip::AddTexture` ([`super::add_texture`]).
+    m.set(
+        "AddTexture",
+        lua.create_function(|lua, (this, args): (Table, Variadic<Value>)| {
+            let file = match args.first() {
+                Some(Value::String(s)) => Some(s.to_string_lossy()),
+                Some(Value::Integer(n)) => Some(n.to_string()),
+                Some(Value::Number(n)) => Some(n.to_string()),
+                _ => None,
+            };
+            let num = |i: usize| -> Option<f64> {
+                match args.get(i) {
+                    Some(Value::Integer(n)) => Some(*n as f64),
+                    Some(Value::Number(n)) => Some(*n),
+                    Some(Value::String(s)) => s.to_str().ok()?.trim().parse().ok(),
+                    _ => None,
+                }
+            };
+            let coords = if num(1).is_some() {
+                match (num(1), num(2), num(3), num(4)) {
+                    (Some(a), Some(b), Some(c), Some(d)) => (a, b, c, d),
+                    _ => {
+                        let model = lua.app_data_ref::<Model>().expect("model app_data");
+                        let name = frame_handle_of(lua, &this)
+                            .ok()
+                            .map(|h| binding_abi::frame_name(&model, h))
+                            .filter(|n| !n.is_empty())
+                            .unwrap_or_else(|| "<unnamed>".to_string());
+                        return Err(mlua::Error::runtime(format!(
+                            "Usage: {name}:AddTexture(\"filename\" [, minx, maxx, miny, maxy])"
+                        )));
+                    }
+                }
+            } else {
+                (0.0, 1.0, 0.0, 1.0)
+            };
+            super::add_texture(lua, &this, file, coords)
+        })?,
+    )?;
     m.set(
         "ClearLines",
         lua.create_function(|lua, this: Table| {

@@ -120,7 +120,23 @@ pub(super) fn update(
     // The sheath toggle (Z) cycles the anim layer's committed sheath state through its one setter
     // ([`crate::creature_anim::SheathRequest`]), which sends `CMSG_SETSHEATHED`; only it plays the
     // ceremony (`bInstant = 0` in `ToggleSheath` `0x5eb480`). No body model yet drops the press.
-    if binds.fired(crate::bindings::Input::ToggleSheath) {
+    //
+    // Souls mode: a hit starts the auto-attack, which refuses the toggle (and redraws on every
+    // play) for as long as it runs, so the key ends it first (StopAttack) and stows once the
+    // `SMSG_ATTACKSTOP` echo clears the engagement, within a second and a half.
+    let pressed = binds.fired(crate::bindings::Input::ToggleSheath);
+    if !player.souls.active {
+        player.sheath_after_stop = 0;
+    }
+    let mut retry = false;
+    if player.sheath_after_stop > 0 {
+        player.sheath_after_stop -= 1;
+        if me.is_some_and(|(_, _, _, engaged, ..)| !engaged) {
+            player.sheath_after_stop = 0;
+            retry = true;
+        }
+    }
+    if pressed || retry {
         if let Some((e, Some((drv, committed)), store, engaged, wielded, precast, _)) = me {
             let toggle = ToggleGates {
                 control_lost: reads.control_lost,
@@ -129,7 +145,21 @@ pub(super) fn update(
                 seated: stand_now != 0,
                 mid_ceremony: drv.sheath_ceremony_active(),
             };
-            if toggle_refused(store.map(|s| &s.0), toggle) {
+            let stop_first = pressed
+                && engaged
+                && player.souls.active
+                && !toggle_refused(
+                    store.map(|s| &s.0),
+                    ToggleGates {
+                        engaged: false,
+                        ..toggle
+                    },
+                );
+            if stop_first {
+                debug!("sheath toggle: souls mode stops the attack first");
+                commands.run_system_cached(stop_attack_for_stand_state);
+                player.sheath_after_stop = 90;
+            } else if toggle_refused(store.map(|s| &s.0), toggle) {
                 debug!("sheath toggle refused ({toggle:?})");
             } else {
                 // Melee, ranged, stowed, skipping what is not worn; `None` makes no call at all.

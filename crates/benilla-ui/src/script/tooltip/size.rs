@@ -43,6 +43,7 @@ pub(in crate::script) fn size_tooltip(model: &mut Model, h: FrameHandle) {
         })
         .collect();
     let (min_width, padding, anchor, (x, y)) = (t.min_width, t.padding, t.anchor, t.owner_offset);
+    let textures = t.textures.clone();
     let mut pending = false;
     // The sizer works in layout units throughout: each constant and the minimum width through the
     // setter steps (`0x41ad70`, `0x41ae60`), each font string through its size slots (`+0x1c`,
@@ -52,7 +53,7 @@ pub(in crate::script) fn size_tooltip(model: &mut Model, h: FrameHandle) {
     // The unwrapped lines (`0x530686`): the left and right widths of the shown cells, and the
     // column gap when both show (`0x5306cf`). The minimum width is the floor (`0x530665`).
     let mut widest = units.store(min_width);
-    for &(left, right, wrapped) in &lines {
+    for (index, &(left, right, wrapped)) in lines.iter().enumerate() {
         if wrapped {
             continue;
         }
@@ -68,9 +69,14 @@ pub(in crate::script) fn size_tooltip(model: &mut Model, h: FrameHandle) {
         if right_shown {
             w = (get_width(model, right, &mut pending) + f64::from(w)) as f32;
         }
-        // The reference adds a third width, a texture `AddTexture` (`0x5303d0`) pinned to this
-        // line (`0x530723`-`0x530755`, `+0x34c` keyed by `+0x358`); nothing calls it, so its count
-        // (`+0x364`) stays the 0 the constructor and the clear write (`0x529313`, `0x5301cf`).
+        // A third width, the `AddTexture` icon pinned to this line and its gap (`0x530723`-
+        // `0x530755`, 12340 `Tooltip.cpp:1024`).
+        if let Some(&(tex, _)) = textures.iter().find(|p| p.1 == index) {
+            let ((tw, _), _) = authored(model, tex);
+            w = (fontstring_slot(units, tw, None)
+                + f64::from(units.store(super::TEXTURE_GAP as f32))
+                + f64::from(w)) as f32;
+        }
         // `fcomp; test ah,5; jp` (`0x53075b`): only a larger number replaces, never a NaN.
         if widest < w {
             widest = w;

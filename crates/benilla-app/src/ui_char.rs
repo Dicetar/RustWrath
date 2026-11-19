@@ -315,6 +315,7 @@ pub(crate) fn unit_combat_stats(store: &ObjectStore) -> UnitCombatStats {
         ranged_percent: f.player_mod_damage_done_pct(0).unwrap_or(1.0),
         spell_damage_done,
         spell_healing_done: 0,
+        spell_penetration_field: 0,
         // As the fields stand, 0 when unsent (`0x518ea0`).
         main_attack_time_ms: f.unit_base_attack_time(0).unwrap_or(0),
         offhand_attack_time_ms: f.unit_base_attack_time(1).unwrap_or(0),
@@ -396,6 +397,11 @@ fn combat_stats(
                 r.0.get(benilla_protocol_wrath::fields::PLAYER_FIELD_MOD_HEALING_DONE_POS)
             })
             .map_or(0, |w| w as i32),
+        spell_penetration_field: raw
+            .and_then(|r| {
+                r.0.get(benilla_protocol_wrath::fields::PLAYER_FIELD_MOD_TARGET_RESISTANCE)
+            })
+            .map_or(0, |w| w as i32),
         ..unit_combat_stats(store)
     }
 }
@@ -452,16 +458,20 @@ fn slot_view(
     let (creator_guid, gift_creator_guid) = crate::items::creator_guids_item(read);
     // Every instance enchant slot: twelve with the typed Wrath row (our own gear streams as item
     // objects), the donor seven otherwise.
-    let enchants = crate::items::enchant_lines(
-        (0..read.enchant_slots()).map(|s| {
-            (
-                s,
-                read.enchant(s).unwrap_or(0),
-                read.enchant_charges(s),
-                enchant_ms.get(usize::from(s)).copied().flatten(),
-            )
-        }),
-        rolls.enchants,
+    let enchants = crate::items::with_object_amounts(
+        crate::items::enchant_lines(
+            (0..read.enchant_slots()).map(|s| {
+                (
+                    s,
+                    read.enchant(s).unwrap_or(0),
+                    read.enchant_charges(s),
+                    enchant_ms.get(usize::from(s)).copied().flatten(),
+                )
+            }),
+            rolls.enchants,
+        ),
+        read,
+        rolls,
     );
     // Only read, as the inventory getters read it (`0x4c8a0a`, `0x4c8d34`): the item's create asked.
     let t = items.template(entry, guid, Ask::Read);

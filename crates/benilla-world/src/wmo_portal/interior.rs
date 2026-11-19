@@ -104,9 +104,23 @@ const GROUP_OUTDOORS_FOR_SPELLS: u32 = 0x8000;
 /// `None` for open terrain or a miss. The placement sets the indoors bit `[node+0x90]` bit 0 for
 /// a group without [`EXTERIOR`] (`0x6a880d`); with it clear the answer is outdoors (`0x670709`),
 /// with it set the group's flag `0x8000`. Flag `0x2000` plays no part.
-fn entity_outdoors(group_flags: Option<u32>) -> bool {
-    group_flags.is_none_or(|f| f & EXTERIOR != 0 || f & GROUP_OUTDOORS_FOR_SPELLS != 0)
+///
+/// `World::QueryOutdoors` then lets the group's `WMOAreaTable` row overrule the geometry: flag
+/// `0x4` answers outdoors and `0x2` indoors (`rec->m_flags`). Stormwind's streets are interior
+/// groups (`0x2000`, no [`EXTERIOR`]) whose rows carry `0x4`, so mounts work there.
+fn entity_outdoors(group_flags: Option<u32>, area_flags: Option<u32>) -> bool {
+    let Some(f) = group_flags else { return true };
+    let geometry = f & EXTERIOR != 0 || f & GROUP_OUTDOORS_FOR_SPELLS != 0;
+    match area_flags {
+        Some(a) if a & WMO_AREA_OUTDOORS != 0 => true,
+        Some(a) if a & WMO_AREA_INDOORS != 0 => false,
+        _ => geometry,
+    }
 }
+
+/// `WMOAreaTable.Flags` bits `World::QueryOutdoors` reads.
+const WMO_AREA_OUTDOORS: u32 = 0x4;
+const WMO_AREA_INDOORS: u32 = 0x2;
 
 /// The placements and terrain `CWorld::IsEntityOutdoors 0x6706f0` is asked against, which the
 /// spell validator asks of the caster through `0x612cc0` for its place rungs. Read-only.
@@ -116,6 +130,7 @@ pub struct EntityOutdoors<'w, 's> {
     instances: Query<'w, 's, &'static WmoPortalInstance>,
     streamer: Res<'w, TerrainStreamer>,
     adt_tiles: Res<'w, Assets<AdtTile>>,
+    wmo_areas: Option<Res<'w, WmoAreas>>,
 }
 
 impl EntityOutdoors<'_, '_> {
@@ -134,8 +149,21 @@ impl EntityOutdoors<'_, '_> {
             LightAttach::DownRay,
             EXTERIOR,
         )
-        .map(|(claim, model, ..)| model.group_nav.get(claim.group).map_or(0, |g| g.flags));
-        entity_outdoors(group_flags)
+        .map(|(claim, model, inst, ..)| {
+            let group = model.group_nav.get(claim.group);
+            let area_flags = group.and_then(|g| {
+                let areas = self.wmo_areas.as_deref()?;
+                areas
+                    .0
+                    .group_row(model.wmo_id, u32::from(inst.name_set), g.area_table_id)
+                    .map(|row| row.flags)
+            });
+            (group.map_or(0, |g| g.flags), area_flags)
+        });
+        match group_flags {
+            Some((flags, area)) => entity_outdoors(Some(flags), area),
+            None => entity_outdoors(None, None),
+        }
     }
 }
 
@@ -709,16 +737,29 @@ mod tests {
     /// indoors bit clear (`0x6a880d`); in any other group, that group's flag 0x8000 (`0x670735`).
     #[test]
     fn the_entity_outdoors_test_reads_the_linked_groups_flags() {
-        assert!(entity_outdoors(None), "open terrain or a miss");
-        assert!(entity_outdoors(Some(EXTERIOR)), "an exterior group");
-        assert!(entity_outdoors(Some(EXTERIOR | EXTERIOR_LIT)));
-        assert!(entity_outdoors(Some(0x8000)));
-        assert!(!entity_outdoors(Some(0)), "a plain interior group");
+        assert!(entity_outdoors(None, None), "open terrain or a miss");
+        assert!(entity_outdoors(Some(EXTERIOR), None), "an exterior group");
+        assert!(entity_outdoors(Some(EXTERIOR | EXTERIOR_LIT), None));
+        assert!(entity_outdoors(Some(0x8000), None));
+        assert!(!entity_outdoors(Some(0), None), "a plain interior group");
         assert!(
-            !entity_outdoors(Some(EXTERIOR_LIT)),
+            !entity_outdoors(Some(EXTERIOR_LIT), None),
             "a lit street is indoors here"
         );
-        assert!(!entity_outdoors(Some(0x2000)), "0x2000 plays no part");
+        assert!(!entity_outdoors(Some(0x2000), None), "0x2000 plays no part");
+        // Stormwind's Trade District street: MOGP 0x2a41, its WMOAreaTable row flags 0x4.
+        assert!(
+            entity_outdoors(Some(0x2a41), Some(0x4)),
+            "a row forces outdoors"
+        );
+        assert!(
+            !entity_outdoors(Some(EXTERIOR), Some(0x2)),
+            "a row forces indoors"
+        );
+        assert!(
+            !entity_outdoors(Some(0x2a41), Some(0x10)),
+            "other row bits keep the group's"
+        );
     }
     use benilla_formats::FootprintTris;
 

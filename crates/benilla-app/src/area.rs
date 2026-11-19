@@ -234,6 +234,8 @@ fn feed_zone_events(
             minimap: minimap_text.clone(),
             pvp_zone: zone_pvp(areas.0.get(zone), factions.as_deref()),
             is_arena: leaf_row.flags & 0x80 != 0,
+            leaf_flags: leaf_row.flags,
+            leaf_is_subzone: leaf != zone,
         });
 
         if let Some(event) = event {

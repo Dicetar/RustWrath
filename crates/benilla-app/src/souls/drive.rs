@@ -7,6 +7,8 @@
 //!   predicted body where the animation puts it without a teleport, so the server sees ordinary
 //!   movement. Until the action's movement cancel, with no debt, the axes are held at zero: the
 //!   body does not walk out of an attack. Held movement past the cancel releases the action.
+//!   A roll is driven at its debt's own pace ([`SoulsDrive::speed`]): the frame covers what the
+//!   clip moved, so the roll carries its whole distance while it plays.
 //! - **Turn lock.** Inside the kit's no-turn windows the facing is held where it was.
 //! - **Turn rate.** Inside the kit's turn-rate windows the controller caps the frame's turn at the
 //!   window's degrees a second, so an attack tracks a target only so fast.
@@ -37,6 +39,12 @@ use crate::player::{Player, SoulsDrive};
 
 /// Debt below this many yards on an axis is not chased (the controller would overshoot it).
 const DEADBAND_YARDS: f32 = 0.25;
+/// A roll moves at its own pace, so it chases its debt this close without overshooting it.
+const ROLL_DEADBAND_YARDS: f32 = 0.03;
+/// A roll's speed never exceeds this, yards a second (a blocked roll's debt does not fling it).
+const ROLL_SPEED_CAP: f32 = 40.0;
+/// The shortest frame a roll's pace divides by, seconds.
+const MIN_FRAME_SECONDS: f32 = 0.001;
 /// A frame's displacement above this is a teleport or a correction, not movement to count.
 const TELEPORT_YARDS: f32 = 5.0;
 /// Under the free camera the body turns toward the run's bearing this fast, degrees a second.
@@ -73,9 +81,14 @@ pub(super) fn yaw_toward(direction: Vec3) -> f32 {
 
 /// The axis value that chases `debt` yards: one step either way past the deadband.
 fn chase(debt: f32) -> i32 {
-    if debt > DEADBAND_YARDS {
+    chase_within(debt, DEADBAND_YARDS)
+}
+
+/// The axis toward a debt outside `deadband`.
+fn chase_within(debt: f32, deadband: f32) -> i32 {
+    if debt > deadband {
         1
-    } else if debt < -DEADBAND_YARDS {
+    } else if debt < -deadband {
         -1
     } else {
         0
@@ -93,6 +106,7 @@ pub(super) fn drive_controller(
     bindings: Res<BindingsState>,
     er: Res<ErControls>,
     link: Res<super::server::SoulsLink>,
+    time: Res<Time>,
     cams: Query<&FlyCam>,
     targets: Query<&GlobalTransform>,
     mut souls: ResMut<SoulsState>,
@@ -106,6 +120,7 @@ pub(super) fn drive_controller(
     }
     let features = config.features;
     let mut drive = SoulsDrive {
+        active: true,
         free_camera: er.active() && er.free_camera,
         orbit: er.hides_cursor(),
         ..SoulsDrive::default()
@@ -185,7 +200,8 @@ pub(super) fn drive_controller(
     }
     let motion = action.motion_at(frame);
     // A roll carries as far as the equipment load lets it.
-    let reach = if action.kind == ActionKind::Dodge && action.name.contains("Roll") {
+    let roll = action.kind == ActionKind::Dodge && action.name.contains("Roll");
+    let reach = if roll {
         crate::combat_kit::roll_load(link.load).distance
     } else {
         1.0
@@ -196,7 +212,17 @@ pub(super) fn drive_controller(
     track.debt += Vec2::new(step(0), step(2));
     track.last_motion = motion;
     track.last_pos = player.pos;
-    if features.root_motion && !released {
+    if features.root_motion && !released && roll {
+        // A roll moves at the pace its clip moves, from the first frame: this frame's whole debt,
+        // so the distance is covered inside the roll (fast out of the tuck, easing into the
+        // recovery) and nothing is left to chase after it.
+        let dt = time.delta_secs().max(MIN_FRAME_SECONDS);
+        drive.axes = Some((
+            chase_within(track.debt.y, ROLL_DEADBAND_YARDS),
+            -chase_within(track.debt.x, ROLL_DEADBAND_YARDS),
+        ));
+        drive.speed = Some((track.debt.length() / dt).min(ROLL_SPEED_CAP));
+    } else if features.root_motion && !released {
         // Right is positive on the controller's strafe axis; the debt's x is left.
         drive.axes = Some((chase(track.debt.y), -chase(track.debt.x)));
     } else {

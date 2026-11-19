@@ -903,6 +903,8 @@ fn a_looted_roll_shows_its_lines_and_never_the_placeholder() {
                         ..Default::default()
                     },
                 ],
+
+                ..Default::default()
             },
         )]
         .into_iter()
@@ -1008,6 +1010,8 @@ fn a_linked_roll_shows_its_lines_and_never_the_placeholder() {
                     name: "Agility +7".into(),
                     ..Default::default()
                 }],
+
+                ..Default::default()
             },
         )]
         .into_iter()

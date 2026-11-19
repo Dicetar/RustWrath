@@ -116,6 +116,44 @@ pub(super) fn add_font_strings(
     })
 }
 
+/// 12340's line growth (`0x61FEC0`, lines `0x61FF02..`): a hidden pair named after the next line,
+/// each cell following the font object of the last pair's cell; the left under the last left at
+/// -2, the right's RIGHT on the new left's LEFT at +40. Appended through `AddFontStrings`.
+fn grow_line_pair(lua: &Lua, this: &Table, cap: usize) -> mlua::Result<()> {
+    use mlua::ObjectLike;
+    let h = frame_handle_of(lua, this)?;
+    let (last_left, last_right, name) = {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let (l, r) = match model.arena.frame(h).map(|f| &f.kind_state) {
+            Some(KindState::Tooltip(t)) => (t.left_lines[cap - 1], t.right_lines[cap - 1]),
+            _ => return Err(mlua::Error::runtime("not a GameTooltip")),
+        };
+        let name = crate::script::binding_abi::frame_name(&model, h);
+        (model.region_id(l), model.region_id(r), name)
+    };
+    let last_left = super::region::region_wrapper(lua, last_left)?;
+    let last_right = super::region::region_wrapper(lua, last_right)?;
+    let make = |side: &str, last: &Table| -> mlua::Result<Table> {
+        let cell: Table = this.call_method(
+            "CreateFontString",
+            (format!("{name}Text{side}{}", cap + 1), "ARTWORK"),
+        )?;
+        if let Value::Table(font) = last.call_method::<Value>("GetFontObject", ())? {
+            cell.call_method::<()>("SetFontObject", font)?;
+        }
+        Ok(cell)
+    };
+    let left = make("Left", &last_left)?;
+    left.call_method::<()>("SetPoint", ("TOPLEFT", last_left, "BOTTOMLEFT", 0, -2))?;
+    left.call_method::<()>("Hide", ())?;
+    let right = make("Right", &last_right)?;
+    right.call_method::<()>("SetPoint", ("RIGHT", left.clone(), "LEFT", 40, 0))?;
+    right.call_method::<()>("Hide", ())?;
+    let left = super::region::region_handle_of(lua, &left)?;
+    let right = super::region::region_handle_of(lua, &right)?;
+    add_font_strings(lua, this, left, right)
+}
+
 /// Writes a line cell's text and colour and shows it. The text goes through `SetText` with its
 /// expand flag (`0x5302e7`, `0x53033d` for the two sides of a line, `0x53060e` for `AppendText`'s
 /// helper `0x5305b0`), so the number separators swap while `SetEuropeanNumbers` holds.
@@ -225,6 +263,7 @@ pub(super) fn status_bar(model: &Model, h: FrameHandle) -> Option<FrameHandle> {
 /// tooltip holds a unit (`0x530070`) the health bar hides by its own transition, shown bit then
 /// hide slot (`0x53009b`/`0x5300a1`), so its `OnHide` runs; then the lines, counters and subject.
 pub(super) fn clear_silent(lua: &Lua, h: FrameHandle) {
+    restore_texture_lines(lua, h);
     let bar = {
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         let held = tip_mut(&mut model, h).is_ok_and(|t| t.unit_guid.is_some());
@@ -235,6 +274,119 @@ pub(super) fn clear_silent(lua: &Lua, h: FrameHandle) {
     }
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     clear_content(&mut model, h);
+}
+
+/// The gap between an `AddTexture` icon and its line, 0.005 in the reference's screen units
+/// (`Tooltip.cpp:3860`), 5.12 in the 1024-wide interface.
+pub(super) const TEXTURE_GAP: f64 = 5.12;
+
+/// The clear's texture pass (`Tooltip.cpp:957`-`971`): each pinned line goes back under the line
+/// above at -2, the line after it back under it, and the icon hides.
+fn restore_texture_lines(lua: &Lua, h: FrameHandle) {
+    use mlua::ObjectLike;
+    let (textures, lefts) = {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let Ok(t) = tip_mut(&mut model, h) else {
+            return;
+        };
+        if t.textures.is_empty() {
+            return;
+        }
+        let textures = std::mem::take(&mut t.textures);
+        let lefts = t.left_lines.clone();
+        let textures: Vec<_> = textures
+            .into_iter()
+            .map(|(rh, line)| (model.region_id(rh), line))
+            .collect();
+        let lefts: Vec<_> = lefts.into_iter().map(|rh| model.region_id(rh)).collect();
+        (textures, lefts)
+    };
+    let wrap = |id| super::region::region_wrapper(lua, id).ok();
+    for (tex, line) in textures {
+        if line >= 1 && line < lefts.len() {
+            if let (Some(cell), Some(above)) = (wrap(lefts[line]), wrap(lefts[line - 1])) {
+                let _ = cell.call_method::<()>("SetPoint", ("TOPLEFT", above, "BOTTOMLEFT", 0, -2));
+            }
+            if line + 1 < lefts.len() {
+                if let (Some(next), Some(cell)) = (wrap(lefts[line + 1]), wrap(lefts[line])) {
+                    let _ =
+                        next.call_method::<()>("SetPoint", ("TOPLEFT", cell, "BOTTOMLEFT", 0, -2));
+                }
+            }
+        }
+        if let Some(tex) = wrap(tex) {
+            let _ = tex.call_method::<()>("Hide", ());
+        }
+    }
+}
+
+/// `CGTooltip::AddTexture` (12340 `0x61C8B0`): the next of the `<name>Texture1`-`10` pool, pinned
+/// left of the last line, which moves right by the icon's width plus [`TEXTURE_GAP`] unless the
+/// line above already holds one; the line after it is pulled back by the same. Nothing with the
+/// pool used up, no such texture, or fewer than two lines.
+pub(super) fn add_texture(
+    lua: &Lua,
+    this: &Table,
+    file: Option<String>,
+    coords: (f64, f64, f64, f64),
+) -> mlua::Result<()> {
+    use mlua::ObjectLike;
+    let h = frame_handle_of(lua, this)?;
+    let (index, prev_line, lines, lefts, name) = {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let name = crate::script::binding_abi::frame_name(&model, h);
+        let t = tip_mut(&mut model, h)?;
+        let (index, prev, lines) = (
+            t.textures.len(),
+            t.textures.last().map(|p| p.1),
+            t.num_lines,
+        );
+        let lefts = t.left_lines.clone();
+        let lefts: Vec<_> = lefts.into_iter().map(|rh| model.region_id(rh)).collect();
+        (index, prev, lines, lefts, name)
+    };
+    if index >= 10 || lines < 2 || lines > lefts.len() {
+        return Ok(());
+    }
+    let Ok(Value::Table(tex)) = lua
+        .globals()
+        .get::<Value>(format!("{name}Texture{}", index + 1))
+    else {
+        return Ok(());
+    };
+    let Ok(tex_handle) = super::region::region_handle_of(lua, &tex) else {
+        return Ok(());
+    };
+    let line = lines - 1;
+    let width: f64 = tex.call_method("GetWidth", ())?;
+    let offset = if index > 0 && prev_line == Some(lines - 2) {
+        0.0
+    } else {
+        width + TEXTURE_GAP
+    };
+    let cell = super::region::region_wrapper(lua, lefts[line])?;
+    let above = super::region::region_wrapper(lua, lefts[line - 1])?;
+    cell.call_method::<()>("SetPoint", ("TOPLEFT", above, "BOTTOMLEFT", offset, -2))?;
+    tex.call_method::<()>("ClearAllPoints", ())?;
+    tex.call_method::<()>(
+        "SetPoint",
+        ("TOPRIGHT", cell.clone(), "TOPLEFT", -TEXTURE_GAP, 0),
+    )?;
+    if line + 1 < lefts.len() {
+        let next = super::region::region_wrapper(lua, lefts[line + 1])?;
+        next.call_method::<()>(
+            "SetPoint",
+            ("TOPLEFT", cell, "BOTTOMLEFT", -(width + TEXTURE_GAP), -2),
+        )?;
+    }
+    tex.call_method::<()>("SetTexture", file)?;
+    tex.call_method::<()>("SetTexCoord", coords)?;
+    tex.call_method::<()>("SetVertexColor", (1, 1, 1, 1))?;
+    tex.call_method::<()>("Show", ())?;
+    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+    tip_mut(&mut model, h)?.textures.push((tex_handle, line));
+    size::size_tooltip(&mut model, h);
+    Ok(())
 }
 
 /// The tooltip clear (`0x530050`): [`clear_silent`], then `OnTooltipCleared` (`0x530263`).
@@ -565,6 +717,20 @@ pub(super) fn append_line(
     let wrap = wrap && right_empty;
     let h = frame_handle_of(lua, this)?;
     let (cap, have) = with_tip(lua, this, |t| (t.left_lines.len(), t.num_lines))?;
+    // 12340 `CGTooltip::AddLine` (`0x61FEC0`) grows the arrays instead: with the last declared
+    // pair about to be filled it makes the next `<name>TextLeft<n>`/`TextRight<n>`, so the
+    // four-line `ShoppingTooltipTemplate` and the eight-line `GameTooltipTemplate` hold any item.
+    let wrath =
+        lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335;
+    if wrath && cap == 0 {
+        return Ok(());
+    }
+    let cap = if wrath && have + 1 >= cap {
+        grow_line_pair(lua, this, cap)?;
+        cap + 1
+    } else {
+        cap
+    };
     // A full line array adds nothing (`0x530291`).
     if have >= cap {
         return Ok(());

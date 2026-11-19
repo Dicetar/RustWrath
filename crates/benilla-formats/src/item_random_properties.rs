@@ -104,6 +104,24 @@ impl RandomPropertyCatalog {
         self.rows.iter().map(|(&id, row)| (id, row))
     }
 
+    /// Every `ItemRandomSuffix` row as `(id, name, enchant ids, AllocationPct)`, the id
+    /// unsigned: an item or link names it negated.
+    #[allow(clippy::type_complexity)]
+    pub fn iter_suffixes(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            u32,
+            Option<&str>,
+            [u32; RANDOM_PROPERTY_SLOTS],
+            [u32; RANDOM_PROPERTY_SLOTS],
+        ),
+    > + '_ {
+        self.suffix_rows
+            .iter()
+            .map(|(&id, row)| (id, row.name.as_deref(), row.enchants, row.allocation))
+    }
+
     /// A catalog from explicit rows, for tests and fixtures.
     pub fn from_rows(rows: HashMap<u32, RandomProperty>) -> Self {
         RandomPropertyCatalog {

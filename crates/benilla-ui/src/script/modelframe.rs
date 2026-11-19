@@ -692,6 +692,21 @@ pub(super) fn install_player_model(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // `SetCreature(creatureID)` (3.3.5 `PlayerModel`, the companion tab's preview,
+    // `PetPaperDollFrame.lua:444`). Unsupported branch: the creature entry's display comes from the
+    // creature query cache, which the UI cannot reach, so the pane is cleared instead of showing
+    // the wrong model. The argument is still checked as a number.
+    if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
+        m.set(
+            "SetCreature",
+            lua.create_function(|lua, (this, id): (Table, Value)| {
+                lua.coerce_number(id)?
+                    .ok_or_else(|| usage(lua, &this, "SetCreature(creatureID)"))?;
+                with_model(lua, &this, ModelState::clear_file)
+            })?,
+        )?;
+    }
+
     lua.set_named_registry_value(REG_PLAYERMODEL_METHODS, m)
 }
 
