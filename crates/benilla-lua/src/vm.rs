@@ -933,9 +933,8 @@ impl Vm {
             },
             capture,
         );
-        let called = set.and_then(|()| {
-            self.protected_map(|vm| vm.call_value(f, args, 0).map(|_| ()), capture)
-        });
+        let called = set
+            .and_then(|()| self.protected_map(|vm| vm.call_value(f, args, 0).map(|_| ()), capture));
         let mut failed = called.err();
         if let Some((value, _)) = &failed {
             // A restore metamethod can collect before the host roots the raised value.
