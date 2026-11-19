@@ -1,6 +1,6 @@
 //! The Souls HUD: the predicted stamina bar (bottom centre), a mode chip at its left end, a
-//! marker on the locked-on unit, and a windup bar over each enemy telegraphing a strike
-//! ([`super::server`]). Plain coloured quads above the world (no text yet). Hidden when Souls
+//! marker on the locked-on unit, and a windup bar under each striking enemy's nameplate (under
+//! its head when it has none), clear of its name ([`super::server`]). Plain coloured quads above the world (no text yet). Hidden when Souls
 //! combat is off, the `hud` switch is off, or there is no local player.
 //!
 //! The bar is green; red for a moment after a press refused for stamina, blue while guarding,
@@ -18,7 +18,9 @@ use crate::combat_kit::PlayerKit;
 use crate::combat_mode::CombatModeView;
 use crate::combat_playback::CombatPlaybackState;
 use crate::combat_profiles::CombatProfiles;
+use crate::entities::{overhead_anchor, BoneAttach, OverheadFallback};
 use crate::net::SelfPlayer;
+use crate::vplates::{gx_px, plate_basis, VPlates, PLATE_H, PLATE_LIFT};
 
 const BAR_WIDTH: f32 = 320.0;
 const BAR_HEIGHT: f32 = 10.0;
@@ -27,11 +29,12 @@ const CHIP: f32 = 14.0;
 const MARKER: f32 = 10.0;
 /// The marker sits this far above the locked unit's feet, yards.
 const MARKER_HEIGHT_YARDS: f32 = 1.6;
-/// Strike bars: how many can show at once, their full size, and their height over the feet.
+/// Strike bars: how many can show at once, their full size, and the gap under the plate (or the
+/// head), px.
 const STRIKE_BARS: u8 = 4;
 const STRIKE_WIDTH: f32 = 56.0;
 const STRIKE_HEIGHT: f32 = 6.0;
-const STRIKE_HEIGHT_YARDS: f32 = 2.6;
+const STRIKE_GAP: f32 = 3.0;
 
 /// One HUD quad.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
@@ -162,6 +165,14 @@ pub(super) fn drive_hud(
     me: Query<(), With<SelfPlayer>>,
     camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
     targets: Query<&GlobalTransform, Without<HudPart>>,
+    plates: Res<VPlates>,
+    heads: (
+        Query<&Transform>,
+        Query<&BoneAttach>,
+        Query<&benilla_world::rig_anim::RigPose>,
+        Query<&OverheadFallback>,
+        Query<(), With<crate::entities::mount::MountChild>>,
+    ),
     mut parts: Query<(&HudPart, &mut Node, &mut BackgroundColor, &mut Visibility)>,
 ) {
     let on = souls_on(&view) && config.features.hud && me.single().is_ok();
@@ -192,13 +203,27 @@ pub(super) fn drive_hud(
         let (camera, view_at) = camera.single().ok()?;
         camera.world_to_viewport(view_at, at).ok()
     };
-    // The strike bars: each telegraphed strike over its unit.
+    // The strike bars: each telegraphed strike under its unit's plate, which hangs from its top
+    // centre 2/3 yd over the overhead anchor; with no plate, under the anchor (the name sits over
+    // it). `at` is the bar's top centre.
+    let plate_h = camera
+        .single()
+        .ok()
+        .and_then(|(camera, _)| camera.logical_viewport_size())
+        .map_or(0.0, |viewport| gx_px(PLATE_H, plate_basis(viewport)));
+    let (units, attach, poses, fallbacks, mounts) = &heads;
     let strikes: Vec<(Vec2, f32, bool, StrikeKind)> = link
         .shown
         .iter()
         .filter(|_| on)
         .filter_map(|strike| {
-            let at = project(strike.at + Vec3::Y * STRIKE_HEIGHT_YARDS)?;
+            let tf = units.get(strike.unit).ok()?;
+            let head = overhead_anchor(strike.unit, tf, attach, poses, fallbacks, &targets, mounts);
+            let at = if plates.0.contains(&strike.unit) {
+                project(head + Vec3::Y * PLATE_LIFT)? + Vec2::Y * (plate_h + STRIKE_GAP)
+            } else {
+                project(head)? + Vec2::Y * STRIKE_GAP
+            };
             Some((at, strike.progress, strike.mine, strike.kind))
         })
         .take(usize::from(STRIKE_BARS))
@@ -261,7 +286,7 @@ pub(super) fn drive_hud(
             HudPart::Strike(index) => {
                 if let Some(&(at, progress, _, _)) = strikes.get(usize::from(*index)) {
                     let left = Val::Px(at.x - STRIKE_WIDTH / 2.0);
-                    let top = Val::Px(at.y - STRIKE_HEIGHT / 2.0);
+                    let top = Val::Px(at.y);
                     let width = Val::Px(STRIKE_WIDTH * progress.max(0.05));
                     if node.left != left || node.top != top || node.width != width {
                         node.left = left;

@@ -3,7 +3,7 @@
 //! `OpenCalendar()` into the shared command tap. Nothing here predicts a rune or invents a date.
 
 use benilla_protocol_wrath::session::Phase;
-use benilla_ui::script::UiTarget;
+use benilla_ui::script::{ScriptValue, UiTarget};
 use bevy::prelude::*;
 
 use crate::net::{ClientCommand, NetCommands};
@@ -41,8 +41,35 @@ pub(crate) fn feed(
         let vehicle = world.local_vehicle(world.player_guid);
         let flags =
             vehicle.and_then(|seat| seats.as_deref()?.0.flags(seat.vehicle_id, seat.seat_index));
+        let was_vehicle_ui = script.vehicle_action_bar_active();
         script.set_wrath_vehicle_guid(vehicle.map(|seat| seat.base_guid));
         script.set_wrath_vehicle_seat_flags(flags);
+        let now_vehicle_ui = script.vehicle_action_bar_active();
+        if was_vehicle_ui != now_vehicle_ui {
+            // MainMenuBar_UpdateArt switches on UNIT_ENTERED/EXITED_VEHICLE("player"); the
+            // reference's UpdateBonusBar then signals UPDATE_BONUS_ACTIONBAR on every change and
+            // ACTIONBAR_PAGE_CHANGED only when the temporary page ends (0x5A83C0).
+            script.fire_event(
+                if now_vehicle_ui {
+                    "UNIT_ENTERING_VEHICLE"
+                } else {
+                    "UNIT_EXITING_VEHICLE"
+                },
+                vec![ScriptValue::Str("player".into())],
+            );
+            script.fire_event(
+                if now_vehicle_ui {
+                    "UNIT_ENTERED_VEHICLE"
+                } else {
+                    "UNIT_EXITED_VEHICLE"
+                },
+                vec![ScriptValue::Str("player".into())],
+            );
+            script.fire_event("UPDATE_BONUS_ACTIONBAR", Vec::new());
+            if was_vehicle_ui {
+                script.fire_event("ACTIONBAR_PAGE_CHANGED", Vec::new());
+            }
+        }
 
         if world.runes.is_empty() {
             script.clear_runes();

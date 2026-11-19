@@ -20,7 +20,7 @@ const PVP_TIMER_PAD_MS: f64 = 1_000.0;
 const SEAT_CONTROLS_VEHICLE: u32 = 0x0000_0800;
 const SEAT_CAN_EXIT: u32 = 0x0200_0000;
 const SEAT_CAN_SWITCH: u32 = 0x0400_0000;
-const SEAT_HAS_UI: u32 = 0x2000_0000;
+pub(crate) const SEAT_HAS_UI: u32 = 0x2000_0000;
 
 fn vehicle_seat_flag(model: &Model, flag: u32) -> bool {
     model.vehicle_guid.is_some()
@@ -816,6 +816,26 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             lua.create_function(|_, _args: mlua::MultiValue| Ok(()))?,
         )?;
     }
+    // The vehicle template's aim-adjustable flag, the seat-indicator DBCs and the aim request
+    // are not projected. These answer the no-vehicle/no-pitch arm the stock UI takes for an
+    // ordinary mount, so VehicleMenuBar loads without raising; a vehicle with a pitch slider or
+    // seat indicator stays empty until those owners are decoded.
+    lua.globals().set(
+        "IsVehicleAimAngleAdjustable",
+        lua.create_function(|_, ()| Ok(Value::Nil))?,
+    )?;
+    lua.globals().set(
+        "VehicleAimRequestNormAngle",
+        lua.create_function(|_, _pitch: Option<f64>| Ok(()))?,
+    )?;
+    lua.globals().set(
+        "GetVehicleUIIndicator",
+        lua.create_function(|_, _id: Option<i64>| Ok((String::new(), 0i64)))?,
+    )?;
+    lua.globals().set(
+        "GetVehicleUIIndicatorSeat",
+        lua.create_function(|_, _args: mlua::MultiValue| Ok(MultiValue::new()))?,
+    )?;
 
     // `UnitInVehicle`, `UnitHasVehicleUI`, `UnitTargetsVehicleInRaidUI`, `UnitInVehicleControlSeat`:
     // vehicle unitframe queries. PetFrame and UnitFrame check `UnitInVehicle` to position vehicle
@@ -1471,10 +1491,15 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, _: mlua::MultiValue| Ok(false))?,
     )?;
 
-    // `IsPossessBarVisible` (`BonusActionBarFrame.lua:221`): mind control / vehicle possess bar.
+    // `IsPossessBarVisible` (`0x5a8820`): `CGPetInfo::m_possessSpell` is set and its aura is not
+    // suppressed. The charm field is the owner we have; a vehicle's leg is hidden by
+    // `UnitHasVehicleUI` in the stock `PossessBar_Update`, and the native keeps the same gate.
     lua.globals().set(
         "IsPossessBarVisible",
-        lua.create_function(|_, _: mlua::MultiValue| Ok(false))?,
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(model.vehicle_guid.is_none() && model.death.possess_bar)
+        })?,
     )?;
 
     // `BNGetNumBlocked` (`FriendsFrame.lua:452`): blocked Battle.net contacts count.
@@ -2457,6 +2482,17 @@ impl super::UiScript {
 
     pub fn set_wrath_vehicle_seat_flags(&mut self, flags: Option<u32>) {
         self.model_mut().vehicle_seat_flags = flags;
+    }
+
+    /// Whether the local player rides a vehicle with its own UI (`UnitHasVehicleUI` main bar
+    /// and the temporary action-bar page). A vehicle GUID alone is not enough: the seat's
+    /// `HAS_UI` permission is what gives the bar.
+    pub fn vehicle_action_bar_active(&self) -> bool {
+        let model = self.model_ref();
+        model.vehicle_guid.is_some()
+            && model
+                .vehicle_seat_flags
+                .is_some_and(|flags| flags & SEAT_HAS_UI != 0)
     }
 
     /// Drain queued 12340 LFG and vehicle commands from the VM.
@@ -3953,6 +3989,22 @@ mod tests {
         assert!(enabled);
         assert_eq!(glyph_type, 2);
         assert_eq!(glyph_id, None);
+    }
+
+    /// `IsPossessBarVisible` reads the player's charm owner and hides the possess bar in a
+    /// vehicle; `UnitHasVehicleUI` remains the vehicle's own owner.
+    #[test]
+    fn wrath_possess_bar_reads_the_charm_and_hides_in_a_vehicle() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        assert!(!s.eval::<bool>("return IsPossessBarVisible()").unwrap());
+        s.set_death(crate::script::DeathUiState {
+            possess_bar: true,
+            ..Default::default()
+        });
+        assert!(s.eval::<bool>("return IsPossessBarVisible()").unwrap());
+        s.set_wrath_vehicle_guid(Some(0xF130_0001_0000_0042));
+        s.set_wrath_vehicle_seat_flags(Some(SEAT_HAS_UI));
+        assert!(!s.eval::<bool>("return IsPossessBarVisible()").unwrap());
     }
 
     #[test]
