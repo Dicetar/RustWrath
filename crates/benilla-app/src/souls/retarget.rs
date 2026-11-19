@@ -1291,6 +1291,24 @@ pub(super) struct RemoteAction {
     pub(super) duration: f32,
 }
 
+#[derive(Component)]
+pub(super) struct RemotePeer {
+    pub(super) until: f32,
+    pub(super) sprint: bool,
+}
+
+fn remote_gait(speed: f32, sprint: bool) -> (u32, f32) {
+    if speed < STILL {
+        (IDLE, 1.0)
+    } else if sprint && speed >= WALK_TOP {
+        (SPRINT, (speed / SPRINT_CLIP_SPEED).clamp(0.5, 2.0))
+    } else if speed < WALK_TOP {
+        (WALK, (speed / WALK_CLIP_SPEED).clamp(0.5, 2.0))
+    } else {
+        (RUN, (speed / RUN_CLIP_SPEED).clamp(0.5, 2.0))
+    }
+}
+
 /// Bounds include fading bodies; overflow keeps the generic animation.
 const MAX_REMOTE_BODIES: usize = 16;
 const MAX_REMOTE_BONES: usize = 512;
@@ -1302,6 +1320,9 @@ struct RemotePose {
     from: Vec<Transform>,
     started: f32,
     fade_at: Option<f32>,
+    gait: Option<u32>,
+    gait_frame: f32,
+    last_pos: Vec3,
 }
 
 #[derive(Resource, Default)]
@@ -1324,29 +1345,35 @@ fn drive_remote_retarget(
             Option<&BoneAttach>,
             Option<&HandKeyBones>,
             Option<&RemoteAction>,
+            Option<&RemotePeer>,
+            &GlobalTransform,
+            Option<&AnimDriver>,
         ),
         Without<SelfPlayer>,
     >,
 ) {
-    let on = souls_on(&view) && config.features.server && config.features.retarget;
+    let on = souls_on(&view) && config.features.server;
+    let actions_on = on && config.features.retarget;
+    let loco_on = on && config.features.retarget_locomotion;
+    let dt = time.delta_secs();
     let now = time.elapsed_secs();
     let clips = retarget.clips.as_ref();
     let rest = retarget.rest.as_ref();
     // Evict despawned bodies before admitting new ones.
     poses.0.retain(|entity, _| bodies.contains(*entity));
-    for (entity, rig, twist, attach, hands, action) in &bodies {
+    for (entity, rig, twist, attach, hands, action, peer, at, _) in &bodies {
         if poses.0.len() >= MAX_REMOTE_BODIES {
             break;
         }
         if poses.0.contains_key(&entity) || rig.locals.len() > MAX_REMOTE_BONES {
             continue;
         }
-        let ready = on
+        let ready = actions_on
             && action.is_some_and(|a| {
                 now < a.started + a.duration
                     && clips.is_some_and(|clips| clips.clips.contains_key(&a.source))
             });
-        if !ready {
+        if !(ready || loco_on && peer.is_some_and(|p| now < p.until)) {
             continue;
         }
         let Some(rest) = rest else {
@@ -1361,11 +1388,16 @@ fn drive_remote_retarget(
                 from: rig.locals.clone(),
                 started: f32::NEG_INFINITY,
                 fade_at: None,
+                gait: None,
+                gait_frame: 0.0,
+                last_pos: at.translation(),
             },
         );
     }
     poses.0.retain(|entity, state| {
-        let Ok((_, mut rig, twist, attach, hands, action)) = bodies.get_mut(*entity) else {
+        let Ok((_, mut rig, twist, attach, hands, action, peer, at, driver)) =
+            bodies.get_mut(*entity)
+        else {
             return false;
         };
         let bones = rig.locals.len();
@@ -1382,7 +1414,8 @@ fn drive_remote_retarget(
             state.written = None;
         }
         let Ok(map) = &state.map else {
-            return on && action.is_some_and(|a| now < a.started + a.duration);
+            return actions_on && action.is_some_and(|a| now < a.started + a.duration)
+                || loco_on && peer.is_some_and(|p| now < p.until);
         };
         for b in map.bones() {
             let current = rig.locals[b];
@@ -1395,24 +1428,63 @@ fn drive_remote_retarget(
                 state.stock[b] = current;
             }
         }
-        let target = action
-            .filter(|a| on && now < a.started + a.duration)
-            .and_then(|a| clips?.clips.get(&a.source).map(|clip| (a, clip)));
-        if let Some((a, _)) = target {
-            if a.started != state.started {
+        let delta = at.translation() - state.last_pos;
+        state.last_pos = at.translation();
+        let speed = if dt > 0.0 {
+            delta.x.hypot(delta.z) / dt / YARDS_PER_METRE
+        } else {
+            0.0
+        };
+        let running = action.filter(|a| now < a.started + a.duration);
+        let mut target = running.filter(|_| actions_on).and_then(|a| {
+            clips?
+                .clips
+                .get(&a.source)
+                .map(|clip| (None, a.started, clip, (now - a.started).max(0.0) * CLIP_FPS))
+        });
+        if target.is_none() && running.is_none() && loco_on {
+            let stock_loco = driver.is_some_and(|d| {
+                let (base, overlay) = d.playing();
+                overlay.is_none() && matches!(base, Some(0 | 4 | 5 | 11 | 12 | 13 | 25..=29 | 143))
+            });
+            if let Some(peer) = peer.filter(|p| now < p.until && stock_loco) {
+                let (id, rate) = remote_gait(speed, peer.sprint);
+                if let Some(clip) = clips.and_then(|clips| clips.named(id)) {
+                    if state.gait != Some(id) {
+                        state.gait_frame = 0.0;
+                    }
+                    state.gait_frame = (state.gait_frame + dt * rate * CLIP_FPS)
+                        .rem_euclid(clip.frames.max(1) as f32);
+                    target = Some((
+                        Some(id),
+                        if state.gait == Some(id) {
+                            state.started
+                        } else {
+                            now
+                        },
+                        clip,
+                        state.gait_frame,
+                    ));
+                }
+            }
+        }
+        if let Some((gait, started, ..)) = target {
+            if gait != state.gait || started != state.started || state.fade_at.is_some() {
                 state.from = state.written.clone().unwrap_or_else(|| state.stock.clone());
-                state.started = a.started;
+                state.started = started;
+                state.gait = gait;
             }
             state.fade_at = None;
         } else if state.fade_at.is_none() {
             state.from = state.written.clone().unwrap_or_else(|| state.stock.clone());
             state.fade_at = Some(now);
+            state.gait = None;
         }
         let mut work = state.stock.clone();
         let (since, fade_len) = match target {
-            Some((a, clip)) => {
+            Some((gait, _, clip, frame)) => {
                 if let Some(clips) = clips {
-                    let pose = clips.sample(clip, (now - a.started).max(0.0) * CLIP_FPS, false);
+                    let pose = clips.sample(clip, frame, gait.is_some());
                     map.pose(&pose, &rig.parents, rig.binds(), &mut work);
                 }
                 (
@@ -1462,6 +1534,14 @@ pub(super) fn plugin(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_gait_uses_speed_and_peer_sprint() {
+        assert_eq!(remote_gait(0.0, true).0, IDLE);
+        assert_eq!(remote_gait(1.5, false).0, WALK);
+        assert_eq!(remote_gait(4.5, false).0, RUN);
+        assert_eq!(remote_gait(6.0, true).0, SPRINT);
+    }
 
     #[test]
     fn relay_resolves_local_kit_ids_names_and_unknowns() {
