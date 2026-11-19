@@ -1,5 +1,7 @@
 //! `benilla-config/combat/souls.toml`: one switch per Souls feature and the binds, re-read each
 //! time `F10` turns Souls combat on, so a change takes effect without a restart.
+//! The equipped main-hand subclass selects combat/kits/<name>.kit (scripts/combat-kits.csv);
+//! missing kits fall back to combat/player.kit, then stock. Weapon changes re-read the kit too.
 //!
 //! ```toml
 //! [features]          # every switch defaults to true; a missing key keeps its default

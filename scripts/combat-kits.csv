@@ -1,0 +1,12 @@
+subclass,name,weapon,grip
+0,axe,Battle Axe,one
+1,axe-two,Greataxe,two
+4,mace,Club,one
+5,mace-two,Great Hammer,two
+6,polearm,Halberd,two
+7,sword,Longsword,one
+8,sword-two,Greatsword,two
+10,staff,Twinblade,two
+13,fist,Fist,one
+15,dagger,Dagger,one
+17,spear,Short Spear,two

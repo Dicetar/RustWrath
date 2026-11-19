@@ -468,12 +468,23 @@ local function strike_watchers(creature, strike)
     return out
 end
 
+-- Authored entry policy: kobold workers/miners thrust; Harvest Golems slam.
+-- Everything else sweeps. No model/family guesses or extra server data required.
+local STRIKE_KIND_BY_ENTRY = { [6] = "thrust", [257] = "thrust", [36] = "slam", [114] = "slam" }
+local STRIKE_SHAPES = {
+    sweep = { half_cone = math.rad(90), extra_reach = 0, windup_scale = 1 },
+    thrust = { half_cone = math.rad(20), extra_reach = 2, windup_scale = 1 },
+    slam = { half_cone = math.pi, extra_reach = 0, windup_scale = 1.5 },
+}
+
 local function start_strike(creature, ck, m, victim, now)
     local attack_ms = creature:GetUInt32Value(UNIT_FIELD_BASEATTACKTIME) or 2000
     if attack_ms <= 0 then
         attack_ms = 2000
     end
-    local windup = math.floor(math.max(WINDUP_MIN_MS, math.min(WINDUP_MAX_MS, attack_ms * WINDUP_SHARE)))
+    local kind = STRIKE_KIND_BY_ENTRY[creature:GetEntry()] or "sweep"
+    local shape = STRIKE_SHAPES[kind]
+    local windup = math.floor(math.max(WINDUP_MIN_MS, math.min(WINDUP_MAX_MS, attack_ms * WINDUP_SHARE)) * shape.windup_scale)
     local id = next_strike_id
     next_strike_id = next_strike_id + 1
     local reach = melee_reach(creature, victim)
@@ -487,6 +498,7 @@ local function start_strike(creature, ck, m, victim, now)
         victim = victim:GetGUID(),
         victim_key = key(victim:GetGUID()),
         reach = reach,
+        kind = kind,
         resolve_at = now + windup,
         verdict = nil,
     }
@@ -495,16 +507,17 @@ local function start_strike(creature, ck, m, victim, now)
         m.next_at - now)
     for _, watcher in ipairs(strike_watchers(creature, m.strike)) do
         local mine = key(watcher:GetGUID()) == m.strike.victim_key and 1 or 0
-        send(watcher, string.format("STRIKE\t%d\t%s\t%d\t%.2f\t%d", id, ck, windup, reach, mine))
+        send(watcher, string.format("STRIKE\t%d\t%s\t%d\t%.2f\t%d\t%s", id, ck, windup, reach, mine, kind))
     end
 end
 
 -- The server's own judgement: inside reach and the frontal cone.
 local function area_check(creature, victim, strike)
-    if not creature:IsWithinDist(victim, strike.reach) then
+    local shape = STRIKE_SHAPES[strike.kind]
+    if not creature:IsWithinDist(victim, strike.reach + shape.extra_reach) then
         return "miss"
     end
-    if angle_diff(creature:GetO(), creature:GetAngle(victim)) > CONE_HALF_RADIANS then
+    if angle_diff(creature:GetO(), creature:GetAngle(victim)) > shape.half_cone then
         return "miss"
     end
     return "hit"

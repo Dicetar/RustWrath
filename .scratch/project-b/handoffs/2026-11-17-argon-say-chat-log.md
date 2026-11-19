@@ -1,6 +1,6 @@
 # Wrath chat language and tag fix
 
-Status: ready to merge
+Status: landed
 Owner: OpenCode / DeepSeek V4.1 Flash (took over the argon branch)
 Branch: argon/say-chat-log
 Issue: none

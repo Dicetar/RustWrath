@@ -49,8 +49,6 @@ use benilla_combat_core::ActionKind;
 pub(crate) const PREFIX: &str = "RWSOULS";
 /// `MODE 1` (and `HELLO` until answered) goes out again this often.
 const KEEPALIVE_SECONDS: f32 = 10.0;
-/// The strike cone, degrees either side of the creature's facing (owner decision 16: 120°).
-const STRIKE_HALF_CONE_DEGREES: f32 = 60.0;
 /// Reach slack for the creature's own size and the rendered position's lag, yards.
 const STRIKE_SLACK_YARDS: f32 = 0.5;
 /// A strike whose `RESOLVE` never comes is dropped this long past its windup.
@@ -93,6 +91,41 @@ fn drain_inbox() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Authored telegraph shapes. Reach in STRIKE is the base melee reach; both peers add the
+/// thrust's two yards. Missing/unknown kinds retain the legacy 60-degree half-cone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StrikeKind {
+    Legacy,
+    Sweep,
+    Thrust,
+    Slam,
+}
+
+impl StrikeKind {
+    fn parse(value: Option<&str>) -> Self {
+        match value {
+            Some("sweep") => Self::Sweep,
+            Some("thrust") => Self::Thrust,
+            Some("slam") => Self::Slam,
+            _ => Self::Legacy,
+        }
+    }
+
+    fn reach(self, base: f32) -> f32 {
+        base + if self == Self::Thrust { 2.0 } else { 0.0 }
+    }
+
+    fn contains_angle(self, angle: f32) -> bool {
+        let degrees: f32 = match self {
+            Self::Legacy => 60.0,
+            Self::Sweep => 90.0,
+            Self::Thrust => 20.0,
+            Self::Slam => return true,
+        };
+        angle.abs() <= degrees.to_radians()
+    }
+}
+
 /// A server message.
 #[derive(Clone, Debug, PartialEq)]
 enum Inbound {
@@ -104,6 +137,7 @@ enum Inbound {
         windup_ms: u32,
         reach: f32,
         mine: bool,
+        kind: StrikeKind,
     },
     Resolve {
         id: u32,
@@ -137,6 +171,7 @@ fn parse(body: &str) -> Option<Inbound> {
             windup_ms: next()?.parse().ok()?,
             reach: next()?.parse().ok()?,
             mine: next()? == "1",
+            kind: StrikeKind::parse(next()),
         },
         "RESOLVE" => Inbound::Resolve {
             id: next()?.parse().ok()?,
@@ -167,6 +202,7 @@ pub(crate) struct Strike {
     deadline: f32,
     windup: f32,
     reach: f32,
+    kind: StrikeKind,
     /// We judge it (we are its victim).
     mine: bool,
     /// The verdict we sent, once judged.
@@ -181,6 +217,7 @@ pub(crate) struct StrikeShown {
     /// How far through the windup, `0..=1`.
     pub(crate) progress: f32,
     pub(crate) mine: bool,
+    pub(crate) kind: StrikeKind,
 }
 
 /// The link's state. [`Default`] is "not announced, nothing pending".
@@ -423,6 +460,7 @@ pub(super) fn drive_link(
                 windup_ms,
                 reach,
                 mine,
+                kind,
             } => {
                 if link.strikes.len() >= MAX_STRIKES {
                     link.strikes.remove(0);
@@ -447,6 +485,7 @@ pub(super) fn drive_link(
                     deadline: t + windup,
                     windup,
                     reach,
+                    kind,
                     // With the switch off we send no verdict; the server's area check decides.
                     mine: mine && config.features.enemy_strikes,
                     verdict: None,
@@ -541,6 +580,7 @@ pub(super) fn drive_link(
                     unit,
                     progress: progress.clamp(0.0, 1.0),
                     mine: strike.mine,
+                    kind: strike.kind,
                 });
             }
         }
@@ -555,10 +595,10 @@ pub(super) fn drive_link(
         let from = at.translation();
         let to_me = player.pos - from;
         let size = store.0.unit_combat_reach().clamp(0.0, 3.0);
-        let in_reach =
-            Vec2::new(to_me.x, to_me.z).length() - size <= strike.reach + STRIKE_SLACK_YARDS;
+        let in_reach = Vec2::new(to_me.x, to_me.z).length() - size
+            <= strike.kind.reach(strike.reach) + STRIKE_SLACK_YARDS;
         let facing = at.compute_transform().rotation.to_euler(EulerRot::YXZ).0;
-        let in_cone = off_facing(facing, to_me).abs() <= STRIKE_HALF_CONE_DEGREES.to_radians();
+        let in_cone = strike.kind.contains_angle(off_facing(facing, to_me));
         let said = verdict(in_reach, in_cone, defence);
         strike.verdict = Some(said);
         verdicts.push(format!("VERDICT\t{}\t{said}", strike.id));
@@ -635,6 +675,7 @@ mod tests {
                 windup_ms: 800,
                 reach: 5.33,
                 mine: true,
+                kind: StrikeKind::Legacy,
             })
         );
         assert_eq!(
@@ -695,6 +736,27 @@ mod tests {
             "guard"
         );
         assert_eq!(verdict(true, true, none), "hit");
+    }
+
+    #[test]
+    fn strike_shapes_parse_and_judge_their_own_geometry() {
+        for (name, kind) in [
+            ("sweep", StrikeKind::Sweep),
+            ("thrust", StrikeKind::Thrust),
+            ("slam", StrikeKind::Slam),
+        ] {
+            assert!(matches!(
+                parse(&format!("STRIKE\t7\t42\t1200\t5\t1\t{name}")),
+                Some(Inbound::Strike { kind: parsed, .. }) if parsed == kind
+            ));
+        }
+        assert!(StrikeKind::Sweep.contains_angle(80f32.to_radians()));
+        assert!(!StrikeKind::Sweep.contains_angle(100f32.to_radians()));
+        assert_eq!(StrikeKind::Thrust.reach(5.0), 7.0);
+        assert!(!StrikeKind::Thrust.contains_angle(30f32.to_radians()));
+        assert!(StrikeKind::Slam.contains_angle(std::f32::consts::PI));
+        assert_eq!(StrikeKind::Slam.reach(5.0), 5.0);
+        assert_eq!(StrikeKind::parse(Some("future")), StrikeKind::Legacy);
     }
 
     #[test]
