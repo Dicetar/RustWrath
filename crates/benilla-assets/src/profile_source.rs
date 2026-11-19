@@ -317,12 +317,6 @@ pub struct ProfileAssetReader {
 /// the app is also reachable synchronously here. One process, one route profile.
 static PROFILE_READERS: OnceLock<Mutex<HashMap<String, ProfileAssetReader>>> = OnceLock::new();
 
-/// Read `path` synchronously from the profile registered as `source`.
-pub(crate) fn read_profile_sync(source: &str, path: &Path) -> Option<Vec<u8>> {
-    let reader = ProfileAssetReader::registered(source)?;
-    reader.read_bytes(path).ok()
-}
-
 impl ProfileAssetReader {
     pub fn open(data_dir: &Path, manifest_path: &Path, profile: &str) -> Result<Self> {
         let opened = Profile::open(data_dir, manifest_path, profile).with_context(|| {
@@ -395,7 +389,7 @@ impl ProfileAssetReader {
         })?;
         let mut inputs = Vec::with_capacity(required.len());
         for path in required {
-            inputs.push(validate_input(&active, &candidate, *path)?);
+            inputs.push(validate_input(&active, &candidate, path)?);
         }
         Ok(StagedContentRevision {
             base,
