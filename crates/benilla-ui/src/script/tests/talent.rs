@@ -51,6 +51,7 @@ fn one_tab_state() -> TalentUiState {
                     prereqs: vec![TalentPrereqView {
                         tier: 1,
                         column: 1,
+                        required_rank: 5,
                         learnable: false,
                     }],
                     display_spell: 11119,
@@ -115,6 +116,7 @@ fn talent_flags_are_one_or_nil() {
     state.talents[0][1].prereqs.push(TalentPrereqView {
         tier: 1,
         column: 2,
+        required_rank: 1,
         learnable: true,
     });
     s.set_talents(state);
@@ -157,6 +159,88 @@ fn learn_talent_hands_the_talent_and_its_rank() {
             },
             crate::script::TalentCall::ConfirmWipe,
         ]
+    );
+    assert!(s.take_errors().is_empty());
+}
+
+/// The Wrath preview verbs add a delta to the known rank, report it through the group/tab/talent
+/// tuples, and learn the previewed pairs in one call.
+#[test]
+fn wrath_preview_points_feed_the_tuples_and_the_learn_batch() {
+    let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+    s.keep_calls();
+    let mut state = WrathTalentUiState::default();
+    state.active_group = 1;
+    state.groups = vec![WrathTalentGroupView {
+        tabs: vec![TalentTabView {
+            name: "Fire".into(),
+            background: "MageFire".into(),
+            points_spent: 1,
+            texture: None,
+        }],
+        talents: vec![vec![
+            TalentView {
+                talent_id: 100,
+                name: "Improved Fireball".into(),
+                tier: 1,
+                column: 1,
+                rank: 1,
+                max_rank: 3,
+                meets_prereq: true,
+                ..Default::default()
+            },
+            TalentView {
+                talent_id: 101,
+                name: "Ignite".into(),
+                tier: 2,
+                column: 1,
+                rank: 0,
+                max_rank: 1,
+                meets_prereq: true,
+                prereqs: vec![TalentPrereqView {
+                    tier: 1,
+                    column: 1,
+                    required_rank: 3,
+                    learnable: false,
+                }],
+                ..Default::default()
+            },
+        ]],
+        unspent_points: 5,
+        glyphs: [0; 6],
+    }];
+    s.set_wrath_talents(state);
+    s.run(
+        r#"
+        assert(GetGroupPreviewTalentPointsSpent(false, 1) == 0)
+        local pt, pc, pl, pp = GetTalentPrereqs(1, 2)
+        assert(pt == 1 and pc == 1 and pl == nil and pp == nil)
+        AddPreviewTalentPoints(1, 1, 1, false, 1)
+        assert(GetGroupPreviewTalentPointsSpent(false, 1) == 1)
+        local name, _, _, _, rank, _, _, _, preview, meetsPreview = GetTalentInfo(1, 1, false, false, 1)
+        assert(name == "Improved Fireball" and rank == 1 and preview == 2 and meetsPreview == 1)
+        local pt1, pc1, pl1, pp1 = GetTalentPrereqs(1, 2)
+        assert(pt1 == 1 and pc1 == 1 and pl1 == nil and pp1 == nil)
+        AddPreviewTalentPoints(1, 1, 1, false, 1)
+        assert(GetGroupPreviewTalentPointsSpent(false, 1) == 2)
+        local pt2, pc2, pl2, pp2 = GetTalentPrereqs(1, 2)
+        assert(pt2 == 1 and pc2 == 1 and pl2 == nil and pp2 == 1)
+        local _, _, _, _, tabPreview = GetTalentTabInfo(1, false, false, 1)
+        assert(tabPreview == 2)
+        local name2, _, _, _, _, _, _, _, preview2 = GetTalentInfo(1, 1, false, false, 1)
+        assert(name2 == "Improved Fireball" and preview2 == 3)
+        LearnPreviewTalents(false)
+        ResetPreviewTalentPoints(1, false, 1)
+        assert(GetGroupPreviewTalentPointsSpent(false, 1) == 0)
+    "#,
+    )
+    .unwrap();
+    assert_eq!(
+        s.take_talent_calls(),
+        [crate::script::TalentCall::LearnPreview {
+            pet: false,
+            entries: vec![(100, 3)]
+        }]
     );
     assert!(s.take_errors().is_empty());
 }

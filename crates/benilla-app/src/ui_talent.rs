@@ -44,6 +44,10 @@ pub(crate) struct WrathTalentState {
     pub pet_unspent_points: Option<u32>,
     pub pet_talents: Vec<(u32, u8)>,
     pub involuntary_reset_flag: Option<u8>,
+    /// Bumped by every `SMSG_TALENTS_INFO` and involuntary reset. The built views can be equal
+    /// on a refused learn, but the stock client still drops its preview ranks on each packet;
+    /// the feed compares this sequence so an identical snapshot reaches `set_wrath_talents`.
+    pub snapshot_seq: u64,
 }
 
 impl WrathTalentState {
@@ -55,6 +59,7 @@ impl WrathTalentState {
         specs: Vec<TalentGroupInfo>,
         pet_talents: Vec<(u32, u8)>,
     ) {
+        self.snapshot_seq = self.snapshot_seq.wrapping_add(1);
         if pet {
             self.pet_unspent_points = Some(unspent_points);
             self.pet_talents = pet_talents;
@@ -66,6 +71,7 @@ impl WrathTalentState {
     }
 
     pub(crate) fn apply_involuntary_reset(&mut self, flag: u8) {
+        self.snapshot_seq = self.snapshot_seq.wrapping_add(1);
         self.involuntary_reset_flag = Some(flag);
         if let Some(spec) = self.specs.get_mut(usize::from(self.active_spec)) {
             spec.talents.clear();
@@ -151,8 +157,16 @@ fn load_talents(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
 struct FeedMemory {
     pushed: TalentUiState,
     pushed_wrath: WrathTalentUiState,
+    /// The `WrathTalentState::snapshot_seq` of `pushed_wrath`; a new sequence forces a push even
+    /// when the built views are equal, so the VM drops its preview ranks on every packet.
+    pushed_wrath_seq: Option<u64>,
     /// `None` until the first read, which gives zero deltas.
     points: Option<(u32, u32)>,
+}
+
+/// Whether the VM needs a new Wrath snapshot: a changed view or a new server packet.
+fn wrath_push_needed(fresh: &WrathTalentUiState, memory: &FeedMemory, seq: u64) -> bool {
+    fresh != &memory.pushed_wrath || memory.pushed_wrath_seq != Some(seq)
 }
 
 fn feed_talents(
@@ -175,6 +189,7 @@ fn feed_talents(
         let self_changed = !changed_self.is_empty();
         let actions_changed = actions.is_changed();
         let wrath_changed = wrath_talents.as_ref().is_some_and(|r| r.is_changed());
+        let wrath_seq = wrath_talents.as_ref().map_or(0, |r| r.snapshot_seq);
         let talents_changed = talents.as_ref().is_some_and(|r| r.is_changed());
         let spells_changed = spells.as_ref().is_some_and(|r| r.is_changed());
         gate::trace(
@@ -235,9 +250,10 @@ fn feed_talents(
             points,
             &fresh,
         );
-        if fresh_wrath != memory.pushed_wrath {
+        if wrath_push_needed(&fresh_wrath, &*memory, wrath_seq) {
             script.set_wrath_talents(fresh_wrath.clone());
             memory.pushed_wrath = fresh_wrath;
+            memory.pushed_wrath_seq = Some(wrath_seq);
         }
         if fresh != memory.pushed {
             gate.audit("feed_talents", "the talent pages");
@@ -331,6 +347,7 @@ pub(crate) fn build_wrath_talent_groups(
             pet_unspent_points: None,
             pet_talents: Vec::new(),
             involuntary_reset_flag: None,
+            snapshot_seq: wrath.snapshot_seq,
         };
         let empty_spells = BTreeSet::new();
         let page = if is_active {
@@ -380,6 +397,7 @@ pub(crate) fn build_wrath_talent_groups(
         pet_talents,
         pet_tabs,
         pet_talent_views,
+        preview_ranks: Default::default(),
     }
 }
 
@@ -437,6 +455,7 @@ fn build_pet_talent_views(
                 prereqs.push(TalentPrereqView {
                     tier: p.row + 1,
                     column: p.col + 1,
+                    required_rank: need,
                     learnable,
                 });
                 if !learnable && rank == 0 {
@@ -573,6 +592,7 @@ pub(crate) fn build_pages_with_wrath(
                 prereqs.push(TalentPrereqView {
                     tier: p.row + 1,
                     column: p.col + 1,
+                    required_rank: need,
                     learnable,
                 });
                 if !learnable && rank == 0 {
@@ -668,6 +688,32 @@ impl TalentSteps<'_, '_> {
                     .net
                     .0
                     .send(ClientCommand::LearnTalent { talent_id, rank });
+            }
+            // The preview batch: one counted packet, the pet form prefixed with the summoned
+            // pet's guid (`Player::LearnPetTalent`, `Player.cpp:14120`; a charmed NPC is not the
+            // pet talent unit).
+            TalentCall::LearnPreview { pet, entries } => {
+                let pet_guid = if pet {
+                    self.self_q
+                        .single()
+                        .ok()
+                        .and_then(|store| store.0.unit_summon())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                if pet && pet_guid == 0 {
+                    return;
+                }
+                debug!(
+                    "ui_talent: learn {} previewed talent(s), pet {pet}",
+                    entries.len()
+                );
+                let _ = self.net.0.send(ClientCommand::LearnPreviewTalents {
+                    pet,
+                    pet_guid,
+                    entries,
+                });
             }
             // `0x48dc40` finds the active player first (`0x48dc78`).
             TalentCall::ConfirmWipe => {
@@ -1000,6 +1046,30 @@ mod tests {
             (wrath.player_unspent_points.unwrap_or(0), 0),
         );
         assert_eq!(wiped.tabs[0].points_spent, 0);
+    }
+
+    /// A refused learn still sends `SMSG_TALENTS_INFO`; the built views can be identical, but
+    /// the VM must still be handed a snapshot so `set_wrath_talents` drops the preview ranks
+    /// (`TalentInfo.cpp:1153-1165`). The view-equality gate alone missed that case.
+    #[test]
+    fn an_identical_talent_snapshot_still_clears_previews() {
+        let fresh = WrathTalentUiState::default();
+        let mut memory = FeedMemory::default();
+        let mut wrath = WrathTalentState::default();
+
+        wrath.apply_talent_info(false, 0, Some(0), Vec::new(), Vec::new());
+        let first = wrath.snapshot_seq;
+        assert!(wrath_push_needed(&fresh, &memory, first));
+        memory.pushed_wrath = fresh.clone();
+        memory.pushed_wrath_seq = Some(first);
+        assert!(!wrath_push_needed(&fresh, &memory, first));
+
+        wrath.apply_talent_info(false, 0, Some(0), Vec::new(), Vec::new());
+        assert_eq!(wrath.snapshot_seq, first + 1);
+        assert!(
+            wrath_push_needed(&fresh, &memory, wrath.snapshot_seq),
+            "an identical packet must still reach set_wrath_talents"
+        );
     }
 
     #[test]

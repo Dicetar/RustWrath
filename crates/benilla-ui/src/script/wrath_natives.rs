@@ -3815,6 +3815,7 @@ mod tests {
             pet_talents: Vec::new(),
             pet_tabs: Vec::new(),
             pet_talent_views: Vec::new(),
+            preview_ranks: Default::default(),
         });
 
         assert_eq!(s.eval::<i64>("return GetNumTalentGroups()").unwrap(), 2);
