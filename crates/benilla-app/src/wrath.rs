@@ -2447,7 +2447,7 @@ impl WrathWorldView {
 
     /// Adopt one decoded swing. A swing is an ordered event, never a replaceable snapshot: the
     /// pending queue is bounded, and overflow drops the oldest row and records the loss.
-    fn apply_swing(
+    pub(crate) fn apply_swing(
         &mut self,
         hit: WrathSwingHit,
         session_epoch: u64,
