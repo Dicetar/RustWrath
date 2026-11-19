@@ -120,6 +120,34 @@ pub(super) fn broken_opening(
     })
 }
 
+fn backstab_geometry(rear_angle: f32, target: Option<u64>, player: u64) -> bool {
+    target != Some(player) && rear_angle.abs() >= 3.0 * std::f32::consts::FRAC_PI_4
+}
+
+pub(super) fn backstab_opening(
+    units: &Units,
+    relations: &RelationWorld,
+    player_pos: Vec3,
+) -> Option<u64> {
+    let player = relations.me_guid()?;
+    units
+        .iter()
+        .filter_map(|(_, guid, store, at)| {
+            if guid.0 >> 48 != 0xf130 || !attackable(relations, guid.0, store) {
+                return None;
+            }
+            let to = player_pos - at.translation();
+            let yaw = at.compute_transform().rotation.to_euler(EulerRot::YXZ).0;
+            let reach = (store.0.unit_combat_reach() + 1.5 + 4.0 / 3.0).max(5.0);
+            let distance = to.length_squared();
+            (distance <= reach * reach
+                && backstab_geometry(off_facing(yaw, to), store.0.unit_target(), player))
+            .then_some((distance, guid.0))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+        .map(|(_, guid)| guid)
+}
+
 /// Toggle and keep the lock.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn toggle_lock(
@@ -464,6 +492,13 @@ mod tests {
             radius: Milli(100),
             blade,
         }
+    }
+
+    #[test]
+    fn backstab_requires_rear_cone_and_no_player_target() {
+        assert!(backstab_geometry(std::f32::consts::PI, None, 1));
+        assert!(!backstab_geometry(std::f32::consts::PI, Some(1), 1));
+        assert!(!backstab_geometry(std::f32::consts::FRAC_PI_2, Some(2), 1));
     }
 
     #[test]

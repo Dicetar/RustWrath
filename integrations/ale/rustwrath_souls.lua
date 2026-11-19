@@ -516,7 +516,7 @@ local function on_addon(event, sender, msg_type, prefix, msg, target)
     elseif state and verb == "HIT" then
         on_hit(sender, state, fields)
     elseif state and verb == "CRIT" then
-        on_critical(sender, fields[2])
+        on_critical(sender, state, fields[2], fields[3] == "back")
     elseif state and verb == "SWING" then
         on_swing(sender, fields)
     elseif state and verb == "VERDICT" then
@@ -678,9 +678,28 @@ local function end_break(creature, m)
 end
 
 local CRITICAL_MULTIPLIER = 3 -- ESTIMATE: critical damage before armour.
-on_critical = function(player, guid)
+on_critical = function(player, state, guid, back)
     local m = managed[guid]
     local now = now_ms()
+    if back then
+        if now < (state.next_backstab or 0) or not player:IsAlive() then return end
+        for _, creature in ipairs(player:GetUnfriendlyUnitsInRange(HIT_REACH_YARDS) or {}) do
+            if key(creature:GetGUID()) == guid and creature:GetObjectType() == "Creature"
+                and creature:IsAlive() and creature:IsWithinDist(player, melee_reach(creature, player)) then
+                local away = angle_diff(creature:GetO(), creature:GetAngle(player)) >= 3 * math.pi / 4
+                local victim = creature:GetVictim()
+                local fighting_player = victim and key(victim:GetGUID()) == key(player:GetGUID())
+                if away and not fighting_player then
+                    state.next_backstab = now + 1000
+                    local damage = defended(player, creature, weapon_roll(player) * CRITICAL_MULTIPLIER)
+                    player:DealDamage(creature, math.max(1, math.floor(damage + 0.5)), true, 0)
+                    trace("backstab %s: %.1f damage", guid, damage)
+                end
+                return
+            end
+        end
+        return
+    end
     if not m or not m.broken_until or now >= m.broken_until then
         return
     end

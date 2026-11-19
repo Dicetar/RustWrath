@@ -598,19 +598,23 @@ pub(super) fn souls_input(
         crit = kit_now
             .filter(|_| idle && link.reporting())
             .and_then(|kit| {
-                let guid = super::targets::broken_opening(
-                    &units,
-                    &relations,
-                    player.pos,
-                    t,
-                    link.broken?,
-                )?;
+                let broken = link.broken.and_then(|opening| {
+                    super::targets::broken_opening(&units, &relations, player.pos, t, opening)
+                });
+                let (guid, back) = if let Some(guid) = broken {
+                    (guid, false)
+                } else {
+                    (
+                        super::targets::backstab_opening(&units, &relations, player.pos)?,
+                        true,
+                    )
+                };
                 let action = kit
                     .action_named("Critical")
                     .or_else(|| kit.action_named("Heavy1"))?;
-                Some((guid, action.id))
+                Some((guid, back, action.id))
             });
-        if let Some((_, id)) = crit {
+        if let Some((_, _, id)) = crit {
             Some(id)
         } else {
             match kit_now {
@@ -641,15 +645,17 @@ pub(super) fn souls_input(
             &mut play_seq,
             &mut actions,
         );
-        if let Some((guid, _)) = crit.filter(|_| {
+        if let Some((guid, back, _)) = crit.filter(|_| {
             events
                 .iter()
                 .any(|e| matches!(e, EngineEvent::Started { id, .. } if *id == action))
         }) {
             if let Some((instance, ..)) = kit_now.and_then(|kit| running_action(kit, &playback)) {
                 souls.critical = Some(instance);
-                link.broken = None;
-                link.critical(guid);
+                if !back {
+                    link.broken = None;
+                }
+                link.critical(guid, back);
             }
         }
         let refused = events.iter().any(|event| {

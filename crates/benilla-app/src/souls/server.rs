@@ -268,8 +268,9 @@ impl SoulsLink {
         ));
     }
 
-    pub(super) fn critical(&mut self, guid: u64) {
-        self.outbox.push(format!("CRIT\t{guid}"));
+    pub(super) fn critical(&mut self, guid: u64, back: bool) {
+        let suffix = if back { "\tback" } else { "" };
+        self.outbox.push(format!("CRIT\t{guid}{suffix}"));
     }
 
     fn is_reset(&self) -> bool {
