@@ -13,7 +13,8 @@ use super::{
 };
 use super::{
     WORD_CLASS_INT, WORD_CLASS_TRANS, WORD_FOG_OFF, WORD_HAS_VC, WORD_INTERIOR, WORD_MATTE,
-    WORD_SHADE_LIT, WORD_TEXTURED, WORD_UNLIT, WORD_WINDOW, WORD_WMO, WORD_WRAP_X, WORD_WRAP_Y,
+    WORD_SHADE_LIT, WORD_TEXTURED, WORD_UNIFIED, WORD_UNLIT, WORD_WINDOW, WORD_WMO, WORD_WRAP_X,
+    WORD_WRAP_Y,
 };
 
 /// Print the declined-batch census, beside the accepted count, once the counts have sat still for
@@ -219,6 +220,7 @@ fn bake_cell(items: &[GxItem], meshes: &mut Assets<Mesh>) -> render::GxCellDraw 
                     | (u32::from(w.class_lane == 1) * WORD_CLASS_INT)
                     | (u32::from(w.class_lane == 2) * WORD_CLASS_TRANS)
                     | (u32::from(w.window) * WORD_WINDOW)
+                    | (u32::from(w.unified.is_some()) * WORD_UNIFIED)
             });
         let anchor = item.transform.translation;
         let rot = item.transform.rotation;
@@ -278,6 +280,7 @@ fn bake_cell(items: &[GxItem], meshes: &mut Assets<Mesh>) -> render::GxCellDraw 
             group: sel_group,
             order: item.wmo.as_ref().map_or(0, |w| w.order),
             sidn: item.wmo.as_ref().map_or([0; 3], |w| w.sidn),
+            ambient: item.wmo.as_ref().and_then(|w| w.unified).unwrap_or([0; 3]),
             slot: item.prop.as_ref().and_then(|p| p.slot).unwrap_or(0),
         });
     }
@@ -533,6 +536,7 @@ mod tests {
             class,
             sidn: Some([10, 20, 30]),
             window: true,
+            unified: (class == Some(WmoBatchClass::Trans)).then_some([0x20, 0x37, 0x21]),
             batch_order: group + 1,
         };
         // An INT batch of group 2, pushed first…
@@ -591,6 +595,11 @@ mod tests {
         assert_eq!(w_ext & (WORD_CLASS_INT | WORD_CLASS_TRANS), 0);
         assert_ne!(w_trans & WORD_INTERIOR, 0);
         assert_eq!(w_ext & WORD_INTERIOR, 0);
+        // A unified-render root's batch carries the lane bit and its MOHD ambient.
+        assert_ne!(w_trans & WORD_UNIFIED, 0);
+        assert_eq!(w_ext & WORD_UNIFIED, 0);
+        assert_eq!(baked.draws[0].ambient, [0x20, 0x37, 0x21]);
+        assert_eq!(baked.draws[2].ambient, [0; 3]);
         let Some(bevy::mesh::VertexAttributeValues::Float32x4(colors)) =
             mesh.attribute(Mesh::ATTRIBUTE_COLOR)
         else {

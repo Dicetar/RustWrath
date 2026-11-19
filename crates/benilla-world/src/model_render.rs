@@ -77,6 +77,8 @@ pub struct MatKey {
     sidn: Option<[u8; 3]>,
     /// The WMO MOMT WINDOW flag: an interior-group batch on the brighter midpoint light.
     window: bool,
+    /// A unified-path WMO batch (`MOHD.flags & 0x2`) and its root's MOHD ambient, R, G, B bytes.
+    wmo_unified: Option<[u8; 3]>,
     /// A depth-prime twin ([`zfill_material`], the reference's `M2UseZFill` clone at `0x707f7d`).
     zfill: bool,
     /// A WMO skybox batch ([`crate::skybox`]), with its own pipeline and sort rung.
@@ -130,7 +132,8 @@ pub(crate) fn forget_instance(cache: &mut MaterialCache, instance: Entity) {
 /// Build or fetch the deduped [`WowModelMaterial`] for one model batch. `fade_variant` marks the
 /// blend twin every fade rides, built with the source blend, never `Blend`: the twin always blends
 /// (`0x70c1fd`) but its alpha test keys on the stored mode (`0x70c237`), so AlphaKey keeps its
-/// 224/255 cutout and Opaque has none.
+/// 224/255 cutout and Opaque has none. A WMO batch that may be on the unified path goes through
+/// [`wmo_model_material`].
 pub fn model_material(
     cache: &mut MaterialCache,
     materials: &mut Assets<WowModelMaterial>,
@@ -159,6 +162,69 @@ pub fn model_material(
     light: &Buffer,
     instance: Option<Entity>,
 ) -> Handle<WowModelMaterial> {
+    wmo_model_material(
+        cache,
+        materials,
+        texture,
+        blend,
+        two_sided,
+        is_wmo,
+        is_interior,
+        is_emissive,
+        is_additive,
+        fade_variant,
+        no_depth_write,
+        no_depth_test,
+        fog_policy,
+        env_map,
+        stage1,
+        combine,
+        shade,
+        batch_order,
+        uv_anim,
+        rgb_anim,
+        wmo_class,
+        sidn,
+        window,
+        sky_depth,
+        light,
+        instance,
+        None,
+    )
+}
+
+/// [`model_material`] plus `wmo_unified`, the batch's `RenderSubmesh::wmo_unified`
+/// (`MOHD.flags & 0x2` and the root's MOHD ambient), which the shader reads from `stage1.w`.
+pub fn wmo_model_material(
+    cache: &mut MaterialCache,
+    materials: &mut Assets<WowModelMaterial>,
+    texture: Option<Handle<Image>>,
+    blend: ModelBlend,
+    two_sided: bool,
+    is_wmo: bool,
+    is_interior: bool,
+    is_emissive: bool,
+    is_additive: bool,
+    fade_variant: bool,
+    no_depth_write: bool,
+    no_depth_test: bool,
+    fog_policy: benilla_formats::FogPolicy,
+    env_map: bool,
+    stage1: Option<&benilla_assets::Stage1>,
+    combine: Option<u8>,
+    shade: ShadeSel,
+    batch_order: u16,
+    uv_anim: Option<&std::sync::Arc<benilla_formats::UvAnim>>,
+    rgb_anim: Option<&std::sync::Arc<benilla_formats::RgbAnim>>,
+    wmo_class: Option<WmoBatchClass>,
+    sidn: Option<[u8; 3]>,
+    window: bool,
+    sky_depth: bool,
+    light: &Buffer,
+    instance: Option<Entity>,
+    wmo_unified: Option<[u8; 3]>,
+) -> Handle<WowModelMaterial> {
+    let wmo_unified = wmo_unified.filter(|_| is_wmo);
     let key = MatKey {
         light: light.id(),
         texture: texture.as_ref().map(Handle::id),
@@ -182,6 +248,7 @@ pub fn model_material(
         wmo_class,
         sidn,
         window,
+        wmo_unified,
         zfill: false,
         sky_depth,
         instance,
@@ -310,7 +377,10 @@ pub fn model_material(
                 // batches lerp lit to baked by the MOCV alpha (`0x6b5190`); exterior and M2 are 0.
                 tint: {
                     let t0 = rgb_anim.map_or([1.0, 1.0, 1.0], |a| a.sample(0.0));
-                    let class_lane = match (is_interior && is_wmo, wmo_class) {
+                    // The unified path splits TRANS batches on every group, so its lane is set
+                    // on exterior groups too.
+                    let classed = is_wmo && (is_interior || wmo_unified.is_some());
+                    let class_lane = match (classed, wmo_class) {
                         (true, Some(WmoBatchClass::Int)) => 1.0,
                         (true, Some(WmoBatchClass::Trans)) => 2.0,
                         _ => 0.0,
@@ -329,7 +399,11 @@ pub fn model_material(
                 },
                 // Zero until a sampler registers this material and bakes its table slot in once.
                 anim_slots: Vec4::ZERO,
-                stage1: stage1_params(stage1, combine),
+                stage1: {
+                    let mut p = stage1_params(stage1, combine);
+                    p.w = unified_lane(wmo_unified);
+                    p
+                },
                 stage1_texture: stage1.map(|s| s.texture.clone()),
                 light_buf: light.clone(),
             },
@@ -423,6 +497,7 @@ pub fn zfill_material(
         wmo_class: None,
         sidn: None,
         window: false,
+        wmo_unified: None,
         zfill: true,
         // No skybox batch has a twin: the sky writes no depth.
         sky_depth: false,
@@ -470,6 +545,14 @@ pub fn zfill_material(
     );
     cache.insert(key, handle.clone());
     handle
+}
+
+/// `WowModelExt::stage1.w`: 0 off the unified path, else 1 + the MOHD ambient packed
+/// `r | g << 8 | b << 16`, exact in an f32 (at most 2²⁴).
+fn unified_lane(wmo_unified: Option<[u8; 3]>) -> f32 {
+    wmo_unified.map_or(0.0, |[r, g, b]| {
+        1.0 + (u32::from(r) | (u32::from(g) << 8) | (u32::from(b) << 16)) as f32
+    })
 }
 
 /// `WowModelExt::stage1`: `x` = stage 1 bound, `y` = its combine preset, `z` = the stage-0 preset
@@ -1000,6 +1083,20 @@ mod tests {
         };
         let p = super::stage1_params(Some(&stage), Some(0));
         assert_eq!((p.x, p.y, p.z), (1.0, 3.0, 1.0));
+    }
+
+    /// The unified lane packs the MOHD ambient RGB + 1, so zero stays "not unified" and a black
+    /// ambient still opens the lane; an f32 holds the 24-bit value exactly.
+    #[test]
+    fn the_unified_lane_packs_the_ambient_above_zero() {
+        assert_eq!(super::unified_lane(None), 0.0);
+        assert_eq!(super::unified_lane(Some([0; 3])), 1.0);
+        let packed = super::unified_lane(Some([0x20, 0x37, 0x21])) as u32 - 1;
+        assert_eq!(
+            [packed & 0xff, (packed >> 8) & 0xff, packed >> 16],
+            [0x20, 0x37, 0x21]
+        );
+        assert_eq!(super::unified_lane(Some([255; 3])) as u32 - 1, 0xff_ffff);
     }
 
     /// Too small and coplanar layers strobe; too large and effects interleave into their owner.

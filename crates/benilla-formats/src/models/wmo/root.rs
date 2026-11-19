@@ -54,6 +54,9 @@ pub struct WmoRoot {
     /// The raw parse, whose material and texture tables the group batch build reads.
     pub(super) parsed: ParsedWmo,
     mohd_flags: u16,
+    /// `MOHD.ambColor` (`+0x1c`, a `CImVector`, so B, G, R, A in file order) as R, G, B bytes:
+    /// the unified path's interior light (`CMapObjGroup::SetLighting` mode 3, `MapObj.cpp:757`).
+    mohd_ambient: [u8; 3],
     doodads: Vec<WmoDoodad>,
     doodad_sets: Vec<WmoDoodadSet>,
     group_infos: Vec<WmoGroupInfo>,
@@ -78,6 +81,18 @@ impl WmoRoot {
     /// (`MapObjRead.cpp:523`, `0x007D82E0`).
     pub fn use_liquid_type_dbc_id(&self) -> bool {
         (self.mohd_flags & 0x4) != 0
+    }
+
+    /// `MOHD.flags & 0x2`: the root draws through `CMapObj::UnifiedRender` (`MapObj.cpp:916`),
+    /// where MOCV is the emissive (ColorMaterial 2) beside the light, not its multiplier. `Some`
+    /// carries the MOHD ambient, the light of the unified interior batches.
+    pub fn unified_ambient(&self) -> Option<[u8; 3]> {
+        ((self.mohd_flags & 0x2) != 0).then_some(self.mohd_ambient)
+    }
+
+    /// `MOHD.flags & 0x8`: the group load skips its MOCV fix-up (`MapObjRead.cpp:323`).
+    pub fn skips_color_fix(&self) -> bool {
+        (self.mohd_flags & 0x8) != 0
     }
 
     /// Resolve a group's raw `MOGP.groupLiquid` and `MOGP.flags` against this root's `MOHD.flags`
@@ -188,10 +203,7 @@ pub fn parse_wmo_root(bytes: &[u8]) -> Result<WmoRoot> {
     if !matches!(parsed, ParsedWmo::Root(_)) {
         anyhow::bail!("not a WMO root file");
     }
-    let mohd_flags = find_wmo_chunk(bytes, b"DHOM")
-        .filter(|mohd| mohd.len() >= 0x3e)
-        .map(|mohd| u16::from_le_bytes([mohd[0x3c], mohd[0x3d]]))
-        .unwrap_or(0);
+    let (mohd_flags, mohd_ambient) = parse_mohd(bytes);
     let (doodads, doodad_sets) = parse_wmo_doodads(bytes);
     let group_infos = parse_wmo_group_infos(bytes);
     let portals = parse_wmo_portals(bytes);
@@ -201,6 +213,7 @@ pub fn parse_wmo_root(bytes: &[u8]) -> Result<WmoRoot> {
     Ok(WmoRoot {
         parsed,
         mohd_flags,
+        mohd_ambient,
         doodads,
         doodad_sets,
         group_infos,
@@ -209,6 +222,18 @@ pub fn parse_wmo_root(bytes: &[u8]) -> Result<WmoRoot> {
         skybox,
         convex_volume,
     })
+}
+
+/// MOHD's flags (u16 at 0x3c) and ambient (`CImVector` at 0x1c, stored B, G, R, A) as RGB.
+fn parse_mohd(bytes: &[u8]) -> (u16, [u8; 3]) {
+    let mohd = find_wmo_chunk(bytes, b"DHOM");
+    let flags = mohd
+        .filter(|mohd| mohd.len() >= 0x3e)
+        .map_or(0, |mohd| u16::from_le_bytes([mohd[0x3c], mohd[0x3d]]));
+    let ambient = mohd
+        .filter(|mohd| mohd.len() >= 0x20)
+        .map_or([0; 3], |mohd| [mohd[0x1e], mohd[0x1d], mohd[0x1c]]);
+    (flags, ambient)
 }
 
 /// MCVP, the root's last chunk (`0x6c3a20` takes it when it lies inside the file with its tag):
@@ -544,6 +569,16 @@ mod tests {
                 [0.0, 0.0, 500.0]
             ));
         }
+    }
+
+    #[test]
+    fn mohd_reads_the_flags_and_the_bgra_ambient_as_rgb() {
+        // Stormwind's root: flags 15 (unified render, skip colour fix), ambient B,G,R,A.
+        let mut mohd = vec![0u8; 0x40];
+        mohd[0x1c..0x20].copy_from_slice(&[0x21, 0x37, 0x20, 0xff]);
+        mohd[0x3c..0x3e].copy_from_slice(&15u16.to_le_bytes());
+        assert_eq!(parse_mohd(&chunk(b"DHOM", &mohd)), (15, [0x20, 0x37, 0x21]));
+        assert_eq!(parse_mohd(&[]), (0, [0; 3]));
     }
 
     #[test]

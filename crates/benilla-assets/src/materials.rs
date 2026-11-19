@@ -117,7 +117,9 @@ pub struct WowModelExt {
     pub anim_slots: Vec4,
     /// The second texture stage: `x` = bound (1) or not (0), `y` = its combine preset 0-5
     /// (`benilla_formats::TextureStage::combine`); `z` = the stage-0 combine preset plus one
-    /// (`benilla_formats::RenderSubmesh::combine`), 0 for a batch that has none; `w` unused.
+    /// (`benilla_formats::RenderSubmesh::combine`), 0 for a batch that has none; `w` the unified
+    /// WMO lane, 0 off it, else 1 + the MOHD ambient packed `r | g << 8 | b << 16`
+    /// (`benilla_formats::RenderSubmesh::wmo_unified`).
     #[uniform(100)]
     pub stage1: Vec4,
     /// Stage 1's texture, sampled at the generated environment coordinate when `stage1.x` is set;
