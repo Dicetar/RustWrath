@@ -537,7 +537,6 @@ impl SessionState {
                             world_generation: self.world_generation,
                             map_id,
                         });
-                        changed = true;
                     }
                 }
                 if self.phase == Phase::EnteringWorld
@@ -552,20 +551,17 @@ impl SessionState {
                 self.verify_position = Some((position, observed_at_unix_ms));
                 changed = true;
             }
-            op if is_relayed_movement_opcode(op) => {
+            op if is_relayed_movement_opcode(op) && self.phase == Phase::InWorld => {
                 // Relayed observer movement (`MovementHandler.cpp:320-370`): packed mover GUID
                 // followed by a 12340 `MovementInfo` block. Never overwrites the local player's
                 // active movement state.
-                if self.phase == Phase::InWorld {
-                    let mut r = Reader::new(payload);
-                    if let Ok(guid) = r.packed_guid() {
-                        if Some(guid) != self.player_guid {
-                            if let Ok(snapshot) = crate::updates::standalone_movement_block(&mut r)
-                            {
-                                if self.world.apply_movement(guid, snapshot) {
-                                    changed = true;
-                                    events.push(ChangeEvent::Moved { guid });
-                                }
+                let mut r = Reader::new(payload);
+                if let Ok(guid) = r.packed_guid() {
+                    if Some(guid) != self.player_guid {
+                        if let Ok(snapshot) = crate::updates::standalone_movement_block(&mut r) {
+                            if self.world.apply_movement(guid, snapshot) {
+                                changed = true;
+                                events.push(ChangeEvent::Moved { guid });
                             }
                         }
                     }
@@ -619,9 +615,7 @@ impl SessionState {
     ) -> Result<Option<SelfObservation>> {
         // A newer state always supersedes a retained snapshot (latest-only coalescing).
         if self.state_revision > self.handoff_revision {
-            let mut snapshot = self
-                .build_snapshot()
-                .map_err(|reason| anyhow::Error::new(reason))?;
+            let mut snapshot = self.build_snapshot().map_err(anyhow::Error::new)?;
             snapshot.sequence = self.next_sequence;
             snapshot.client_uptime_ms = client_uptime_ms;
             self.next_sequence += 1;
@@ -696,7 +690,6 @@ impl SessionState {
     }
 
     /// The session phase.
-
     fn build_snapshot(&self) -> std::result::Result<SelfObservation, SkipReason> {
         let player_guid = self.player_guid.ok_or(SkipReason::NoPlayer)?;
         let map_id = self.map_id.ok_or(SkipReason::NoPosition)?;

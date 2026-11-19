@@ -173,7 +173,7 @@ impl ReplyHeader {
         if !bytes[24..24 + counter_len].iter().all(u8::is_ascii_digit) {
             return None;
         }
-        for row in bytes[24 + counter_len..].chunks_exact(18) {
+        for row in bytes[24 + counter_len..].as_chunks::<18>().0 {
             if row[4] > 2
                 || row[5] > 10
                 || row[6] > 3
