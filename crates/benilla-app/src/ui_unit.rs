@@ -334,16 +334,25 @@ fn load_default_languages(
 /// reads it, and so does `ChatFrame.lua:1276` at a `PLAYER_ENTERING_WORLD` that [`feed_units`]
 /// fires unordered against [`feed_default_language`].
 pub(crate) fn seed_default_language(world: &mut World, script: &mut UiScript) {
-    let (Some(langs), Some(roster)) = (
-        world.get_resource::<DefaultLanguagesRes>(),
-        world.get_resource::<crate::glue_session::roster::Roster>(),
-    ) else {
+    let Some(langs) = world.get_resource::<DefaultLanguagesRes>() else {
         return;
     };
-    let Some(row) = roster.pending_row() else {
+    let race = world
+        .get_resource::<crate::glue_session::roster::Roster>()
+        .and_then(|roster| roster.pending_row().map(|row| u32::from(row.race)))
+        .or_else(|| {
+            let guid = world.get_resource::<crate::net::SelfGuid>()?.0?;
+            let &entity = world.get_resource::<crate::net::GuidIndex>()?.0.get(&guid)?;
+            world
+                .get::<ObjectStore>(entity)?
+                .0
+                .unit_race()
+                .map(u32::from)
+        });
+    let Some(race) = race else {
         return;
     };
-    script.set_default_language(langs.0.name(u32::from(row.race)).map(str::to_string));
+    script.set_default_language(langs.0.name(race).map(str::to_string));
 }
 
 /// Seed a new VM with `Languages.dbc`, the static table `SendChatMessage` resolves its language

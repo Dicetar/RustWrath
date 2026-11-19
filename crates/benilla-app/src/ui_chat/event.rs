@@ -702,6 +702,7 @@ pub(crate) fn language_name(id: u32) -> &'static str {
         13 => "Gnomish",
         14 => "Troll",
         33 => "Gutterspeak",
+        35 => "Draenei",
         _ => "", // 0, Universal, and unknown ids: no header
     }
 }
