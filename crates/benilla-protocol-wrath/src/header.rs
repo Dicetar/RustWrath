@@ -60,6 +60,7 @@ pub struct ServerHeader {
 }
 
 /// How many bytes the next server header occupies: `None` until at least two arrived.
+#[cfg(test)]
 pub fn server_header_len(bytes: &[u8]) -> Option<usize> {
     if bytes.len() < 2 {
         return None;
