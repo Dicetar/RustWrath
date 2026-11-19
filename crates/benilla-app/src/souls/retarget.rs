@@ -1,4 +1,4 @@
-//! The Elden Ring motion on the local player's own rig: the kit's actions play the ER clip each
+//! Elden Ring motion on our rig and relayed Souls players: kit actions play the ER clip each
 //! row was read from (`source`), and, on their own switch, idle, guard, walk, run, sprint, crouch
 //! and airborne play the ER locomotion clips.
 //!
@@ -1220,7 +1220,7 @@ pub(super) struct RemoteAction {
 
 /// Bounds include fading bodies; overflow keeps the generic animation.
 const MAX_REMOTE_BODIES: usize = 16;
-const MAX_REMOTE_BONES: usize = 256;
+const MAX_REMOTE_BONES: usize = 512;
 
 struct RemotePose {
     map: Result<RigMap, String>,
@@ -1235,7 +1235,7 @@ struct RemotePose {
 struct RemotePoses(std::collections::HashMap<Entity, RemotePose>);
 
 /// Same bake, rig mapping, sampling and pose solver as our own body. No per-body file loads.
-/// At most 16 bodies, 256 bones each; one sample and one bounded pose solve per body/frame.
+/// At most 16 bodies, 512 bones each; one sample and one bounded pose solve per body/frame.
 #[allow(clippy::type_complexity)]
 fn drive_remote_retarget(
     time: Res<Time>,
