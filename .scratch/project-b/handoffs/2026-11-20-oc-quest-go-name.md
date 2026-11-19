@@ -1,10 +1,10 @@
 # Quest log GameObject objective names
 
-Status: ready to merge
+Status: landed
 Owner: OpenCode / DeepSeek
 Branch: oc/quest-go-name
 Issue: 18 (quest log row inventory: GameObject objective name)
-Next: Owner launches the client and reads a quest with a GameObject objective.
+Next: none; landed on main as dbdcb58e. Owner still needs to read a real GameObject objective line in game.
 
 ## What changed
 - `crates/benilla-ui/src/script/quest_log.rs`: the quest-log store keeps a GameObject name map,
@@ -34,7 +34,7 @@ Next: Owner launches the client and reads a quest with a GameObject objective.
   `ui_quest_log::tests::a_gameobject_ask_is_answered_from_the_template_cache_without_asking_again`
 
 ## CI
-Not run yet. Pushed for GitHub CI to compile and test; rustfmt was run on both changed files.
+CI 44486026975 on fc90c169: Windows check and tests green; the changed-crate tests green. The gates job's only red step was the pre-existing `player-clippy` debt in untouched lines. Landed as dbdcb58e. rustfmt was run on both changed files.
 
 ## What is not proven in game
 The engine answer and the app feed are proven only by the named focused tests. No client or server

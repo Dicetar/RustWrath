@@ -1,10 +1,10 @@
 # Economy stock frames at app level: trade, mail and auction
 
-Status: ready to merge
+Status: landed
 Owner: OC / DeepSeek
 Branch: oc/economy-ui-coverage
 Issue: 18
-Next: CI compiles and runs the three new tests; then the owner checks the same windows in game.
+Next: none; landed on main as c1d5c925. The owner still checks the same windows in game.
 
 ## What changed
 Added `crates/benilla-app/src/ui_script/economy_tests.rs` and registered it from
@@ -27,8 +27,7 @@ No production behavior changed. Fixtures use the existing model types (`TradeSta
 `MailState`, `AuctionState`) and the stock XML path helpers.
 
 ## CI run id and result
-The three cases are data-gated (`wow_data_or_skip!`): CI with `WOW_DATA=""` compiles them but
-they skip; the owner's install is needed to execute them. Not run yet on the branch. No local Cargo, client or server run. The changed .rs files were rustfmt'd
+CI 44486042837 on eb6a6b16: Windows check green; the three data-gated cases compiled and skipped under `WOW_DATA=""`. The gates job's only red step was the pre-existing `player-clippy` debt in untouched lines. Landed as c1d5c925; the owner's install is needed to execute the three cases. No local Cargo, client or server run. The changed .rs files were rustfmt'd
 with the pinned toolchain's `rustfmt 1.9.0-stable`.
 
 ## What is not proven in game
