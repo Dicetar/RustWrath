@@ -1,6 +1,6 @@
 # Wrath action-bar spell fallback and cooldown owner
 
-Status: ready to merge
+Status: landed
 Owner: OpenCode / DeepSeek V4.1 Flash (took over the branch)
 Branch: fix/wrath-action-spell-slot-a
 Issue: none
