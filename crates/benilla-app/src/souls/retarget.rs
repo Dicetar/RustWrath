@@ -418,8 +418,11 @@ enum Drive {
         bind_up: Vec3,
         bind_side: Vec3,
     },
-    /// The actual item attachment below the wrist, indexed like `HAND_ATTACH`.
-    Grip { side: usize },
+    /// A socket-chain bone below the wrist. Only the attachment itself takes ER weapon axes.
+    Grip {
+        aim_side: Option<usize>,
+        seated: Option<Vec3>,
+    },
 }
 
 /// The roles of one rig's bones.
@@ -711,6 +714,8 @@ struct RigInput<'a> {
     head: usize,
     /// The hand attachment bones, `[right, left]`.
     hands: [usize; 2],
+    /// Authored stock Stand local translation, if the bone has a translation track.
+    stand_translation: &'a dyn Fn(usize) -> Option<Vec3>,
     /// The elbow attachment points in the model frame, `[right, left]`, when the model has them.
     elbows: [Option<Vec3>; 2],
     /// The thumb key bones, `[right, left]`, when the model has them.
@@ -965,11 +970,16 @@ impl RigMap {
                     },
                 ));
             }
-            // A shared wrist/socket must keep the palm frame. On HD rigs the socket can be
-            // below an animated origin helper. Only rotate the actual attachment bone.
+            // Attack2HTight can translate an HD weapon helper far outside the palm.
+            // The ER hand supplies the swing. Seat the socket chain as in stock Stand.
             let socket = rig.hands[side];
-            if socket != wrist {
-                driven.push((socket, Drive::Grip { side }));
+            let chain = ancestors(rig.parents, socket);
+            for &bone in chain.iter().rev().skip_while(|&&b| b != wrist).skip(1) {
+                let aim_side = (bone == socket).then_some(side);
+                let seated = (rig.stand_translation)(bone);
+                if aim_side.is_some() || seated.is_some() {
+                    driven.push((bone, Drive::Grip { aim_side, seated }));
+                }
             }
         }
 
@@ -1091,7 +1101,14 @@ impl RigMap {
                     .zip(basis(bind_up, Vec3::X))
                     .map(|(now, bind)| now * bind.inverse()),
                 Drive::Head => basis(pose.head_up, pose.head_fwd.cross(pose.head_up)),
-                Drive::Grip { side } => pose.weapon_axes[side].and_then(grip_rotation),
+                Drive::Grip { aim_side, seated } => {
+                    if let Some(translation) = seated {
+                        work[bone].translation = translation;
+                    }
+                    aim_side
+                        .and_then(|side| pose.weapon_axes[side])
+                        .and_then(grip_rotation)
+                }
                 Drive::Hand {
                     hand,
                     finger,
@@ -1380,6 +1397,7 @@ fn map_rig(
     twist: Option<&BodyTwist>,
     attach: Option<&BoneAttach>,
     hands: Option<&HandKeyBones>,
+    anims: Option<&benilla_assets::ModelAnimations>,
     rest: &Pose,
 ) -> Result<RigMap, String> {
     let head = twist
@@ -1401,12 +1419,24 @@ fn map_rig(
             .get(&ELBOW_ATTACH[side])
             .and_then(|&(bone, offset)| piv.get(usize::from(bone)).map(|p| *p + offset))
     };
+    let stand = anims.and_then(|anims| {
+        let node = anims.pose.node(anims.find(0)?.node)?;
+        anims.pose.clips.get(node.clip as usize)
+    });
     RigMap::build(
         &RigInput {
             parents: &rig.parents,
             binds: rig.binds(),
             head,
             hands: [hand(0)?, hand(1)?],
+            stand_translation: &|b| {
+                stand?
+                    .bones
+                    .iter()
+                    .find(|track| usize::from(track.bone) == b)?
+                    .translation
+                    .sample(0.)
+            },
             elbows: [elbow(0), elbow(1)],
             thumbs: hands.map_or([None, None], |h| h.thumbs.map(|t| t.map(usize::from))),
         },
@@ -1531,7 +1561,14 @@ pub(super) fn drive_retarget(
             .as_ref()
             .is_none_or(|(e, n, _)| *e != entity || *n != bones),
     ) {
-        let built = map_rig(&rig, twist, attach, hands, rest);
+        let built = map_rig(
+            &rig,
+            twist,
+            attach,
+            hands,
+            anims.map(|(_, model)| model),
+            rest,
+        );
         if let Err(e) = &built {
             warn!("souls retarget: the player's model cannot be mapped, stock clips play: {e}");
         }
@@ -1870,6 +1907,7 @@ fn drive_remote_retarget(
             Option<&RemotePeer>,
             &GlobalTransform,
             Option<&AnimDriver>,
+            Option<&benilla_assets::ModelAnimations>,
         ),
         Without<SelfPlayer>,
     >,
@@ -1883,7 +1921,7 @@ fn drive_remote_retarget(
     let rest = retarget.rest.as_ref();
     // Evict despawned bodies before admitting new ones.
     poses.0.retain(|entity, _| bodies.contains(*entity));
-    for (entity, rig, twist, attach, hands, action, peer, at, _) in &bodies {
+    for (entity, rig, twist, attach, hands, action, peer, at, _, anims) in &bodies {
         if poses.0.len() >= MAX_REMOTE_BODIES {
             break;
         }
@@ -1904,7 +1942,7 @@ fn drive_remote_retarget(
         poses.0.insert(
             entity,
             RemotePose {
-                map: map_rig(&rig, twist, attach, hands, rest),
+                map: map_rig(rig, twist, attach, hands, anims, rest),
                 stock: rig.locals.clone(),
                 written: None,
                 from: rig.locals.clone(),
@@ -1916,7 +1954,7 @@ fn drive_remote_retarget(
         );
     }
     poses.0.retain(|entity, state| {
-        let Ok((_, mut rig, twist, attach, hands, action, peer, at, driver)) =
+        let Ok((_, mut rig, twist, attach, hands, action, peer, at, driver, anims)) =
             bodies.get_mut(*entity)
         else {
             return false;
@@ -1928,7 +1966,7 @@ fn drive_remote_retarget(
         if bones != state.stock.len() {
             state.map = rest.map_or_else(
                 || Err("no rest pose".into()),
-                |rest| map_rig(&rig, twist, attach, hands, rest),
+                |rest| map_rig(&rig, twist, attach, hands, anims, rest),
             );
             state.stock = rig.locals.clone();
             state.from = rig.locals.clone();
@@ -2161,11 +2199,30 @@ mod tests {
                 let binds: Vec<_> = (0..piv.len())
                     .map(|i| piv[i] - parent_of(&parents, i).map_or(Vec3::ZERO, |p| piv[p]))
                     .collect();
+                let anims =
+                    benilla_formats::parse_m2_animations_with_external(&bytes, |id, variation| {
+                        matches!(id, 0 | 4 | 5 | 18)
+                            .then(|| {
+                                chain
+                                    .read(&format!("{path}{id:04}-{variation:02}.anim"))
+                                    .ok()
+                            })
+                            .flatten()
+                    });
+                let stand = anims.iter().find(|a| a.anim_id == 0).unwrap();
+                let standing = stock_pose(&binds, stand, 0.);
                 let rig = RigInput {
                     parents: &parents,
                     binds: &binds,
                     head: key(6).unwrap(),
                     hands: HAND_ATTACH.map(|id| usize::from(point(id).bone)),
+                    stand_translation: &|b| {
+                        stand
+                            .bones
+                            .iter()
+                            .find(|k| usize::from(k.bone) == b && !k.translation.is_empty())
+                            .map(|_| standing[b].translation)
+                    },
                     elbows: ELBOW_ATTACH.map(|id| {
                         att.iter()
                             .find(|a| a.id == id)
@@ -2183,19 +2240,40 @@ mod tests {
                         })
                     })
                     .collect();
-                let anims =
-                    benilla_formats::parse_m2_animations_with_external(&bytes, |id, variation| {
-                        matches!(id, 0 | 4 | 5)
-                            .then(|| {
-                                chain
-                                    .read(&format!("{path}{id:04}-{variation:02}.anim"))
-                                    .ok()
-                            })
-                            .flatten()
-                    });
-                let stand = anims.iter().find(|a| a.anim_id == 0).unwrap();
+                if (profile, race, sex) == ("wm-hd", "Human", "Female") {
+                    // Socket 210 hangs from helper 115 under wrist 62. Measure the rendered
+                    // grip in wrist space, through every stock Attack2HTight variation.
+                    let a = point(1);
+                    assert_eq!(a.bone, 210);
+                    assert_eq!((parents[210], parents[115]), (115, 62));
+                    let offset = wow_to_bevy(a.position) - piv[210];
+                    let seat = |locals: &[Transform]| {
+                        locals[115].transform_point(locals[210].transform_point(offset))
+                    };
+                    let stand_seat = seat(&standing);
+                    let heavy = &clips.clips["a030_032505"];
+                    let mut old_drift = 0.0_f32;
+                    let mut fixed_drift = 0.0_f32;
+                    for attack in anims.iter().filter(|a| a.anim_id == 18) {
+                        for frame in 0..=(attack.duration * CLIP_FPS).ceil() as usize {
+                            let mut work = stock_pose(&binds, attack, frame as f32 / CLIP_FPS);
+                            old_drift = old_drift.max(seat(&work).distance(stand_seat));
+                            let pose = clips.sample(heavy, frame as f32, false);
+                            map.pose(&pose, &parents, &binds, &mut work);
+                            let drift = seat(&work).distance(stand_seat);
+                            assert!(drift.is_finite());
+                            fixed_drift = fixed_drift.max(drift);
+                        }
+                    }
+                    println!("wm-hd HumanFemale heavy grip displacement {old_drift:.6} -> {fixed_drift:.6} yd");
+                    assert!(old_drift > 0.6, "missing the stock weapon excursion");
+                    assert!(
+                        fixed_drift < 0.003,
+                        "heavy attack displaced the grip {fixed_drift} yd"
+                    );
+                }
                 let mut stand_world = Vec::new();
-                for (i, t) in stock_pose(&binds, stand, 0.).iter().enumerate() {
+                for (i, t) in standing.iter().enumerate() {
                     let local = t.compute_affine();
                     stand_world
                         .push(parent_of(&parents, i).map_or(local, |p| stand_world[p] * local));
@@ -2473,7 +2551,13 @@ mod tests {
     #[test]
     fn grip_aligns_the_hatchet_under_an_animated_helper() {
         let map = RigMap {
-            driven: vec![(2, Drive::Grip { side: 1 })],
+            driven: vec![(
+                2,
+                Drive::Grip {
+                    aim_side: Some(1),
+                    seated: None,
+                },
+            )],
             pelvis: 0,
             scale: 1.0,
             rest_pelvis: Vec3::ZERO,
@@ -2662,6 +2746,7 @@ mod tests {
                 binds: &binds,
                 head: 5,
                 hands: [9, 16],
+                stand_translation: &|_| None,
                 elbows: [None, None],
                 thumbs: [Some(12), Some(19)],
             },
