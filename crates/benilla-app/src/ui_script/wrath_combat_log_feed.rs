@@ -228,11 +228,14 @@ fn endpoint_name(
         .map(str::to_owned)
 }
 
-/// 12340's `UnitCombatLog` builds the `SWING_DAMAGE` row only for a wound (1) or block (4)
-/// with non-zero damage (`UnitCombatLog_C.cpp:939-980`). 12340's victim states are intact=0,
-/// hit=1 and blocks=4.
+/// 12340's `UnitCombatLog` first drops feedback for a melee-spell round unless the victim
+/// state is a wound (`ShouldShowFeedback`, `UnitCombatLog_C.cpp:933-950`), then builds the
+/// `SWING_DAMAGE` row only for a wound (1) or block (4) with non-zero damage
+/// (`UnitCombatLog_C.cpp:952-980`). 12340's victim states are intact=0, hit=1 and blocks=4.
 fn swing_reports_damage(swing: &WrathSwing) -> bool {
-    swing.hit.damage != 0 && matches!(swing.hit.victim_state, 1 | 4)
+    swing.hit.damage != 0
+        && matches!(swing.hit.victim_state, 1 | 4)
+        && (swing.hit.melee_spell_id == 0 || swing.hit.victim_state == 1)
 }
 
 /// The exactly eight values `CombatLogEntry::PushEvent` sends before an event-specific block
@@ -566,6 +569,30 @@ mod tests {
                 ScriptValue::Nil,
                 ScriptValue::Nil,
             ]
+        );
+    }
+
+    /// `ShouldShowFeedback` drops a blocked melee-spell round before the SWING_DAMAGE block, while
+    /// a wounded melee-spell round is still shown.
+    #[test]
+    fn a_blocked_melee_spell_round_is_not_a_swing_damage_event() {
+        let mut swing = WrathSwing {
+            hit: swing_hit(20, 4),
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 3,
+            received_at: 10.0,
+        };
+        assert!(swing_reports_damage(&swing), "a plain blocked swing shows");
+        swing.hit.melee_spell_id = 78;
+        assert!(
+            !swing_reports_damage(&swing),
+            "a blocked melee-spell round is dropped by ShouldShowFeedback"
+        );
+        swing.hit.victim_state = 1;
+        assert!(
+            swing_reports_damage(&swing),
+            "a wounded melee-spell round is still shown"
         );
     }
 

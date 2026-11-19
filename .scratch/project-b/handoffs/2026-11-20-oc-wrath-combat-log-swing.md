@@ -34,6 +34,12 @@ absent crit/glance/crush are nil). 12340 victim states come from AzerothCore `Un
 - `feed_delivers_a_wounded_swing_and_silently_retires_the_rest`
 - `swing_queue_clears_at_scope_end_and_reports_capacity_loss`
 
+## Overseer review
+
+The 12340 `ShouldShowFeedback` gate was added after review: a blocked melee-spell round
+(`melee_spell_id != 0` and victim state not WOUND) is dropped before the SWING_DAMAGE block.
+Test: `a_blocked_melee_spell_round_is_not_a_swing_damage_event`.
+
 ## CI
 
 Not run yet. No Cargo command, client or server was run in this task.
@@ -52,3 +58,4 @@ Not run yet. No Cargo command, client or server was run in this task.
   the reference builds; no spell-damage/log-name path is claimed here.
 - `SWING_MISSED` is out of scope: the next slice should build event index 2 from 12340's
   `hitInfo & 0x10` (miss/parry/dodge/absorb/resist/block) and name the miss kind.
+
