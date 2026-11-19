@@ -744,6 +744,7 @@ mod tests {
             ],
             spine_bone: None,
             head_bone: None,
+            thumb_bones: [None, None],
         };
         dm.inverse_bindposes = Some(Handle::default());
         displays.models.insert((7, KIND), dm);
@@ -994,6 +995,7 @@ mod tests {
                 ],
                 spine_bone: None,
                 head_bone: None,
+                thumb_bones: [None, None],
             };
             dm.inverse_bindposes = Some(Handle::default());
             // A firearm's animation shape: Stand + BowRelease, and no BowPull.
@@ -1437,6 +1439,7 @@ mod tests {
                 }],
                 spine_bone: None,
                 head_bone: None,
+                thumb_bones: [None, None],
             };
             if effects {
                 dm.emitters = vec![benilla_assets::ModelEmitter {

@@ -640,6 +640,7 @@ mod tests {
                 .collect(),
             spine_bone: None,
             head_bone: None,
+            thumb_bones: [None, None],
         }
     }
 

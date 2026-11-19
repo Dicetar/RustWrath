@@ -230,6 +230,9 @@ pub struct ModelSkeleton {
     pub spine_bone: Option<u16>,
     /// The KeyBoneID 6 (Head) bone, which takes the rest of that twist (`0x711f10(6, …)`).
     pub head_bone: Option<u16>,
+    /// The KeyBoneID 12 and 17 (ThumbR, ThumbL) bones, `[right, left]`: which way a hand's palm
+    /// faces, for the Souls retarget.
+    pub thumb_bones: [Option<u16>; 2],
 }
 
 /// Bake a [`Skeleton`] to Bevy space, with its inverse bind poses. A vanilla M2 has no
@@ -268,6 +271,7 @@ pub(crate) fn build_skeleton(skel: &Skeleton) -> (ModelSkeleton, Vec<Mat4>) {
             joints,
             spine_bone: key_bone(4),
             head_bone: key_bone(6),
+            thumb_bones: [key_bone(12), key_bone(17)],
         },
         inverse_bindposes,
     )
@@ -790,6 +794,7 @@ mod tests {
             joints: Vec::new(),
             spine_bone: None,
             head_bone: None,
+            thumb_bones: [None, None],
         };
         let (clip, _pose, poses_bones) =
             build_animation_clip(&sequence(1.333, Vec::new()), &skeleton);

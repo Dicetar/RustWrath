@@ -89,7 +89,7 @@ use chain_beam::{simulate_chain_beams, spawn_chain_beams};
 pub(crate) use attach::equip_slot;
 pub(crate) use equipment::ItemDisplays;
 pub(crate) use equipment::{attach_id, DressKey, HeldAttached};
-pub(crate) use equipment::{BoneAttach, Equipment};
+pub(crate) use equipment::{BoneAttach, Equipment, HandKeyBones};
 // Only the tests that build a `DressKey` name this type.
 #[cfg(test)]
 pub(crate) use equipment::ItemModelKind;

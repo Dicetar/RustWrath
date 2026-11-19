@@ -196,6 +196,13 @@ pub(crate) struct BoneAttach {
     pub(crate) markers: HashMap<[u8; 4], (u16, Vec3)>,
 }
 
+/// The ThumbR and ThumbL key bones (KeyBoneID 12 and 17), `[right, left]`, on a unit whose model
+/// has either: the Souls retarget turns each hand so its palm faces where the ER hand's does.
+#[derive(Component, Clone, Copy, Debug)]
+pub(crate) struct HandKeyBones {
+    pub(crate) thumbs: [Option<u16>; 2],
+}
+
 /// The item models spawned for a unit: the [`HeldItems`] they were built from and each slot's root.
 #[derive(Component, Default)]
 pub(crate) struct HeldAttached {

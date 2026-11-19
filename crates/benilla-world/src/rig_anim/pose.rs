@@ -533,6 +533,7 @@ mod tests {
                 .collect(),
             spine_bone: None,
             head_bone: None,
+            thumb_bones: [None, None],
         };
         app.world_mut().entity_mut(ours).insert((
             model_anims(graph.clone(), pose.clone()),

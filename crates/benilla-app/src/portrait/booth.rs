@@ -1086,6 +1086,7 @@ mod tests {
             ],
             spine_bone: None,
             head_bone: None,
+            thumb_bones: [None, None],
         };
         let ibp = Handle::default();
         // One skinned batch and one static one, through the same call.
@@ -1185,6 +1186,7 @@ mod tests {
             }],
             spine_bone: None,
             head_bone: None,
+            thumb_bones: [None, None],
         };
         let anims = benilla_assets::ModelAnimations {
             graph: Handle::default(),
@@ -1279,6 +1281,7 @@ mod tests {
             joints: vec![joint(-1, Vec3::ZERO), joint(0, Vec3::Y)],
             spine_bone: None,
             head_bone: None,
+            thumb_bones: [None, None],
         };
         let animations = benilla_assets::ModelAnimations {
             graph: Handle::default(),

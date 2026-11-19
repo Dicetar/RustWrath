@@ -43,7 +43,7 @@ use crate::combat_mode::CombatModeView;
 use crate::combat_playback::CombatPlaybackState;
 use crate::combat_profiles::CombatProfiles;
 use crate::creature_anim::{AnimDriver, BodyTwist};
-use crate::entities::BoneAttach;
+use crate::entities::{BoneAttach, HandKeyBones};
 use crate::net::SelfPlayer;
 
 /// The bake's rate.
@@ -82,9 +82,11 @@ enum J {
     RToe0,
     LFinger2,
     RFinger2,
+    LFinger0,
+    RFinger0,
 }
 
-const JOINTS: usize = 24;
+const JOINTS: usize = 26;
 
 /// The bake's joint names, by [`J`].
 const JOINT_NAMES: [&str; JOINTS] = [
@@ -112,6 +114,8 @@ const JOINT_NAMES: [&str; JOINTS] = [
     "R_Toe0",
     "L_Finger2",
     "R_Finger2",
+    "L_Finger0",
+    "R_Finger0",
 ];
 
 const SPINE: [J; 6] = [J::Pelvis, J::Spine, J::Spine1, J::Spine2, J::Neck, J::Head];
@@ -137,6 +141,8 @@ const LEGS: [[J; 4]; 2] = [
     [J::RThigh, J::RCalf, J::RFoot, J::RToe0],
     [J::LThigh, J::LCalf, J::LFoot, J::LToe0],
 ];
+/// The thumb's base, `[right, left]`: which way the palm faces.
+const THUMBS: [J; 2] = [J::RFinger0, J::LFinger0];
 /// The hand attachment ids, `[right, left]`.
 const HAND_ATTACH: [u16; 2] = [1, 2];
 /// The elbow attachment ids, `[right, left]`.
@@ -374,6 +380,15 @@ enum Drive {
     },
     /// The bake's head axes.
     Head,
+    /// A whole hand frame: up from the ER hand to its middle knuckle, the side toward the thumb's
+    /// base; `bind_up` and `bind_side` are the same in the M2 bind pose.
+    Hand {
+        hand: J,
+        finger: J,
+        thumb: J,
+        bind_up: Vec3,
+        bind_side: Vec3,
+    },
 }
 
 /// The roles of one rig's bones.
@@ -504,6 +519,8 @@ struct RigInput<'a> {
     hands: [usize; 2],
     /// The elbow attachment points in the model frame, `[right, left]`, when the model has them.
     elbows: [Option<Vec3>; 2],
+    /// The thumb key bones, `[right, left]`, when the model has them.
+    thumbs: [Option<usize>; 2],
 }
 
 impl RigMap {
@@ -637,10 +654,23 @@ impl RigMap {
         if piv[wrists[0]].x <= piv[wrists[1]].x {
             return Err("the right hand is not on the right".into());
         }
-        for ((&wrist, elbow), arm) in wrists.iter().zip(rig.elbows).zip(ARMS) {
+        // As with the legs, a bone both arms hang from is neither arm's.
+        let shared_arm: Vec<usize> = ancestors(rig.parents, wrists[0])
+            .into_iter()
+            .filter(|b| ancestors(rig.parents, wrists[1]).contains(b))
+            .collect();
+        for (side, ((&wrist, elbow), arm)) in wrists.iter().zip(rig.elbows).zip(ARMS).enumerate() {
+            // The thumb, when it is a placed bone under this wrist.
+            let thumb = rig.thumbs[side].filter(|&t| {
+                t < n
+                    && t != wrist
+                    && !at_origin(t)
+                    && piv[t].distance(piv[wrist]) > eps
+                    && ancestors(rig.parents, t).contains(&wrist)
+            });
             let mut chain: Vec<usize> = ancestors(rig.parents, wrist)
                 .into_iter()
-                .take_while(|&b| !on_head_chain(b))
+                .take_while(|&b| !on_head_chain(b) && !shared_arm.contains(&b))
                 .collect();
             chain.reverse();
             if chain.len() < 2 {
@@ -648,11 +678,17 @@ impl RigMap {
             }
             let mut points: Vec<Vec3> = chain.iter().map(|&b| piv[b]).collect();
             let wrist_i = points.len() - 1;
-            // The fingers' base, or the forearm carried on a little.
+            // The fingers' base, or the forearm carried on a little. An HD hand also carries
+            // weapon and attach bones well past the knuckles; only children within half a
+            // forearm of the wrist are fingers.
+            let forearm = points[wrist_i].distance(points[wrist_i - 1]);
             let fingers: Vec<Vec3> = children(wrist)
-                .filter(|&c| !at_origin(c))
+                .filter(|&c| !at_origin(c) && Some(c) != thumb)
                 .map(|c| piv[c])
-                .filter(|p| p.distance(piv[wrist]) > eps)
+                .filter(|p| {
+                    let d = p.distance(piv[wrist]);
+                    d > eps && d <= forearm * 0.5
+                })
                 .collect();
             let finger = if fingers.is_empty() {
                 piv[wrist] + (piv[wrist] - points[wrist_i - 1]) * 0.25
@@ -686,6 +722,21 @@ impl RigMap {
                 let Some(j) = next_distinct(&points, k, eps) else {
                     continue;
                 };
+                // The wrist takes the ER hand's whole frame when the thumb says which way the
+                // palm faces: the roll of the hand, and of the weapon in it.
+                if let (true, Some(t)) = (k == wrist_i, thumb) {
+                    driven.push((
+                        bone,
+                        Drive::Hand {
+                            hand: arm[3],
+                            finger: arm[4],
+                            thumb: THUMBS[side],
+                            bind_up: points[finger_i] - points[wrist_i],
+                            bind_side: piv[t] - piv[wrist],
+                        },
+                    ));
+                    continue;
+                }
                 driven.push((
                     bone,
                     Drive::Aim {
@@ -697,11 +748,18 @@ impl RigMap {
             }
         }
 
-        // The legs, hip to toe; the toe follows its foot.
+        // The legs, hip to toe; the toe follows its foot. A bone both legs hang from (an HD
+        // rig's hip root at the body's centre) belongs to neither: one leg would aim it, the
+        // other aim it again the opposite way, and the first leg, solved under the first aim,
+        // would swing up with it. It keeps the stock pose.
+        let shared: Vec<usize> = ancestors(rig.parents, toes[0])
+            .into_iter()
+            .filter(|b| ancestors(rig.parents, toes[1]).contains(b))
+            .collect();
         for (&toe, leg) in toes.iter().zip(LEGS) {
             let mut chain: Vec<usize> = ancestors(rig.parents, toe)
                 .into_iter()
-                .take_while(|&b| b != pelvis)
+                .take_while(|b| !shared.contains(b))
                 .collect();
             chain.reverse();
             if chain.len() < 2 {
@@ -787,6 +845,18 @@ impl RigMap {
                     .zip(basis(bind_up, Vec3::X))
                     .map(|(now, bind)| now * bind.inverse()),
                 Drive::Head => basis(pose.head_up, pose.head_fwd.cross(pose.head_up)),
+                Drive::Hand {
+                    hand,
+                    finger,
+                    thumb,
+                    bind_up,
+                    bind_side,
+                } => {
+                    let at = pose.at(hand);
+                    basis(pose.at(finger) - at, pose.at(thumb) - at)
+                        .zip(basis(bind_up, bind_side))
+                        .map(|(now, bind)| now * bind.inverse())
+                }
             };
             let Some(desired) = desired else {
                 continue;
@@ -969,6 +1039,7 @@ fn map_rig(
     rig: &RigPose,
     twist: Option<&BodyTwist>,
     attach: Option<&BoneAttach>,
+    hands: Option<&HandKeyBones>,
     rest: &Pose,
 ) -> Result<RigMap, String> {
     let head = twist
@@ -997,6 +1068,7 @@ fn map_rig(
             head,
             hands: [hand(0)?, hand(1)?],
             elbows: [elbow(0), elbow(1)],
+            thumbs: hands.map_or([None, None], |h| h.thumbs.map(|t| t.map(usize::from))),
         },
         rest,
     )
@@ -1020,6 +1092,7 @@ pub(super) fn drive_retarget(
             &GlobalTransform,
             Option<&BodyTwist>,
             Option<&BoneAttach>,
+            Option<&HandKeyBones>,
             Option<&AnimDriver>,
         ),
         With<SelfPlayer>,
@@ -1038,7 +1111,7 @@ pub(super) fn drive_retarget(
         r.last_pos = None;
         return;
     }
-    let Ok((entity, mut rig, global, twist, attach, driver)) = me.single_mut() else {
+    let Ok((entity, mut rig, global, twist, attach, hands, driver)) = me.single_mut() else {
         r.written = None;
         r.playing = None;
         return;
@@ -1064,7 +1137,7 @@ pub(super) fn drive_retarget(
             .as_ref()
             .is_none_or(|(e, n, _)| *e != entity || *n != bones),
     ) {
-        let built = map_rig(&rig, twist, attach, rest);
+        let built = map_rig(&rig, twist, attach, hands, rest);
         if let Err(e) = &built {
             warn!("souls retarget: the player's model cannot be mapped, stock clips play: {e}");
         }
@@ -1297,5 +1370,156 @@ mod tests {
         // The rest pelvis (here the origin) is a metre under the map's: the body drops two units.
         assert!((work[0].translation - Vec3::new(0.0, 0.0, 0.0)).length() < 1e-5);
         assert!(basis(Vec3::Y, Vec3::X).is_some_and(|q| q.angle_between(Quat::IDENTITY) < 1e-6));
+    }
+
+    /// An HD-shaped rig whose legs hang from one hip root at the body's centre: no bone is driven
+    /// twice, and after the whole pass every aimed bone points where its ER limb points (a hip
+    /// root aimed by both legs left the right leg swung up).
+    #[test]
+    fn a_shared_hip_root_is_no_leg_and_every_limb_lands() {
+        // (parent, model pivot); the left side mirrors the right.
+        let mut bones: Vec<(i16, Vec3)> = vec![
+            (-1, Vec3::ZERO),               // 0 root
+            (0, Vec3::new(0.0, 1.16, 0.0)), // 1 pelvis
+            (1, Vec3::new(0.0, 1.15, 0.0)), // 2 hip root, shared
+            (1, Vec3::new(0.0, 1.4, 0.0)),  // 3 chest
+            (3, Vec3::new(0.0, 1.65, 0.0)), // 4 neck
+            (4, Vec3::new(0.0, 1.75, 0.0)), // 5 head
+        ];
+        for s in [1.0, -1.0] {
+            let at = bones.len() as i16;
+            bones.extend([
+                (3, Vec3::new(0.04 * s, 1.59, 0.0)),        // clavicle
+                (at, Vec3::new(0.145 * s, 1.6, 0.0)),       // upper arm
+                (at + 1, Vec3::new(0.30 * s, 1.35, 0.0)),   // forearm
+                (at + 2, Vec3::new(0.45 * s, 1.12, 0.0)),   // hand
+                (at + 3, Vec3::new(0.50 * s, 1.02, 0.0)),   // finger
+                (at + 3, Vec3::new(0.62 * s, 1.0, -0.1)),   // weapon bone
+                (at + 3, Vec3::new(0.46 * s, 1.07, -0.05)), // thumb
+            ]);
+        }
+        for s in [1.0, -1.0] {
+            let at = bones.len() as i16;
+            bones.extend([
+                (2, Vec3::new(0.082 * s, 1.117, 0.0)),        // hip
+                (at, Vec3::new(0.082 * s, 0.6, 0.0)),         // knee
+                (at + 1, Vec3::new(0.082 * s, 0.08, 0.1)),    // ankle
+                (at + 2, Vec3::new(0.082 * s, 0.028, -0.06)), // toe
+            ]);
+        }
+        let parents: Vec<i16> = bones.iter().map(|b| b.0).collect();
+        let binds: Vec<Vec3> = bones
+            .iter()
+            .map(|&(p, at)| at - usize::try_from(p).map_or(Vec3::ZERO, |p| bones[p].1))
+            .collect();
+
+        let mut p = [Vec3::ZERO; JOINTS];
+        let joints = [
+            (J::Pelvis, [0.0, 1.0, 0.0]),
+            (J::Spine, [0.0, 1.1, 0.0]),
+            (J::Spine1, [0.0, 1.25, 0.0]),
+            (J::Spine2, [0.0, 1.35, 0.0]),
+            (J::Neck, [0.0, 1.5, 0.0]),
+            (J::Head, [0.0, 1.6, 0.0]),
+            (J::RClavicle, [0.03, 1.45, 0.0]),
+            (J::RUpperArm, [0.18, 1.45, 0.0]),
+            (J::RForearm, [0.25, 1.2, 0.0]),
+            (J::RHand, [0.3, 0.95, 0.0]),
+            (J::RFinger2, [0.32, 0.88, 0.0]),
+            (J::RFinger0, [0.31, 0.92, -0.04]),
+            (J::RThigh, [0.1, 0.95, 0.0]),
+            (J::RCalf, [0.1, 0.5, 0.0]),
+            (J::RFoot, [0.1, 0.08, 0.05]),
+            (J::RToe0, [0.1, 0.02, -0.1]),
+        ];
+        let mirror = |j: J| match j {
+            J::RClavicle => Some(J::LClavicle),
+            J::RUpperArm => Some(J::LUpperArm),
+            J::RForearm => Some(J::LForearm),
+            J::RHand => Some(J::LHand),
+            J::RFinger2 => Some(J::LFinger2),
+            J::RFinger0 => Some(J::LFinger0),
+            J::RThigh => Some(J::LThigh),
+            J::RCalf => Some(J::LCalf),
+            J::RFoot => Some(J::LFoot),
+            J::RToe0 => Some(J::LToe0),
+            _ => None,
+        };
+        for (j, [x, y, z]) in joints {
+            p[j as usize] = Vec3::new(x, y, z);
+            if let Some(l) = mirror(j) {
+                p[l as usize] = Vec3::new(-x, y, z);
+            }
+        }
+        let rest = Pose {
+            p,
+            head_up: Vec3::Y,
+            head_fwd: Vec3::NEG_Z,
+        };
+        let map = RigMap::build(
+            &RigInput {
+                parents: &parents,
+                binds: &binds,
+                head: 5,
+                hands: [9, 16],
+                elbows: [None, None],
+                thumbs: [Some(12), Some(19)],
+            },
+            &rest,
+        )
+        .expect("maps");
+        let mut seen: Vec<usize> = map.driven.iter().map(|&(b, _)| b).collect();
+        seen.sort_unstable();
+        assert!(seen.windows(2).all(|w| w[0] != w[1]), "a bone driven twice");
+        assert!(!seen.contains(&2), "the shared hip root is driven");
+
+        // A kick forward with the right leg, the left knee bent, the right arm raised.
+        let mut pose = Pose { ..rest };
+        pose.p[J::RCalf as usize] = Vec3::new(0.15, 0.7, -0.4);
+        pose.p[J::RFoot as usize] = Vec3::new(0.15, 0.6, -0.8);
+        pose.p[J::RToe0 as usize] = Vec3::new(0.15, 0.65, -0.95);
+        pose.p[J::LCalf as usize] = Vec3::new(-0.1, 0.55, -0.2);
+        pose.p[J::RForearm as usize] = Vec3::new(0.3, 1.65, -0.1);
+        pose.p[J::RHand as usize] = Vec3::new(0.35, 1.9, -0.2);
+        pose.p[J::RFinger2 as usize] = Vec3::new(0.36, 1.97, -0.22);
+        pose.p[J::RFinger0 as usize] = Vec3::new(0.31, 1.93, -0.25);
+        let mut work: Vec<Transform> = binds
+            .iter()
+            .map(|&t| Transform::from_translation(t))
+            .collect();
+        map.pose(&pose, &parents, &binds, &mut work);
+        let mut hands = 0;
+        for &(bone, drive) in &map.driven {
+            let model = ancestors(&parents, bone)
+                .iter()
+                .rev()
+                .fold(Quat::IDENTITY, |acc, &a| acc * work[a].rotation);
+            match drive {
+                Drive::Aim { from, to, bind_dir } => {
+                    let got = (model * bind_dir).normalize();
+                    let want = (to.at(&pose) - from.at(&pose)).normalize();
+                    assert!(
+                        got.angle_between(want) < 1e-3,
+                        "bone {bone} points {got}, not {want}"
+                    );
+                }
+                // The wrist's whole frame is the ER hand's, palm and all.
+                Drive::Hand {
+                    hand,
+                    finger,
+                    thumb,
+                    bind_up,
+                    bind_side,
+                } => {
+                    hands += 1;
+                    let at = pose.at(hand);
+                    let want = basis(pose.at(finger) - at, pose.at(thumb) - at).unwrap()
+                        * basis(bind_up, bind_side).unwrap().inverse();
+                    assert!(model.angle_between(want) < 1e-3, "hand {bone} is off");
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(hands, 2, "both wrists take the hand frame");
     }
 }

@@ -2977,6 +2977,7 @@ mod tests {
             joints: vec![joint(-1, 0.0), joint(0, 1.0)],
             spine_bone: None,
             head_bone: None,
+            thumb_bones: [None, None],
         }
     }
 

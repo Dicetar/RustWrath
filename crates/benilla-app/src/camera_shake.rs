@@ -754,6 +754,7 @@ mod tests {
             }],
             spine_bone: None,
             head_bone: None,
+            thumb_bones: [None, None],
         };
         RigPose::new(Entity::PLACEHOLDER, &skeleton)
     }
