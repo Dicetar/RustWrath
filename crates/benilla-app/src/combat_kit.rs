@@ -49,6 +49,7 @@ pub(crate) struct PlayerKit {
     /// Bumped whenever a read changes [`Self::kit`], so the profile build compiles the new one.
     pub(crate) generation: u32,
     selected_main: Option<(u8, u8)>,
+    selected_weapon: u64,
 }
 
 impl PlayerKit {
@@ -83,12 +84,29 @@ fn weapon_kit(main: Option<(u8, u8)>) -> Option<&'static str> {
 
 /// Equipment changes use the same reload as F10; disarming does not change the equipped kit.
 pub(crate) fn select_player_kit(
-    me: Query<&crate::creature_anim::Wielded, With<crate::net::SelfPlayer>>,
+    me: Query<
+        (&crate::creature_anim::Wielded, &crate::net::ObjectStore),
+        With<crate::net::SelfPlayer>,
+    >,
+    inventory: Option<Res<crate::wrath_inventory::WrathInventory>>,
     mut kit: ResMut<PlayerKit>,
 ) {
-    let main = me.single().ok().and_then(|wielded| wielded.main);
-    if main != kit.selected_main {
+    let body = me.single().ok();
+    let main = body.and_then(|(wielded, _)| wielded.main);
+    let weapon = inventory
+        .as_deref()
+        .map(|inventory| inventory.equipment(crate::items::EQUIPMENT_SLOT_MAINHAND))
+        .or_else(|| {
+            body.and_then(|(_, store)| {
+                store
+                    .0
+                    .player_inv_slot(crate::items::EQUIPMENT_SLOT_MAINHAND)
+            })
+        })
+        .unwrap_or(0);
+    if main != kit.selected_main || weapon != kit.selected_weapon {
         kit.selected_main = main;
+        kit.selected_weapon = weapon;
         kit.reload();
     }
 }
@@ -96,16 +114,20 @@ pub(crate) fn select_player_kit(
 /// A missing subclass file falls back to player.kit, then to stock profiles.
 fn read_kit(main: Option<(u8, u8)>) -> Option<Kit> {
     let fallback = crate::local_state::player_kit_path()?;
+    read_kit_at(main, &fallback)
+}
+
+fn read_kit_at(main: Option<(u8, u8)>, fallback: &std::path::Path) -> Option<Kit> {
     let path = weapon_kit(main)
         .and_then(|name| {
             fallback
                 .parent()
                 .map(|p| p.join("kits").join(format!("{name}.kit")))
         })
-        .unwrap_or_else(|| fallback.clone());
+        .unwrap_or_else(|| fallback.to_path_buf());
     read_kit_file(&path).or_else(|| {
         (path != fallback)
-            .then(|| read_kit_file(&fallback))
+            .then(|| read_kit_file(fallback))
             .flatten()
     })
 }
@@ -258,6 +280,40 @@ pub(crate) fn clip_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_weapon_kit_falls_back_to_player_then_stock() {
+        let temp = std::env::temp_dir().join(format!(
+            "rustwrath-kits-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(temp.join("kits")).unwrap();
+        let fallback = temp.join("player.kit");
+        assert!(read_kit_at(Some((2, 15)), &fallback).is_none());
+        std::fs::write(&fallback, KIT).unwrap();
+        assert_eq!(
+            read_kit_at(Some((2, 15)), &fallback).unwrap().label,
+            "test kit"
+        );
+        std::fs::write(
+            temp.join("kits/dagger.kit"),
+            KIT.replace("label test kit", "label dagger"),
+        )
+        .unwrap();
+        assert_eq!(
+            read_kit_at(Some((2, 15)), &fallback).unwrap().label,
+            "dagger"
+        );
+        assert_eq!(
+            read_kit_at(Some((2, 7)), &fallback).unwrap().label,
+            "test kit"
+        );
+        std::fs::remove_dir_all(temp).unwrap();
+    }
 
     #[test]
     fn weapon_subclasses_pick_the_import_table() {
