@@ -58,7 +58,7 @@ DeepSeek in those two.
 
 **CI.** Every landed code ticket's branch had Windows `check` and its changed-crate tests green
 before landing; the gates job was red only on the pre-existing `player-clippy` debt, except
-three runs where the gates `test-build` hit a missing `wayland-sys` system library on the
+four runs where the gates `test-build` hit a missing `wayland-sys` system library on the
 runner (the Windows job passed; the branch was landed on that and on source review). Main's own
 run is re-built after this batch. No local Cargo, client or server was run; no `target` was
 created. `origin` received no credentials, game data or extracted interface files.
