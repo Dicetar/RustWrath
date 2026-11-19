@@ -62,6 +62,10 @@ const WORD_HAS_VC: u32 = 1 << 27;
 // `ShadeSel::Matte`, fixed 1.0: a map doodad never reaches the 2.5 site (`0x69e4ad`). Not
 // `WORD_SHADE_LIT`, so lifting the shader's `min(I, 1)` cap leaves this at 1.0.
 const WORD_MATTE: u32 = 1 << 28;
+// A unified-path WMO batch (`MOHD.flags & 0x2`): MOCV adds as emissive beside the halved light,
+// doubled after, where the classic drawers multiply the light by it. The root's MOHD ambient rides
+// the record table (see `render::GxItemDraw::ambient`).
+const WORD_UNIFIED: u32 = 1 << 29;
 // An interior M2 prop is WORD_INTERIOR with WORD_WMO clear, the entity shader's `interior_prop =
 // flags.z && !flags.x`: SH-probe light from its record slot, interior fog, no live point lights.
 
@@ -214,6 +218,8 @@ struct GxItemWmo {
     class_lane: u8,
     sidn: [u8; 3],
     window: bool,
+    /// The unified path's MOHD ambient (see [`GxWmoBatch::unified`]).
+    unified: Option<[u8; 3]>,
     /// The authored batch order for the clip-z nudge; 0 under `WOW_WMO_BIAS=0`.
     order: u16,
 }
@@ -348,6 +354,8 @@ pub struct GxWmoBatch {
     pub sidn: Option<[u8; 3]>,
     /// The MOMT WINDOW midpoint-light flag.
     pub window: bool,
+    /// A unified-path WMO (`MOHD.flags & 0x2`) and its root's MOHD ambient, R, G, B bytes.
+    pub unified: Option<[u8; 3]>,
     /// The authored batch order (batch index + 1), for the coplanar-MOBA clip-z nudge.
     pub batch_order: u16,
 }
@@ -438,13 +446,16 @@ impl StaticGx {
         let wmo = b.wmo.map(|w| GxItemWmo {
             group: w.group,
             interior: w.interior,
-            class_lane: match (w.interior, w.class) {
+            // The unified path splits TRANS batches on every group, so its lane is set on
+            // exterior groups too.
+            class_lane: match (w.interior || w.unified.is_some(), w.class) {
                 (true, Some(WmoBatchClass::Int)) => 1,
                 (true, Some(WmoBatchClass::Trans)) => 2,
                 _ => 0,
             },
             sidn: w.sidn.unwrap_or([0; 3]),
             window: w.window,
+            unified: w.unified,
             order: if wmo_bias_disabled() {
                 0
             } else {

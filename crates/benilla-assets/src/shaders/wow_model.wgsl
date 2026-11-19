@@ -45,7 +45,9 @@ struct ModelParams {
     // Rows of `wow_light.matanim`, 0 = identity: x = UV scroll, y = tint, z = texture-transform
     // affine, w = the UI tile's cell clip.
     anim_slots: vec4<f32>,
-    // The second texture stage: x = bound (1) or not (0), y = its combine preset 0-5; zw unused.
+    // The second texture stage: x = bound (1) or not (0), y = its combine preset 0-5, z = the
+    // stage-0 preset + 1 (0 for none); w = the unified WMO lane, 0 off it, else 1 + the MOHD
+    // ambient r | g << 8 | b << 16 (`model_render::unified_lane`).
     stage1: vec4<f32>,
 };
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> m: ModelParams;
@@ -539,17 +541,22 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
     // WMO MOCV alpha is lighting data (the TRANS lerp, the INT glow mask), and the reference's WMO
     // output alpha is tex.a alone. Bevy folds the vertex alpha into base_color, so re-sample the
     // texel alpha: dividing the fold back out loses everything where MOCV.a ≈ 0.
+    // The unified WMO combine (below) reads the unfolded texel too: near-black MOCV leaves
+    // nothing to divide back out of the fold.
+    var wmo_texel = base_color.rgb;
 #ifdef VERTEX_COLORS
     if (m.model_flags.x > 0.5) {
 #ifdef VERTEX_UVS_A
-        base_color.a = textureSampleBias(
+        let wmo_sample = textureSampleBias(
             pbr_bindings::base_color_texture,
             pbr_bindings::base_color_sampler,
             vo.uv,
             // The colour's LOD: `pbr_input_from_standard_material` applies `view.mip_bias`, and
             // coverage from another mip erodes out of step with the art.
             view.mip_bias,
-        ).a;
+        );
+        base_color.a = wmo_sample.a;
+        wmo_texel = wmo_sample.rgb;
 #else
         base_color.a = 1.0;
 #endif
@@ -818,6 +825,44 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
     );
     lit_rgb = albedo * primary;
 #endif
+    // The unified WMO path (`MOHD.flags & 0x2`, `stage1.w` = 1 + the packed MOHD ambient):
+    // `CMapObj::UnifiedRender` draws every batch on the MapObjU program, C = clamp(clamp(L)·127/255
+    // + MOCV + SIDN/2), then 2·tex·C. MOCV is the emissive (ColorMaterial 2) beside the light, so
+    // Stormwind's near-black exterior MOCV reads tex × L, never black; a batch without MOCV gets
+    // the reference's black base (`FillVertexVB`). Exterior-lit groups light by the sun (mode 1),
+    // interior ones by the MOHD ambient (mode 3) or, WINDOW, the midpoint pair (mode 2). A TRANS
+    // batch draws lit (mode 1 or 2) at SrcAlpha, then ambient at InvSrcAlpha: one lerp here.
+    if (is_wmo && m.stage1.w > 0.5) {
+        let packed = u32(m.stage1.w) - 1u;
+        let amb = vec3<f32>(
+            f32(packed & 0xffu),
+            f32((packed >> 8u) & 0xffu),
+            f32((packed >> 16u) & 0xffu),
+        ) / 255.0;
+        var vc_u = vec3<f32>(0.0);
+#ifdef VERTEX_COLORS
+        vc_u = in.color.rgb;
+#endif
+        let is_win = m.sidn.w > 0.5;
+        let class_trans = m.tint.w > 1.5;
+        let e_half = 0.5 * (m.sidn.rgb * wow_light.grade.x + highlight);
+        let l_lit = select(lit_nl, lit_window, is_win && (is_interior || class_trans));
+        let c_lit = clamp(
+            (l_lit + point_diffuse) * (127.0 / 255.0) + vc_u + e_half,
+            vec3<f32>(0.0),
+            vec3<f32>(1.0),
+        );
+        let c_amb = clamp(
+            select(amb, lit_window, is_win && !class_trans) * (127.0 / 255.0) + vc_u + e_half,
+            vec3<f32>(0.0),
+            vec3<f32>(1.0),
+        );
+        var c_u = select(c_lit, c_amb, is_interior);
+        if (class_trans) {
+            c_u = mix(c_amb, c_lit, trans_a);
+        }
+        lit_rgb = clamp(2.0 * wmo_texel * m.tint.rgb * c_u, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
     // The unlit path: an M2's unlit program outputs `c28 + c29` (`0x70c663`-`0x70c693` fold the
     // tint·M2Color term into `c29` beside the highlight), so the texel modulates
     // `clamp(C·tint + highlight)`, C the M2Color. A WMO keeps the plain modulate.
