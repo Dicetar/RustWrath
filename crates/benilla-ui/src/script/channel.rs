@@ -758,7 +758,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             match pos {
                 0 => {
                     out.push(Value::String(
-                        lua.create_string(&localized("CHANNEL_CATEGORY_GROUP"))?,
+                        lua.create_string(localized("CHANNEL_CATEGORY_GROUP"))?,
                     ));
                     out.push(Value::Number(1.0));
                     out.push(Value::Nil);
@@ -771,7 +771,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 }
                 1 => {
                     out.push(Value::String(
-                        lua.create_string(&localized("CHANNEL_CATEGORY_WORLD"))?,
+                        lua.create_string(localized("CHANNEL_CATEGORY_WORLD"))?,
                     ));
                     out.push(Value::Number(1.0));
                     out.push(Value::Nil);
@@ -788,7 +788,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 }
                 2 => {
                     out.push(Value::String(
-                        lua.create_string(&localized("CHANNEL_CATEGORY_CUSTOM"))?,
+                        lua.create_string(localized("CHANNEL_CATEGORY_CUSTOM"))?,
                     ));
                     out.push(Value::Number(1.0));
                     out.push(Value::Nil);
