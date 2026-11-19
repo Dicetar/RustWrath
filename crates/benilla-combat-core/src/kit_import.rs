@@ -1295,6 +1295,55 @@ mod tests {
     }
 
     #[test]
+    fn imports_reference_shaped_one_hand_openers_without_inventing_paired_rows() {
+        let fixture = sample()
+            .replace("Test Knife", "Dagger")
+            .replace("Test Blade", "Longsword");
+        let arm = fixture
+            .lines()
+            .find(|line| line.contains("(1, false, LeftLight1)"))
+            .unwrap();
+        let dagger = arm.replace("(1,", "(0,");
+        let extra = [
+            dagger.clone(),
+            dagger.replace("LeftLight1", "JumpLightLand"),
+            dagger.replace("LeftLight1", "JumpHeavyLand"),
+            arm.replace("LeftLight1", "JumpHeavyLand"),
+            arm.replace("LeftLight1", "PairedLight1"),
+        ]
+        .join("\n");
+        let fixture = fixture.replace(arm, &format!("{arm}\n{extra}"));
+        for weapon in ["Dagger", "Longsword"] {
+            let (kit, _) = import_kit(
+                &fixture,
+                Some(CONSTANTS),
+                &ImportOptions {
+                    weapon,
+                    off_hand: true,
+                    ..ImportOptions::default()
+                },
+            )
+            .unwrap();
+            for row in ["JumpLightLand", "JumpHeavyLand", "LeftLight1", "Parry"] {
+                assert!(kit.action_named(row).is_some(), "{weapon}: {row}");
+            }
+            assert!(kit.action_named("PairedLight1").is_none());
+        }
+        let paired = fixture.replace("Longsword", "Fist");
+        let (kit, _) = import_kit(
+            &paired,
+            Some(CONSTANTS),
+            &ImportOptions {
+                weapon: "Fist",
+                off_hand: true,
+                ..ImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(kit.action_named("PairedLight1").is_some());
+    }
+
+    #[test]
     fn chains_follow_the_donor_rules() {
         let (kit, _) = import_kit(&sample(), Some(CONSTANTS), &options()).expect("import");
         let id = |name: &str| {
