@@ -6616,6 +6616,7 @@ mod tests {
         );
         assert_eq!(u32::from_le_bytes(le::<4>(&pet_preview[8..12])), 1);
         assert_eq!(u32::from_le_bytes(le::<4>(&pet_preview[12..16])), 161);
+        assert_eq!(u32::from_le_bytes(le::<4>(&pet_preview[16..20])), 2);
 
         let pet_act = encode_pet_action(0xF140_0000_0000_0010, 0x0700_0002, 0x0000_0000_0000_0099);
         assert_eq!(pet_act.len(), 20);
