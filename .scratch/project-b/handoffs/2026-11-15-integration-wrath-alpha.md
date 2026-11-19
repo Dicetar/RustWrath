@@ -1,6 +1,6 @@
 # Wrath private alpha integration candidate
 
-Status: ready to merge
+Status: landed
 Owner: Pi / OpenAI
 Branch: integration/wrath-alpha
 Issue: none

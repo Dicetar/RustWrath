@@ -1,6 +1,6 @@
 # Wrath runtime-diagnostic fixes: tooltip width, PvP timer, options CVars
 
-Status: ready to merge
+Status: landed
 Owner: OpenCode / DeepSeek V4.1 Flash
 Branch: fix/wrath-diagnostics-a
 Issue: none

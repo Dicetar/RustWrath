@@ -5,7 +5,7 @@
 //! **The file.** `benilla-config/combat/player.kit` ([`crate::local_state::player_kit_path`]), in
 //! the `rustwrath-kit 1` format ([`Kit`]). The owner makes it with `import_kit` from data they
 //! generated from their own copy of the game; it is never committed. It is read at startup and
-//! again each time Experimental is requested (`F10`), so a new kit takes effect without a
+//! again on an equipped main-hand subclass change or Experimental request (`F10`), so a new kit takes effect without a
 //! restart. No file, or one that does not read or compile, leaves the stock-clip profiles in
 //! place, and the reason is logged.
 //!
@@ -48,12 +48,14 @@ pub(crate) struct PlayerKit {
     pub(crate) kit: Option<Kit>,
     /// Bumped whenever a read changes [`Self::kit`], so the profile build compiles the new one.
     pub(crate) generation: u32,
+    selected_main: Option<(u8, u8)>,
+    selected_weapon: u64,
 }
 
 impl PlayerKit {
     /// Read the file again; a changed result bumps the generation.
     pub(crate) fn reload(&mut self) {
-        let kit = read_kit();
+        let kit = read_kit(self.selected_main);
         if kit != self.kit {
             self.kit = kit;
             self.generation = self.generation.wrapping_add(1);
@@ -66,11 +68,70 @@ pub(crate) fn load_player_kit(mut kit: ResMut<PlayerKit>) {
     kit.reload();
 }
 
-/// The kit file, parsed and checked. A missing file is the normal case without a kit; a file
-/// that does not read is reported with its path and line.
-fn read_kit() -> Option<Kit> {
-    let path = crate::local_state::player_kit_path()?;
-    let text = match std::fs::read_to_string(&path) {
+/// One mapping for the client and import-kits.ps1. Names are from the reference WEAPONS table;
+/// staff uses Twinblade (there is no staff entry).
+const WEAPON_KITS: &str = include_str!("../../../scripts/combat-kits.csv");
+
+fn weapon_kit(main: Option<(u8, u8)>) -> Option<&'static str> {
+    let (2, subclass) = main? else { return None };
+    WEAPON_KITS.lines().skip(1).find_map(|row| {
+        let mut fields = row.split(',');
+        let id = fields.next()?.parse::<u8>().ok()?;
+        let name = fields.next()?;
+        (id == subclass).then_some(name)
+    })
+}
+
+/// Equipment changes use the same reload as F10; disarming does not change the equipped kit.
+#[allow(clippy::type_complexity)]
+pub(crate) fn select_player_kit(
+    me: Query<
+        (&crate::creature_anim::Wielded, &crate::net::ObjectStore),
+        With<crate::net::SelfPlayer>,
+    >,
+    inventory: Option<Res<crate::wrath_inventory::WrathInventory>>,
+    mut kit: ResMut<PlayerKit>,
+) {
+    let body = me.single().ok();
+    let main = body.and_then(|(wielded, _)| wielded.main);
+    let weapon = body.map_or(0, |(_, store)| {
+        crate::wrath_inventory::PlayerInventory::new(
+            &store.0,
+            inventory.as_deref(),
+            crate::wrath::selected_from_env(),
+        )
+        .equipment(crate::items::EQUIPMENT_SLOT_MAINHAND)
+    });
+    if main != kit.selected_main || weapon != kit.selected_weapon {
+        kit.selected_main = main;
+        kit.selected_weapon = weapon;
+        kit.reload();
+    }
+}
+
+/// A missing subclass file falls back to player.kit, then to stock profiles.
+fn read_kit(main: Option<(u8, u8)>) -> Option<Kit> {
+    let fallback = crate::local_state::player_kit_path()?;
+    read_kit_at(main, &fallback)
+}
+
+fn read_kit_at(main: Option<(u8, u8)>, fallback: &std::path::Path) -> Option<Kit> {
+    let path = weapon_kit(main)
+        .and_then(|name| {
+            fallback
+                .parent()
+                .map(|p| p.join("kits").join(format!("{name}.kit")))
+        })
+        .unwrap_or_else(|| fallback.to_path_buf());
+    read_kit_file(&path).or_else(|| {
+        (path != fallback)
+            .then(|| read_kit_file(fallback))
+            .flatten()
+    })
+}
+
+fn read_kit_file(path: &std::path::Path) -> Option<Kit> {
+    let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             info!(
@@ -217,6 +278,71 @@ pub(crate) fn clip_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_weapon_kit_falls_back_to_player_then_stock() {
+        let temp = std::env::temp_dir().join(format!(
+            "rustwrath-kits-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(temp.join("kits")).unwrap();
+        let fallback = temp.join("player.kit");
+        assert!(read_kit_at(Some((2, 15)), &fallback).is_none());
+        std::fs::write(&fallback, KIT).unwrap();
+        assert_eq!(
+            read_kit_at(Some((2, 15)), &fallback).unwrap().label,
+            "test kit"
+        );
+        std::fs::write(
+            temp.join("kits/dagger.kit"),
+            KIT.replace("label test kit", "label dagger"),
+        )
+        .unwrap();
+        assert_eq!(
+            read_kit_at(Some((2, 15)), &fallback).unwrap().label,
+            "dagger"
+        );
+        assert_eq!(
+            read_kit_at(Some((2, 7)), &fallback).unwrap().label,
+            "test kit"
+        );
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn weapon_subclasses_pick_the_import_table() {
+        for (subclass, name) in [
+            (0, "axe"),
+            (1, "axe-two"),
+            (4, "mace"),
+            (5, "mace-two"),
+            (6, "polearm"),
+            (7, "sword"),
+            (8, "sword-two"),
+            (10, "staff"),
+            (13, "fist"),
+            (15, "dagger"),
+            (17, "spear"),
+        ] {
+            assert_eq!(weapon_kit(Some((2, subclass))), Some(name));
+        }
+        assert_eq!(weapon_kit(Some((2, 2))), None);
+        assert_eq!(weapon_kit(Some((4, 7))), None);
+        assert_eq!(weapon_kit(None), None);
+        for row in WEAPON_KITS.lines().skip(1) {
+            let fields: Vec<_> = row.split(',').collect();
+            assert_eq!(fields.len(), 4);
+            let subclass: u8 = fields[0].parse().unwrap();
+            assert_eq!(
+                fields[3] == "two",
+                matches!(subclass, 1 | 5 | 6 | 8 | 10 | 17)
+            );
+        }
+    }
 
     /// An authored kit: a backstep, two rolls and a two-step light chain, at 30 frames a second.
     /// No game value.
