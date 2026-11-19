@@ -86,4 +86,30 @@ DeepSeek 4.1. Push it to main. That is the only report.
 
 ## Swarm result
 
-(pending: filled at the end of the session)
+1. Stale field audit: landed on main as `6d488fae` (the branch delta `4dc98a95` after merging
+   `origin/main`; CI `44481364607`). Windows check and the changed-crate tests passed; the only
+   red step was the pre-existing `player-clippy` debt in lines the ticket did not write. Main's
+   live field table was kept; the verified missing GameObject rotation/art-kit/anim-progress rows,
+   the honor counters and the GameObject/corpse `FieldChanged` edges were added. Branch deleted.
+2. Issue 25: gap list pinned Firna (human warrior 0x1522), a Young Wolf and Heroic Strike 78. Two
+   source gaps landed: `oc/clear-target` `5ec97ba5` and `oc/wrath-combat-log-swing` `5fb029bd`
+   (CI `44486020541` / `44486035669`: Windows check and changed-crate tests green, pre-existing
+   `player-clippy` red only). Baseline combat is source-complete; the visible run is the owner's.
+3. Issue 26: gap list only. Gossip, quest log/updates, loot window/roll, reward choice and the
+   item push all have source owners and focused tests; no source gap was found. `Blocked: needs
+   owner run` for live eligibility, persistence and the route.
+4. Issue 27: gap list. The death/release/reclaim/spirit-healer path is source-complete and
+   `oc/clear-target` covers the stale target; the spirit-healer minimap POI and the camera reset
+   are named next. `Blocked: needs owner run` for the live death cycle.
+5. Issue 18: four area tables merged into the issue note as `44d5fac0`; the three smallest
+   missing rows landed as `oc/quest-go-name` `dbdcb58e`, `oc/economy-ui-coverage` `c1d5c925`
+   and `oc/wrath-combat-log-swing` `5fb029bd`. The GameObject quest-marker row was corrected to
+   reference behavior after review.
+6. Issues 19-24 and 28-32: not started. 19-24 need the live client or server to judge; 28-32 are
+   large typed-publication slices, not safe one-sitting tickets tonight.
+
+Workers: 5 tickets went to free models (clear-target and the four issue-18 table surveys); 3 code
+tickets fell back to DeepSeek 4.1 after `opencode/beam-free` hit its free usage limit. The
+overseer reviewed every diff and fixed the clear-target test derive and the combat-log
+`ShouldShowFeedback`/visibility follow-ups.
+
