@@ -131,6 +131,10 @@ impl StrikeKind {
 enum Inbound {
     Hello,
     Mode(bool),
+    Peer {
+        player: u64,
+        sprint: bool,
+    },
     Strike {
         id: u32,
         creature: u64,
@@ -165,6 +169,10 @@ fn parse(body: &str) -> Option<Inbound> {
     Some(match verb {
         "HELLO" => Inbound::Hello,
         "MODE" => Inbound::Mode(next()? == "1"),
+        "PEER" => Inbound::Peer {
+            player: next()?.parse().ok()?,
+            sprint: next()? == "1",
+        },
         "STRIKE" => Inbound::Strike {
             id: next()?.parse().ok()?,
             creature: next()?.parse().ok()?,
@@ -454,6 +462,14 @@ pub(super) fn drive_link(
                     link.announced_at = None;
                 }
             }
+            Inbound::Peer { player, sprint } => {
+                if let Some((entity, ..)) = bodies.iter().find(|(_, guid, ..)| guid.0 == player) {
+                    commands.entity(entity).insert(super::retarget::RemotePeer {
+                        until: t + KEEPALIVE_SECONDS * 2.5,
+                        sprint,
+                    });
+                }
+            }
             Inbound::Strike {
                 id,
                 creature,
@@ -667,6 +683,13 @@ mod tests {
     fn server_messages_parse() {
         assert_eq!(parse("HELLO\t1"), Some(Inbound::Hello));
         assert_eq!(parse("MODE\t0"), Some(Inbound::Mode(false)));
+        assert_eq!(
+            parse("PEER\t42\t1"),
+            Some(Inbound::Peer {
+                player: 42,
+                sprint: true
+            })
+        );
         assert_eq!(
             parse("STRIKE\t7\t17370386514018042881\t800\t5.33\t1"),
             Some(Inbound::Strike {

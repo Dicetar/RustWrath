@@ -391,6 +391,18 @@ local function on_verdict(player, fields)
     end
 end
 
+-- Existing MODE keepalives refresh nearby clients' remote pose leases.
+local function announce_peer(player, state)
+    local me = key(player:GetGUID())
+    local text = "PEER\t" .. me .. "\t" .. (state.sprint and "1" or "0")
+    for _, other in ipairs(player:GetPlayersInRange(SWING_RELAY_YARDS) or {}) do
+        local other_key = key(other:GetGUID())
+        if other_key ~= me and souls[other_key] then
+            send(other, text)
+        end
+    end
+end
+
 local function on_addon(event, sender, msg_type, prefix, msg, target)
     if prefix ~= PREFIX then
         return
@@ -412,6 +424,7 @@ local function on_addon(event, sender, msg_type, prefix, msg, target)
                 sender:AttackStop()
             end
             send(sender, "MODE\t1")
+            announce_peer(sender, souls[k])
         else
             leave(sender, k)
             send(sender, "MODE\t0")
@@ -419,6 +432,7 @@ local function on_addon(event, sender, msg_type, prefix, msg, target)
     elseif state and verb == "SPRINT" then
         state.sprint = fields[2] == "1" or nil
         apply_speed(sender, state)
+        announce_peer(sender, state)
     elseif state and verb == "CROUCH" then
         state.crouch = fields[2] == "1" or nil
         apply_speed(sender, state)
