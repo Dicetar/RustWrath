@@ -350,8 +350,11 @@ pub struct TooltipState {
     /// (`0x53036f`) and the clear zeroes it (`0x530236`).
     pub wrapped: Vec<bool>,
     /// `SetMinimumWidth` (`+0x3c0`): the sizer's starting widest (`0x530665`), zeroed by the clear
-    /// (`0x530258`).
+    /// (`0x530258`). A forced width (12340 `+0x3c4`, `0x61d040`) survives the clear and skips
+    /// the per-line width pass; the sizer here still treats it as a floor.
     pub min_width: f32,
+    /// `SetMinimumWidth`'s second argument (`+0x3c4`): the width is a floor the clear keeps.
+    pub min_width_force: bool,
     /// `FadeOut()`'s countdown in seconds (`[+0x3b4]` armed, `[+0x3b8]` left): the tooltip's own
     /// update counts it down by its elapsed, so it stands still while the tooltip is not walked.
     /// `FadeOut` arms it; the show, the SetOwner core (so every hide) and a cursor-mode `FadeOut`

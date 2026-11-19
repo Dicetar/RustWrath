@@ -389,6 +389,12 @@ fn minimum_width_and_padding_read_their_arguments_as_the_reference() {
     );
     s.run(r#"TS:SetMinimumWidth("90") TS:SetPadding(nil)"#)
         .unwrap();
+    let (w, force): (f64, Option<f64>) = s.eval("return TS:GetMinimumWidth()").unwrap();
+    assert_eq!(
+        (w, force),
+        (90.0, None),
+        "an unforced floor and no force flag"
+    );
     assert!(close(size(&s).0, plate(20.0)), "no sizing yet");
     s.run("TS:Show()").unwrap();
     assert!(close(size(&s).0, plate(90.0)), "{:?}", size(&s));
@@ -396,6 +402,12 @@ fn minimum_width_and_padding_read_their_arguments_as_the_reference() {
         .unwrap();
     let want = f64::from(2.0 * 10.24f32 + 16.0 + 20.0);
     assert!(close(size(&s).0, want), "{:?}", size(&s));
+
+    // `GetMinimumWidth` (`0x61d0d0`) reads the stored floor and the force bit; a forced floor
+    // survives `ClearLines` (`0x53071a`).
+    s.run("TS:SetMinimumWidth(120, 1) TS:ClearLines()").unwrap();
+    let (w, force): (f64, Option<f64>) = s.eval("return TS:GetMinimumWidth()").unwrap();
+    assert_eq!((w, force), (120.0, Some(1.0)));
 }
 
 /// The hover loops clear, rebuild and show every frame (`ContainerFrameItemButton_OnUpdate`): past

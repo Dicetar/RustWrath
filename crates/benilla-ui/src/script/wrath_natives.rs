@@ -10,11 +10,17 @@ use mlua::{Lua, MultiValue, Value};
 
 use super::{CursorPayload, Model};
 
+// `PLAYER_FLAGS_PVP_TIMER` (`Player.h:477`) and the reference's five-minute toggle window
+// (`Player_C.cpp:2220-2241`); `GetPVPTimer` adds the reference's one-second pad.
+const PLAYER_FLAGS_PVP_TIMER: u32 = 0x0004_0000;
+const PVP_TOGGLE_MS: f64 = 300_000.0;
+const PVP_TIMER_PAD_MS: f64 = 1_000.0;
+
 // VehicleSeatRec::m_flags, as read by the 12340 input and unit queries.
 const SEAT_CONTROLS_VEHICLE: u32 = 0x0000_0800;
 const SEAT_CAN_EXIT: u32 = 0x0200_0000;
 const SEAT_CAN_SWITCH: u32 = 0x0400_0000;
-const SEAT_HAS_UI: u32 = 0x2000_0000;
+pub(crate) const SEAT_HAS_UI: u32 = 0x2000_0000;
 
 fn vehicle_seat_flag(model: &Model, flag: u32) -> bool {
     model.vehicle_guid.is_some()
@@ -494,6 +500,61 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             })?,
         )?;
     }
+    // `IsPVPTimerRunning()` (`GameUI_Scripts.cpp:1001`): 1 while the active player's
+    // `PLAYER_FLAGS` carries `PLAYER_FLAGS_PVP_TIMER` (0x40000), nil otherwise; nil with no
+    // player, as the reference's missing-object arm pushes. The first true observation starts
+    // the client-side five-minute window (`Player_C.cpp:2220-2241`).
+    lua.globals().set(
+        "IsPVPTimerRunning",
+        lua.create_function(|lua, ()| {
+            let running = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                model
+                    .unit("player")
+                    .is_some_and(|unit| unit.player_flags & PLAYER_FLAGS_PVP_TIMER != 0)
+            };
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            if running {
+                if !model.pvp_timer_was_running || model.pvp_timer_start.is_none() {
+                    let now = model.now;
+                    model.pvp_timer_start = Some(now);
+                }
+                model.pvp_timer_was_running = true;
+            } else {
+                model.pvp_timer_was_running = false;
+                model.pvp_timer_start = None;
+            }
+            Ok(if running {
+                Value::Number(1.0)
+            } else {
+                Value::Nil
+            })
+        })?,
+    )?;
+    // `GetPVPTimer()` (`GameUI_Scripts.cpp:834`): `GetPVPToggleTimer() + 1000`, 0 without a
+    // player. The toggle timer is 300000 ms with the flag off, the remaining window while it is
+    // set, and -1 once that window expires; the stock `PlayerFrame` then decrements the value
+    // itself (`PlayerFrame.lua:413`).
+    lua.globals().set(
+        "GetPVPTimer",
+        lua.create_function(|lua, ()| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let Some(flags) = model.unit("player").map(|unit| unit.player_flags) else {
+                return Ok(Value::Number(0.0));
+            };
+            if flags & PLAYER_FLAGS_PVP_TIMER == 0 {
+                return Ok(Value::Number(PVP_TOGGLE_MS + PVP_TIMER_PAD_MS));
+            }
+            let now = model.now;
+            let start = *model.pvp_timer_start.get_or_insert(now);
+            let remaining = (start + PVP_TOGGLE_MS / 1000.0 - now) * 1000.0;
+            Ok(Value::Number(if remaining > 0.0 {
+                remaining + PVP_TIMER_PAD_MS
+            } else {
+                PVP_TIMER_PAD_MS - 1.0
+            }))
+        })?,
+    )?;
     // `UnitIsTalking(unit)` (`ComSatClient_Scripts.cpp` 0x007DF0B0): non-string -> no values;
     // a string -> 1.0 if the unit is in the voice talking set, else nil. Voice chat is permanently
     // absent, so every string answers nil; non-string preserves the zero-return arity.
@@ -755,6 +816,26 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             lua.create_function(|_, _args: mlua::MultiValue| Ok(()))?,
         )?;
     }
+    // The vehicle template's aim-adjustable flag, the seat-indicator DBCs and the aim request
+    // are not projected. These answer the no-vehicle/no-pitch arm the stock UI takes for an
+    // ordinary mount, so VehicleMenuBar loads without raising; a vehicle with a pitch slider or
+    // seat indicator stays empty until those owners are decoded.
+    lua.globals().set(
+        "IsVehicleAimAngleAdjustable",
+        lua.create_function(|_, ()| Ok(Value::Nil))?,
+    )?;
+    lua.globals().set(
+        "VehicleAimRequestNormAngle",
+        lua.create_function(|_, _pitch: Option<f64>| Ok(()))?,
+    )?;
+    lua.globals().set(
+        "GetVehicleUIIndicator",
+        lua.create_function(|_, _id: Option<i64>| Ok((String::new(), 0i64)))?,
+    )?;
+    lua.globals().set(
+        "GetVehicleUIIndicatorSeat",
+        lua.create_function(|_, _args: mlua::MultiValue| Ok(MultiValue::new()))?,
+    )?;
 
     // `UnitInVehicle`, `UnitHasVehicleUI`, `UnitTargetsVehicleInRaidUI`, `UnitInVehicleControlSeat`:
     // vehicle unitframe queries. PetFrame and UnitFrame check `UnitInVehicle` to position vehicle
@@ -1410,10 +1491,15 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, _: mlua::MultiValue| Ok(false))?,
     )?;
 
-    // `IsPossessBarVisible` (`BonusActionBarFrame.lua:221`): mind control / vehicle possess bar.
+    // `IsPossessBarVisible` (`0x5a8820`): `CGPetInfo::m_possessSpell` is set and its aura is not
+    // suppressed. The charm field is the owner we have; a vehicle's leg is hidden by
+    // `UnitHasVehicleUI` in the stock `PossessBar_Update`, and the native keeps the same gate.
     lua.globals().set(
         "IsPossessBarVisible",
-        lua.create_function(|_, _: mlua::MultiValue| Ok(false))?,
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(model.vehicle_guid.is_none() && model.death.possess_bar)
+        })?,
     )?;
 
     // `BNGetNumBlocked` (`FriendsFrame.lua:452`): blocked Battle.net contacts count.
@@ -2398,6 +2484,17 @@ impl super::UiScript {
         self.model_mut().vehicle_seat_flags = flags;
     }
 
+    /// Whether the local player rides a vehicle with its own UI (`UnitHasVehicleUI` main bar
+    /// and the temporary action-bar page). A vehicle GUID alone is not enough: the seat's
+    /// `HAS_UI` permission is what gives the bar.
+    pub fn vehicle_action_bar_active(&self) -> bool {
+        let model = self.model_ref();
+        model.vehicle_guid.is_some()
+            && model
+                .vehicle_seat_flags
+                .is_some_and(|flags| flags & SEAT_HAS_UI != 0)
+    }
+
     /// Drain queued 12340 LFG and vehicle commands from the VM.
     pub fn take_wrath_scoped_commands(&mut self) -> Vec<super::model::WrathScopedCommand> {
         self.model_mut().wrath_scoped_commands.drain(..).collect()
@@ -2441,6 +2538,39 @@ mod tests {
             s.eval::<bool>("return UnitIsDND('player') == 1").unwrap(),
             true
         );
+        assert!(s.eval::<bool>("return IsPVPTimerRunning() == nil").unwrap());
+        assert_eq!(s.eval::<f64>("return GetPVPTimer()").unwrap(), 301_000.0);
+        s.set_unit(
+            "player",
+            Some(UnitState {
+                exists: true,
+                player_flags: 0x0004_0006,
+                ..Default::default()
+            }),
+        );
+        s.set_now(100.0);
+        assert_eq!(
+            s.eval::<bool>("return IsPVPTimerRunning() == 1").unwrap(),
+            true
+        );
+        assert_eq!(s.eval::<f64>("return GetPVPTimer()").unwrap(), 301_000.0);
+        s.set_now(110.0);
+        assert_eq!(s.eval::<f64>("return GetPVPTimer()").unwrap(), 291_000.0);
+        s.set_unit("player", Some(UnitState::default()));
+        assert!(s.eval::<bool>("return IsPVPTimerRunning() == nil").unwrap());
+        assert_eq!(s.eval::<f64>("return GetPVPTimer()").unwrap(), 301_000.0);
+        s.set_unit(
+            "player",
+            Some(UnitState {
+                exists: true,
+                player_flags: 0x0004_0006,
+                ..Default::default()
+            }),
+        );
+        s.set_now(200.0);
+        assert!(s.eval::<bool>("return IsPVPTimerRunning() == 1").unwrap());
+        s.set_now(600.0);
+        assert_eq!(s.eval::<f64>("return GetPVPTimer()").unwrap(), 999.0);
         s.set_title_count(193);
         assert_eq!(s.eval::<u32>("return GetNumTitles()").unwrap(), 193);
         s.set_known_languages(vec!["Common".into(), "Dwarvish".into()]);
@@ -3815,6 +3945,7 @@ mod tests {
             pet_talents: Vec::new(),
             pet_tabs: Vec::new(),
             pet_talent_views: Vec::new(),
+            preview_ranks: Default::default(),
         });
 
         assert_eq!(s.eval::<i64>("return GetNumTalentGroups()").unwrap(), 2);
@@ -3858,6 +3989,22 @@ mod tests {
         assert!(enabled);
         assert_eq!(glyph_type, 2);
         assert_eq!(glyph_id, None);
+    }
+
+    /// `IsPossessBarVisible` reads the player's charm owner and hides the possess bar in a
+    /// vehicle; `UnitHasVehicleUI` remains the vehicle's own owner.
+    #[test]
+    fn wrath_possess_bar_reads_the_charm_and_hides_in_a_vehicle() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        assert!(!s.eval::<bool>("return IsPossessBarVisible()").unwrap());
+        s.set_death(crate::script::DeathUiState {
+            possess_bar: true,
+            ..Default::default()
+        });
+        assert!(s.eval::<bool>("return IsPossessBarVisible()").unwrap());
+        s.set_wrath_vehicle_guid(Some(0xF130_0001_0000_0042));
+        s.set_wrath_vehicle_seat_flags(Some(SEAT_HAS_UI));
+        assert!(!s.eval::<bool>("return IsPossessBarVisible()").unwrap());
     }
 
     #[test]

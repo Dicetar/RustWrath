@@ -11,8 +11,10 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{field_count, loc_str, parse, parse_with_trailing_fields, str_at, u32_at};
-use crate::Chain;
+use crate::dbc::{
+    field_count, loc_str, loc_str_index, parse, parse_with_trailing_fields, str_at, u32_at,
+};
+use crate::{Chain, Locale};
 
 const LANGUAGES: &str = "DBFilesClient\\Languages.dbc";
 const CHR_RACES: &str = "DBFilesClient\\ChrRaces.dbc";
@@ -61,8 +63,12 @@ fn chr_races_schema() -> Schema {
     s
 }
 
-/// `BaseLanguage`, which the binding reads at `record + 0x20`.
+/// `BaseLanguage`, which the 1.12 binding reads at `record + 0x20` (field 8). In 3.3.5
+/// (`ChrRaces.dbc`, 69 fields), `MountScale` was removed, shifting `BaseLanguage` to field 7 and
+/// placing `CreatureType` (`7` = Humanoid) at field 8.
 const CHR_RACES_BASE_LANGUAGE: usize = 8;
+const WRATH_CHR_RACES_FIELDS: usize = 69;
+const WRATH_CHR_RACES_BASE_LANGUAGE: usize = 7;
 
 /// `Languages.dbc` in row order, the order `GetNumLanguages` and `GetLanguageByIndex` count in
 /// (`0x49fb30`, `0x49fbe0`), each name in the locale's column.
@@ -96,26 +102,57 @@ impl Languages {
 
 /// `Languages.dbc`'s `(id, name)` rows, the name block at field 1 read at `locale`
 /// (`+4 + 4·locale`).
+fn parse_language_rows(bytes: &[u8], locale: Locale) -> Result<Vec<(u32, Option<String>)>> {
+    let wrath = field_count(bytes) == Some(18);
+    let locales = if wrath { LOCALES_335 } else { LOCALES_112 };
+    let langs = parse(bytes, languages_schema(locales), "Languages.dbc")?;
+    let wrath_col = Locale::wrath_dbc_column(locale.wrath_index()).unwrap_or(0);
+    Ok(langs
+        .records()
+        .iter()
+        .filter_map(|r| {
+            let id = u32_at(r, 0)?;
+            let name = if wrath {
+                loc_str_index(&langs, r, 1, wrath_col).filter(|s| !s.is_empty())
+            } else {
+                loc_str(&langs, r, 1, locale)
+            };
+            Some((id, name))
+        })
+        .collect())
+}
+
 fn language_rows(chain: &mut Chain) -> Result<Vec<(u32, Option<String>)>> {
     let bytes = chain
         .read_file(LANGUAGES)
         .with_context(|| format!("reading {LANGUAGES}"))?;
-    let locales = if field_count(&bytes) == Some(18) {
-        LOCALES_335
-    } else {
-        LOCALES_112
-    };
-    let langs = parse(&bytes, languages_schema(locales), "Languages.dbc")?;
-    let locale = chain.locale();
-    Ok(langs
-        .records()
-        .iter()
-        .filter_map(|r| Some((u32_at(r, 0)?, loc_str(&langs, r, 1, locale))))
-        .collect())
+    parse_language_rows(&bytes, chain.locale())
 }
 
 pub fn load_languages(chain: &mut Chain) -> Result<Languages> {
     language_rows(chain).map(Languages)
+}
+
+fn parse_default_languages(
+    by_id: &HashMap<u32, Option<String>>,
+    race_bytes: &[u8],
+) -> Result<DefaultLanguages> {
+    let base_lang_col = if field_count(race_bytes).is_some_and(|n| n >= WRATH_CHR_RACES_FIELDS) {
+        WRATH_CHR_RACES_BASE_LANGUAGE
+    } else {
+        CHR_RACES_BASE_LANGUAGE
+    };
+    let races = parse_with_trailing_fields(race_bytes, chr_races_schema(), "ChrRaces.dbc")?;
+    let mut out = HashMap::new();
+    for r in races.records() {
+        let (Some(race), Some(lang)) = (u32_at(r, 0), u32_at(r, base_lang_col)) else {
+            continue;
+        };
+        if let Some(name) = by_id.get(&lang) {
+            out.insert(race, name.clone());
+        }
+    }
+    Ok(DefaultLanguages(out))
 }
 
 /// Load and join both tables into the race-to-language-name map.
@@ -125,17 +162,7 @@ pub fn load_default_languages(chain: &mut Chain) -> Result<DefaultLanguages> {
     let race_bytes = chain
         .read_file(CHR_RACES)
         .with_context(|| format!("reading {CHR_RACES}"))?;
-    let races = parse_with_trailing_fields(&race_bytes, chr_races_schema(), "ChrRaces.dbc")?;
-    let mut out = HashMap::new();
-    for r in races.records() {
-        let (Some(race), Some(lang)) = (u32_at(r, 0), u32_at(r, CHR_RACES_BASE_LANGUAGE)) else {
-            continue;
-        };
-        if let Some(name) = by_id.get(&lang) {
-            out.insert(race, name.clone());
-        }
-    }
-    Ok(DefaultLanguages(out))
+    parse_default_languages(&by_id, &race_bytes)
 }
 
 /// `LanguageWords.dbc`, the fake words the client substitutes, word for word, when it renders
@@ -316,5 +343,64 @@ mod tests {
             total += p.words().len();
         }
         assert_eq!(total, 1481, "every LanguageWords row landed in a pool");
+    }
+
+    #[test]
+    fn wrath_chr_races_reads_base_language_at_field_7_and_16_locale_languages() {
+        let mut strings = vec![0u8];
+        let mut put = |s: &str| {
+            let at = strings.len() as u32;
+            strings.extend_from_slice(s.as_bytes());
+            strings.push(0);
+            at
+        };
+        // 18-field Languages.dbc: (id=1 Orcish, ruRU=col8="Орочий"), (id=7 Common, enUS="Common").
+        let mut lang_rows = vec![vec![0u32; 18], vec![0u32; 18]];
+        lang_rows[0][0] = 1;
+        lang_rows[0][1] = put("Orcish");
+        lang_rows[0][1 + 8] = put("Орочий");
+        lang_rows[1][0] = 7;
+        lang_rows[1][1] = put("Common");
+        let mut lang_dbc = b"WDBC".to_vec();
+        for w in [2u32, 18, 18 * 4, strings.len() as u32] {
+            lang_dbc.extend_from_slice(&w.to_le_bytes());
+        }
+        for f in lang_rows.iter().flatten() {
+            lang_dbc.extend_from_slice(&f.to_le_bytes());
+        }
+        lang_dbc.extend_from_slice(&strings);
+
+        let ru = parse_language_rows(&lang_dbc, Locale::from_language_country(b"ru", b"RU"))
+            .unwrap()
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        assert_eq!(ru.get(&1).and_then(|s| s.as_deref()), Some("Орочий"));
+
+        let en: HashMap<_, _> = parse_language_rows(&lang_dbc, Locale::default())
+            .unwrap()
+            .into_iter()
+            .collect();
+
+        // 69-field ChrRaces.dbc: BaseLanguage at col 7, CreatureType=7 at col 8.
+        let mut race_row = vec![0u32; WRATH_CHR_RACES_FIELDS];
+        race_row[0] = 2; // Orc
+        race_row[7] = 1; // BaseLanguage = Orcish
+        race_row[8] = 7; // CreatureType = Humanoid (must NOT be read as Common!)
+        let mut race_dbc = b"WDBC".to_vec();
+        for w in [
+            1u32,
+            WRATH_CHR_RACES_FIELDS as u32,
+            (WRATH_CHR_RACES_FIELDS * 4) as u32,
+            1,
+        ] {
+            race_dbc.extend_from_slice(&w.to_le_bytes());
+        }
+        for f in &race_row {
+            race_dbc.extend_from_slice(&f.to_le_bytes());
+        }
+        race_dbc.push(0);
+
+        let defaults = parse_default_languages(&en, &race_dbc).unwrap();
+        assert_eq!(defaults.name(2), Some("Orcish"));
     }
 }

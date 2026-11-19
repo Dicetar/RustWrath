@@ -16,7 +16,7 @@
 //! prints its state; they run too. The trailing address is
 //! the register site in `reference/cvars.tsv`.
 
-use super::table::{ours, same, Registered};
+use super::table::{ours, same, same_by_locale, Registered};
 
 pub(super) const INERT: &[Registered] = &[
     // ── The camera block ─────────────────────────────────────────────────────────────────────
@@ -474,4 +474,29 @@ pub(super) const INERT: &[Registered] = &[
     ),
     ours("threatShowNumeric", "0", "Numeric threat display"),
     ours("targetStatusText", "0", "Target frame status text"),
+    // 3.3.5a options rows the runtime logs showed missing (`Couldn't find CVar named`). The
+    // reference's registered defaults; no benilla consumer reads them yet, so they are inert.
+    // `GameUI_CVar.cpp:617-628`: "0" on enUS/koKR/esMX, "1" elsewhere. benilla's locale table
+    // maps esMX's tag to enUS's index 0, so the other two exceptions are 0 and 1.
+    same_by_locale("timeMgrUseMilitaryTime", "1", &[(0, "0"), (1, "0")]),
+    ours(
+        "fctRepChanges",
+        "0",
+        "GameUI_CVar.cpp:539; InterfaceOptionsPanels.lua:1235",
+    ),
+    ours(
+        "fctFriendlyHealers",
+        "0",
+        "GameUI_CVar.cpp:541; InterfaceOptionsPanels.lua:1237",
+    ),
+    ours(
+        "showArenaEnemyPets",
+        "1",
+        "GameUI_CVar.cpp:564; InterfaceOptionsPanels.lua:1414",
+    ),
+    ours(
+        "UnitNameEnemyPlayerName",
+        "1",
+        "PlayerName_CVar.cpp:35; object-name callback, not projected",
+    ),
 ];

@@ -368,7 +368,9 @@ fn eval_single_condition(lua: &Lua, raw: &str, unit: &str) -> bool {
         "flyable" => lua_bool_call(lua, "IsFlyableArea", ()),
         "indoors" => lua_bool_call(lua, "IsIndoors", ()),
         "outdoors" => lua_bool_call(lua, "IsOutdoors", ()),
-        "vehicleui" => lua_bool_call(lua, "HasVehicleActionBar", ()),
+        // 3.3.5 spells this condition through `UnitHasVehicleUI("player")`; there is no
+        // `HasVehicleActionBar` global in 12340 (the stock UI never calls one).
+        "vehicleui" => lua_bool_call(lua, "UnitHasVehicleUI", "player"),
         "possessbar" => lua_bool_call(lua, "IsPossessBarVisible", ()),
         "channeling" => lua_bool_call(lua, "UnitChannelInfo", "player"),
         "pet" => lua_bool_call(lua, "UnitExists", "pet"),

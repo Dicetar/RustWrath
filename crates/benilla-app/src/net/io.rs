@@ -1958,7 +1958,8 @@ pub(super) fn writer_loop(
                         | ClientCommand::VehicleExit { .. }
                         | ClientCommand::VehiclePrevSeat { .. }
                         | ClientCommand::VehicleNextSeat { .. }
-                        | ClientCommand::VehicleSwitchSeat { .. } => Ok(()),
+                        | ClientCommand::VehicleSwitchSeat { .. }
+                        | ClientCommand::LearnPreviewTalents { .. } => Ok(()),
                     }
                 });
                 // Send failures (tag `wire`): the controller's `snd` line records a decision, not a

@@ -1,8 +1,8 @@
-//! The action-bar bindings. The app pushes what each of the 120 slots shows and its per-frame
-//! state, and drains the queued `UseAction` presses and the slot writes the cursor made
-//! (`CMSG_SET_ACTION_BUTTON`); the engine keeps each slot's packed `(kind, action)` so the cursor
-//! can move a slot without the app. Actions are keyed by Lua action id, 1..120, one more than the
-//! wire's slot index. FrameXML's bonus bar shows actions `(6 + offset - 1) * 12 + i` for the
+//! The action-bar bindings. The app pushes what each of the 120 donor slots (144 on Wrath)
+//! shows and its per-frame state, and drains the queued `UseAction` presses and the slot writes
+//! the cursor made (`CMSG_SET_ACTION_BUTTON`); the engine keeps each slot's packed
+//! `(kind, action)` so the cursor can move a slot without the app. Actions are keyed by Lua action
+//! id, 1..=120 on the donor and 1..=144 on Wrath, one more than the wire's slot index. FrameXML's bonus bar shows actions `(6 + offset - 1) * 12 + i` for the
 //! app-pushed `GetBonusBarOffset`.
 
 use mlua::{Lua, MultiValue, Value};
@@ -319,6 +319,18 @@ impl super::UiScript {
     }
 }
 
+/// Whether the temporary action page is active: a vehicle whose seat grants its UI, or a possess
+/// charm. The reference's `m_tempPageActiveFlags` forces `GetActionBarPage` to 1 and
+/// `GetBonusBarOffset` to 5 (`UpdateBonusBar 0x5A83C0`, `Script_GetActionBarPage 0x5A7FD0`);
+/// a vehicle's leg is hidden from `IsPossessBarVisible` but still pages the bar.
+fn temporary_page_active(model: &Model) -> bool {
+    let vehicle = model.vehicle_guid.is_some()
+        && model
+            .vehicle_seat_flags
+            .is_some_and(|flags| flags & super::wrath_natives::SEAT_HAS_UI != 0);
+    vehicle || (model.vehicle_guid.is_none() && model.death.possess_bar)
+}
+
 /// Register the action globals.
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();
@@ -591,7 +603,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "GetBonusBarOffset",
         lua.create_function(|lua, ()| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(i64::from(model.bonus_bar_offset))
+            Ok(i64::from(if temporary_page_active(&model) {
+                5
+            } else {
+                model.bonus_bar_offset
+            }))
         })?,
     )?;
 
@@ -614,15 +630,31 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
-        // 3.3.5a moves the page in the interpreter: `ActionBar_PageUp` passes the next page
-        // (`ActionButton.lua:52`) and the buttons read it back with `GetActionBarPage`
-        // (`ActionButton.lua:138`). The page stays FrameXML's `CURRENT_ACTIONBAR_PAGE`, which the
-        // wrath scripts declare (`ActionButton.lua:1`) and the 1.12 scripts already own.
+        // 12340 `0x005A7F60`: validate before changing native state; only a changed page signals.
+        // Keep the page bound in stock Lua's live-editable NUM_ACTIONBAR_PAGES policy, not a
+        // second Rust mapping. Temporary-bar override/restoration belongs to its separate owner.
         g.set(
             "ChangeActionBarPage",
-            lua.create_function(|lua, page: Option<i64>| {
-                if let Some(page) = page {
-                    lua.globals().set("CURRENT_ACTIONBAR_PAGE", page)?;
+            lua.create_function(|lua, page: Value| {
+                let pages: i64 = lua.globals().get("NUM_ACTIONBAR_PAGES")?;
+                if pages < 1 {
+                    return Err(mlua::Error::runtime("NUM_ACTIONBAR_PAGES must be positive"));
+                }
+                let page = binding_abi::is_number(lua, page)
+                    .filter(|n| n.is_finite())
+                    .map(|n| n.trunc() as i64)
+                    .filter(|n| (1..=pages).contains(n))
+                    .ok_or_else(|| {
+                        mlua::Error::runtime(format!(
+                            "ChangeActionBarPage() needs a page in the range 1 to {pages}"
+                        ))
+                    })?;
+                {
+                    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                    if model.action_bar_page == page {
+                        return Ok(());
+                    }
+                    model.action_bar_page = page;
                 }
                 super::tick::fire_event_into(lua, "ACTIONBAR_PAGE_CHANGED", Vec::new());
                 Ok(())
@@ -631,10 +663,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         g.set(
             "GetActionBarPage",
             lua.create_function(|lua, ()| {
-                Ok(lua
-                    .globals()
-                    .get::<Option<i64>>("CURRENT_ACTIONBAR_PAGE")?
-                    .unwrap_or(1))
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                Ok(if temporary_page_active(&model) {
+                    1
+                } else {
+                    model.action_bar_page
+                })
             })?,
         )?;
     }
@@ -1069,6 +1103,57 @@ mod tests {
     }
 
     #[test]
+    fn wrath_page_is_native_and_signals_only_after_a_change() {
+        let s = UiScript::with_target(super::super::UiTarget::Wrath335).unwrap();
+        s.run(
+            "NUM_ACTIONBAR_PAGES = 6; CURRENT_ACTIONBAR_PAGE = 99
+             seen = {}; local f = CreateFrame('Frame')
+             f:RegisterEvent('ACTIONBAR_PAGE_CHANGED')
+             f:SetScript('OnEvent', function() table.insert(seen, GetActionBarPage()) end)
+             assert(GetActionBarPage() == 1)
+             assert(select('#', ChangeActionBarPage(3)) == 0)
+             ChangeActionBarPage(3)
+             assert(GetActionBarPage() == 3 and #seen == 1 and seen[1] == 3)
+             CURRENT_ACTIONBAR_PAGE = 88
+             assert(GetActionBarPage() == 3)",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn wrath_page_rejects_invalid_inputs_without_mutation_or_events() {
+        let s = UiScript::with_target(super::super::UiTarget::Wrath335).unwrap();
+        s.run(
+            "NUM_ACTIONBAR_PAGES = 6; seen = 0
+             local f = CreateFrame('Frame'); f:RegisterEvent('ACTIONBAR_PAGE_CHANGED')
+             f:SetScript('OnEvent', function() seen = seen + 1 end)
+             for _, page in ipairs({0, -1, 7, 'bad', false, math.huge}) do
+                 assert(not pcall(ChangeActionBarPage, page))
+             end
+             assert(not pcall(ChangeActionBarPage))
+             assert(GetActionBarPage() == 1 and seen == 0)
+             ChangeActionBarPage('2.9')
+             assert(GetActionBarPage() == 2 and seen == 1)",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn wrath_page_limits_follow_live_lua_policy() {
+        let s = UiScript::with_target(super::super::UiTarget::Wrath335).unwrap();
+        s.run(
+            "NUM_ACTIONBAR_PAGES = 6; ChangeActionBarPage(6)
+             NUM_ACTIONBAR_PAGES = 4
+             assert(not pcall(ChangeActionBarPage, 5))
+             assert(GetActionBarPage() == 6)
+             ChangeActionBarPage(4); assert(GetActionBarPage() == 4)
+             NUM_ACTIONBAR_PAGES = 8
+             ChangeActionBarPage(8); assert(GetActionBarPage() == 8)",
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn action_snapshot_reads_and_use_queues() {
         let mut s = UiScript::new().unwrap();
         s.keep_calls();
@@ -1289,5 +1374,81 @@ mod tests {
             .eval::<(f64, f64, i64)>("return GetActionCooldown(1)")
             .unwrap();
         assert_eq!((start, duration, enabled), (0.0, 0.0, 0));
+    }
+
+    /// The stock 3.3.5 action bar, MacroUI and SecureTemplates calls exist on the Wrath VM. The
+    /// multicast totem APIs are the named exception (no multicast bar is installed).
+    #[test]
+    fn wrath_stock_action_and_macro_surface_exists() {
+        let s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        for name in [
+            "GetActionInfo",
+            "GetActionTexture",
+            "GetActionCount",
+            "GetActionCooldown",
+            "HasAction",
+            "UseAction",
+            "IsUsableAction",
+            "IsActionInRange",
+            "ActionHasRange",
+            "IsCurrentAction",
+            "IsAutoRepeatAction",
+            "IsAttackAction",
+            "GetBonusBarOffset",
+            "GetActionBarPage",
+            "ChangeActionBarPage",
+            "IsPossessBarVisible",
+            "GetMultiCastBarOffset",
+            "RunMacro",
+            "RunMacroText",
+            "StopMacro",
+            "GetMacroInfo",
+            "GetNumMacros",
+            "CreateMacro",
+            "EditMacro",
+            "DeleteMacro",
+            "GetMacroIndexByName",
+            "GetMacroBody",
+            "GetRunningMacro",
+            "GetRunningMacroButton",
+        ] {
+            assert!(
+                s.eval::<bool>(&format!("return type({name}) == 'function'"))
+                    .unwrap(),
+                "{name} is not installed"
+            );
+        }
+    }
+
+    /// The temporary page forces `GetActionBarPage` to 1 and `GetBonusBarOffset` to 5 for a
+    /// vehicle with UI and for a possess charm; leaving restores the stored page and form offset.
+    #[test]
+    fn wrath_temporary_page_forces_page_one_and_bonus_five() {
+        let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        s.set_bonus_bar_offset(3);
+        s.run("NUM_ACTIONBAR_PAGES = 6; ChangeActionBarPage(4)")
+            .unwrap();
+        assert_eq!(s.eval::<i64>("return GetActionBarPage()").unwrap(), 4);
+        assert_eq!(s.eval::<i64>("return GetBonusBarOffset()").unwrap(), 3);
+
+        s.set_wrath_vehicle_guid(Some(0xF130_0000_0000_0042));
+        s.set_wrath_vehicle_seat_flags(Some(0x2000_0000));
+        assert_eq!(s.eval::<i64>("return GetActionBarPage()").unwrap(), 1);
+        assert_eq!(s.eval::<i64>("return GetBonusBarOffset()").unwrap(), 5);
+
+        s.set_wrath_vehicle_seat_flags(None);
+        assert_eq!(s.eval::<i64>("return GetActionBarPage()").unwrap(), 4);
+        assert_eq!(s.eval::<i64>("return GetBonusBarOffset()").unwrap(), 3);
+
+        s.set_wrath_vehicle_guid(None);
+        s.set_death(crate::script::DeathUiState {
+            possess_bar: true,
+            ..Default::default()
+        });
+        assert_eq!(s.eval::<i64>("return GetActionBarPage()").unwrap(), 1);
+        assert_eq!(s.eval::<i64>("return GetBonusBarOffset()").unwrap(), 5);
+        s.set_death(crate::script::DeathUiState::default());
+        assert_eq!(s.eval::<i64>("return GetActionBarPage()").unwrap(), 4);
+        assert_eq!(s.eval::<i64>("return GetBonusBarOffset()").unwrap(), 3);
     }
 }

@@ -199,7 +199,11 @@ fn clear_content(model: &mut Model, h: FrameHandle) {
         let used = t.num_lines.min(t.wrapped.len());
         t.wrapped[..used].fill(false);
         t.num_lines = 0;
-        t.min_width = 0.0;
+        // The clear drops an unforced floor only (`0x530258`, 12340 `Tooltip.cpp:986`); a forced
+        // one survives the clear until a later `SetMinimumWidth` replaces it.
+        if !t.min_width_force {
+            t.min_width = 0.0;
+        }
         // Clear drops the subject and unregisters its health watcher (`0x5300ad`, `0x53007c`).
         t.unit_guid = None;
         t.unit_token = None;

@@ -100,6 +100,93 @@ fn learn_talent_sends_inside_its_call() {
     );
 }
 
+/// `LearnPreviewTalents(pet)` sends the previewed pairs inside its call (`0x5c6a10`): the
+/// player packet is `count` + pairs, the pet packet prefixes the summoned pet's guid
+/// (`PetHandler.cpp:1119`). The fixture also sets `UNIT_FIELD_CHARM`, whose guid must not win:
+/// `Player::LearnPetTalent` compares against `GetPet()` (`Player.cpp:14120`).
+#[test]
+fn learn_preview_talents_sends_the_counted_pairs_inside_its_call() {
+    const PET: u64 = 0xF140_0000_0000_0021;
+    const CHARM: u64 = 0xF130_0000_0000_0032;
+    let (mut app, rx) = client(5000);
+    let _ = sent(&rx);
+
+    let mut script = UiScript::with_target(benilla_ui::script::UiTarget::Wrath335).expect("a VM");
+    script.set_wrath_talents(WrathTalentUiState {
+        active_group: 1,
+        groups: vec![WrathTalentGroupView {
+            tabs: vec![TalentTabView {
+                name: "Beast Mastery".into(),
+                ..Default::default()
+            }],
+            talents: vec![vec![TalentView {
+                talent_id: 200,
+                rank: 1,
+                max_rank: 3,
+                meets_prereq: true,
+                ..Default::default()
+            }]],
+            unspent_points: 5,
+            glyphs: [0; 6],
+        }],
+        pet_talent_views: vec![vec![TalentView {
+            talent_id: 201,
+            rank: 0,
+            max_rank: 2,
+            meets_prereq: true,
+            ..Default::default()
+        }]],
+        ..Default::default()
+    });
+    let world = app.world_mut();
+    let me = world
+        .resource::<GuidIndex>()
+        .0
+        .get(&ME)
+        .copied()
+        .expect("the player");
+    *world
+        .get_mut::<ObjectStore>(me)
+        .expect("the player's store") = ObjectStore(ObjectFields::from_pairs(&[
+        (2, 0x19),
+        (COINAGE, 5000),
+        (6, CHARM as u32),
+        (7, (CHARM >> 32) as u32),
+        (8, PET as u32),
+        (9, (PET >> 32) as u32),
+    ]));
+    world.insert_non_send_resource(script);
+
+    run(
+        &mut app,
+        r#"AddPreviewTalentPoints(1, 1, 2) LearnPreviewTalents(false) RandomRoll(1, 2)
+        AddPreviewTalentPoints(1, 1, 2, true) LearnPreviewTalents(true) RandomRoll(3, 4)"#,
+    );
+    assert_eq!(
+        sent(&rx),
+        [
+            format!(
+                "{:?}",
+                ClientCommand::LearnPreviewTalents {
+                    pet: false,
+                    pet_guid: 0,
+                    entries: vec![(200, 3)],
+                }
+            ),
+            roll(1, 2),
+            format!(
+                "{:?}",
+                ClientCommand::LearnPreviewTalents {
+                    pet: true,
+                    pet_guid: PET,
+                    entries: vec![(201, 2)],
+                }
+            ),
+            roll(3, 4),
+        ]
+    );
+}
+
 /// The Accept sends the latched trainer's guid inside its call (`0x5dfad6`); over budget it shows
 /// `ERR_NOT_ENOUGH_MONEY` there instead (`0x5dfa81`).
 #[test]

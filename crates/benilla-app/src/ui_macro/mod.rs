@@ -132,13 +132,16 @@ fn load_macros(
         files.account = crate::local_state::macros_account_path();
         files.character = crate::local_state::macros_character_path(realm, character);
         *files.identity.get(script) = Some(id.clone());
+        // The stock FrameXML caps are the policy owner; the target's defaults stand before the
+        // stock files set them (the 1.12 18+18, 12340's 36+18).
+        let limits = script.macro_limits();
 
         let read = |path: &Option<std::path::PathBuf>,
                     per_character: bool|
          -> Vec<benilla_ui::script::MacroView> {
             let Some(path) = path else { return Vec::new() };
             match std::fs::read_to_string(path) {
-                Ok(text) => store::parse(&text, per_character),
+                Ok(text) => store::parse_with_cap(&text, per_character, limits.cap(per_character)),
                 // Absent is the first run, not a failure.
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
                 Err(e) => {
@@ -149,7 +152,11 @@ fn load_macros(
         };
         let character_records = read(&files.character, true);
         let moves = store::legacy_character_words(&character_records);
-        let state = MacroState::from_scopes(read(&files.account, false), character_records);
+        let state = MacroState::from_scopes_with_limits(
+            limits,
+            read(&files.account, false),
+            character_records,
+        );
         info!(
             "ui_macro: {} account + {} character macros for {character} on {realm}",
             state.count(false),
