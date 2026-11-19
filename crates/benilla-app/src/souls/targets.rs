@@ -381,7 +381,7 @@ pub(super) fn resolve_hits(
         if link.reporting() && !struck.is_empty() {
             struck.sort_by(|a, b| a.0.total_cmp(&b.0));
             let guids: Vec<u64> = struck.iter().map(|(_, guid)| *guid).collect();
-            link.report_hit(hit.motion_value.0, &guids);
+            link.report_hit(hit.motion_value.0, &guids, kit.two_handing());
         }
     }
     if stop > Duration::ZERO {
