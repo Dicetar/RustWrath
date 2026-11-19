@@ -1322,6 +1322,7 @@ fn drive_remote_retarget(
             &mut RigPose,
             Option<&BodyTwist>,
             Option<&BoneAttach>,
+            Option<&HandKeyBones>,
             Option<&RemoteAction>,
         ),
         Without<SelfPlayer>,
@@ -1333,7 +1334,7 @@ fn drive_remote_retarget(
     let rest = retarget.rest.as_ref();
     // Evict despawned bodies before admitting new ones.
     poses.0.retain(|entity, _| bodies.contains(*entity));
-    for (entity, rig, twist, attach, action) in &bodies {
+    for (entity, rig, twist, attach, hands, action) in &bodies {
         if poses.0.len() >= MAX_REMOTE_BODIES {
             break;
         }
@@ -1354,7 +1355,7 @@ fn drive_remote_retarget(
         poses.0.insert(
             entity,
             RemotePose {
-                map: map_rig(&rig, twist, attach, rest),
+                map: map_rig(&rig, twist, attach, hands, rest),
                 stock: rig.locals.clone(),
                 written: None,
                 from: rig.locals.clone(),
@@ -1364,7 +1365,7 @@ fn drive_remote_retarget(
         );
     }
     poses.0.retain(|entity, state| {
-        let Ok((_, mut rig, twist, attach, action)) = bodies.get_mut(*entity) else {
+        let Ok((_, mut rig, twist, attach, hands, action)) = bodies.get_mut(*entity) else {
             return false;
         };
         let bones = rig.locals.len();
@@ -1374,7 +1375,7 @@ fn drive_remote_retarget(
         if bones != state.stock.len() {
             state.map = rest.map_or_else(
                 || Err("no rest pose".into()),
-                |rest| map_rig(&rig, twist, attach, rest),
+                |rest| map_rig(&rig, twist, attach, hands, rest),
             );
             state.stock = rig.locals.clone();
             state.from = rig.locals.clone();
