@@ -92,6 +92,7 @@ cursor_keys = ["Escape", "B", "C", "P", "M", "L", "N", "O", "I", "K", "U", "H", 
 
 | ER feature | Status | Where | Switch |
 |---|---|---|---|
+| Equipped main-hand kit (dagger, swords, axes, maces, polearm, staff, fist, spear), re-picked on weapon change; missing file → player.kit → stock | done; owner runs `scripts/import-kits.ps1` | `combat_kit.rs`, `scripts/combat-kits.csv` | — |
 | Light chain (Light1–5), roll/backstep follow-ups | done (kit slice) | `combat_kit::resolve_press` | — |
 | Dodge on release, direction from held keys, backstep standing | done | `souls/input.rs` | — |
 | Sprint (hold dodge while moving), stamina drain | done; ×1.4 run speed from the server script | `souls/input.rs` | `sprint` |

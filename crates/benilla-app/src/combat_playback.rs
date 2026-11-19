@@ -191,6 +191,7 @@ impl Plugin for CombatPlaybackPlugin {
             .add_systems(
                 Update,
                 (
+                    crate::combat_kit::select_player_kit,
                     fill_local_profiles,
                     advance_playback,
                     toggle_and_stage_action,
