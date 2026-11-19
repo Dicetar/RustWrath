@@ -9,6 +9,12 @@
 //! restart. No file, or one that does not read or compile, leaves the stock-clip profiles in
 //! place, and the reason is logged.
 //!
+//! **The weapon.** The weapon fought with ([`fighting_weapon`]: the main hand, else the ranged
+//! slot, else the fists) picks `kits/{name}.kit` from `scripts/combat-kits.csv`, which maps every
+//! WoW weapon subclass to an Elden Ring moveset. A one-handed weapon can be held in both hands
+//! (the Souls grip key, [`PlayerKit::toggle_grip`]): its `kits/{name}-twohand.kit`, the same
+//! weapon's two-handed moveset, and the server's two-hand damage bonus.
+//!
 //! **Presses** ([`resolve_press`]). A light press continues the running action's chain (its
 //! `next_light`: the next light, or a roll's or backstep's attack) and otherwise opens with
 //! `Light1`. A dodge press rolls in the held direction, forward and back before a strafe, and
@@ -32,7 +38,7 @@ use benilla_combat_core::{
 };
 use bevy::prelude::*;
 
-use crate::creature_anim::move_flags;
+use crate::creature_anim::{move_flags, ITEM_CLASS_WEAPON};
 
 /// Kit stamina points become this many engine points: 45 points a second at 100 Hz is 9 a tick.
 pub(crate) const STAMINA_SCALE: i32 = 20;
@@ -48,18 +54,45 @@ pub(crate) struct PlayerKit {
     pub(crate) kit: Option<Kit>,
     /// Bumped whenever a read changes [`Self::kit`], so the profile build compiles the new one.
     pub(crate) generation: u32,
+    /// The weapon fought with: `(class, subclass)` ([`fighting_weapon`]).
     selected_main: Option<(u8, u8)>,
     selected_weapon: u64,
+    /// The grip key's choice: hold a one-handed weapon in both hands.
+    two_handing: bool,
 }
 
 impl PlayerKit {
     /// Read the file again; a changed result bumps the generation.
     pub(crate) fn reload(&mut self) {
-        let kit = read_kit(self.selected_main);
+        let kit = read_kit(self.selected_main, self.two_handing());
         if kit != self.kit {
             self.kit = kit;
             self.generation = self.generation.wrapping_add(1);
         }
+    }
+
+    /// A one-handed weapon held in both hands. A two-handed weapon is always held so, and is not
+    /// counted: the server's two-hand bonus is for the switch, as Elden Ring's is.
+    pub(crate) fn two_handing(&self) -> bool {
+        self.two_handing && weapon_row(self.selected_main).is_some_and(|row| !row.two)
+    }
+
+    /// The grip key: switch a one-handed weapon between one and both hands. Returns the new
+    /// grip, or `None` when the weapon has only one (a two-handed weapon).
+    pub(crate) fn toggle_grip(&mut self) -> Option<bool> {
+        let row = weapon_row(self.selected_main).filter(|row| !row.two)?;
+        self.two_handing = !self.two_handing;
+        self.reload();
+        info!(
+            "souls: {} held {}",
+            row.weapon,
+            if self.two_handing {
+                "in both hands"
+            } else {
+                "in one hand"
+            }
+        );
+        Some(self.two_handing)
     }
 }
 
@@ -68,18 +101,55 @@ pub(crate) fn load_player_kit(mut kit: ResMut<PlayerKit>) {
     kit.reload();
 }
 
-/// One mapping for the client and import-kits.ps1. Names are from the reference WEAPONS table;
-/// staff uses Twinblade (there is no staff entry).
+/// One mapping for the client and import-kits.ps1: every WoW weapon subclass, by `Item.dbc`
+/// number, to a moveset of the reference WEAPONS table. WoW has movesets Elden Ring does not, so
+/// those take the nearest one: staff the Twinblade, bow the Curved Sword's sweeping limb, gun
+/// the Great Hammer's butt, crossbow the Club's stock, wand the Torch, fishing pole the Whip,
+/// thrown weapons the Dagger, miscellaneous tools the Club. [`UNARMED`] is the empty hand.
 const WEAPON_KITS: &str = include_str!("../../../scripts/combat-kits.csv");
 
-fn weapon_kit(main: Option<(u8, u8)>) -> Option<&'static str> {
-    let (2, subclass) = main? else { return None };
+/// The table's row for no weapon at all: the Fist.
+const UNARMED: u8 = 255;
+/// The two-handed kit of a one-handed row is `{name}{TWO_HAND_SUFFIX}.kit`.
+const TWO_HAND_SUFFIX: &str = "-twohand";
+
+/// A row of [`WEAPON_KITS`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct WeaponRow {
+    name: &'static str,
+    /// The reference moveset.
+    weapon: &'static str,
+    /// The weapon is two-handed in WoW, so it is always held in both hands.
+    two: bool,
+}
+
+/// The row for the weapon fought with; `None` (no weapon) is [`UNARMED`].
+fn weapon_row(weapon: Option<(u8, u8)>) -> Option<WeaponRow> {
+    let subclass = match weapon {
+        Some((ITEM_CLASS_WEAPON, subclass)) => subclass,
+        Some(_) => return None,
+        None => UNARMED,
+    };
     WEAPON_KITS.lines().skip(1).find_map(|row| {
         let mut fields = row.split(',');
         let id = fields.next()?.parse::<u8>().ok()?;
         let name = fields.next()?;
-        (id == subclass).then_some(name)
+        let weapon = fields.next()?;
+        let two = fields.next()? == "two";
+        (id == subclass).then_some(WeaponRow { name, weapon, two })
     })
+}
+
+#[cfg(test)]
+fn weapon_kit(main: Option<(u8, u8)>) -> Option<&'static str> {
+    weapon_row(main).map(|row| row.name)
+}
+
+/// What the player fights with: the main hand's weapon; with the main hand empty, the ranged
+/// slot's (a bow or gun swung as a club); with neither, nothing (the fists).
+fn fighting_weapon(wielded: &crate::creature_anim::Wielded) -> Option<(u8, u8)> {
+    let weapon = |item: Option<(u8, u8)>| item.filter(|(class, _)| *class == ITEM_CLASS_WEAPON);
+    weapon(wielded.main).or_else(|| weapon(wielded.ranged))
 }
 
 /// Equipment changes use the same reload as F10; disarming does not change the equipped kit.
@@ -93,7 +163,7 @@ pub(crate) fn select_player_kit(
     mut kit: ResMut<PlayerKit>,
 ) {
     let body = me.single().ok();
-    let main = body.and_then(|(wielded, _)| wielded.main);
+    let main = body.and_then(|(wielded, _)| fighting_weapon(wielded));
     let weapon = body.map_or(0, |(_, store)| {
         crate::wrath_inventory::PlayerInventory::new(
             &store.0,
@@ -109,35 +179,47 @@ pub(crate) fn select_player_kit(
     }
 }
 
-/// A missing subclass file falls back to player.kit, then to stock profiles.
-fn read_kit(main: Option<(u8, u8)>) -> Option<Kit> {
+/// The weapon's kit (its two-handed one when `two_handing`), then the weapon's one-handed kit,
+/// then player.kit, then the stock profiles.
+fn read_kit(main: Option<(u8, u8)>, two_handing: bool) -> Option<Kit> {
     let fallback = crate::local_state::player_kit_path()?;
-    read_kit_at(main, &fallback)
+    read_kit_at(main, two_handing, &fallback)
 }
 
-fn read_kit_at(main: Option<(u8, u8)>, fallback: &std::path::Path) -> Option<Kit> {
-    let path = weapon_kit(main)
-        .and_then(|name| {
-            fallback
-                .parent()
-                .map(|p| p.join("kits").join(format!("{name}.kit")))
-        })
-        .unwrap_or_else(|| fallback.to_path_buf());
-    read_kit_file(&path).or_else(|| {
-        (path != fallback)
-            .then(|| read_kit_file(fallback))
-            .flatten()
-    })
+fn read_kit_at(
+    main: Option<(u8, u8)>,
+    two_handing: bool,
+    fallback: &std::path::Path,
+) -> Option<Kit> {
+    let kits = fallback.parent().map(|parent| parent.join("kits"));
+    let mut paths = Vec::new();
+    if let (Some(row), Some(kits)) = (weapon_row(main), kits) {
+        if two_handing && !row.two {
+            paths.push(kits.join(format!("{}{TWO_HAND_SUFFIX}.kit", row.name)));
+        }
+        paths.push(kits.join(format!("{}.kit", row.name)));
+    }
+    paths.push(fallback.to_path_buf());
+    let last = paths.len() - 1;
+    paths
+        .iter()
+        .enumerate()
+        .find_map(|(index, path)| read_kit_file(path, index == last))
 }
 
-fn read_kit_file(path: &std::path::Path) -> Option<Kit> {
+/// Read one kit file; a missing one is only logged when nothing is left to fall back on.
+fn read_kit_file(path: &std::path::Path, last: bool) -> Option<Kit> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            info!(
-                "souls kit: none at {}; the stock-clip profiles stay",
-                path.display()
-            );
+            if last {
+                info!(
+                    "souls kit: none at {}; the stock-clip profiles stay",
+                    path.display()
+                );
+            } else {
+                info!("souls kit: none at {}; falling back", path.display());
+            }
             return None;
         }
         Err(error) => {
@@ -291,25 +373,34 @@ mod tests {
         ));
         std::fs::create_dir_all(temp.join("kits")).unwrap();
         let fallback = temp.join("player.kit");
-        assert!(read_kit_at(Some((2, 15)), &fallback).is_none());
+        let label = |main, two| read_kit_at(main, two, &fallback).map(|kit| kit.label);
+        assert!(label(Some((2, 15)), false).is_none());
         std::fs::write(&fallback, KIT).unwrap();
+        assert_eq!(label(Some((2, 15)), false).as_deref(), Some("test kit"));
+        let write = |name: &str| {
+            std::fs::write(
+                temp.join(format!("kits/{name}.kit")),
+                KIT.replace("label test kit", &format!("label {name}")),
+            )
+            .unwrap();
+        };
+        write("dagger");
+        assert_eq!(label(Some((2, 15)), false).as_deref(), Some("dagger"));
+        // Two-handing without its own kit keeps the one-handed one; with it, takes it.
+        assert_eq!(label(Some((2, 15)), true).as_deref(), Some("dagger"));
+        write("dagger-twohand");
         assert_eq!(
-            read_kit_at(Some((2, 15)), &fallback).unwrap().label,
-            "test kit"
+            label(Some((2, 15)), true).as_deref(),
+            Some("dagger-twohand")
         );
-        std::fs::write(
-            temp.join("kits/dagger.kit"),
-            KIT.replace("label test kit", "label dagger"),
-        )
-        .unwrap();
-        assert_eq!(
-            read_kit_at(Some((2, 15)), &fallback).unwrap().label,
-            "dagger"
-        );
-        assert_eq!(
-            read_kit_at(Some((2, 7)), &fallback).unwrap().label,
-            "test kit"
-        );
+        assert_eq!(label(Some((2, 15)), false).as_deref(), Some("dagger"));
+        // A two-handed weapon has one grip: the switch does not look for a second kit.
+        write("sword-two");
+        write("sword-two-twohand");
+        assert_eq!(label(Some((2, 8)), true).as_deref(), Some("sword-two"));
+        assert_eq!(label(Some((2, 7)), false).as_deref(), Some("test kit"));
+        write("unarmed");
+        assert_eq!(label(None, false).as_deref(), Some("unarmed"));
         std::fs::remove_dir_all(temp).unwrap();
     }
 
@@ -318,29 +409,51 @@ mod tests {
         for (subclass, name) in [
             (0, "axe"),
             (1, "axe-two"),
+            (2, "bow"),
+            (3, "gun"),
             (4, "mace"),
             (5, "mace-two"),
             (6, "polearm"),
             (7, "sword"),
             (8, "sword-two"),
             (10, "staff"),
+            (11, "exotic"),
+            (12, "exotic-two"),
             (13, "fist"),
+            (14, "misc"),
             (15, "dagger"),
+            (16, "thrown"),
             (17, "spear"),
+            (18, "crossbow"),
+            (19, "wand"),
+            (20, "fishing-pole"),
         ] {
             assert_eq!(weapon_kit(Some((2, subclass))), Some(name));
         }
-        assert_eq!(weapon_kit(Some((2, 2))), None);
-        assert_eq!(weapon_kit(Some((4, 7))), None);
-        assert_eq!(weapon_kit(None), None);
+        assert_eq!(weapon_kit(Some((2, 9))), None, "obsolete subclass");
+        assert_eq!(weapon_kit(Some((4, 7))), None, "armour is no weapon");
+        assert_eq!(weapon_kit(None), Some("unarmed"));
+        let wielded = |main, ranged| crate::creature_anim::Wielded {
+            main,
+            ranged,
+            ..Default::default()
+        };
+        assert_eq!(
+            fighting_weapon(&wielded(Some((2, 7)), Some((2, 2)))),
+            Some((2, 7))
+        );
+        assert_eq!(fighting_weapon(&wielded(None, Some((2, 3)))), Some((2, 3)));
+        assert_eq!(fighting_weapon(&wielded(Some((4, 6)), None)), None);
         for row in WEAPON_KITS.lines().skip(1) {
             let fields: Vec<_> = row.split(',').collect();
             assert_eq!(fields.len(), 4);
             let subclass: u8 = fields[0].parse().unwrap();
             assert_eq!(
                 fields[3] == "two",
-                matches!(subclass, 1 | 5 | 6 | 8 | 10 | 17)
+                matches!(subclass, 1 | 2 | 3 | 5 | 6 | 8 | 10 | 12 | 17 | 18 | 20),
+                "{row}"
             );
+            assert!(!fields[1].ends_with(TWO_HAND_SUFFIX), "{row}");
         }
     }
 
