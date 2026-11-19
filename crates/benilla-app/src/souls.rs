@@ -133,6 +133,8 @@ pub(crate) struct SoulsState {
     drive: drive::DriveTrack,
     /// The hit test's tracking of the running attack.
     swing: targets::SwingTrack,
+    /// A critical action's hit is sent once via CRIT instead of its normal hit windows.
+    critical: Option<Instance>,
     /// The guid the last landed hit started stock melee on.
     engaged: Option<u64>,
     /// The bar flashes red until then (app seconds): a press refused for stamina.
@@ -165,6 +167,7 @@ impl SoulsState {
             && self.lock.is_none()
             && self.drive == drive::DriveTrack::default()
             && self.swing == targets::SwingTrack::default()
+            && self.critical.is_none()
             && self.engaged.is_none()
             && self.poise.is_none()
             && !self.crouched

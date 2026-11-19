@@ -493,6 +493,8 @@ local function announce_peer(player, state)
     end
 end
 
+local on_critical
+
 local function on_addon(event, sender, msg_type, prefix, msg, target)
     if prefix ~= PREFIX then
         return
@@ -529,6 +531,8 @@ local function on_addon(event, sender, msg_type, prefix, msg, target)
         set_creep(sender, state, state.crouch == true)
     elseif state and verb == "HIT" then
         on_hit(sender, state, fields)
+    elseif state and verb == "CRIT" then
+        on_critical(sender, state, fields[2], fields[3] == "back")
     elseif state and verb == "SWING" then
         on_swing(sender, fields)
     elseif state and verb == "VERDICT" then
@@ -691,7 +695,7 @@ break_stance = function(creature, ck, m, now)
         m.strike = nil
     end
     m.broken_until = now + STANCE_BREAK_MS
-    m.parried_until = now + STANCE_BREAK_MS
+    m.parried_until = nil
     m.next_at = now + STANCE_BREAK_MS + 400
     m.stance = m.stance_max
     m.stance_refill_at = nil
@@ -709,6 +713,50 @@ local function end_break(creature, m)
     m.broken_until = nil
     creature:EmoteState(EMOTE_STATE_NONE)
     creature:SetRooted(false)
+end
+
+local CRITICAL_MULTIPLIER = 3 -- ESTIMATE: critical damage before armour.
+on_critical = function(player, state, guid, back)
+    local m = managed[guid]
+    local now = now_ms()
+    if back then
+        if now < (state.next_backstab or 0) or not player:IsAlive() then return end
+        for _, creature in ipairs(player:GetUnfriendlyUnitsInRange(HIT_REACH_YARDS) or {}) do
+            if key(creature:GetGUID()) == guid and creature:GetObjectType() == "Creature"
+                and creature:IsAlive() and creature:IsWithinDist(player, melee_reach(creature, player)) then
+                local away = angle_diff(creature:GetO(), creature:GetAngle(player)) >= 3 * math.pi / 4
+                local victim = creature:GetVictim()
+                local fighting_player = victim and key(victim:GetGUID()) == key(player:GetGUID())
+                if away and not fighting_player then
+                    state.next_backstab = now + 1000
+                    local damage = defended(player, creature, weapon_roll(player) * CRITICAL_MULTIPLIER)
+                    player:DealDamage(creature, math.max(1, math.floor(damage + 0.5)), true, 0)
+                    trace("backstab %s: %.1f damage", guid, damage)
+                end
+                return
+            end
+        end
+        return
+    end
+    if not m or not m.broken_until or now >= m.broken_until then
+        return
+    end
+    local creature = managed_creature(m)
+    if not creature or not creature:IsAlive() or not player:IsAlive()
+        or creature:GetMap() ~= player:GetMap() then
+        return
+    end
+    if not creature:IsWithinDist(player, melee_reach(creature, player))
+        or angle_diff(creature:GetO(), creature:GetAngle(player)) > math.pi / 4 then
+        return
+    end
+    end_break(creature, m)
+    for _, watcher in ipairs(strike_watchers(creature, nil)) do
+        send(watcher, "BROKEN\t" .. guid .. "\t0")
+    end
+    local damage = defended(player, creature, weapon_roll(player) * CRITICAL_MULTIPLIER)
+    player:DealDamage(creature, math.max(1, math.floor(damage + 0.5)), true, 0)
+    trace("critical %s: %.1f damage", guid, damage)
 end
 
 local function adopt(creature, now)

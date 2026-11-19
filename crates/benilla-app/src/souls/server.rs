@@ -250,6 +250,7 @@ pub(crate) struct SoulsLink {
     pub(crate) shown: Vec<StrikeShown>,
     /// A parried creature's guid and the end of its riposte window (app seconds).
     pub(crate) riposte: Option<(u64, f32)>,
+    pub(super) broken: Option<(u64, f32)>,
     /// Other Souls players' bodies and when their last relayed `SWING` arrived.
     remote_swings: Vec<(Entity, f32)>,
 }
@@ -275,6 +276,11 @@ impl SoulsLink {
         ));
     }
 
+    pub(super) fn critical(&mut self, guid: u64, back: bool) {
+        let suffix = if back { "\tback" } else { "" };
+        self.outbox.push(format!("CRIT\t{guid}{suffix}"));
+    }
+
     fn is_reset(&self) -> bool {
         !self.up
             && self.announced_at.is_none()
@@ -285,6 +291,7 @@ impl SoulsLink {
             && self.strikes.is_empty()
             && self.shown.is_empty()
             && self.riposte.is_none()
+            && self.broken.is_none()
             && self.remote_swings.is_empty()
     }
 }
@@ -533,8 +540,13 @@ pub(super) fn drive_link(
                 creature,
                 riposte_ms,
             } => {
-                info!("souls: stance of {creature:#x} broken; riposte open {riposte_ms} ms");
-                link.riposte = Some((creature, t + riposte_ms as f32 / 1000.0));
+                if riposte_ms == 0 {
+                    if link.broken.is_some_and(|(guid, _)| guid == creature) {
+                        link.broken = None;
+                    }
+                } else {
+                    link.broken = Some((creature, t + riposte_ms as f32 / 1000.0));
+                }
             }
             Inbound::Swing {
                 player: guid,
@@ -570,6 +582,9 @@ pub(super) fn drive_link(
                 }
             }
         }
+    }
+    if link.broken.is_some_and(|(_, until)| t >= until) {
+        link.broken = None;
     }
     if link.riposte.is_some_and(|(_, until)| t >= until) {
         link.riposte = None;
