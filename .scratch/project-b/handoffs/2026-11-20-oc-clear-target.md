@@ -1,6 +1,6 @@
 # Clear target: SMSG_CLEAR_TARGET (0x3BF)
 
-Status: ready to merge
+Status: landed
 Branch: oc/clear-target
 
 ## What changed
@@ -21,9 +21,10 @@ The existing clear_target_requests drain already ignores a guid that is not the 
 
 ## CI
 
-CI 44479269404: the Windows check (and clippy, which compiles tests) failed on this branch's own
-test — `DeselectGuid` had no `PartialEq`. The derive was added; the follow-up push re-runs CI.
-No Cargo build, test or client run was made in this session.
+CI 44479269404 failed on this branch's own test (`DeselectGuid` had no `PartialEq`); the derive
+was added. CI 44486020541 on 008679c2: Windows check green, changed-crate tests green; the gates
+job's only red step was the pre-existing `player-clippy` debt in untouched lines. Landed as
+5ec97ba5. No Cargo build, test or client run was made in this session.
 
 ## What is not proven in game
 

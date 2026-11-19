@@ -1,10 +1,10 @@
 # Wrath combat log: SWING_DAMAGE
 
-Status: ready to merge
-Owner: OpenCode / oc-wrath-combat-log-swing
+Status: landed
+Owner: OpenCode / DeepSeek 4.1 (fallback after the free model's usage limit)
 Branch: oc/wrath-combat-log-swing
 Issue: 18 (first-loop behavior C06), 25 (combat-log gap)
-Next: SWING_MISSED is the named next slice.
+Next: none; landed on main as 5fb029bd. SWING_MISSED is the named next slice.
 
 ## What changed
 
@@ -42,7 +42,9 @@ Test: `a_blocked_melee_spell_round_is_not_a_swing_damage_event`.
 
 ## CI
 
-Not run yet. No Cargo command, client or server was run in this task.
+CI 44486035669 on cca4ede1: Windows check green, changed-crate tests green; the gates job's
+only red step was the pre-existing `player-clippy` debt in untouched lines. Landed as 5fb029bd.
+No Cargo command, client or server was run in this task.
 
 ## What is not proven in game
 
@@ -54,8 +56,9 @@ Not run yet. No Cargo command, client or server was run in this task.
   measured.
 - Group-affiliation header flags remain absent, as for party kills; only the GUID-family bits are
   set.
-- Non-zero `melee_spell_id` rows are emitted as `SWING_DAMAGE` because that is the index-1 entry
-  the reference builds; no spell-damage/log-name path is claimed here.
+- A non-zero `melee_spell_id` row is emitted only when the victim state is WOUND, matching
+  `ShouldShowFeedback`; a blocked melee-spell round is dropped. No spell-damage/log-name path is
+  claimed here.
 - `SWING_MISSED` is out of scope: the next slice should build event index 2 from 12340's
   `hitInfo & 0x10` (miss/parry/dodge/absorb/resist/block) and name the miss kind.
 
