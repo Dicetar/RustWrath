@@ -272,6 +272,8 @@ pub(crate) struct SoulsLink {
     /// The latest dodge's i-frames (app seconds, first and last frame inside), kept after they
     /// end so a strike is judged against the window rather than the one frame of its deadline.
     iframes_span: Option<(f32, f32)>,
+    /// The latest parry's active window, kept the same way as the i-frames.
+    parry_span: Option<(f32, f32)>,
 }
 
 impl SoulsLink {
@@ -647,9 +649,12 @@ pub(super) fn drive_link(
     let dodging_now = config.features.iframes && in_iframes(&playback, &profiles);
     link.iframes_span = track_iframes(link.iframes_span, dodging_now, t);
     let iframes_span = link.iframes_span;
+    let parrying_now =
+        config.features.parry && kit_now.is_some_and(|kit| in_parry_window(kit, &playback));
+    link.parry_span = track_iframes(link.parry_span, parrying_now, t);
+    let parry_span = link.parry_span;
     let defence = Defence {
-        parrying: config.features.parry
-            && kit_now.is_some_and(|kit| in_parry_window(kit, &playback)),
+        parrying: false,
         dodging: false,
         guarding: config.features.guard && souls.guarding,
     };
@@ -691,14 +696,19 @@ pub(super) fn drive_link(
         let facing = at.compute_transform().rotation.to_euler(EulerRot::YXZ).0;
         let in_cone = strike.kind.contains_angle(off_facing(facing, to_me));
         let defence = Defence {
+            parrying: dodged(parry_span, strike.deadline),
             dodging: dodged(iframes_span, strike.deadline),
             ..defence
         };
         let said = verdict(in_reach, in_cone, defence);
+        let around = |span: Option<(f32, f32)>| {
+            span.map(|(from, to)| (from - strike.deadline, to - strike.deadline))
+        };
         info!(
-            "souls: strike {} judged {said}; last i-frames {:?} s around its moment",
+            "souls: strike {} judged {said}; last i-frames {:?} s, last parry {:?} s around its moment",
             strike.id,
-            iframes_span.map(|(from, to)| (from - strike.deadline, to - strike.deadline))
+            around(iframes_span),
+            around(parry_span)
         );
         strike.verdict = Some(said);
         verdicts.push(format!("VERDICT\t{}\t{said}", strike.id));

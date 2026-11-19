@@ -15,12 +15,13 @@
 //! - `Backstep` and the four `Roll(<load>, <direction>)` actions, as dodges. Their stamina cost
 //!   is not in the action record; it comes from `ROLL_COST` / `BACKSTEP_COST`.
 //! - Every ground attack of the chosen weapon and grip, as light or heavy attacks.
-//! - The landing halves of the jump attacks (`JumpLightLand`, `JumpHeavyLand`; `PairedJumpLand`
-//!   with the off hand). The landing carries the hit; the client plays it when a press made in
-//!   the air comes down.
-//! - `Parry`, authored here: the donor data has no parry (in ER it is a shield skill). A dodge-
-//!   kind action whose `iframes` row is the parry window; every number is an estimate, to tune
-//!   in play.
+//! - The jump attacks, both halves. The air swing (`JumpLight`, `JumpHeavy`, `PairedJump`, from
+//!   `fn air_attack` / `fn air_paired`) starts at the press in the air with its own clip and hit
+//!   and the landing's damage; the landing (`JumpLightLand`, `JumpHeavyLand`, `PairedJumpLand`
+//!   with the off hand) carries the hit instead when the body comes down before the swing's hit.
+//! - `Parry`, authored here and on every grip: the donor data has no parry (in ER it is a shield
+//!   skill). A dodge-kind action whose `iframes` row is the parry window; every number is an
+//!   estimate, to tune in play.
 //! - The chain rules of the donor's player code, as data: a light swing continues into the next
 //!   one and wraps to the first after the last; running, rolling, backstep and crouch attacks
 //!   continue into the second swing; a roll continues into the roll attack and a backstep into
@@ -233,8 +234,46 @@ pub fn import_kit(
         });
     }
     report.empty_windows_dropped = parser.empty_windows;
-    if !options.two_handed {
-        drafts.push(parry(backstep_cost));
+    // The parry is the client's own on every grip: ER gives it to shields, WoW's two-handers have
+    // no shield to give it to.
+    drafts.push(parry(backstep_cost));
+
+    // `fn air_attack` / `fn air_paired`: the swings a jump attack starts in the air.
+    let mut air = Vec::new();
+    if parser.has_fn("air_attack") {
+        for (arm, line) in parser.arms("air_attack", |pattern| {
+            attack_kind(pattern)
+                .is_some_and(|(index, grip, _)| Some(index) == wanted_index && grip == wanted_grip)
+        })? {
+            if let Arm::Taken(pattern, def) = arm {
+                let heavy = attack_kind(&pattern).is_some_and(|(_, _, heavy)| heavy == "true");
+                let landing = if heavy {
+                    "JumpHeavyLand"
+                } else {
+                    "JumpLightLand"
+                };
+                air.push((landing, parser.air_def(&def, line)?));
+            }
+        }
+    }
+    let paired_kit = drafts.iter().any(|draft| draft.name == "PairedJumpLand");
+    if paired_kit && parser.has_fn("air_paired") {
+        for (arm, line) in parser.arms(
+            "air_paired",
+            |pattern| matches!(pattern, Value::Num(index) if Some(*index) == wanted_index),
+        )? {
+            if let Arm::Taken(_, def) = arm {
+                air.push(("PairedJumpLand", parser.air_def(&def, line)?));
+            }
+        }
+    }
+    for (landing, swing) in air {
+        match drafts.iter().find(|draft| draft.name == landing) {
+            Some(land) => drafts.push(air_swing(land, swing)),
+            None => report
+                .skipped
+                .push((air_name(landing), "an air swing without its landing")),
+        }
     }
     drafts.append(&mut other_rolls);
 
@@ -401,6 +440,61 @@ fn parry(cost: Milli) -> Draft {
             motion: Vec::new(),
         },
     }
+}
+
+/// The air swing's row for a landing row: `JumpLightLand` → `JumpLight`.
+fn air_name(landing: &str) -> String {
+    landing.strip_suffix("Land").unwrap_or(landing).to_string()
+}
+
+/// The air half of a jump attack (`fn air_attack`), as the donor plays it: its own clip, its hit
+/// live in the air from the press, and the landing's damage (the donor's airborne swing "deals
+/// what its landing follow-through does"). It is `airborne`, has no root motion (the jump's arc
+/// carries the body), and keeps the landing's length and windows for the swing's recovery once
+/// down. The client swaps to the landing row when the body lands before this hit comes out.
+fn air_swing(landing: &Draft, swing: AirDef) -> Draft {
+    let land = &landing.def;
+    let damage = land.hits.first();
+    let hit = KitHit {
+        from: swing.from,
+        to: swing.to,
+        motion_value: damage.map_or(Milli::whole(1), |hit| hit.motion_value),
+        guard_damage: damage.map_or(Milli::whole(1), |hit| hit.guard_damage),
+        stamina: swing.stamina,
+        hit_stop: damage.map_or(Milli::ZERO, |hit| hit.hit_stop),
+        radius: swing.radius,
+        blade: swing.blade,
+    };
+    Draft {
+        name: air_name(&landing.name),
+        kind: landing.kind,
+        cost: None,
+        def: ActionDef {
+            source: swing.source,
+            total: land.total.max(swing.to),
+            input_from: land.input_from,
+            input_dodge_from: land.input_dodge_from,
+            cancel: land.cancel,
+            iframes: None,
+            jump_frames: true,
+            stamina: swing.stamina,
+            hits: vec![hit],
+            charge: None,
+            no_turn: land.no_turn.clone(),
+            turn: land.turn.clone(),
+            motion: Vec::new(),
+        },
+    }
+}
+
+/// One generated `AirAttackDef`, read.
+struct AirDef {
+    from: Milli,
+    to: Milli,
+    stamina: Milli,
+    source: String,
+    radius: Milli,
+    blade: Vec<[Milli; 6]>,
 }
 
 struct Draft {
@@ -784,6 +878,61 @@ impl<'a> Parser<'a> {
             self.at += 1;
         }
         self.fail("the file ends in the middle of a match arm")
+    }
+
+    /// Whether the file has a `fn <function>(`.
+    fn has_fn(&self, function: &str) -> bool {
+        let sequence = [Tok::Ident("fn"), Tok::Ident(function), Tok::Punct('(')];
+        self.tokens
+            .windows(sequence.len())
+            .any(|window| window.iter().map(|token| token.tok).eq(sequence))
+    }
+
+    /// Read one `AirAttackDef` record; as with `ActionDef`, an unknown field is an error.
+    fn air_def(&mut self, value: &Value<'a>, line: usize) -> Result<AirDef, KitError> {
+        let Value::Struct {
+            name: "AirAttackDef",
+            fields,
+        } = value
+        else {
+            return Err(KitError::at(line, "expected an `AirAttackDef` record"));
+        };
+        let mut seen: BTreeMap<&str, &Value<'a>> = BTreeMap::new();
+        for (field, field_line, value) in fields {
+            const KNOWN: [&str; 6] = ["from", "to", "stamina", "source", "radius", "blade"];
+            if !KNOWN.contains(field) {
+                return Err(KitError::at(
+                    *field_line,
+                    format!("unknown `AirAttackDef` field `{field}`"),
+                ));
+            }
+            seen.insert(*field, value);
+        }
+        let field = |name: &str| {
+            seen.get(name)
+                .copied()
+                .ok_or_else(|| KitError::at(line, format!("an `AirAttackDef` has no `{name}`")))
+        };
+        let Value::Str(source) = field("source")? else {
+            return Err(KitError::at(line, "`source` must be a string"));
+        };
+        let from = self.number(field("from")?, line, "from")?;
+        let to = self.number(field("to")?, line, "to")?;
+        if from >= to {
+            return Err(KitError::at(line, "an air swing's hit has no length"));
+        }
+        Ok(AirDef {
+            from,
+            to,
+            stamina: self.number(field("stamina")?, line, "stamina")?,
+            source: (*source).to_string(),
+            radius: self.number(field("radius")?, line, "radius")?,
+            blade: self
+                .items(field("blade")?, line, "blade")?
+                .iter()
+                .map(|sample| self.numbers(sample, line, "blade"))
+                .collect::<Result<_, _>>()?,
+        })
     }
 
     /// The arms of the `match` in `fn <function>`, in file order with the line each starts on.
@@ -1201,7 +1350,16 @@ mod tests {
         for (pattern, def) in arms {
             text.push_str(&format!("        ({pattern}) => {def},\n"));
         }
-        text.push_str("        _ => return None,\n    })\n}\n\npub fn air_attack() {}\n");
+        text.push_str("        _ => return None,\n    })\n}\n\n#[rustfmt::skip]\n");
+        text.push_str(
+            "pub fn air_attack(weapon: usize, two_hand: bool, heavy: bool) -> Option<AirAttackDef> {\n    \
+             Some(match (weapon, two_hand, heavy) {\n        \
+             (1, false, false) => AirAttackDef { from: 5.0, to: 8.0, stamina: 6.0, source: \"t000_air\", \
+             radius: 0.10, blade: &[[0.500, 1.500, 0.200, 0.700, 1.600, -0.100]] },\n        \
+             (1, false, true) => AirAttackDef { from: 9.0, to: 12.0, stamina: 9.0, source: \"t000_airheavy\", \
+             radius: 0.10, blade: &[[0.500, 1.500, 0.200, 0.700, 1.600, -0.100]] },\n        \
+             _ => return None,\n    })\n}\n",
+        );
         text
     }
 
@@ -1244,6 +1402,7 @@ mod tests {
                 "Heavy2Charge",
                 "JumpLightLand",
                 "Parry",
+                "JumpLight",
                 "LightRollFront",
                 "LightRollBack",
                 "LightRollLeft",
@@ -1258,7 +1417,7 @@ mod tests {
                 weapon_index: 1,
                 weapon_name: "Test Blade".to_string(),
                 dodges: 10,
-                attacks: 8,
+                attacks: 9,
                 skipped: vec![
                     (
                         "JumpLightLandShort".to_string(),
@@ -1268,6 +1427,7 @@ mod tests {
                         "LeftLight1".to_string(),
                         "the selected weapon, grip or off-hand option does not use this row"
                     ),
+                    ("JumpHeavy".to_string(), "an air swing without its landing"),
                     ("Feint".to_string(), "costs no stamina"),
                 ],
                 // SprintStop. Rolls of another load ride along as dodges (`LightRoll*` here).
@@ -1317,6 +1477,21 @@ mod tests {
         assert!(roll.airborne);
         assert_eq!(kit.actions[0].stamina, Milli::whole(6));
 
+        // The jump attack's air half: its own clip and hit window, the landing's damage and
+        // length, airborne, no root motion of its own.
+        let air = kit.action_named("JumpLight").expect("JumpLight");
+        assert_eq!(air.kind, ActionKind::MeleeLight);
+        assert_eq!(air.source, "t000_air");
+        assert!(air.airborne);
+        assert!(air.motion.is_empty());
+        assert_eq!(air.total, Milli::whole(30));
+        assert_eq!(
+            (air.hits[0].from, air.hits[0].to, air.hits[0].stamina),
+            (Milli::whole(5), Milli::whole(8), Milli::whole(6))
+        );
+        assert_eq!(air.hits[0].motion_value, Milli::whole(1));
+        assert_eq!(air.hits[0].hit_stop, Milli(50));
+
         let heavy = kit.action(ActionId(109)).expect("Heavy1Charge");
         assert_eq!(heavy.kind, ActionKind::MeleeHeavy);
         assert_eq!(heavy.charge, Some((Milli::whole(3), Milli::whole(5))));
@@ -1326,7 +1501,7 @@ mod tests {
         let table = kit
             .to_table(ActionRevision(1), TickRate::new(100).expect("100 Hz"))
             .expect("table");
-        assert_eq!(table.len(), 18);
+        assert_eq!(table.len(), 19);
     }
 
     #[test]
@@ -1361,6 +1536,10 @@ mod tests {
             .unwrap();
             for row in ["JumpLightLand", "JumpHeavyLand", "LeftLight1", "Parry"] {
                 assert!(kit.action_named(row).is_some(), "{weapon}: {row}");
+            }
+            if weapon == "Longsword" {
+                assert!(kit.action_named("JumpLight").is_some());
+                assert!(kit.action_named("JumpHeavy").is_some());
             }
             assert!(kit.action_named("PairedLight1").is_none());
         }
@@ -1419,8 +1598,8 @@ mod tests {
         };
         let (kit, report) = import_kit(&sample(), Some(CONSTANTS), &two_handed).expect("import");
         assert_eq!(kit.label, "Test Blade, two-handed, light load");
-        assert_eq!((report.dodges, report.attacks), (9, 1));
-        assert!(kit.action_named("Parry").is_none());
+        assert_eq!((report.dodges, report.attacks), (10, 1));
+        assert!(kit.action_named("Parry").is_some(), "every grip parries");
         assert_eq!(kit.actions[5].hits[0].stamina, Milli::whole(9));
         assert_eq!(
             kit.actions[5].next_light, None,
