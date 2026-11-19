@@ -125,7 +125,7 @@ cursor_keys = ["Escape", "B", "C", "P", "M", "L", "N", "O", "I", "K", "U", "H", 
 | Left-hand chain | done; needs `LeftLight1…` or `PairedLight1…` rows (the importer's opt-in) | `souls/input.rs` | `left_hand` |
 | Parry: the `Parry` row's `iframes` window deflects a hit | done; needs a `Parry` row; with the server script a parried strike opens a ×3 riposte on that creature for 1.5 s | `souls/input.rs` | `parry` |
 | Clip retarget: each kit action plays the ER clip it was read from on our own rig (spine, head, arms, legs by role; pelvis height) | done (local and relayed player actions); needs `benilla-config/combat/player_anims.bin` | `souls/retarget.rs` | `retarget` |
-| ER locomotion: idle, guard, walk/run/sprint by direction, crouch idle/walk/run, airborne | done (locomotion stays local; relayed actions retarget too; clip rates are estimates) | `souls/retarget.rs` | `retarget_locomotion` |
+| ER locomotion: idle, guard, walk/run/sprint by direction, crouch idle/walk/run, airborne | done (nearby Souls peers also use idle/walk/run/sprint; clip rates are estimates) | `souls/retarget.rs` | `retarget_locomotion` |
 | ER control layout: hidden-cursor orbit, mouse attacks and guard, `LeftCtrl` cursor toggle, claimed keys override their WoW bindings, jump/use item/walk remaps | done | `souls/controls.rs`, `bindings.rs`, `player/camera.rs`, `ui_script/input.rs` | `er_controls` |
 | Interact key: the selection in reach, else the nearest usable thing in front (corpse loot, chest, door, mailbox, friendly NPC) | done | `souls/controls.rs` | `er_controls` |
 | Free camera: camera-relative movement, the body faces where it runs, actions snap to the held bearing, camera-picked lock-on | done | `souls/drive.rs`, `player/controller.rs` | `free_camera` |
@@ -144,5 +144,5 @@ Install and side effects: `.scratch/project-b/server-rebuild-batch.md` item 2.
 
 - Retarget checks in game: the bone roles are found from the bind pivots and attachments, not
   checked against the HumanMale skeleton; hand roll and the weapon's angle come from the forearm
-  aim; the locomotion clip speeds are estimates. Remote locomotion still uses stock clips; relayed actions use the ER bake.
+  aim; the locomotion clip speeds are estimates. Remote swim, mounts and airborne locomotion stay stock.
 - Gameplay tuning of imported jumps, left-hand attacks and one-handed parries.
