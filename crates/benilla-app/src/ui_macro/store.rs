@@ -60,6 +60,12 @@ pub(super) const ICON_PREFIX: &str = "Interface\\Icons\\";
 /// empty body. The table that takes the records skips what the scope cannot hold and any id it
 /// has, and gives an id below its base the base (`MacroState::from_scopes`).
 pub(super) fn parse(text: &str, per_character: bool) -> Vec<MacroView> {
+    parse_with_cap(text, per_character, MAX_MACROS)
+}
+
+/// The same reader with the target's stock cap: 12340's account file may hold 36 where the
+/// donor's stops at 18.
+pub(super) fn parse_with_cap(text: &str, per_character: bool, cap: usize) -> Vec<MacroView> {
     let base = if per_character { CHARACTER_ID_BASE } else { 0 };
     let mut out: Vec<MacroView> = Vec::new();
     // The ids of the records opened so far, as the table holds them: past the base
@@ -84,7 +90,7 @@ pub(super) fn parse(text: &str, per_character: bool) -> Vec<MacroView> {
             continue; // stray text between records
         }
         // A full scope opens no record (`0x4f06f8`).
-        if held.len() >= MAX_MACROS {
+        if held.len() >= cap {
             continue;
         }
         let id = s_str_to_int(&token(b" ")) as u32;
@@ -479,5 +485,15 @@ mod tests {
         );
         let again = MacroState::from_scopes(Vec::new(), parse(&saved, true));
         assert_eq!(again, state, "the full id loads as itself");
+    }
+
+    /// 12340's account file may hold 36; the donor reader still stops at 18.
+    #[test]
+    fn the_wrath_cap_keeps_36_account_records() {
+        let text: String = (1..=36)
+            .map(|i| format!("MACRO {i} \"m{i}\" Ability_Ambush\nEND\n"))
+            .collect();
+        assert_eq!(parse_with_cap(&text, false, 36).len(), 36);
+        assert_eq!(parse(&text, false).len(), 18);
     }
 }

@@ -176,8 +176,8 @@ pub(crate) struct Strike {
 /// A strike as the HUD draws it this frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct StrikeShown {
-    /// The striking unit's position (feet), world space.
-    pub(crate) at: Vec3,
+    /// The striking unit, whose overhead anchor seats the bar.
+    pub(crate) unit: Entity,
     /// How far through the windup, `0..=1`.
     pub(crate) progress: f32,
     pub(crate) mine: bool,
@@ -529,7 +529,7 @@ pub(super) fn drive_link(
         .retain(|strike| t < strike.deadline + STRIKE_FORGET_SECONDS);
     for strike in &mut link.strikes {
         let body = bodies.iter().find(|(_, g, ..)| g.0 == strike.creature);
-        if let Some((_, _, _, at)) = body {
+        if let Some((unit, ..)) = body {
             if strike.verdict.is_none() {
                 let left = (strike.deadline - t).max(0.0);
                 let progress = if strike.windup > 0.0 {
@@ -538,7 +538,7 @@ pub(super) fn drive_link(
                     1.0
                 };
                 shown.push(StrikeShown {
-                    at: at.translation(),
+                    unit,
                     progress: progress.clamp(0.0, 1.0),
                     mine: strike.mine,
                 });

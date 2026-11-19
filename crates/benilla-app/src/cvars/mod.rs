@@ -1380,7 +1380,12 @@ mod tests {
                 );
                 assert_eq!(registered_default(name, locale), Some(want));
             }
-            for row in all_rows().filter(|r| !on_at.iter().any(|(n, _)| *n == r.name)) {
+            let military = if matches!(locale, 0 | 1) { "0" } else { "1" };
+            assert_eq!(cvars.get("timeMgrUseMilitaryTime"), Some(military));
+            assert_eq!(cvars.default_of("timeMgrUseMilitaryTime"), Some(military));
+            for row in all_rows().filter(|r| {
+                r.name != "timeMgrUseMilitaryTime" && !on_at.iter().any(|(n, _)| *n == r.name)
+            }) {
                 assert_eq!(
                     row.default_for(locale),
                     row.default,
