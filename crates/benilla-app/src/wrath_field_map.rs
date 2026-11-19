@@ -324,6 +324,43 @@ mod tests {
         assert!(!table.gameobject.is_empty());
     }
 
+    /// 3.3.5 `GAMEOBJECT_PARENTROTATION` is four floats at 10..13 and `GAMEOBJECT_BYTES_1`
+    /// packs state, type, art kit and animation progress in one word at 17. The 1.12
+    /// descriptor has no single word for that split, so the shipped table must carry all four
+    /// byte rules plus the rotation quaternion.
+    #[test]
+    fn shipped_gameobject_rules_carry_rotation_and_bytes_1() {
+        let table = FieldTable::parse(SHIPPED).expect("shipped table");
+        let mut values = vec![0u32; 18];
+        values[10] = 0.5f32.to_bits();
+        values[11] = 0.25f32.to_bits();
+        values[17] = 0x64_03_02_01;
+        let mut delivered = vec![0u64; 1];
+        for index in [10u16, 11, 17] {
+            delivered[0] |= 1u64 << index;
+        }
+        let window = WrathFieldWindow::new(values, delivered);
+        let mut pairs = Vec::new();
+        for rule in table
+            .gameobject
+            .iter()
+            .filter(|rule| rule.from == 10 || rule.from == 17)
+        {
+            rule.push(&window, &mut pairs);
+        }
+        assert_eq!(
+            pairs,
+            vec![
+                (10, 0.5f32.to_bits()),
+                (11, 0.25f32.to_bits()),
+                (14, 0x01),
+                (21, 0x02),
+                (23, 0x03),
+                (24, 0x64),
+            ]
+        );
+    }
+
     #[test]
     fn rule_copies_only_delivered_words() {
         let mut values = vec![0u32; 18];
