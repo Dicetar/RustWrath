@@ -83,6 +83,7 @@ fn weapon_kit(main: Option<(u8, u8)>) -> Option<&'static str> {
 }
 
 /// Equipment changes use the same reload as F10; disarming does not change the equipped kit.
+#[allow(clippy::type_complexity)]
 pub(crate) fn select_player_kit(
     me: Query<
         (&crate::creature_anim::Wielded, &crate::net::ObjectStore),
@@ -93,17 +94,14 @@ pub(crate) fn select_player_kit(
 ) {
     let body = me.single().ok();
     let main = body.and_then(|(wielded, _)| wielded.main);
-    let weapon = inventory
-        .as_deref()
-        .map(|inventory| inventory.equipment(crate::items::EQUIPMENT_SLOT_MAINHAND))
-        .or_else(|| {
-            body.and_then(|(_, store)| {
-                store
-                    .0
-                    .player_inv_slot(crate::items::EQUIPMENT_SLOT_MAINHAND)
-            })
-        })
-        .unwrap_or(0);
+    let weapon = body.map_or(0, |(_, store)| {
+        crate::wrath_inventory::PlayerInventory::new(
+            &store.0,
+            inventory.as_deref(),
+            crate::wrath::selected_from_env(),
+        )
+        .equipment(crate::items::EQUIPMENT_SLOT_MAINHAND)
+    });
     if main != kit.selected_main || weapon != kit.selected_weapon {
         kit.selected_main = main;
         kit.selected_weapon = weapon;
