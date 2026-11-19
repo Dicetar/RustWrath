@@ -12,7 +12,7 @@
 use benilla_world::view::WorldCamera;
 use bevy::prelude::*;
 
-use super::server::SoulsLink;
+use super::server::{SoulsLink, StrikeKind};
 use super::{current_kit, souls_on, SoulsConfig, SoulsState};
 use crate::combat_kit::PlayerKit;
 use crate::combat_mode::CombatModeView;
@@ -128,12 +128,19 @@ pub(super) fn spawn_hud(mut commands: Commands) {
 }
 
 /// A strike bar's colour.
-fn strike_color(mine: bool, progress: f32) -> Color {
-    match (mine, progress >= 0.8) {
-        (true, true) => Color::srgb(0.95, 0.12, 0.08),
-        (true, false) => Color::srgb(0.95, 0.5, 0.1),
-        (false, _) => Color::srgb(0.6, 0.6, 0.6),
-    }
+fn strike_color(kind: StrikeKind, mine: bool, progress: f32) -> Color {
+    let brightness = if mine { 1.0 } else { 0.55 };
+    let pulse = if progress >= 0.8 { 1.0 } else { 0.8 };
+    let (r, g, b) = match kind {
+        StrikeKind::Legacy | StrikeKind::Sweep => (0.95, 0.5, 0.1),
+        StrikeKind::Thrust => (0.2, 0.65, 1.0),
+        StrikeKind::Slam => (0.85, 0.2, 0.85),
+    };
+    Color::srgb(
+        r * brightness * pulse,
+        g * brightness * pulse,
+        b * brightness * pulse,
+    )
 }
 
 fn shown(visible: bool) -> Visibility {
@@ -205,7 +212,7 @@ pub(super) fn drive_hud(
         .and_then(|(camera, _)| camera.logical_viewport_size())
         .map_or(0.0, |viewport| gx_px(PLATE_H, plate_basis(viewport)));
     let (units, attach, poses, fallbacks, mounts) = &heads;
-    let strikes: Vec<(Vec2, f32, bool)> = link
+    let strikes: Vec<(Vec2, f32, bool, StrikeKind)> = link
         .shown
         .iter()
         .filter(|_| on)
@@ -217,7 +224,7 @@ pub(super) fn drive_hud(
             } else {
                 project(head)? + Vec2::Y * STRIKE_GAP
             };
-            Some((at, strike.progress, strike.mine))
+            Some((at, strike.progress, strike.mine, strike.kind))
         })
         .take(usize::from(STRIKE_BARS))
         .collect();
@@ -243,7 +250,7 @@ pub(super) fn drive_hud(
                 let strike = strikes.get(usize::from(*index));
                 (
                     strike.is_some(),
-                    strike.map(|&(_, progress, mine)| strike_color(mine, progress)),
+                    strike.map(|&(_, progress, mine, kind)| strike_color(kind, mine, progress)),
                 )
             }
         };
@@ -277,7 +284,7 @@ pub(super) fn drive_hud(
                 }
             }
             HudPart::Strike(index) => {
-                if let Some(&(at, progress, _)) = strikes.get(usize::from(*index)) {
+                if let Some(&(at, progress, _, _)) = strikes.get(usize::from(*index)) {
                     let left = Val::Px(at.x - STRIKE_WIDTH / 2.0);
                     let top = Val::Px(at.y);
                     let width = Val::Px(STRIKE_WIDTH * progress.max(0.05));

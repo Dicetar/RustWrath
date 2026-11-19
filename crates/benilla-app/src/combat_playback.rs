@@ -191,6 +191,7 @@ impl Plugin for CombatPlaybackPlugin {
             .add_systems(
                 Update,
                 (
+                    crate::combat_kit::select_player_kit,
                     fill_local_profiles,
                     advance_playback,
                     toggle_and_stage_action,
@@ -394,6 +395,7 @@ pub(crate) fn play_starts(
             if let Some(&anim_id) = profiles.anims.get(id) {
                 actions.write(ActionAnim {
                     entity,
+                    contact_in: None,
                     anim_id,
                     seq: play_seq.next(),
                 });
@@ -608,6 +610,7 @@ pub(crate) fn play_clip(
 ) {
     actions.write(ActionAnim {
         entity,
+        contact_in: None,
         anim_id,
         seq: play_seq.next(),
     });

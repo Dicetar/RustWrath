@@ -239,7 +239,7 @@ impl ObjectFields {
         let packed = self.get_u32(FIELD_UNIT_TRAINING_POINTS).unwrap_or(0);
         ((packed >> 16) as u16, (packed & 0xffff) as u16)
     }
-    /// `UNIT_FIELD_BYTES_1` byte 3 bit `0x2`, `UNIT_VIS_FLAGS_CREEP` (`SpellAuras.cpp:3610`):
+    /// Donor `UNIT_FIELD_BYTES_1` byte 3 bit `0x2` (Wrath wire byte 2 is projected here):
     /// stealthed; read by the usable check (`[+0x110]+0x213 & 2`) and the tracker (`0x5ed210`).
     pub fn unit_is_stealthed(&self) -> bool {
         (self.get_u32(FIELD_UNIT_BYTES_1).unwrap_or(0) >> 24) & 0x2 != 0

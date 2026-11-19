@@ -16,7 +16,7 @@
 //! prints its state; they run too. The trailing address is
 //! the register site in `reference/cvars.tsv`.
 
-use super::table::{ours, same, same_by_locale, Registered};
+use super::table::{ours, same, Registered};
 
 pub(super) const INERT: &[Registered] = &[
     // ── The camera block ─────────────────────────────────────────────────────────────────────
@@ -478,7 +478,12 @@ pub(super) const INERT: &[Registered] = &[
     // reference's registered defaults; no benilla consumer reads them yet, so they are inert.
     // `GameUI_CVar.cpp:617-628`: "0" on enUS/koKR/esMX, "1" elsewhere. benilla's locale table
     // maps esMX's tag to enUS's index 0, so the other two exceptions are 0 and 1.
-    same_by_locale("timeMgrUseMilitaryTime", "1", &[(0, "0"), (1, "0")]),
+    ours(
+        "timeMgrUseMilitaryTime",
+        "1",
+        "3.3.5 GameUI_CVar.cpp:617-628; absent from the 1.12 catalog",
+    )
+    .by_locale(&[(0, "0"), (1, "0")]),
     ours(
         "fctRepChanges",
         "0",

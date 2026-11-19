@@ -61,7 +61,6 @@ local ITEM_CLASS_ARMOR = 4
 local ARMOR_SUBCLASS_SHIELD = 6
 local EMOTE_ONESHOT_WOUND = 33
 local EMOTE_ONESHOT_WOUND_CRITICAL = 34
-local EMOTE_ONESHOT_ATTACK1H = 36
 local EMOTE_STATE_NONE = 0
 local EMOTE_STATE_STUN = 64
 
@@ -71,7 +70,6 @@ local CROUCH_RATE = 0.5             -- ESTIMATE: ER's crouch walk over its run
 local WINDUP_SHARE = 0.4            -- decision 16: 40 % of the attack time...
 local WINDUP_MIN_MS = 600           -- ...clamped 0.6-1.5 s
 local WINDUP_MAX_MS = 1500
-local SWING_LEAD_MS = 350           -- ESTIMATE: the attack emote starts this long before the hit
 local VERDICT_GRACE_MS = 500        -- wait this long past the windup for the client's verdict
 local CONE_HALF_RADIANS = math.pi / 3   -- decision 16: a 120 degree frontal cone
 local GUARD_TAKEN_NO_SHIELD = 0.4   -- ESTIMATE: a weapon guard lets 40 % through; a shield none
@@ -470,12 +468,23 @@ local function strike_watchers(creature, strike)
     return out
 end
 
+-- Authored entry policy: kobold workers/miners thrust; Harvest Golems slam.
+-- Everything else sweeps. No model/family guesses or extra server data required.
+local STRIKE_KIND_BY_ENTRY = { [6] = "thrust", [257] = "thrust", [36] = "slam", [114] = "slam" }
+local STRIKE_SHAPES = {
+    sweep = { half_cone = math.rad(90), extra_reach = 0, windup_scale = 1 },
+    thrust = { half_cone = math.rad(20), extra_reach = 2, windup_scale = 1 },
+    slam = { half_cone = math.pi, extra_reach = 0, windup_scale = 1.5 },
+}
+
 local function start_strike(creature, ck, m, victim, now)
     local attack_ms = creature:GetUInt32Value(UNIT_FIELD_BASEATTACKTIME) or 2000
     if attack_ms <= 0 then
         attack_ms = 2000
     end
-    local windup = math.floor(math.max(WINDUP_MIN_MS, math.min(WINDUP_MAX_MS, attack_ms * WINDUP_SHARE)))
+    local kind = STRIKE_KIND_BY_ENTRY[creature:GetEntry()] or "sweep"
+    local shape = STRIKE_SHAPES[kind]
+    local windup = math.floor(math.max(WINDUP_MIN_MS, math.min(WINDUP_MAX_MS, attack_ms * WINDUP_SHARE)) * shape.windup_scale)
     local id = next_strike_id
     next_strike_id = next_strike_id + 1
     local reach = melee_reach(creature, victim)
@@ -489,9 +498,8 @@ local function start_strike(creature, ck, m, victim, now)
         victim = victim:GetGUID(),
         victim_key = key(victim:GetGUID()),
         reach = reach,
+        kind = kind,
         resolve_at = now + windup,
-        emote_at = now + windup - SWING_LEAD_MS,
-        emoted = false,
         verdict = nil,
     }
     m.next_at = now + math.max(attack_ms, windup + 400)
@@ -499,16 +507,17 @@ local function start_strike(creature, ck, m, victim, now)
         m.next_at - now)
     for _, watcher in ipairs(strike_watchers(creature, m.strike)) do
         local mine = key(watcher:GetGUID()) == m.strike.victim_key and 1 or 0
-        send(watcher, string.format("STRIKE\t%d\t%s\t%d\t%.2f\t%d", id, ck, windup, reach, mine))
+        send(watcher, string.format("STRIKE\t%d\t%s\t%d\t%.2f\t%d\t%s", id, ck, windup, reach, mine, kind))
     end
 end
 
 -- The server's own judgement: inside reach and the frontal cone.
 local function area_check(creature, victim, strike)
-    if not creature:IsWithinDist(victim, strike.reach) then
+    local shape = STRIKE_SHAPES[strike.kind]
+    if not creature:IsWithinDist(victim, strike.reach + shape.extra_reach) then
         return "miss"
     end
-    if angle_diff(creature:GetO(), creature:GetAngle(victim)) > CONE_HALF_RADIANS then
+    if angle_diff(creature:GetO(), creature:GetAngle(victim)) > shape.half_cone then
         return "miss"
     end
     return "hit"
@@ -629,10 +638,6 @@ local function tick()
                 end
             elseif m.strike then
                 local strike = m.strike
-                if not strike.emoted and now >= strike.emote_at then
-                    strike.emoted = true
-                    creature:PerformEmote(EMOTE_ONESHOT_ATTACK1H)
-                end
                 local judged = strike.verdict ~= nil or souls[strike.victim_key] == nil
                 if (judged and now >= strike.resolve_at) or now >= strike.resolve_at + VERDICT_GRACE_MS then
                     resolve_strike(creature, ck, m, now)

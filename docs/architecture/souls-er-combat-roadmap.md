@@ -92,6 +92,7 @@ cursor_keys = ["Escape", "B", "C", "P", "M", "L", "N", "O", "I", "K", "U", "H", 
 
 | ER feature | Status | Where | Switch |
 |---|---|---|---|
+| Equipped main-hand kit (dagger, swords, axes, maces, polearm, staff, fist, spear), re-picked on weapon change; missing file → player.kit → stock | done; owner runs `scripts/import-kits.ps1` | `combat_kit.rs`, `scripts/combat-kits.csv` | — |
 | Light chain (Light1–5), roll/backstep follow-ups | done (kit slice) | `combat_kit::resolve_press` | — |
 | Dodge on release, direction from held keys, backstep standing | done | `souls/input.rs` | — |
 | Sprint (hold dodge while moving), stamina drain | done; ×1.4 run speed from the server script | `souls/input.rs` | `sprint` |
@@ -111,9 +112,9 @@ cursor_keys = ["Escape", "B", "C", "P", "M", "L", "N", "O", "I", "K", "U", "H", 
 | Hit-stop and camera jolt; the player's clips pause for the stop | done | `souls/targets.rs`, `camera_shake.rs` | `hit_stop` |
 | Damage: weapon roll × motion value, cleave falloff, blob share | done by the server script; without it a landed hit starts stock melee | `souls/targets.rs`, `souls/server.rs`, `integrations/ale/rustwrath_souls.lua` | `server` (`engage_on_hit` without it) |
 | Stock auto-attack off while the mode is on | done by the server script (blocks `CMSG_ATTACKSWING`) | `rustwrath_souls.lua` | `server` |
-| Enemy telegraphs: creatures stop melee and wind up strikes (40 % of attack time, 0.6–1.5 s), a windup bar over them, the client judges reach/cone/i-frames/parry/guard | done (server script + client) | `souls/server.rs`, `souls/hud.rs`, `rustwrath_souls.lua` | `enemy_strikes`, `server` |
+| Enemy telegraphs: sweep (90° half-cone), thrust (20°, +2 yd), slam (circle, ×1.5 windup), orange/blue/purple bars; model-authored attack sequences scaled to land their impact at windup end; creatures stop melee and wind up strikes (40 % of attack time, 0.6–1.5 s), a windup bar over them, the client judges reach/cone/i-frames/parry/guard | done (server script + client) | `souls/server.rs`, `souls/hud.rs`, `rustwrath_souls.lua` | `enemy_strikes`, `server` |
 | Enemy stance break: hits cost the creature stance (30 + 2/level, ×2 elite; 10 per 100 % motion value), at zero it is stunned 3 s, its strike and casts cancelled, and a ×3 riposte opens | done (server script; the client shows the gold riposte marker) | `rustwrath_souls.lua`, `souls/server.rs` | `server` |
-| Other Souls players' swings shown (generic attack/parry/dodge anims) | done | `souls/server.rs` | `server` |
+| Other Souls players' swings, parries and dodges use the local kit's ER clips; unknown ids or missing bake/rig fall back to generic | done; at most 16 bodies, 512 bones each | `souls/server.rs`, `souls/retarget.rs` | `server` |
 | Stamina bar, mode chip (teal while the server answers), lock-on marker (gold while a riposte is open) | done | `souls/hud.rs` | `hud` |
 | Turn-rate caps (`turn` windows, degrees a second) | done | `souls/drive.rs`, `player/controller.rs` | `turn_rate` |
 | Poise: each hit taken costs poise and does not interrupt; at zero it breaks and staggers; refills 30 s after the last hit | done (prediction only, authored numbers) | `souls/input.rs`, `combat_playback.rs` | `poise` |
@@ -122,8 +123,8 @@ cursor_keys = ["Escape", "B", "C", "P", "M", "L", "N", "O", "I", "K", "U", "H", 
 | Jump attacks (light/heavy in the air) | done; needs `JumpLight`/`JumpHeavy` rows, which the owner's kit lacks | `souls/input.rs` | `jump_attacks` |
 | Left-hand chain | done; needs `LeftLight1…` or `PairedLight1…` rows (the importer's opt-in) | `souls/input.rs` | `left_hand` |
 | Parry: the `Parry` row's `iframes` window deflects a hit | done; needs a `Parry` row; with the server script a parried strike opens a ×3 riposte on that creature for 1.5 s | `souls/input.rs` | `parry` |
-| Clip retarget: each kit action plays the ER clip it was read from on our own rig (spine, head, arms, legs by role; pelvis height) | done (local player only); needs `benilla-config/combat/player_anims.bin` | `souls/retarget.rs` | `retarget` |
-| ER locomotion: idle, guard, walk/run/sprint by direction, crouch idle/walk/run, airborne | done (local player only; clip rates are estimates) | `souls/retarget.rs` | `retarget_locomotion` |
+| Clip retarget: each kit action plays the ER clip it was read from on our own rig (spine, head, arms, legs by role; pelvis height) | done (local and relayed player actions); needs `benilla-config/combat/player_anims.bin` | `souls/retarget.rs` | `retarget` |
+| ER locomotion: idle, guard, walk/run/sprint by direction, crouch idle/walk/run, airborne | done (locomotion stays local; relayed actions retarget too; clip rates are estimates) | `souls/retarget.rs` | `retarget_locomotion` |
 | ER control layout: hidden-cursor orbit, mouse attacks and guard, `LeftCtrl` cursor toggle, claimed keys override their WoW bindings, jump/use item/walk remaps | done | `souls/controls.rs`, `bindings.rs`, `player/camera.rs`, `ui_script/input.rs` | `er_controls` |
 | Interact key: the selection in reach, else the nearest usable thing in front (corpse loot, chest, door, mailbox, friendly NPC) | done | `souls/controls.rs` | `er_controls` |
 | Free camera: camera-relative movement, the body faces where it runs, actions snap to the held bearing, camera-picked lock-on | done | `souls/drive.rs`, `player/controller.rs` | `free_camera` |
@@ -134,7 +135,7 @@ cursor_keys = ["Escape", "B", "C", "P", "M", "L", "N", "O", "I", "K", "U", "H", 
 by itself; deleting it turns it off). The client talks to it over addon self-whispers with the
 prefix `RWSOULS` (`souls/server.rs`): `HELLO`, `MODE 1|0` every 10 s while F10 is on, `SPRINT`,
 `CROUCH`, `HIT <mv%> <guids>`, `SWING <action>`, `VERDICT <id> <outcome>`; the server answers
-`STRIKE`, `RESOLVE`, `PARRIED`, `BROKEN`, `SWING`. F10 off sends `MODE 0` and the server hands every creature back to
+`STRIKE <id> <creature> <windup-ms> <base-reach> <mine> [sweep|thrust|slam]`, `RESOLVE`, `PARRIED`, `BROKEN`, `SWING`. The optional trailing shape preserves old-client parsing; absent or unknown means the legacy 60° half-cone. Entry policy is in `STRIKE_KIND_BY_ENTRY`; unspecified creatures sweep. F10 off sends `MODE 0` and the server hands every creature back to
 stock AI. Without the script the client stays on the stock-melee fallback (`engage_on_hit`).
 Install and side effects: `.scratch/project-b/server-rebuild-batch.md` item 2.
 
@@ -142,9 +143,5 @@ Install and side effects: `.scratch/project-b/server-rebuild-batch.md` item 2.
 
 - Retarget checks in game: the bone roles are found from the bind pivots and attachments, not
   checked against the HumanMale skeleton; hand roll and the weapon's angle come from the forearm
-  aim; the locomotion clip speeds are estimates. Other players still show stock clips.
+  aim; the locomotion clip speeds are estimates. Remote locomotion still uses stock clips; relayed actions use the ER bake.
 - Kit rows for jumps, the left hand and the parry (`kit_import` options), then tuning.
-- Creature-specific strike animations (the server plays the generic one-hand attack emote).
-- The client reads the stealth CREEP flag from `UNIT_FIELD_BYTES_1` byte 3 (`unit_is_stealthed`),
-  where AzerothCore keeps it in byte 2 (byte 3 is the anim tier, `0x02` = hover): other players'
-  crouch and real stealth poses may not show, and a hovering unit may show crouched.

@@ -1,4 +1,4 @@
-//! The Elden Ring motion on the local player's own rig: the kit's actions play the ER clip each
+//! Elden Ring motion on our rig and relayed Souls players: kit actions play the ER clip each
 //! row was read from (`source`), and, on their own switch, idle, guard, walk, run, sprint, crouch
 //! and airborne play the ER locomotion clips.
 //!
@@ -1270,20 +1270,213 @@ pub(super) fn drive_retarget(
     }
 }
 
+/// The relay is a name on older scripts, or an action id on newer ones. Resolve against our
+/// local kit; never invent a clip for an unknown action.
+pub(super) fn relayed_row<'a>(
+    kit: Option<&'a benilla_combat_core::Kit>,
+    action: &str,
+) -> Option<&'a benilla_combat_core::KitAction> {
+    let kit = kit?;
+    action
+        .parse::<u32>()
+        .ok()
+        .and_then(|id| kit.action(benilla_combat_core::ActionId(id)))
+        .or_else(|| kit.action_named(action))
+}
+
+#[derive(Component)]
+pub(super) struct RemoteAction {
+    pub(super) source: String,
+    pub(super) started: f32,
+    pub(super) duration: f32,
+}
+
+/// Bounds include fading bodies; overflow keeps the generic animation.
+const MAX_REMOTE_BODIES: usize = 16;
+const MAX_REMOTE_BONES: usize = 512;
+
+struct RemotePose {
+    map: Result<RigMap, String>,
+    stock: Vec<Transform>,
+    written: Option<Vec<Transform>>,
+    from: Vec<Transform>,
+    started: f32,
+    fade_at: Option<f32>,
+}
+
+#[derive(Resource, Default)]
+struct RemotePoses(std::collections::HashMap<Entity, RemotePose>);
+
+/// Same bake, rig mapping, sampling and pose solver as our own body. No per-body file loads.
+/// At most 16 bodies, 512 bones each; one sample and one bounded pose solve per body/frame.
+#[allow(clippy::type_complexity)]
+fn drive_remote_retarget(
+    time: Res<Time>,
+    view: Res<CombatModeView>,
+    config: Res<SoulsConfig>,
+    retarget: Res<Retarget>,
+    mut poses: ResMut<RemotePoses>,
+    mut bodies: Query<
+        (
+            Entity,
+            &mut RigPose,
+            Option<&BodyTwist>,
+            Option<&BoneAttach>,
+            Option<&RemoteAction>,
+        ),
+        Without<SelfPlayer>,
+    >,
+) {
+    let on = souls_on(&view) && config.features.server && config.features.retarget;
+    let now = time.elapsed_secs();
+    let clips = retarget.clips.as_ref();
+    let rest = retarget.rest.as_ref();
+    // Evict despawned bodies before admitting new ones.
+    poses.0.retain(|entity, _| bodies.contains(*entity));
+    for (entity, rig, twist, attach, action) in &bodies {
+        if poses.0.len() >= MAX_REMOTE_BODIES {
+            break;
+        }
+        if poses.0.contains_key(&entity) || rig.locals.len() > MAX_REMOTE_BONES {
+            continue;
+        }
+        let ready = on
+            && action.is_some_and(|a| {
+                now < a.started + a.duration
+                    && clips.is_some_and(|clips| clips.clips.contains_key(&a.source))
+            });
+        if !ready {
+            continue;
+        }
+        let Some(rest) = rest else {
+            continue;
+        };
+        poses.0.insert(
+            entity,
+            RemotePose {
+                map: map_rig(&rig, twist, attach, rest),
+                stock: rig.locals.clone(),
+                written: None,
+                from: rig.locals.clone(),
+                started: f32::NEG_INFINITY,
+                fade_at: None,
+            },
+        );
+    }
+    poses.0.retain(|entity, state| {
+        let Ok((_, mut rig, twist, attach, action)) = bodies.get_mut(*entity) else {
+            return false;
+        };
+        let bones = rig.locals.len();
+        if bones > MAX_REMOTE_BONES {
+            return false;
+        }
+        if bones != state.stock.len() {
+            state.map = rest.map_or_else(
+                || Err("no rest pose".into()),
+                |rest| map_rig(&rig, twist, attach, rest),
+            );
+            state.stock = rig.locals.clone();
+            state.from = rig.locals.clone();
+            state.written = None;
+        }
+        let Ok(map) = &state.map else {
+            return on && action.is_some_and(|a| now < a.started + a.duration);
+        };
+        for b in map.bones() {
+            let current = rig.locals[b];
+            let ours = state.written.as_ref().is_some_and(|w| {
+                w[b] == current
+                    || (w[b].translation == current.translation
+                        && twist.and_then(|t| t.last_written(b)) == Some(current.rotation))
+            });
+            if !ours {
+                state.stock[b] = current;
+            }
+        }
+        let target = action
+            .filter(|a| on && now < a.started + a.duration)
+            .and_then(|a| clips?.clips.get(&a.source).map(|clip| (a, clip)));
+        if let Some((a, _)) = target {
+            if a.started != state.started {
+                state.from = state.written.clone().unwrap_or_else(|| state.stock.clone());
+                state.started = a.started;
+            }
+            state.fade_at = None;
+        } else if state.fade_at.is_none() {
+            state.from = state.written.clone().unwrap_or_else(|| state.stock.clone());
+            state.fade_at = Some(now);
+        }
+        let mut work = state.stock.clone();
+        let (since, fade_len) = match target {
+            Some((a, clip)) => {
+                if let Some(clips) = clips {
+                    let pose = clips.sample(clip, (now - a.started).max(0.0) * CLIP_FPS, false);
+                    map.pose(&pose, &rig.parents, rig.binds(), &mut work);
+                }
+                (
+                    now - state.started,
+                    (clip.blend / CLIP_FPS).max(MIN_BLEND_SECS),
+                )
+            }
+            None => (now - state.fade_at.unwrap_or(now), FADE_OUT_SECS),
+        };
+        let blend = (since / fade_len).clamp(0.0, 1.0);
+        let mut written = rig.locals.clone();
+        for b in map.bones() {
+            let from = state.from[b];
+            let out = Transform {
+                translation: from.translation.lerp(work[b].translation, blend),
+                rotation: from.rotation.slerp(work[b].rotation, blend).normalize(),
+                scale: work[b].scale,
+            };
+            if !out.translation.is_finite() || !out.rotation.is_finite() {
+                continue;
+            }
+            if rig.locals[b] != out {
+                rig.locals[b] = out;
+                rig.pose_dirty = true;
+            }
+            written[b] = out;
+        }
+        state.written = Some(written);
+        target.is_some() || blend < 1.0
+    });
+}
+
 /// Register [`drive_retarget`] in the pose post-pass, before the strafe twist composes onto the
 /// spine and head.
 pub(super) fn plugin(app: &mut App) {
-    app.init_resource::<Retarget>().add_systems(
-        PostUpdate,
-        drive_retarget
-            .in_set(benilla_world::rig_anim::PosePost)
-            .before(crate::creature_anim::apply_body_twist),
-    );
+    app.init_resource::<Retarget>()
+        .init_resource::<RemotePoses>()
+        .add_systems(
+            PostUpdate,
+            (drive_retarget, drive_remote_retarget)
+                .chain()
+                .in_set(benilla_world::rig_anim::PosePost)
+                .before(crate::creature_anim::apply_body_twist),
+        );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relay_resolves_local_kit_ids_names_and_unknowns() {
+        let kit = benilla_combat_core::Kit::parse("rustwrath-kit 1\nlabel relay\nframe_rate 30\naction 100 dodge\n name RollFront\n source a001\n total 30\n input 15 15\n cancel 20 20 20 never 20 20 never\n stamina 4\n iframes 0 6\nend\n").unwrap();
+        assert_eq!(
+            relayed_row(Some(&kit), "100").map(|row| row.source.as_str()),
+            Some("a001")
+        );
+        assert_eq!(
+            relayed_row(Some(&kit), "RollFront").map(|row| row.id),
+            Some(benilla_combat_core::ActionId(100))
+        );
+        assert!(relayed_row(Some(&kit), "999").is_none());
+        assert!(relayed_row(Some(&kit), "Unknown").is_none());
+        assert!(relayed_row(None, "100").is_none());
+    }
 
     /// A bake with every joint the retarget reads parses, and a sample between frames is the
     /// mix, turned into the model frame.
