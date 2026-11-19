@@ -9590,6 +9590,28 @@ fn push_player_unit_fields(
     }
 }
 
+/// The 3.3.5 honor counters (`PLAYER_FIELD_KILLS` 1225 .. `PLAYER_FIELD_WATCHED_FACTION_INDEX`
+/// 1230) into the 1.12 honor block. Session kills are two u16 counts in one dword; this-week,
+/// yesterday and lifetime honor are one dword each, and BYTES2 packs rank progress with the
+/// visible-aura mask.
+fn push_player_honor_fields(
+    raw: &crate::wrath_inventory::WrathFieldWindow,
+    pairs: &mut Vec<(u16, u32)>,
+) {
+    for (src, dst) in [
+        (1225u16, 1250u16), // PLAYER_FIELD_KILLS -> FIELD_PLAYER_FIELD_SESSION_KILLS
+        (1226, 1254), // PLAYER_FIELD_TODAY_CONTRIBUTION -> FIELD_PLAYER_FIELD_THIS_WEEK_CONTRIBUTION
+        (1227, 1257), // PLAYER_FIELD_YESTERDAY_CONTRIBUTION -> FIELD_PLAYER_FIELD_YESTERDAY_CONTRIBUTION
+        (1228, 1255), // PLAYER_FIELD_LIFETIME_HONORABLE_KILLS -> FIELD_PLAYER_FIELD_LIFETIME_HONORABLE_KILLS
+        (1229, 1260), // PLAYER_FIELD_BYTES2 -> FIELD_PLAYER_FIELD_BYTES2
+        (1230, 1261), // PLAYER_FIELD_WATCHED_FACTION_INDEX -> FIELD_PLAYER_WATCHED_FACTION_INDEX
+    ] {
+        if let Some(value) = raw.get(src) {
+            pairs.push((dst, value));
+        }
+    }
+}
+
 /// Translate one 3.3.5 corpse block into the 1.12 corpse layout. Owner and party (6..=9) keep
 /// their indices; display, the nineteen item slots, both appearance bytes, guild, flags and the
 /// dynamic flags start two dwords earlier (`CORPSE_FIELD_DISPLAY_ID` 10 against the 1.12 slot
@@ -10324,19 +10346,20 @@ fn wrath_apply_world(world: &mut World) {
                         pairs.push((1201 + i, v));
                     }
                 }
-                // `PLAYER_FIELD_BYTES` (combo points in byte 1), ammo, self-res, PvP medals,
-                // buyback prices/timestamps (`1201..1225` -> `1226..1250`), and watched faction (`1230` -> `1261`).
+                // `PLAYER_FIELD_BYTES` (combo points in byte 1), ammo, self-res and PvP medals.
                 for (src, dst) in [
                     (1197u16, 1222u16), // PLAYER_FIELD_BYTES
                     (1198, 1223),       // PLAYER_AMMO_ID
                     (1199, 1224),       // PLAYER_SELF_RES_SPELL
                     (1200, 1225),       // PLAYER_FIELD_PVP_MEDALS
-                    (1230, 1261),       // PLAYER_FIELD_WATCHED_FACTION_INDEX
                 ] {
                     if let Some(v) = raw.get(src) {
                         pairs.push((dst, v));
                     }
                 }
+                // Buyback prices/timestamps (1201..=1224 -> 1226..=1249), then the honor
+                // counters at 1225..=1230 into the scattered 1.12 honor block.
+                push_player_honor_fields(raw, &mut pairs);
                 for i in 0..24u16 {
                     if let Some(v) = raw.get(1201 + i) {
                         pairs.push((1226 + i, v));
@@ -11170,6 +11193,27 @@ fn wrath_apply_world(world: &mut World) {
                     {
                         let entity = world.resource::<GuidIndex>().0.get(guid).copied();
                         if let Some(entity) = entity {
+                            let _ = world.write_message(FieldChanged {
+                                at: crate::lanes::stamp(),
+                                entity,
+                                guid: *guid,
+                                kind: *kind,
+                                index,
+                                old,
+                                new,
+                            });
+                        }
+                    }
+                }
+            }
+            if *kind == ObjectType::GameObject || *kind == ObjectType::Corpse {
+                for &(index, old, new) in moved {
+                    if (*kind == ObjectType::GameObject
+                        && index == benilla_protocol::field::FIELD_GAMEOBJECT_STATE)
+                        || (*kind == ObjectType::Corpse
+                            && index == benilla_protocol::field::FIELD_CORPSE_DYNAMIC_FLAGS)
+                    {
+                        if let Some(entity) = world.resource::<GuidIndex>().0.get(guid).copied() {
                             let _ = world.write_message(FieldChanged {
                                 at: crate::lanes::stamp(),
                                 entity,
@@ -14002,6 +14046,41 @@ mod tests {
         assert_eq!(at(134), [7.0f32.to_bits()], "min damage");
         assert_eq!(at(137), [9.0f32.to_bits()], "max off-hand damage");
         assert_eq!(at(193), [0x0102_0304], "PLAYER_BYTES");
+    }
+
+    /// The 3.3.5 honor counters are at 1225..=1230, but the 1.12 honor block scatters them from
+    /// 1250 to 1261. Undelivered counters must leave their donor slots untouched.
+    #[test]
+    fn wrath_player_honor_fields_sit_in_the_1_12_honor_block() {
+        let window = item_window(
+            &[
+                (1225, 0x0003_0007),
+                (1226, 1200),
+                (1227, 800),
+                (1228, 42_000),
+                (1229, 0x0000_6400),
+                (1230, 17),
+            ],
+            crate::wrath_inventory::PLAYER_WINDOW_END,
+        );
+        let mut pairs = Vec::new();
+        push_player_honor_fields(&window, &mut pairs);
+        assert_eq!(
+            pairs,
+            vec![
+                (1250, 0x0003_0007),
+                (1254, 1200),
+                (1257, 800),
+                (1255, 42_000),
+                (1260, 0x0000_6400),
+                (1261, 17),
+            ]
+        );
+
+        let partial = item_window(&[(1228, 42_000)], crate::wrath_inventory::PLAYER_WINDOW_END);
+        let mut pairs = Vec::new();
+        push_player_honor_fields(&partial, &mut pairs);
+        assert_eq!(pairs, vec![(1255, 42_000)]);
     }
 
     /// A window where only the supplied `(index, value)` dwords count as delivered.
