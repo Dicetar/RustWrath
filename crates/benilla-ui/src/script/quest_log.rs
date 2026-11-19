@@ -2,8 +2,8 @@
 //! slots and the quest records the app mirrors from its cache, the display list the rebuild
 //! (`0x4de510`) makes of them, and the verbs the stock `QuestLogFrame.lua` calls. A verb reads
 //! what it needs at the call, as the reference's do: a row's title off its quest's record, its
-//! state and counters off its slot, an objective's name off the creature or item cache and its
-//! count off the bags. A record a verb misses is asked for with a callback that fires
+//! state and counters off its slot, an objective's name off the creature, GameObject or item cache
+//! and its count off the bags. A record a verb misses is asked for with a callback that fires
 //! `QUEST_LOG_UPDATE` when it lands (`0x4e07d0`, `0x4e0830`); the reference holds one per call that
 //! missed (`0x4e05c9`, `0x4e0b9c`; `0x55bbb3`), benilla one per record
 //! ([`super::UiScript::flush_quest_log_refires`]).
@@ -29,9 +29,8 @@
 //!
 //! `IsUnitOnQuest` reads a unit's quest-log window off its snapshot ([`super::UnitState`]).
 //!
-//! Not built: a GameObject objective's name, which wears the placeholder, and 12340's
-//! intermediate drop-item ids (the decoder maps the six required/collect items into the donor's
-//! four objective slots and has no slot for the drop item itself).
+//! Not built: 12340's intermediate drop-item ids (the decoder maps the six required/collect items
+//! into the donor's four objective slots and has no slot for the drop item itself).
 //!
 //! The 3.3.5 watch frame's extra verbs (`GetQuestWatchIndex`, `GetQuestSortIndex`,
 //! `ShiftQuestWatches`, `SortQuestWatches`, `GetQuestLogCompletionText`,
@@ -198,12 +197,17 @@ pub(crate) struct QuestLogStore {
     record_waits: HashMap<u32, u32>,
     /// The quests the rebuild missed, for the app to ask.
     record_asks: Vec<u32>,
-    /// The item and creature records a verb missed and that have not landed.
+    /// The item, creature and GameObject records a verb missed and that have not landed.
     item_waits: HashSet<u32>,
     creature_waits: HashSet<u32>,
     creature_asks: Vec<u32>,
     /// The creature cache (`0xc0e354`) as far as the leaderboard asked it.
     creature_names: HashMap<u32, String>,
+    /// A GameObject objective's entry, with its top bit stripped, while its name is in flight.
+    go_waits: HashSet<u32>,
+    go_asks: Vec<u32>,
+    /// The GameObject cache (`0xc0e318`) as far as the leaderboard asked it.
+    go_names: HashMap<u32, String>,
     /// The held count of each item a log quest needs (`0x622130(inventory, item, 8)`).
     held: HashMap<u32, u32>,
     /// Missed records that landed, each one `QUEST_LOG_UPDATE` at the next flush.
@@ -670,6 +674,23 @@ impl Model {
             }
         }
     }
+
+    /// A GameObject objective's name through the same one-callback-per-call lookup
+    /// (`0x4e031e`: the record is keyed by the objective with its top bit cleared,
+    /// `objective & 0x7fffffff`), or on a miss the ask, once, and the entry held as awaited.
+    fn quest_go_lookup(&mut self, entry: u32) -> Option<String> {
+        let entry = entry & !GO_OBJECTIVE_BIT;
+        let store = &mut self.quest_store;
+        match store.go_names.get(&entry) {
+            Some(name) => Some(name.clone()),
+            None => {
+                if store.go_waits.insert(entry) {
+                    store.go_asks.push(entry);
+                }
+                None
+            }
+        }
+    }
 }
 
 /// One leaderboard line of a record, in `GetQuestLogLeaderBoard`'s order (`0x4e0110`): the event
@@ -783,8 +804,9 @@ impl LineParts {
 /// Line `line` (1-based) of row `index`, read at the call. The event line is the end text,
 /// finished by the slot's complete bit alone (`test byte [slot+7],1`, `0x4e02a2`). A creature line
 /// takes the slot's 6-bit counter (`0x4e0302`); its override text is the name under
-/// `QUEST_OBJECTS_FOUND` (`0x4e03e1`), else a GameObject's key is that one too (`0x4e031e`) and a
-/// creature's `QUEST_MONSTERS_KILLED` with its name looked up (`0x4e0461`). An item line holds the
+/// `QUEST_OBJECTS_FOUND` (`0x4e03e1`), else a GameObject's key is that one too (`0x4e031e`, its
+/// entry cleared of the top bit and looked up in the GameObject cache) and a creature's
+/// `QUEST_MONSTERS_KILLED` with its name looked up (`0x4e0461`). An item line holds the
 /// count in the bags capped at the need (`0x4e0579`-`0x4e059c`) and its name looked up at every
 /// call (`0x4e05e0`). The reputation line is finished when the player's standing reaches `+0x18`
 /// (`cmp edi,[esi+0x18]`, `0x4e0787`).
@@ -844,9 +866,12 @@ fn line_parts(model: &mut Model, index: usize, line: usize) -> Option<LineParts>
             ));
         }
         if is_go {
+            let name = model
+                .quest_go_lookup(o.creature_or_go)
+                .unwrap_or_else(|| NAME_PLACEHOLDER.into());
             return Some(LineParts::count(
                 "QUEST_OBJECTS_FOUND",
-                NAME_PLACEHOLDER.into(),
+                name,
                 cur,
                 req,
                 kind,
@@ -1140,6 +1165,21 @@ impl super::UiScript {
     /// The server refused a creature: its callbacks run with status 0 and only log (`0x4e07dc`).
     pub fn refuse_quest_creature(&mut self, entry: u32) {
         self.model_mut().quest_store.creature_waits.remove(&entry);
+    }
+
+    /// The GameObject entries the leaderboard missed since the last drain, with the top bit
+    /// already stripped: the app asks each.
+    pub fn take_quest_go_asks(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.model_mut().quest_store.go_asks)
+    }
+
+    /// A GameObject's name landed: held, and each callback the leaderboard left on it is due, as
+    /// the creature cache's landing signals `QUEST_LOG_UPDATE` (`0x4e07ea`).
+    pub fn set_quest_go_name(&mut self, entry: u32, name: String) {
+        let mut model = self.model_mut();
+        let store = &mut model.quest_store;
+        store.go_names.insert(entry, name);
+        store.due += u32::from(store.go_waits.remove(&entry));
     }
 
     /// Fire one `QUEST_LOG_UPDATE` for each missed record that landed, after the frame's landings,
@@ -2515,7 +2555,10 @@ mod detail_tests;
 #[cfg(test)]
 mod tests {
     use super::fixture::{collect, kill, record, seat, slot};
-    use super::{QuestRecordView, QuestSlotView, QUEST_LOG_SLOTS, SLOT_COMPLETE, SLOT_FAILED};
+    use super::{
+        QuestObjectiveView, QuestRecordView, QuestSlotView, QUEST_LOG_SLOTS, SLOT_COMPLETE,
+        SLOT_FAILED,
+    };
     use crate::script::tick::heard;
     use crate::script::{ItemTemplateView, UiScript};
 
@@ -4306,6 +4349,85 @@ mod tests {
         s.set_quest_creature_name(41, "Bear".into());
         s.flush_quest_log_refires();
         assert!(heard::take(&s).is_empty());
+    }
+
+    /// A GameObject objective's entry marks the line `object`, and a cached name fills it from the
+    /// GameObject cache (`0x4e031e`): a hit queues no ask and leaves no callback.
+    #[test]
+    fn a_cached_gameobject_name_fills_the_object_line() {
+        let mut s = UiScript::new().unwrap();
+        let mut r = record("Candles", 1, 12, "Elwynn Forest");
+        r.objectives[0] = QuestObjectiveView {
+            creature_or_go: 0x8000_0010,
+            required_count: 2,
+            ..Default::default()
+        };
+        seat(&mut s, &[(50, r, slot(50, 1, 0))]);
+        s.set_quest_go_name(0x10, "Mysterious Crate".into());
+        heard::listen(&s, &["QUEST_LOG_UPDATE"], None);
+        assert_eq!(
+            s.eval::<String>("return (GetQuestLogLeaderBoard(1, 2))")
+                .unwrap(),
+            "Mysterious Crate: 1/2"
+        );
+        assert!(s.take_quest_go_asks().is_empty(), "a hit asks nothing");
+        s.flush_quest_log_refires();
+        assert!(heard::take(&s).is_empty(), "a hit holds nothing");
+    }
+
+    /// A GameObject the cache misses keeps the placeholder, queues one ask with the top bit
+    /// stripped, and a second read asks nothing more.
+    #[test]
+    fn a_gameobject_miss_holds_the_placeholder_and_asks_once() {
+        let mut s = UiScript::new().unwrap();
+        let mut r = record("Candles", 1, 12, "Elwynn Forest");
+        r.objectives[0] = QuestObjectiveView {
+            creature_or_go: 0x8000_0010,
+            required_count: 2,
+            ..Default::default()
+        };
+        seat(&mut s, &[(50, r, slot(50, 1, 0))]);
+        for _ in 0..2 {
+            assert_eq!(
+                s.eval::<String>("return (GetQuestLogLeaderBoard(1, 2))")
+                    .unwrap(),
+                "...: 1/2"
+            );
+        }
+        assert_eq!(
+            s.take_quest_go_asks(),
+            vec![0x10],
+            "one ask, keyed by the cleared entry"
+        );
+        s.run("GetQuestLogLeaderBoard(1, 2)").unwrap();
+        assert!(s.take_quest_go_asks().is_empty(), "still held, no re-ask");
+    }
+
+    /// The GameObject's name landing replaces the placeholder and fires the leaderboard's
+    /// callback once, as the creature cache's landing does (`0x4e07ea`).
+    #[test]
+    fn a_gameobject_name_landing_replaces_the_placeholder_and_fires_once() {
+        let mut s = UiScript::new().unwrap();
+        let mut r = record("Candles", 1, 12, "Elwynn Forest");
+        r.objectives[0] = QuestObjectiveView {
+            creature_or_go: 0x8000_0010,
+            required_count: 2,
+            ..Default::default()
+        };
+        seat(&mut s, &[(50, r, slot(50, 1, 0))]);
+        s.run("GetQuestLogLeaderBoard(1, 2)").unwrap();
+        assert_eq!(s.take_quest_go_asks(), vec![0x10]);
+        heard::listen(
+            &s,
+            &["QUEST_LOG_UPDATE"],
+            Some("(GetQuestLogLeaderBoard(1, 2))"),
+        );
+        s.set_quest_go_name(0x10, "Mysterious Crate".into());
+        assert!(heard::take(&s).is_empty(), "fired at the flush");
+        s.flush_quest_log_refires();
+        assert_eq!(heard::take(&s), ["QUEST_LOG_UPDATE Mysterious Crate: 1/2"]);
+        s.flush_quest_log_refires();
+        assert!(heard::take(&s).is_empty(), "a landed name fires once");
     }
 
     /// A handler that walks every line at each `QUEST_LOG_UPDATE` over three creatures in flight:

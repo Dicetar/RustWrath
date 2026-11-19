@@ -997,6 +997,9 @@ mod auction_tests;
 mod bank_tests;
 
 #[cfg(test)]
+mod economy_tests;
+
+#[cfg(test)]
 mod taxi_tests;
 
 #[cfg(test)]
