@@ -20,6 +20,7 @@ const ME: u64 = 0x0000_0000_0000_0001;
 fn form(flags: u32) -> ShapeshiftForm {
     ShapeshiftForm {
         bonus_bar: 0,
+        has_action_bar: false,
         name: String::new(),
         flags,
         creature_type: 0,

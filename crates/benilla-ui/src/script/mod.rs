@@ -352,8 +352,8 @@ pub use lock_check::{check_lock, LockCheck, LockOpener, LockOpeners, LockSlotVie
 pub use loot::{LootCall, LootRow, LootState, LOOT_PORTRAIT_UNIT};
 pub use loot_roll::{LootRollCall, LootRollEntry, LootRollsState, WrathLootRollTooltip};
 pub use macros::{
-    macro_lines, MacroBinding, MacroDerives, MacroState, MacroView, CHARACTER_ID_BASE, MAX_MACROS,
-    MAX_MACRO_BODY, MAX_MACRO_NAME,
+    macro_lines, MacroBinding, MacroDerives, MacroLimits, MacroState, MacroView, CHARACTER_ID_BASE,
+    MAX_MACROS, MAX_MACRO_BODY, MAX_MACRO_NAME,
 };
 pub use mail::{
     MailCall, MailInboxAttachment, MailInboxRow, MailInvoice, MailRowVerb, MailSendRequest,
