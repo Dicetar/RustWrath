@@ -1868,7 +1868,11 @@ mod tests {
                     binds: &binds,
                     head: key(6).unwrap(),
                     hands: HAND_ATTACH.map(|id| usize::from(point(id).bone)),
-                    elbows: ELBOW_ATTACH.map(|id| Some(wow_to_bevy(point(id).position))),
+                    elbows: ELBOW_ATTACH.map(|id| {
+                        att.iter()
+                            .find(|a| a.id == id)
+                            .map(|a| piv[usize::from(a.bone)] + wow_to_bevy(a.position))
+                    }),
                     thumbs: [key(12), key(17)],
                 };
                 let map = RigMap::build(&rig, &rest).unwrap();
