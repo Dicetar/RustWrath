@@ -6,6 +6,7 @@ use bevy::prelude::*;
 
 use super::{CorpsePoint, DeathNet, ReleaseLocation, ResurrectOffer};
 use crate::net::{MoveModeMessage, NetHandlerApp, ObjectStore, SelfGuid, SelfPlayer};
+use crate::target::DeselectGuid;
 
 /// Register the death handlers and the session-end listener.
 pub(super) fn register(app: &mut App) {
@@ -17,7 +18,9 @@ pub(super) fn register(app: &mut App) {
         .net_handler(K::DurabilityDamageDeath, on_durability_damage_death)
         .net_handler(K::DeathReleaseLoc, on_death_release_loc)
         .net_handler(K::PreResurrect, on_pre_resurrect)
+        .net_handler(K::ClearTarget, on_clear_target)
         .net_handler(K::CorpseNotInInstance, on_corpse_not_in_instance)
+        .add_message::<DeselectGuid>()
         .net_handler(K::MoveMode, on_move_mode)
         .net_handler(K::Disconnected, on_session_end);
 }
@@ -90,6 +93,14 @@ fn on_pre_resurrect(
 ) {
     if let SessionEvent::PreResurrect { guid } = ev {
         clear.write(crate::entities::ClearMissilesAt { target: guid });
+    }
+}
+
+/// `SMSG_CLEAR_TARGET` (`UnitCombat_C.cpp:860`): a forced deselect writes the guid-scoped
+/// [`DeselectGuid`], which the target drain applies only to the live selection.
+fn on_clear_target(In(ev): In<SessionEvent>, mut deselect: MessageWriter<DeselectGuid>) {
+    if let SessionEvent::ClearTarget { guid } = ev {
+        deselect.write(DeselectGuid(guid));
     }
 }
 
@@ -410,5 +421,24 @@ mod tests {
         assert_eq!(death.release_location, None, "a ghost keeps no location");
         death_release_loc(-1, [0.0, 0.0, 0.0], true, &mut death);
         assert_eq!(death.release_location, None, "the resurrection clears too");
+    }
+
+    /// `SMSG_CLEAR_TARGET` writes the guid-scoped deselect the target drain applies, and only to
+    /// the live selection: a non-matching guid is dropped downstream by `clear_target_requests`.
+    #[test]
+    fn clear_target_writes_a_guid_scoped_deselect() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = App::new();
+        app.add_message::<crate::target::DeselectGuid>();
+        let guid = 0xF130_0000_0000_00ABu64;
+        app.world_mut()
+            .run_system_once_with(on_clear_target, SessionEvent::ClearTarget { guid })
+            .expect("the clear-target handler");
+        let written: Vec<crate::target::DeselectGuid> = app
+            .world_mut()
+            .resource_mut::<Messages<crate::target::DeselectGuid>>()
+            .drain()
+            .collect();
+        assert_eq!(written, vec![crate::target::DeselectGuid(guid)]);
     }
 }

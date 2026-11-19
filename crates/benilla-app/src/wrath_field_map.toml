@@ -30,6 +30,11 @@ to = 8
 from = 9
 to = 9
 
+[[gameobject]] # GAMEOBJECT_PARENTROTATION 0..3 -> FIELD_GAMEOBJECT_ROTATION
+from = 10
+to = 10
+count = 4
+
 [[gameobject]] # GAMEOBJECT_BYTES_1 byte 0 (state) -> GAMEOBJECT_STATE
 from = 17
 to = 14
@@ -39,6 +44,18 @@ mask = 0xFF
 from = 17
 to = 21
 shift = 8
+mask = 0xFF
+
+[[gameobject]] # GAMEOBJECT_BYTES_1 byte 2 (art kit) -> GAMEOBJECT_ARTKIT
+from = 17
+to = 23
+shift = 16
+mask = 0xFF
+
+[[gameobject]] # GAMEOBJECT_BYTES_1 byte 3 (anim progress) -> GAMEOBJECT_ANIMPROGRESS
+from = 17
+to = 24
+shift = 24
 mask = 0xFF
 
 [[gameobject]] # GAMEOBJECT_DYNAMIC low u16 (dynamic flags) -> GAMEOBJECT_DYN_FLAGS
