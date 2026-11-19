@@ -14,7 +14,7 @@ use crate::billboard::BillboardCard;
 use crate::doodad_anim::DoodadAnimHost;
 use crate::mesh_tag::alpha_bits;
 use crate::model_fade::DoodadFade;
-use crate::model_render::{model_material, MaterialCache, ShadeSel};
+use crate::model_render::{wmo_model_material, MaterialCache, ShadeSel};
 use crate::model_render::{ModelKind, ModelPart};
 use benilla_assets::materials::WowModelMaterial;
 
@@ -165,7 +165,7 @@ pub fn spawn_model_entities(
         // host it shares and stays at the built seed.
         let per_seq = sub.uv_seq.is_some() || sub.rgb_seq.is_some();
         let seq_owner = per_seq.then_some(rig_root).flatten();
-        let cutout = model_material(
+        let cutout = wmo_model_material(
             mat_cache,
             materials,
             sub.texture.clone(),
@@ -192,6 +192,7 @@ pub fn spawn_model_entities(
             false, // the world streamer never spawns a skybox
             light,
             seq_owner,
+            sub.geometry.wmo_unified,
         );
         // The fade's blend twin, the cutout itself when already blended or never fading. A multiply
         // batch (Mod, Mod2x) keeps its cutout too: it reads no alpha, so the shader fades its
@@ -204,7 +205,7 @@ pub fn spawn_model_entities(
             cutout.clone()
         } else {
             // The source blend decides the twin's cutout: only AlphaKey alpha-tests while fading.
-            model_material(
+            wmo_model_material(
                 mat_cache,
                 materials,
                 sub.texture.clone(),
@@ -231,6 +232,7 @@ pub fn spawn_model_entities(
                 false, // the world streamer never spawns a skybox
                 light,
                 seq_owner,
+                sub.geometry.wmo_unified,
             )
         };
         // One classification for the census tally and the diverts, so the two cannot drift.
@@ -331,6 +333,7 @@ pub fn spawn_model_entities(
                                     class: sub.wmo_batch,
                                     sidn: sub.sidn,
                                     window: sub.window,
+                                    unified: sub.geometry.wmo_unified,
                                     batch_order,
                                 }),
                                 None,

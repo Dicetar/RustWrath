@@ -49,6 +49,9 @@ pub(crate) struct GxItemDraw {
     pub order: u16,
     /// The MOMT SIDN night-glow colour (gamma bytes; zero on cell items).
     pub sidn: [u8; 3],
+    /// The unified path's MOHD ambient, R, G, B bytes (zero elsewhere): R and G in record column y
+    /// bits 16..=31 above the batch order, B in column z bits 24..=31 above the SIDN colour.
+    pub ambient: [u8; 3],
     /// The interior prop's SH-probe slot, record column w bits 1..=13; 0 elsewhere.
     pub slot: u16,
 }
@@ -523,10 +526,13 @@ fn assemble_region(
         .map(|(i, item)| {
             [
                 u32::from(item_class_layer[i].1),
-                u32::from(item.order),
+                u32::from(item.order)
+                    | (u32::from(item.ambient[0]) << 16)
+                    | (u32::from(item.ambient[1]) << 24),
                 u32::from(item.sidn[0])
                     | (u32::from(item.sidn[1]) << 8)
-                    | (u32::from(item.sidn[2]) << 16),
+                    | (u32::from(item.sidn[2]) << 16)
+                    | (u32::from(item.ambient[2]) << 24),
                 kill_bit(&draw.killed, i) | (u32::from(item.slot) << 1),
             ]
         })
@@ -847,6 +853,7 @@ mod tests {
             group: None,
             order: 0,
             sidn: [0; 3],
+            ambient: [0; 3],
             slot: 0,
         }
     }

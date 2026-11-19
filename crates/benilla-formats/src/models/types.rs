@@ -312,6 +312,11 @@ pub struct RenderSubmesh {
     /// MOMT WINDOW (`0x20`): the interior drawer lights the batch by the midpoint of the Direct and
     /// Ambient bands (ambient +16/255), per batch (`0x6d37e0`).
     pub window: bool,
+    /// A batch of a WMO on the unified render path (`MOHD.flags & 0x2`), carrying the root's
+    /// MOHD ambient as R, G, B bytes; `None` elsewhere. The unified shader adds MOCV as emissive
+    /// beside the halved light and doubles the sum, `2·tex·clamp(L/2 + MOCV + SIDN/2)`, where
+    /// the classic drawers multiply the light by it (`MapObj.cpp:916`, `MapObjU` vertex program).
+    pub wmo_unified: Option<[u8; 3]>,
     /// M2 blend mode 3 or 4 (glow cards); alpha-blended instead, the background mutes the hue.
     pub additive: bool,
     /// M2 render flag `0x10`; without it the reference writes depth for every batch (`0x70c190`).
@@ -425,6 +430,7 @@ impl Default for RenderSubmesh {
             icon_slot: false,
             sidn: None,
             window: false,
+            wmo_unified: None,
             additive: false,
             no_depth_write: false,
             no_depth_test: false,
