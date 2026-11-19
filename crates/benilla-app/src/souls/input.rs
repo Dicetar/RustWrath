@@ -336,6 +336,11 @@ pub(super) fn souls_input(
     profiles: Res<CombatProfiles>,
     player: Res<Player>,
     me: Query<Entity, With<SelfPlayer>>,
+    critical: (
+        super::targets::Units,
+        crate::target::RelationWorld,
+        ResMut<super::server::SoulsLink>,
+    ),
     mut playback: ResMut<CombatPlaybackState>,
     mut souls: ResMut<SoulsState>,
     mut play_seq: ResMut<PlaySeq>,
@@ -567,6 +572,8 @@ pub(super) fn souls_input(
     let active = playback.engine.as_ref().and_then(|engine| engine.active());
     let counter = t < souls.counter_until;
     let mut heavy_pressed = None;
+    let (units, relations, mut link) = critical;
+    let mut crit = None;
     let request = if let Some(row) = landing {
         kit_now.and_then(|kit| kit_row(kit, row))
     } else if jumping {
@@ -588,12 +595,30 @@ pub(super) fn souls_input(
             None => Some(stock_press(Press::Dodge)),
         }
     } else if input.just_pressed(binds.light) {
-        match kit_now {
-            Some(kit) if souls.crouched => {
-                kit_row(kit, "CrouchAttack").or_else(|| light_action(kit, active, false, &features))
+        crit = kit_now
+            .filter(|_| idle && link.reporting())
+            .and_then(|kit| {
+                let guid = super::targets::broken_opening(
+                    &units,
+                    &relations,
+                    player.pos,
+                    t,
+                    link.broken?,
+                )?;
+                let action = kit
+                    .action_named("Critical")
+                    .or_else(|| kit.action_named("Heavy1"))?;
+                Some((guid, action.id))
+            });
+        if let Some((_, id)) = crit {
+            Some(id)
+        } else {
+            match kit_now {
+                Some(kit) if souls.crouched => kit_row(kit, "CrouchAttack")
+                    .or_else(|| light_action(kit, active, false, &features)),
+                Some(kit) => light_action(kit, active, souls.sprinting, &features),
+                None => Some(stock_press(Press::Light)),
             }
-            Some(kit) => light_action(kit, active, souls.sprinting, &features),
-            None => Some(stock_press(Press::Light)),
         }
     } else if features.heavy && input.just_pressed(binds.heavy) {
         let id =
@@ -616,6 +641,17 @@ pub(super) fn souls_input(
             &mut play_seq,
             &mut actions,
         );
+        if let Some((guid, _)) = crit.filter(|_| {
+            events
+                .iter()
+                .any(|e| matches!(e, EngineEvent::Started { id, .. } if *id == action))
+        }) {
+            if let Some((instance, ..)) = kit_now.and_then(|kit| running_action(kit, &playback)) {
+                souls.critical = Some(instance);
+                link.broken = None;
+                link.critical(guid);
+            }
+        }
         let refused = events.iter().any(|event| {
             matches!(
                 event,

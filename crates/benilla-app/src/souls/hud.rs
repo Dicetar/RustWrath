@@ -166,6 +166,7 @@ pub(super) fn drive_hud(
     camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
     targets: Query<&GlobalTransform, Without<HudPart>>,
     plates: Res<VPlates>,
+    index: Res<crate::net::GuidIndex>,
     heads: (
         Query<&Transform>,
         Query<&BoneAttach>,
@@ -228,14 +229,17 @@ pub(super) fn drive_hud(
         })
         .take(usize::from(STRIKE_BARS))
         .collect();
-    let lock_color = if link.riposte.is_some() {
+    let broken = link
+        .broken
+        .and_then(|(guid, _)| index.0.get(&guid).copied());
+    let lock_color = if broken.is_some() || link.riposte.is_some() {
         Color::srgb(0.95, 0.8, 0.2)
     } else {
         Color::srgb(0.9, 0.15, 0.1)
     };
     // The marker: the locked unit projected through the world camera.
-    let marker = souls
-        .lock
+    let marker = broken
+        .or(souls.lock)
         .filter(|_| on)
         .and_then(|entity| targets.get(entity).ok())
         .and_then(|at| project(at.translation() + Vec3::Y * MARKER_HEIGHT_YARDS));

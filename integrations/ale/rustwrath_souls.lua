@@ -479,6 +479,8 @@ local function on_verdict(player, fields)
     end
 end
 
+local on_critical
+
 local function on_addon(event, sender, msg_type, prefix, msg, target)
     if prefix ~= PREFIX then
         return
@@ -513,6 +515,8 @@ local function on_addon(event, sender, msg_type, prefix, msg, target)
         set_creep(sender, state, state.crouch == true)
     elseif state and verb == "HIT" then
         on_hit(sender, state, fields)
+    elseif state and verb == "CRIT" then
+        on_critical(sender, fields[2])
     elseif state and verb == "SWING" then
         on_swing(sender, fields)
     elseif state and verb == "VERDICT" then
@@ -653,7 +657,7 @@ break_stance = function(creature, ck, m, now)
         m.strike = nil
     end
     m.broken_until = now + STANCE_BREAK_MS
-    m.parried_until = now + STANCE_BREAK_MS
+    m.parried_until = nil
     m.next_at = now + STANCE_BREAK_MS + 400
     m.stance = m.stance_max
     m.stance_refill_at = nil
@@ -671,6 +675,31 @@ local function end_break(creature, m)
     m.broken_until = nil
     creature:EmoteState(EMOTE_STATE_NONE)
     creature:SetRooted(false)
+end
+
+local CRITICAL_MULTIPLIER = 3 -- ESTIMATE: critical damage before armour.
+on_critical = function(player, guid)
+    local m = managed[guid]
+    local now = now_ms()
+    if not m or not m.broken_until or now >= m.broken_until then
+        return
+    end
+    local creature = managed_creature(m)
+    if not creature or not creature:IsAlive() or not player:IsAlive()
+        or creature:GetMap() ~= player:GetMap() then
+        return
+    end
+    if not creature:IsWithinDist(player, melee_reach(creature, player))
+        or angle_diff(creature:GetO(), creature:GetAngle(player)) > math.pi / 4 then
+        return
+    end
+    end_break(creature, m)
+    for _, watcher in ipairs(strike_watchers(creature, nil)) do
+        send(watcher, "BROKEN\t" .. guid .. "\t0")
+    end
+    local damage = defended(player, creature, weapon_roll(player) * CRITICAL_MULTIPLIER)
+    player:DealDamage(creature, math.max(1, math.floor(damage + 0.5)), true, 0)
+    trace("critical %s: %.1f damage", guid, damage)
 end
 
 local function adopt(creature, now)

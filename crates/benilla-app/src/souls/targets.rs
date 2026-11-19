@@ -65,7 +65,7 @@ pub(super) struct SwingTrack {
 }
 
 /// The units the lock and the hit test consider.
-type Units<'w, 's> = Query<
+pub(super) type Units<'w, 's> = Query<
     'w,
     's,
     (
@@ -93,6 +93,31 @@ pub(super) fn attackable(relations: &RelationWorld, guid: u64, store: &ObjectSto
 pub(super) fn off_facing(yaw: f32, to: Vec3) -> f32 {
     let delta = yaw_toward(to) - yaw;
     (delta + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
+/// Check the opening from the creature's facing, not the player's camera.
+fn opening_geometry(to_player: Vec3, facing: f32, reach: f32, now: f32, until: f32) -> bool {
+    now < until
+        && to_player.length_squared() <= reach * reach
+        && off_facing(facing, to_player).abs() <= std::f32::consts::FRAC_PI_4
+}
+
+pub(super) fn broken_opening(
+    units: &Units,
+    relations: &RelationWorld,
+    player_pos: Vec3,
+    now: f32,
+    broken: (u64, f32),
+) -> Option<u64> {
+    let (target, until) = broken;
+    units.iter().find_map(|(_, guid, store, at)| {
+        let yaw = at.compute_transform().rotation.to_euler(EulerRot::YXZ).0;
+        let reach = (store.0.unit_combat_reach() + 1.5 + 4.0 / 3.0).max(5.0);
+        (guid.0 == target
+            && attackable(relations, guid.0, store)
+            && opening_geometry(player_pos - at.translation(), yaw, reach, now, until))
+        .then_some(target)
+    })
 }
 
 /// Toggle and keep the lock.
@@ -325,6 +350,10 @@ pub(super) fn resolve_hits(
         souls.swing = SwingTrack::default();
         return;
     };
+    if souls.critical == Some(instance) {
+        return;
+    }
+    souls.critical = None;
     let mut track = std::mem::take(&mut souls.swing);
     if track.instance != Some(instance) {
         track = SwingTrack {
@@ -435,6 +464,16 @@ mod tests {
             radius: Milli(100),
             blade,
         }
+    }
+
+    #[test]
+    fn broken_opening_requires_front_reach_and_time() {
+        let front = Vec3::NEG_Z;
+        let facing = yaw_toward(front);
+        assert!(opening_geometry(front * 3.0, facing, 5.0, 1.0, 2.0));
+        assert!(!opening_geometry(-front * 3.0, facing, 5.0, 1.0, 2.0));
+        assert!(!opening_geometry(front * 6.0, facing, 5.0, 1.0, 2.0));
+        assert!(!opening_geometry(front * 3.0, facing, 5.0, 2.0, 2.0));
     }
 
     #[test]
