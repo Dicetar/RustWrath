@@ -72,6 +72,11 @@ const NOT_YET_ANSWERED: &[(&str, &str, &str)] = &[
 /// Methods answered here that 1.12 does not register on that class, each with why it stays.
 const ALLOWED_BEYOND: &[(&str, &str, &str)] = &[
     (
+        "GetMinimumWidth",
+        "GameTooltip",
+        "12340's minimum-width/force getter (0x61d0d0); the shared tooltip supports Wrath money lines",
+    ),
+    (
         "GetHyperlinksEnabled",
         "ScrollingMessageFrame",
         "12340's hyperlink toggle getter, beside SetHyperlinksEnabled on the shared message \
