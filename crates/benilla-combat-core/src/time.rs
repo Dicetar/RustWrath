@@ -59,6 +59,10 @@ impl TickWindow {
         self.from <= elapsed_ticks && elapsed_ticks < self.to
     }
 
+    pub fn is_empty(self) -> bool {
+        self.from >= self.to
+    }
+
     pub fn len(self) -> u64 {
         self.to.saturating_sub(self.from)
     }
@@ -100,6 +104,6 @@ impl TickRate {
 
     /// Milliseconds represented by one tick, rounded up. This is descriptive only.
     pub fn millis_per_tick_ceil(self) -> u64 {
-        (1000_u64 + self.0 as u64 - 1) / self.0 as u64
+        1000_u64.div_ceil(u64::from(self.0))
     }
 }
