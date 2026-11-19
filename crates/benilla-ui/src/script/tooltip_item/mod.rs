@@ -44,13 +44,44 @@ fn view_of(lua: &Lua, item_id: u32) -> Option<ItemTemplateView> {
 
 /// A random-suffix roll's enchant lines: the reference copies the suffix row's five ids into
 /// enchant slots 2..6 (`0x52b7bf`) for a block source with no item object.
-fn roll_enchants(lua: &Lua, random_property_id: u32) -> Vec<crate::script::EnchantView> {
+///
+/// Suffix rows (keyed by the negative id's two's complement) sit in slots 7..11 and carry
+/// their allocation; `CGItem_C::GetRandomPropertyValue` (`0x707650`) gives each slot
+/// `trunc(allocation * 0.0001 * factor)`, which replaces the line's `$i` as `"%d"`. Positive
+/// property rows and other slots answer 0.
+fn roll_enchants(
+    lua: &Lua,
+    random_property_id: u32,
+    suffix_factor: u32,
+) -> Vec<crate::script::EnchantView> {
     let model = lua.app_data_ref::<Model>().expect("model app_data");
-    model
-        .random_properties
-        .get(&random_property_id)
-        .map(|v| v.enchants.clone())
-        .unwrap_or_default()
+    let Some(view) = model.random_properties.get(&random_property_id) else {
+        return Vec::new();
+    };
+    let suffix = (random_property_id as i32) < 0;
+    view.enchants
+        .iter()
+        .cloned()
+        .map(|mut e| {
+            if e.name.contains("$i") {
+                let amount = match e.slot.checked_sub(7) {
+                    Some(i) if suffix && i < 5 => {
+                        (f64::from(view.allocation[i as usize]) * 0.0001 * f64::from(suffix_factor))
+                            as i32
+                    }
+                    _ => 0,
+                };
+                e.name = e.name.replace("$i", &amount.to_string());
+            }
+            e
+        })
+        .collect()
+}
+
+/// The suffix factor a source's Wrath link carries, 0 without one.
+fn link_suffix_factor(link: Option<&str>) -> u32 {
+    link.and_then(super::item_stats::wrath::ItemLink::parse)
+        .map_or(0, |l| l.suffix_factor())
 }
 
 fn link_name(link: &str) -> Option<&str> {
@@ -475,7 +506,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     Default::default(),
                 );
             }
-            let (id, enchant_id, roll, gems) = if wrath {
+            let (id, enchant_id, roll, gems, factor) = if wrath {
                 let Some(item) = super::item_stats::wrath::ItemLink::parse(&link) else {
                     return Ok(());
                 };
@@ -485,14 +516,15 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 (
                     item.id,
                     item.enchant,
-                    u32::try_from(item.random_property).unwrap_or(0),
+                    item.random_property as u32,
                     item.gems,
+                    item.suffix_factor(),
                 )
             } else {
                 let Some((id, enchant, roll)) = hyperlink_item_fields(&link) else {
                     return Ok(());
                 };
-                (id, enchant, roll, [0; 3])
+                (id, enchant, roll, [0; 3], 0)
             };
             let h = frame_handle_of(lua, &this)?;
             // The item the shown tooltip holds hides it instead (`0x5320c7`..`0x5320e9`): the
@@ -526,10 +558,14 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     );
                 }
             }
-            let mut properties = roll_enchants(lua, roll);
+            let mut properties = roll_enchants(lua, roll, factor);
             if wrath {
+                // Positive property rows are listed at slots 2..6; suffix rows already sit at
+                // their 7..11 property slots.
                 for enchant in &mut properties {
-                    enchant.slot += 5;
+                    if enchant.slot < 7 {
+                        enchant.slot += 5;
+                    }
                 }
             }
             enchants.extend(properties);
@@ -929,7 +965,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             // come from the roll id, the reference's `+0x424` (`0x52b7bf`).
             let inst = render::ItemInstance {
                 name: row.name.clone(),
-                enchants: roll_enchants(lua, row.random_property_id),
+                enchants: roll_enchants(lua, row.random_property_id, row.suffix_factor),
                 ..Default::default()
             };
             build_block(lua, &this, h, row.item_id, inst, row.quality, row.link)?;
@@ -962,7 +998,11 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             };
             let inst = render::ItemInstance {
                 name: entry.name.clone(),
-                enchants: roll_enchants(lua, entry.random_property_id),
+                enchants: roll_enchants(
+                    lua,
+                    entry.random_property_id,
+                    link_suffix_factor(entry.link.as_deref()),
+                ),
                 ..Default::default()
             };
             build_block(
@@ -1089,7 +1129,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             // placeholder, and its charges and durability (`0x53566f`, `0x53568d`, `0x535699`).
             let inst = render::ItemInstance {
                 name: row.item_name,
-                enchants: roll_enchants(lua, row.item_random_property_id),
+                enchants: roll_enchants(lua, row.item_random_property_id, 0),
                 block_charges: Some(row.item_charges),
                 block_durability: row.item_durability,
                 ..Default::default()
@@ -1147,7 +1187,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             // and its charges (`0x535a4a`).
             let inst = render::ItemInstance {
                 name,
-                enchants: roll_enchants(lua, roll),
+                enchants: roll_enchants(lua, roll, link_suffix_factor(source_link.as_deref())),
                 block_charges: Some(charges),
                 ..Default::default()
             };

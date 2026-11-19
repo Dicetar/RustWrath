@@ -136,6 +136,34 @@ impl Addon {
     /// shared state, anything else is parsed as FrameXML and materialized. What the reference's
     /// `.toc` runner (`0x6edb90`) reports goes into `toc`: a file that did not open or parse, and
     /// each document's own record under its banner.
+    /// A dropped stock document's `virtual` templates only, at its place in the toc: what the
+    /// rest of the interface inherits from it (`VoiceChatSpeakerTemplate`, inherited by the
+    /// player, party and channel frames) without its frames or Lua. A file that does not open or
+    /// parse is a failure as in [`Self::load_files_into`].
+    pub(super) fn register_templates_of(&self, script: &UiScript, file: &str) -> Vec<String> {
+        let path = benilla_ui::loader::join_ref(&self.prefix(), file);
+        let Some(bytes) = self.read(&path) else {
+            return vec![format!("{}/{file}: not found", self.name)];
+        };
+        let doc = match benilla_ui::framexml::parse(&benilla_ui::source::decode(&bytes)) {
+            Ok(d) => d,
+            Err(e) => return vec![format!("{}/{file}: {e}", self.name)],
+        };
+        let templates = benilla_ui::framexml::ParsedDocument {
+            items: doc
+                .items
+                .into_iter()
+                .filter(|item| matches!(item, benilla_ui::framexml::TopLevel::Template(_)))
+                .collect(),
+            warnings: Vec::new(),
+        };
+        let report = benilla_ui::loader::load_in(script, &templates, &path, &|_| None);
+        for w in &report.warnings {
+            warn!("ui_script({}/{file}): {w}", self.name);
+        }
+        Vec::new()
+    }
+
     pub(super) fn load_files_into(
         &self,
         script: &UiScript,

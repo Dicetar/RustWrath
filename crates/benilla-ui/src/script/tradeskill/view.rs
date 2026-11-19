@@ -234,14 +234,21 @@ pub(crate) fn refilter(model: &mut Model) {
         return;
     };
     let mut headers = std::mem::take(&mut model.trade_skill_headers);
+    let rows = std::mem::take(&mut model.trade_skill_rows);
     crate::crt::qsort(&mut headers, header_order);
     let pos: HashMap<(u32, u32), usize> = headers
         .iter()
         .enumerate()
         .map(|(i, h)| (h.key, i))
         .collect();
+    // The slot mask, the makeable and skill-up toggles, then the name and level search
+    // (`0x5da287`-`0x5da293`, `Profession_FilterSpell`).
     let slot_passes = |r: &TradeSkillRecipe| {
         inv_slot_mask(r.product_inv_type) & model.trade_skill_invslot_mask != 0
+            && !(model.trade_skill_only_makeable && r.num_available == 0)
+            && !(model.trade_skill_only_skill_ups
+                && r.difficulty == super::TradeSkillDifficulty::Trivial)
+            && search_passes(model, r)
     };
     let mut members: HashMap<(u32, u32), usize> = HashMap::new();
     for r in t.recipes.iter().filter(|r| slot_passes(r)) {
@@ -250,7 +257,7 @@ pub(crate) fn refilter(model: &mut Model) {
     let shown = |key: &(u32, u32)| {
         !model.trade_skill_subclass_hidden.contains(key) && members.get(key).is_some_and(|&n| n > 0)
     };
-    let mut placed: Vec<Placed> = std::mem::take(&mut model.trade_skill_rows)
+    let mut placed: Vec<Placed> = rows
         .into_iter()
         .map(|row| {
             let visible = match &row {
@@ -271,6 +278,38 @@ pub(crate) fn refilter(model: &mut Model) {
     model.trade_skill_visible = visible;
 }
 
+/// `Profession_FilterSpell`: the product's required level inside the level bounds (an uncached
+/// product passes them), then the case-folded name filter as a substring of the product's search
+/// text, the recipe's name, a reagent's or a tool's name.
+fn search_passes(model: &Model, r: &TradeSkillRecipe) -> bool {
+    let (min, max) = model.trade_skill_level_filter;
+    if min != 0 || max != 0 {
+        if let Some(t) = model.item_templates.get(&r.product_item) {
+            let level = t.required_level as i32;
+            if (min != 0 && level < min) || (max != 0 && level > max) {
+                return false;
+            }
+        }
+    }
+    let Some(name) = model.trade_skill_name_filter.as_deref() else {
+        return true;
+    };
+    let hit = |text: &str| fold_case(text).contains(name);
+    model
+        .trade_skill_search_text
+        .get(&r.product_item)
+        .is_some_and(|t| t.contains(name))
+        || hit(&r.name)
+        || r.reagents.iter().filter_map(|g| g.name.as_deref()).any(hit)
+        || r.tools.iter().any(|(tool, _)| hit(tool))
+}
+
+/// The search's case fold (`CaseAccentInsensitiveParse`): lowercase. Accents are kept, so an
+/// accented filter only matches the same accent.
+pub(crate) fn fold_case(text: &str) -> String {
+    text.to_lowercase()
+}
+
 /// One row of the array: a group header, or a recipe's position in `TradeSkillState::recipes`.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Row {
@@ -285,8 +324,11 @@ pub(super) fn rows(model: &Model) -> &[Row] {
 }
 
 /// `GetNumTradeSkills` (`0x4fd800`): the displayed count (`0xbde054`).
+/// The count is held across a build that left before its sort (a product's record in flight),
+/// which may refill a shorter array (another line's list): it is clamped to the array, whose
+/// rows past the end the reference reads as stale memory.
 pub(super) fn num_rows(model: &Model) -> usize {
-    model.trade_skill_visible
+    model.trade_skill_visible.min(model.trade_skill_rows.len())
 }
 
 /// The recipe at a 1-based index into the whole array; `None` on a header, so the per-recipe

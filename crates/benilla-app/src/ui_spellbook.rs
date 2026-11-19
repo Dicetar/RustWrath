@@ -97,6 +97,8 @@ struct FeedMemory {
     pushed: SpellBookState,
     /// The player's all-learned flat list last pushed, for its own change detection.
     pushed_spell_list: Vec<SpellSlotView>,
+    /// The companion collections last pushed, for `COMPANION_UPDATE`.
+    pushed_companions: [Vec<benilla_ui::script::CompanionView>; 2],
     /// Counter watches for stores whose lazy resolves defeat `is_changed` (template asks, the
     /// cooldown prune), and for the self store's presence: a despawn flips the weapon icons unseen.
     items_templates: gate::Watch,
@@ -117,7 +119,7 @@ fn feed_spellbook(
     mut learned: ResMut<LearnedInTab>,
 ) {
     // The book, read off the host's cooldowns and pushed; its events signal with the host lent.
-    let Some((book_changed, learned, tab_lines, race, class)) =
+    let Some((book_changed, companions_changed, learned, tab_lines, race, class)) =
         vm.turn(|script, cooldowns| {
             let script = script?;
             let (memory, vm_reset) = memory.get_reset(script);
@@ -291,6 +293,13 @@ fn feed_spellbook(
                         (a.spell_id, &a.name, &a.rank, &a.texture, a.passive)
                             != (b.spell_id, &b.name, &b.rank, &b.texture, b.passive)
                     });
+            // The companion collections (`CGSpellBook::m_companions`), behind the mount tab.
+            let companions = build_companions(&actions.spells, &spells.catalog);
+            let companions_changed = companions != memory.pushed_companions;
+            if companions_changed {
+                script.set_companions(companions.clone());
+                memory.pushed_companions = companions;
+            }
             let mut changed = false;
             if displayed_changed {
                 gate.audit("feed_spellbook", "the spellbook snapshot");
@@ -334,7 +343,7 @@ fn feed_spellbook(
                     changed = true;
                 }
             }
-            Some((changed, learned, tab_lines, race, class))
+            Some((changed, companions_changed, learned, tab_lines, race, class))
         })
     else {
         return;
@@ -345,6 +354,9 @@ fn feed_spellbook(
         };
         if book_changed {
             script.fire_event("SPELLS_CHANGED", vec![]);
+        }
+        if companions_changed {
+            script.fire_event("COMPANION_UPDATE", vec![]);
         }
         // The tab flash after `SPELLS_CHANGED` (`0x4b2b5a` before `0x4b2b92`), outside the diff:
         // the reference fires on the packet, so a re-learn that changes nothing still flashes.
@@ -511,6 +523,32 @@ fn build_book(
 /// mounted-companion exclusion), including `castUI` spells outside the displayed book, in
 /// `SortSpellsForDisplay` order (skill-line group, then name, then rank). Catalog-missing IDs are
 /// not added, matching `g_spellDB.GetRecord`'s early return.
+/// The companion collections `[critters, mounts]` from the learned spells, each sorted by name as
+/// `SortCompanions` does. A mount is `EffectApplyAuraName[0] == SPELL_AURA_MOUNTED` (78)
+/// (`SpellIsCallCompanion`). Unsupported branch: a critter needs `SummonProperties.dbc` slot 5,
+/// which is not loaded, so the critter list stays empty. The name is the spell's: no creature
+/// name cache reaches this feed.
+fn build_companions(
+    known: &BTreeSet<u32>,
+    catalog: &SpellCatalog,
+) -> [Vec<benilla_ui::script::CompanionView>; 2] {
+    let mut mounts: Vec<_> = known
+        .iter()
+        .filter_map(|&spell_id| {
+            let d = catalog.get(spell_id)?;
+            (d.effect_apply_aura[0] == 78).then(|| benilla_ui::script::CompanionView {
+                creature_id: d.effect_misc_value[0].max(0) as u32,
+                name: d.name.clone(),
+                spell_id,
+                icon: d.icon.clone(),
+                active_icon: d.active_icon.clone(),
+            })
+        })
+        .collect();
+    mounts.sort_by(|a, b| a.name.cmp(&b.name).then(a.spell_id.cmp(&b.spell_id)));
+    [Vec::new(), mounts]
+}
+
 fn build_spell_list(
     known: &BTreeSet<u32>,
     catalog: &SpellCatalog,

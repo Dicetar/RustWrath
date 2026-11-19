@@ -504,4 +504,29 @@ pub(super) const INERT: &[Registered] = &[
         "1",
         "PlayerName_CVar.cpp:35; object-name callback, not projected",
     ),
+    ours(
+        "UnitNameEnemyPetName",
+        "1",
+        "PlayerName_CVar.cpp:36; object-name callback, not projected",
+    ),
+    ours(
+        "fctReactives",
+        "0",
+        "GameUI_CVar.cpp:540; InterfaceOptionsPanels.lua combat text panel",
+    ),
+    ours(
+        "fctLowManaHealth",
+        "1",
+        "GameUI_CVar.cpp:543; InterfaceOptionsPanels.lua combat text panel",
+    ),
+    ours(
+        "fullSizeFocusFrame",
+        "0",
+        "GameUI_CVar.cpp:565; focus frame scale, read by the stock FocusFrame Lua",
+    ),
+    ours(
+        "timeMgrUseLocalTime",
+        "0",
+        "GameUI_CVar.cpp:629; realm or system clock for the time manager",
+    ),
 ];

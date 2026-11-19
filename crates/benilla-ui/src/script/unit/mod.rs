@@ -505,6 +505,20 @@ impl super::UiScript {
         self.model_ref().exhaustion.get(&state).cloned()
     }
 
+    /// Push `gtOCTRegenHP.dbc` and `gtRegenHPPerSpt.dbc`, class by level; an empty push leaves
+    /// the existing tables untouched.
+    pub fn set_regen_hp_tables(&mut self, base: Vec<f32>, per_spirit: Vec<f32>) {
+        if base.is_empty() || per_spirit.is_empty() {
+            return;
+        }
+        self.model_mut().regen_hp_tables = Some((base, per_spirit));
+    }
+
+    /// Whether the world-side UI is shown, `SetUIVisibility`'s flag (`CGGameUI::m_visible`).
+    pub fn ui_visible(&self) -> bool {
+        self.model_ref().ui_visible
+    }
+
     /// Push `gtCombatRatings.dbc`'s scalers in row order (`rating_idx * 100 + (level - 1)`); an
     /// empty push leaves the existing table untouched.
     pub fn set_combat_rating_scalers(&mut self, scalers: Vec<f32>) {

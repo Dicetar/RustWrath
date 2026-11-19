@@ -29,6 +29,9 @@ pub struct WmoArea {
     /// `0x6703a0` (`0x670437`) when the down-ray keeps the WMO over the terrain: Ironforge reports
     /// its own area.
     pub area_table_id: u32,
+    /// `m_flags`: `0x4` forces the group outdoors and `0x2` indoors for `World::QueryOutdoors`
+    /// (Stormwind's street groups carry `0x4` over their interior `MOGP` flags).
+    pub flags: u32,
     /// The interior's display name in the locale's column, empty for an unnamed row.
     pub name: String,
 }
@@ -90,6 +93,7 @@ impl WmoAreaCatalog {
             zone_music: 0,
             intro_sound: 0,
             area_table_id: 0,
+            flags: 0,
             name: String::new(),
         });
         let Some(g) = group else { return Some(base) };
@@ -104,6 +108,7 @@ impl WmoAreaCatalog {
             zone_music: nz(g.zone_music, base.zone_music),
             intro_sound: nz(g.intro_sound, base.intro_sound),
             area_table_id: nz(g.area_table_id, base.area_table_id),
+            flags: g.flags,
             name: if g.name.is_empty() {
                 base.name
             } else {
@@ -165,6 +170,7 @@ pub fn load_wmo_area_catalog(chain: &mut Chain) -> Result<WmoAreaCatalog> {
             zone_music: u32_at(r, 7).unwrap_or(0),
             intro_sound: u32_at(r, 8).unwrap_or(0),
             area_table_id: u32_at(r, 10).unwrap_or(0),
+            flags: u32_at(r, 9).unwrap_or(0),
             name: loc_str(&rs, r, 11, locale).unwrap_or_default(),
         };
         if group == u32::MAX {

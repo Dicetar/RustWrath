@@ -2,6 +2,11 @@
 //! aura text (`0x5075f0` → `0x507710`), effect values from `GetEffectPoints 0x6e3800`. Effect
 //! point values print unsigned, as the client's do. `$g` and `$G` branch on the active player's
 //! gender ([`TokenContext::gender`]). Unknown or unresolved tokens stay raw.
+//!
+//! Wrath adds arithmetic: `${expr}` evaluates `expr` (numbers, the tokens' numbers, `+ - * /`,
+//! brackets, and `$max $min $floor $ceil $abs $gt $ge $lt $le $eq $cond`), printed whole, or with
+//! `N` decimals after a `.N` suffix: "Restores ${$m1/5*$d} mana" reads "Restores 151 mana". An
+//! expression that does not evaluate stays raw.
 
 use super::soft_float;
 use super::{SpellDisplay, SpellDurationCatalog, SpellRadiusCatalog, SpellRangeCatalog};
@@ -612,6 +617,21 @@ pub fn substitute_parts(
         }
         let start = i;
         i += 1;
+        if bytes.get(i) == Some(&b'{') {
+            let inner_at = ExpandAt {
+                level,
+                stack: at.stack,
+            };
+            if let Some((printed, value, next)) = expression(text, i, spell, ctx, inner_at) {
+                out.push_str(&printed);
+                last_value = value;
+                i = next;
+            } else {
+                // Unbalanced or unevaluable: the `$` stays and the rest reads as text.
+                out.push('$');
+            }
+            continue;
+        }
         let mut scale = 1.0f32;
         if let Some((s, next)) = scale_prefix(text, i) {
             scale = s;
@@ -712,6 +732,280 @@ pub fn substitute_parts(
         parts.push(TokenPart::Text(out));
     }
     parts
+}
+
+/// The functions a `${...}` expression may call, as `$name(...)`.
+const EXPRESSION_FUNCTIONS: [&str; 11] = [
+    "max", "min", "floor", "ceil", "abs", "gt", "ge", "lt", "le", "eq", "cond",
+];
+
+/// The `${expr}` at `open` (its `{`) in `text`: the printed value, the value, and the index past
+/// the `}` and any `.N` decimals suffix. Each token inside reads as its number, as `$l` keys on;
+/// `None` when the braces do not close or the expression does not evaluate.
+fn expression(
+    text: &str,
+    open: usize,
+    spell: &SpellDisplay,
+    ctx: &TokenContext,
+    at: ExpandAt,
+) -> Option<(String, f64, usize)> {
+    let bytes = text.as_bytes();
+    let mut depth = 0usize;
+    let mut close = None;
+    for (offset, &b) in bytes[open..].iter().enumerate() {
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(open + offset);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let close = close?;
+    let numeric = numeric_text(&text[open + 1..close], spell, ctx, at)?;
+    let value = Evaluator::new(&numeric).run()?;
+    let mut next = close + 1;
+    let mut decimals = 0usize;
+    if bytes.get(next) == Some(&b'.') {
+        if let Some(&digit @ b'0'..=b'9') = bytes.get(next + 1) {
+            decimals = usize::from(digit - b'0');
+            next += 2;
+        }
+    }
+    let printed = if decimals == 0 {
+        format!("{}", value.round() as i64)
+    } else {
+        format!("{value:.decimals$}")
+    };
+    Some((printed, value, next))
+}
+
+/// `inner` with each `$` token replaced by its number and each `$name(` function call by its
+/// name; `None` for a token that does not resolve.
+fn numeric_text(
+    inner: &str,
+    spell: &SpellDisplay,
+    ctx: &TokenContext,
+    at: ExpandAt,
+) -> Option<String> {
+    let bytes = inner.as_bytes();
+    let mut out = String::with_capacity(inner.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'$' {
+            let ch_len = utf8_len(bytes[i]);
+            out.push_str(&inner[i..i + ch_len]);
+            i += ch_len;
+            continue;
+        }
+        i += 1;
+        // A function call: `$max(`.
+        let word_end = i + bytes[i..]
+            .iter()
+            .take_while(|b| b.is_ascii_alphabetic())
+            .count();
+        if bytes.get(word_end) == Some(&b'(') {
+            let word = inner[i..word_end].to_ascii_lowercase();
+            if EXPRESSION_FUNCTIONS.contains(&word.as_str()) {
+                out.push_str(&word);
+                i = word_end;
+                continue;
+            }
+        }
+        if bytes.get(i) == Some(&b'{') {
+            let (_, value, next) = expression(inner, i, spell, ctx, at)?;
+            out.push_str(&format!("({value})"));
+            i = next;
+            continue;
+        }
+        let mut scale = 1.0f32;
+        if let Some((s, next)) = scale_prefix(inner, i) {
+            scale = s;
+            i = next;
+        }
+        let id_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        let ref_spell: Option<u32> = if i > id_start {
+            inner[id_start..i].parse().ok()
+        } else {
+            None
+        };
+        let letter = *bytes.get(i)?;
+        if !letter.is_ascii_alphabetic() {
+            return None;
+        }
+        i += 1;
+        let slot = match bytes.get(i) {
+            Some(&digit @ b'1'..=b'9') => {
+                i += 1;
+                let index = usize::from(digit - b'1');
+                if index < 3 {
+                    index
+                } else {
+                    0
+                }
+            }
+            _ => 0,
+        };
+        let (target, level) = match ref_spell {
+            Some(id) => {
+                let s = (ctx.lookup)(id)?;
+                let level = if s.max_level > 0 {
+                    at.level.min(s.max_level)
+                } else {
+                    at.level
+                };
+                (s, level)
+            }
+            None => (spell, at.level),
+        };
+        let at = ExpandAt {
+            level,
+            stack: at.stack,
+        };
+        let (_, value) = token_value(letter as char, slot, target, ctx, scale, at)?;
+        out.push_str(&format!("({value})"));
+    }
+    Some(out)
+}
+
+/// A recursive-descent evaluator over a `${...}` expression whose tokens are numbers already.
+struct Evaluator<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Evaluator<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            bytes: text.as_bytes(),
+            at: 0,
+        }
+    }
+
+    /// The whole expression's value; `None` on a syntax error, trailing text or a non-finite
+    /// result.
+    fn run(mut self) -> Option<f64> {
+        let value = self.sum()?;
+        self.skip_spaces();
+        (self.at == self.bytes.len() && value.is_finite()).then_some(value)
+    }
+
+    fn skip_spaces(&mut self) {
+        while self.bytes.get(self.at).is_some_and(u8::is_ascii_whitespace) {
+            self.at += 1;
+        }
+    }
+
+    fn eat(&mut self, b: u8) -> bool {
+        self.skip_spaces();
+        if self.bytes.get(self.at) == Some(&b) {
+            self.at += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn sum(&mut self) -> Option<f64> {
+        let mut value = self.product()?;
+        loop {
+            if self.eat(b'+') {
+                value += self.product()?;
+            } else if self.eat(b'-') {
+                value -= self.product()?;
+            } else {
+                return Some(value);
+            }
+        }
+    }
+
+    fn product(&mut self) -> Option<f64> {
+        let mut value = self.unary()?;
+        loop {
+            if self.eat(b'*') {
+                value *= self.unary()?;
+            } else if self.eat(b'/') {
+                let divisor = self.unary()?;
+                value = if divisor == 0.0 { 0.0 } else { value / divisor };
+            } else {
+                return Some(value);
+            }
+        }
+    }
+
+    fn unary(&mut self) -> Option<f64> {
+        if self.eat(b'-') {
+            return Some(-self.unary()?);
+        }
+        if self.eat(b'+') {
+            return self.unary();
+        }
+        self.atom()
+    }
+
+    fn atom(&mut self) -> Option<f64> {
+        self.skip_spaces();
+        if self.eat(b'(') {
+            let value = self.sum()?;
+            return self.eat(b')').then_some(value);
+        }
+        let start = self.at;
+        let letters = self.bytes[start..]
+            .iter()
+            .take_while(|b| b.is_ascii_alphabetic())
+            .count();
+        if letters > 0 {
+            let name = std::str::from_utf8(&self.bytes[start..start + letters]).ok()?;
+            let name = name.to_string();
+            self.at += letters;
+            if !self.eat(b'(') {
+                return None;
+            }
+            let mut args = vec![self.sum()?];
+            while self.eat(b',') {
+                args.push(self.sum()?);
+            }
+            if !self.eat(b')') {
+                return None;
+            }
+            return call(&name, &args);
+        }
+        let digits = self.bytes[start..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit() || **b == b'.')
+            .count();
+        self.at += digits;
+        std::str::from_utf8(&self.bytes[start..start + digits])
+            .ok()?
+            .parse()
+            .ok()
+    }
+}
+
+/// An expression function over its arguments; `None` for an unknown name or a wrong count.
+fn call(name: &str, args: &[f64]) -> Option<f64> {
+    let truth = |b: bool| if b { 1.0 } else { 0.0 };
+    match (name, args) {
+        ("max", [a, b]) => Some(a.max(*b)),
+        ("min", [a, b]) => Some(a.min(*b)),
+        ("floor", [a]) => Some(a.floor()),
+        ("ceil", [a]) => Some(a.ceil()),
+        ("abs", [a]) => Some(a.abs()),
+        ("gt", [a, b]) => Some(truth(a > b)),
+        ("ge", [a, b]) => Some(truth(a >= b)),
+        ("lt", [a, b]) => Some(truth(a < b)),
+        ("le", [a, b]) => Some(truth(a <= b)),
+        ("eq", [a, b]) => Some(truth((a - b).abs() < 1e-9)),
+        ("cond", [test, yes, no]) => Some(if *test != 0.0 { *yes } else { *no }),
+        _ => None,
+    }
 }
 
 fn utf8_len(b: u8) -> usize {
@@ -899,6 +1193,23 @@ mod tests {
         );
         let none = ctx(&durations, &radii, &lookup);
         assert_eq!(substitute("Costs $c ($p)", &d, &none), "Costs -1 (-1)");
+    }
+
+    /// Wrath's `${...}` arithmetic evaluates over the tokens' numbers, with `.N` decimals and the
+    /// functions; an unbalanced one stays raw.
+    #[test]
+    fn expressions_evaluate_over_token_numbers() {
+        let spell = points(42);
+        let (durations, radii) = (
+            SpellDurationCatalog::default(),
+            SpellRadiusCatalog::default(),
+        );
+        let c = ctx(&durations, &radii, &none_lookup);
+        assert_eq!(substitute("${$m1/5*18} mana", &spell, &c), "151 mana");
+        assert_eq!(substitute("${$m1/4}.1%", &spell, &c), "10.5%");
+        assert_eq!(substitute("${$max($m1,50)-($m1+8)}", &spell, &c), "0");
+        assert_eq!(substitute("${$cond($gt($m1,40),1,2)}", &spell, &c), "1");
+        assert_eq!(substitute("${$m1/5", &spell, &c), "${42/5");
     }
 
     #[test]

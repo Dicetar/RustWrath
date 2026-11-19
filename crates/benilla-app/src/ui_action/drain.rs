@@ -110,6 +110,13 @@ impl AttackPress<'_, '_> {
         self.seam.stop();
     }
 
+    /// `StopAttack()` (`Script_StopAttack`): the stop while we attack with control, else nothing.
+    pub(crate) fn stop_attack(&mut self) {
+        if self.seam.engaged() && self.seam.start_gate().has_control() {
+            self.seam.stop();
+        }
+    }
+
     /// The validator `0x612df0` up to its selection's re-read, for the call host, which runs the
     /// listeners of the selection its pick commits in place before [`Self::settle_attack`]: the
     /// actor checks, then the pick ([`crate::target::AttackPick::pick`]), what its commit owes;

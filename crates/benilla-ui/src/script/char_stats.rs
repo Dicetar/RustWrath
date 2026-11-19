@@ -132,6 +132,9 @@ pub struct UnitCombatStats {
     pub spell_damage_done: [i32; 7],
     /// Healing bonus (`PLAYER_FIELD_MOD_HEALING_DONE_POS`, Wrath field 1192).
     pub spell_healing_done: i32,
+    /// `PLAYER_FIELD_MOD_TARGET_RESISTANCE` (Wrath field 1195), negative for penetration;
+    /// `GetSpellPenetration` answers its negation.
+    pub spell_penetration_field: i32,
 }
 
 impl Default for UnitCombatStats {
@@ -178,6 +181,7 @@ impl Default for UnitCombatStats {
             block_percent: 0.0,
             spell_damage_done: [0; 7],
             spell_healing_done: 0,
+            spell_penetration_field: 0,
         }
     }
 }
@@ -1561,6 +1565,7 @@ mod tests {
             block_percent: 0.0,
             spell_damage_done: [0; 7],
             spell_healing_done: 0,
+            spell_penetration_field: 0,
         }
     }
 

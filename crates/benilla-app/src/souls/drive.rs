@@ -120,6 +120,7 @@ pub(super) fn drive_controller(
     }
     let features = config.features;
     let mut drive = SoulsDrive {
+        active: true,
         free_camera: er.active() && er.free_camera,
         orbit: er.hides_cursor(),
         ..SoulsDrive::default()

@@ -26,6 +26,13 @@ pub struct ZoneTexts {
     /// `GetZonePVPInfo`'s isArena: the leaf area's flag `0x80` (`0xb4e318`, `0x48d575`), the
     /// free-for-all pit.
     pub is_arena: bool,
+    /// Wrath's `GetZonePVPInfo` (`GameUI_Scripts.cpp` `Script_GetZonePVPInfo`) reads the
+    /// subzone's `AreaTable.dbc` flags, else the zone's: `0x800` sanctuary, `0x80` arena,
+    /// `0x1000000` combat, `0x40000` contested.
+    pub leaf_flags: u32,
+    /// Whether the leaf area is a subzone of the zone, Wrath's second value (`1` or nil) on the
+    /// sanctuary, arena and combat types.
+    pub leaf_is_subzone: bool,
 }
 
 /// What `GetZonePVPInfo` reads of the zone's `AreaTable.dbc` row.
@@ -61,6 +68,59 @@ fn zone_pvp_type(
         "contested"
     };
     Some((ty, &zone.faction_name))
+}
+
+/// Wrath's `GetZonePVPInfo()`: `pvpType, isSubZonePvP, factionName`. Sanctuary, arena and
+/// combat areas push the type and the subzone flag alone; else the gate (a PvP realm or a
+/// capital) opens `"friendly"`, `"hostile"` or `"contested"` with nil and the faction name, and
+/// shut pushes nothing.
+fn wrath_zone_pvp_info(lua: &Lua, model: &Model) -> mlua::Result<MultiValue> {
+    let z = &model.zone;
+    let flags = z.leaf_flags;
+    let special = if flags & 0x800 != 0 {
+        Some("sanctuary")
+    } else if flags & 0x80 != 0 {
+        Some("arena")
+    } else if flags & 0x0100_0000 != 0 {
+        Some("combat")
+    } else {
+        None
+    };
+    if let Some(ty) = special {
+        return Ok(MultiValue::from_vec(vec![
+            Value::String(lua.create_string(ty)?),
+            if z.leaf_is_subzone {
+                Value::Number(1.0)
+            } else {
+                Value::Nil
+            },
+        ]));
+    }
+    let Some(zone) = z
+        .pvp_zone
+        .as_ref()
+        .filter(|zone| model.realm_pvp || zone.capital)
+    else {
+        return Ok(MultiValue::new());
+    };
+    let Some((friend, enemy)) = model.player_faction_masks else {
+        return Ok(MultiValue::new());
+    };
+    let mask = zone.faction_group_mask;
+    let ty = if flags & 0x4_0000 != 0 {
+        "contested"
+    } else if mask & friend != 0 {
+        "friendly"
+    } else if mask & enemy != 0 {
+        "hostile"
+    } else {
+        "contested"
+    };
+    Ok(MultiValue::from_vec(vec![
+        Value::String(lua.create_string(ty)?),
+        Value::Nil,
+        Value::String(lua.create_string(&zone.faction_name)?),
+    ]))
 }
 
 impl super::UiScript {
@@ -109,6 +169,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, ()| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let z = &model.zone;
+            if model.target == super::UiTarget::Wrath335 {
+                return wrath_zone_pvp_info(lua, &model);
+            }
             let pvp = zone_pvp_type(
                 z.pvp_zone.as_ref(),
                 model.realm_pvp,

@@ -305,6 +305,7 @@ mod tests {
                     zone_music: 0,
                     intro_sound: 0,
                     area_table_id: 1519,
+                    flags: 0,
                     name: String::new(),
                 },
             )]),

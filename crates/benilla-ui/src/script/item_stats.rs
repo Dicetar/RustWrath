@@ -895,6 +895,7 @@ mod get_item_info_tests {
             crate::script::RandomPropertyView {
                 suffix: "of the Monkey".into(),
                 enchants: Vec::new(),
+                ..Default::default()
             },
         )]));
         s.run(r#"ITEM_SUFFIX_TEMPLATE = "%s %s""#).unwrap();

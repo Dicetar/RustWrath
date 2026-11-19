@@ -664,7 +664,210 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // GetTradeSkillDescription(index) (`TradeSkillFrame_Scripts.cpp`): the recipe spell's parsed
+    // description, nil on a header, an index out of range or an empty description. The text is
+    // the spell view's, which the app builds against the player; a miss asks for it and its
+    // arrival signals `TRADE_SKILL_UPDATE`, which re-runs the frame's selection.
+    g.set(
+        "GetTradeSkillDescription",
+        lua.create_function(|lua, index: Value| {
+            let index =
+                binding_abi::index_arg(lua, index, "Usage: GetTradeSkillDescription(index)")?;
+            let spell_id = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                recipe_at(&model, index).map(|r| r.spell_id)
+            };
+            let Some(spell_id) = spell_id.filter(|&id| id != 0) else {
+                return Ok(Value::Nil);
+            };
+            let Some(view) = crate::script::tooltip_spell::spell_view_of(lua, spell_id, false)
+            else {
+                lua.app_data_mut::<Model>()
+                    .expect("model app_data")
+                    .trade_skill_description_wait = spell_id;
+                return Ok(Value::Nil);
+            };
+            let text = view
+                .description
+                .text(&|key| crate::strings::global(lua, key));
+            if text.is_empty() {
+                return Ok(Value::Nil);
+            }
+            Ok(Value::String(lua.create_string(&text)?))
+        })?,
+    )?;
+
+    // StopTradeSkillRepeat(): an armed repeat disarms with its `UPDATE_TRADESKILL_RECAST`.
+    g.set(
+        "StopTradeSkillRepeat",
+        lua.create_function(|lua, ()| {
+            crate::script::tick::verb(lua, super::disarm_repeat);
+            Ok(())
+        })?,
+    )?;
+
+    // SetTradeSkillItemNameFilter(text) (`CGTradeSkillInfo::SetItemNameFilter`): nil or "" clears
+    // it; an unchanged filter (case-insensitive) does nothing; else the list refilters and
+    // `TRADE_SKILL_FILTER_UPDATE` signals. The product texts the search reads are gathered here,
+    // while the global strings the stat lines are made of are reachable.
+    g.set(
+        "SetTradeSkillItemNameFilter",
+        lua.create_function(|lua, text: Option<Value>| {
+            let text = text
+                .as_ref()
+                .and_then(|v| binding_abi::optional_string(lua, v))
+                .filter(|s| !s.is_empty())
+                .map(|s| super::view::fold_case(&s));
+            {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                if model.trade_skill_name_filter == text {
+                    return Ok(());
+                }
+            }
+            let texts = match text {
+                Some(_) => product_search_texts(lua),
+                None => Default::default(),
+            };
+            crate::script::tick::verb(lua, |model| {
+                model.trade_skill_name_filter = text;
+                model.trade_skill_search_text = texts;
+                refilter(model);
+                model.raise("TRADE_SKILL_FILTER_UPDATE", Vec::new());
+            });
+            Ok(())
+        })?,
+    )?;
+    g.set(
+        "GetTradeSkillItemNameFilter",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            match model.trade_skill_name_filter.as_deref() {
+                Some(s) => Ok(Value::String(lua.create_string(s)?)),
+                None => Ok(Value::Nil),
+            }
+        })?,
+    )?;
+
+    // SetTradeSkillItemLevelFilter(minLevel, maxLevel) (`CGTradeSkillInfo::SetItemLevelFilter`):
+    // the product's required level bounds, 0 for none; a change refilters and signals
+    // `TRADE_SKILL_UPDATE`.
+    g.set(
+        "SetTradeSkillItemLevelFilter",
+        lua.create_function(|lua, (min, max): (Value, Value)| {
+            const USAGE: &str = "Usage: SetTradeSkillItemLevelFilter(minLevel, maxLevel)";
+            let min = number_arg(lua, min, USAGE)?;
+            let max = number_arg(lua, max, USAGE)?;
+            crate::script::tick::verb(lua, |model| {
+                if model.trade_skill_level_filter != (min, max) {
+                    model.trade_skill_level_filter = (min, max);
+                    raise_update(model);
+                }
+            });
+            Ok(())
+        })?,
+    )?;
+    g.set(
+        "GetTradeSkillItemLevelFilter",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let (min, max) = model.trade_skill_level_filter;
+            Ok((i64::from(min), i64::from(max)))
+        })?,
+    )?;
+
+    // TradeSkillOnlyShowMakeable(on) and TradeSkillOnlyShowSkillUps(on): `StringToBOOL` with a
+    // default of 1; a change refilters and signals `TRADE_SKILL_UPDATE`.
+    g.set(
+        "TradeSkillOnlyShowMakeable",
+        lua.create_function(|lua, on: mlua::Variadic<Value>| {
+            let on = binding_abi::bool_or_default(on.first(), true);
+            crate::script::tick::verb(lua, |model| {
+                if model.trade_skill_only_makeable != on {
+                    model.trade_skill_only_makeable = on;
+                    raise_update(model);
+                }
+            });
+            Ok(())
+        })?,
+    )?;
+    g.set(
+        "TradeSkillOnlyShowSkillUps",
+        lua.create_function(|lua, on: mlua::Variadic<Value>| {
+            let on = binding_abi::bool_or_default(on.first(), true);
+            crate::script::tick::verb(lua, |model| {
+                if model.trade_skill_only_skill_ups != on {
+                    model.trade_skill_only_skill_ups = on;
+                    raise_update(model);
+                }
+            });
+            Ok(())
+        })?,
+    )?;
+
+    // IsTradeSkillLinked() answers `(1, ownerName)` for another player's linked list, else nil,
+    // nil. Unsupported branch: a linked list (`SMSG_TRADE_SKILL` from a clicked trade link) is not
+    // projected, so the open window is always the player's own.
+    g.set(
+        "IsTradeSkillLinked",
+        lua.create_function(|_, ()| Ok((Value::Nil, Value::Nil)))?,
+    )?;
+    // GetTradeSkillListLink(): the player's `|Htrade:` link over the known-recipe bitmap of the
+    // open line. Unsupported branch: the bitmap encoding (`SkillLineAbility` order per line) is not
+    // built, so it answers nil and the stock frame hides its link button.
+    g.set(
+        "GetTradeSkillListLink",
+        lua.create_function(|lua, ()| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .record_unsupported_native_once(
+                    "GetTradeSkillListLink",
+                    "the trade link's known-recipe bitmap is not encoded",
+                );
+            Ok(Value::Nil)
+        })?,
+    )?;
+
     Ok(())
+}
+
+/// Per product item, the case-folded stat lines, name and description the name filter searches
+/// (`Profession_FilterSpell`), for each recipe whose product's template is cached.
+fn product_search_texts(lua: &Lua) -> std::collections::HashMap<u32, String> {
+    let (views, req, player) = {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let Some(t) = model.trade_skill.as_ref() else {
+            return Default::default();
+        };
+        let views: Vec<(u32, crate::script::item_stats::ItemTemplateView)> = t
+            .recipes
+            .iter()
+            .filter(|r| r.product_item != 0)
+            .filter_map(|r| {
+                let v = model.item_templates.get(&r.product_item)?;
+                Some((r.product_item, v.clone()))
+            })
+            .collect();
+        let player = model.unit("player").map(|u| (u.pvp_team, u.sex == 3));
+        (views, model.player_req.clone(), player)
+    };
+    let facts = super::itemstats::PlayerFacts {
+        present: req.level != 0 || player.is_some(),
+        pvp_team: player.map_or(0, |p| p.0),
+        female: player.is_some_and(|p| p.1),
+        knows_required_spell: false,
+    };
+    let get = |key: &str| crate::strings::global(lua, key).unwrap_or_default();
+    views
+        .into_iter()
+        .map(|(item, v)| {
+            let mut text = super::itemstats::item_stat_lines(&v, &req, facts, &get).join("\n");
+            text.push('\n');
+            text.push_str(&v.name);
+            text.push('\n');
+            text.push_str(&v.description);
+            (item, super::view::fold_case(&text))
+        })
+        .collect()
 }
 
 /// The filter and fold setters' tail (`0x4fd710`, `0x4fd730`, `0x4fd750`): the recompute and its

@@ -86,6 +86,7 @@ mod wrath_security;
 mod wrath_world;
 pub use client::FrameTimeRing;
 mod clock;
+mod companions;
 mod cvar_checks;
 mod cvars;
 mod dressup;
@@ -339,6 +340,7 @@ pub use video_pairs::VIDEO_PAIR_CVARS;
 pub use worldmap_arrow::ARROW_MODEL;
 
 pub(crate) use button::{refresh_label_lua, state_font_lua, LabelFont};
+pub use companions::CompanionView;
 pub(crate) use font_block::{face_loads, own_font_lua, SAME_FONT_HEIGHT};
 pub use inspect::{InspectCall, UnitReach};
 pub use instance::{InstanceCall, InstanceInfo};

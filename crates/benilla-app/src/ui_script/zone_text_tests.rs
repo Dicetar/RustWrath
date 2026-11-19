@@ -38,6 +38,8 @@ fn area(zone: &str, sub: &str, pvp: &str, faction: &str) -> ZoneTexts {
             faction_name: faction.to_string(),
         }),
         is_arena: false,
+        leaf_flags: 0,
+        leaf_is_subzone: false,
     }
 }
 

@@ -16,13 +16,18 @@ pub fn sort_column(name: &str) -> Option<u8> {
 
 /// The Bids and Auctions lists' starting columns, the twin tables `0x849084` and `0x849064`:
 /// status, duration, bid, level, name, quality, buyout, seller.
-const OWNED_SEED: [u8; 8] = [5, 3, 2, 0, 6, 1, 4, 7];
+/// Wrath's two extra columns, quantity and minbidbuyout, close every stack.
+const OWNED_SEED: [u8; COLUMNS] = [5, 3, 2, 0, 6, 1, 4, 7, 8, 9];
+
+/// The columns a stack holds: the eight 1.12 sorts, then Wrath's `quantity` (8) and
+/// `minbidbuyout` (9), which only `SortAuctionSetSort` names.
+pub const COLUMNS: usize = 10;
 
 /// One list's sort key stack, eight `{column, reversed}` slots with the primary first (browse
 /// `0xb725b0`, owner `0xb72420`, bidder `0xb72548`). It holds every column from the world entry on,
 /// so every sort walks all eight keys and a list is always fully ordered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AuctionSortStack([(u8, bool); 8]);
+pub struct AuctionSortStack([(u8, bool); COLUMNS]);
 
 impl AuctionSortStack {
     /// The stack the world entry gives `list` (`0x4cc0f0`, `0x4cc236`-`0x4cc274`): Browse in column
@@ -54,13 +59,24 @@ impl AuctionSortStack {
         self.0[0] = (column, flag);
     }
 
+    /// Wrath's `SortAuctionSetSort(type, column, reversed)`: `column` moves to the front with
+    /// `reversed` as its flag, the slots above it shifting down. Each call makes its column the
+    /// primary, so the stock tables list a sort's keys from the least significant up.
+    pub fn set_front(&mut self, column: u8, reversed: bool) {
+        let Some(at) = self.0.iter().position(|&(c, _)| c == column) else {
+            return;
+        };
+        self.0.copy_within(0..at, 1);
+        self.0[0] = (column, reversed);
+    }
+
     /// The column's reversed flag, `None` for a column the stack does not hold.
     pub fn reversed(&self, column: u8) -> Option<bool> {
         self.0.iter().find(|&&(c, _)| c == column).map(|&(_, r)| r)
     }
 
     /// The slots, primary first.
-    pub fn slots(&self) -> [(u8, bool); 8] {
+    pub fn slots(&self) -> [(u8, bool); COLUMNS] {
         self.0
     }
 
@@ -143,6 +159,20 @@ fn compare(column: u8, a: &AuctionItemRow, b: &AuctionItemRow) -> i32 {
             (None, Some(_)) => 1,
             (None, None) => 0,
         },
+        // Wrath's quantity: the stack size, the smallest first.
+        8 => after(a.count == b.count, a.count >= b.count),
+        // Wrath's minbidbuyout: the buyout, or the opening bid without one, the lowest first.
+        9 => {
+            let key = |r: &AuctionItemRow| {
+                if r.buyout_price != 0 {
+                    r.buyout_price
+                } else {
+                    r.min_bid
+                }
+            };
+            let (ka, kb) = (key(a), key(b));
+            after(ka == kb, ka >= kb)
+        }
         _ => 0,
     }
 }
@@ -181,12 +211,34 @@ mod tests {
     fn the_stacks_start_with_every_column_unreversed() {
         assert_eq!(
             columns(&AuctionSortStack::seeded(LIST)),
-            ["level", "quality", "bid", "duration", "buyout", "status", "name", "seller"]
+            [
+                "level",
+                "quality",
+                "bid",
+                "duration",
+                "buyout",
+                "status",
+                "name",
+                "seller",
+                "quantity",
+                "minbidbuyout"
+            ]
         );
         for list in [BIDDER, OWNER] {
             assert_eq!(
                 columns(&AuctionSortStack::seeded(list)),
-                ["status", "duration", "bid", "level", "name", "quality", "buyout", "seller"]
+                [
+                    "status",
+                    "duration",
+                    "bid",
+                    "level",
+                    "name",
+                    "quality",
+                    "buyout",
+                    "seller",
+                    "quantity",
+                    "minbidbuyout"
+                ]
             );
         }
         assert!(AuctionSortStack::seeded(LIST)
@@ -205,13 +257,31 @@ mod tests {
         s.promote(4);
         assert_eq!(
             columns(&s),
-            ["buyout", "level", "quality", "bid", "duration", "status", "name", "seller"]
+            [
+                "buyout",
+                "level",
+                "quality",
+                "bid",
+                "duration",
+                "status",
+                "name",
+                "seller",
+                "quantity",
+                "minbidbuyout"
+            ]
         );
         assert_eq!(s.reversed(4), Some(false));
         s.promote(0);
         assert_eq!(s.slots()[0], (0, true), "promoted with the flag it had");
-        s.promote(9);
+        s.promote(12);
         assert_eq!(s.slots()[0], (0, true), "an unknown column changes nothing");
+        s.set_front(8, true);
+        s.set_front(0, false);
+        assert_eq!(
+            &s.slots()[..2],
+            &[(0, false), (8, true)],
+            "set, not flipped"
+        );
     }
 
     fn row(name: &str) -> AuctionItemRow {

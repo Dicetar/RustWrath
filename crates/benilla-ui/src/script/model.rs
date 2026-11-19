@@ -842,6 +842,8 @@ pub(crate) struct Model {
     /// The player's all-learned flat spell list (`s_spellList`), in reference slot order; used as
     /// the player book's slot namespace instead of the displayed book's slots.
     pub(crate) spell_list: Vec<spellbook::SpellSlotView>,
+    /// The companion collections, `[critters, mounts]` (`CGSpellBook::m_companions`).
+    pub(crate) companions: [Vec<super::companions::CompanionView>; 2],
     /// The pet's spellbook, a second array as in the reference (`0xb700f0`, `0xb6f098`).
     pub(crate) pet_book: spellbook::PetBookState,
     /// The player's macros, owned here as 1.12 macros have no server side; the app persists them.
@@ -1086,6 +1088,21 @@ pub(crate) struct Model {
     /// The InvSlot filter mask (`0x84dd64`), a set bit shown and all ones for all slots. Never
     /// pruned on a re-push, as in the client, so a later slot stays hidden; a switch resets it.
     pub(crate) trade_skill_invslot_mask: u32,
+    /// `SetTradeSkillItemNameFilter`'s text, case-folded (`m_itemNameFilter`); `None` for none.
+    pub(crate) trade_skill_name_filter: Option<String>,
+    /// Per product item, the case-folded texts the name filter searches past the recipe's,
+    /// reagents' and tools' names (`Profession_FilterSpell`): the product's stat lines, name and
+    /// description, filled when the filter is set, while the global strings are reachable.
+    pub(crate) trade_skill_search_text: HashMap<u32, String>,
+    /// `SetTradeSkillItemLevelFilter`'s `(min, max)` required level, 0 for no bound.
+    pub(crate) trade_skill_level_filter: (i32, i32),
+    /// `TradeSkillOnlyShowMakeable` (`m_showOnlyMakeable`).
+    pub(crate) trade_skill_only_makeable: bool,
+    /// `TradeSkillOnlyShowSkillUps` (`m_showOnlySkillUps`): trivial recipes hide.
+    pub(crate) trade_skill_only_skill_ups: bool,
+    /// The recipe spell whose description `GetTradeSkillDescription` missed in the spell view
+    /// store; its view's arrival signals `TRADE_SKILL_UPDATE` so the frame asks again.
+    pub(crate) trade_skill_description_wait: u32,
     /// The skill line the state was last built for (`0xbde064`): a push for another line resets
     /// the filters, collapses and selection; the same line keeps them, even across a reopen.
     pub(crate) trade_skill_last_line: u32,
@@ -1332,6 +1349,13 @@ pub(crate) struct Model {
     /// `gtCombatRatings.dbc` scalers in row order (`rating_idx * 100 + (level - 1)`), pushed by
     /// the host when `WorldAssets` loads; `GetCombatRatingBonus` divides the rating by it.
     pub(crate) combat_rating_scalers: Vec<f32>,
+    /// `gtOCTRegenHP.dbc` and `gtRegenHPPerSpt.dbc` (game tables 7 and 9), class by level,
+    /// `(class - 1) * 100 + (level - 1)`: `GetUnitHealthRegenRateFromSpirit` reads both.
+    pub(crate) regen_hp_tables: Option<(Vec<f32>, Vec<f32>)>,
+    /// `CGMailInfo::m_sendMailShowing`, set by `SetSendMailShowing(bool)`.
+    pub(crate) send_mail_showing: bool,
+    /// `CGGameUI::m_visible`, set by `SetUIVisibility(bool)` (Alt-Z's world-side half).
+    pub(crate) ui_visible: bool,
 
     /// The paper doll's combat stats, `None` until the first push.
     pub(crate) player_combat_stats: Option<char_stats::UnitCombatStats>,
@@ -1870,6 +1894,7 @@ impl Model {
             ui_errors: Vec::new(),
             spellbook: spellbook::SpellBookState::default(),
             spell_list: Vec::new(),
+            companions: [Vec::new(), Vec::new()],
             pet_book: spellbook::PetBookState::default(),
             macros: macros::MacroState::default(),
             macros_dirty: false,
@@ -1966,6 +1991,12 @@ impl Model {
             trade_skill_collapsed: HashSet::new(),
             trade_skill_subclass_hidden: HashSet::new(),
             trade_skill_invslot_mask: u32::MAX,
+            trade_skill_name_filter: None,
+            trade_skill_search_text: HashMap::new(),
+            trade_skill_level_filter: (0, 0),
+            trade_skill_only_makeable: false,
+            trade_skill_only_skill_ups: false,
+            trade_skill_description_wait: 0,
             trade_skill_last_line: 0,
             trade_skill_selected_spell: 0,
             trade_skill_repeat_spell: 0,
@@ -2094,6 +2125,9 @@ impl Model {
             .into_iter()
             .collect(),
             combat_rating_scalers: Vec::new(),
+            regen_hp_tables: None,
+            send_mail_showing: false,
+            ui_visible: true,
             player_combat_stats: None,
             player_crit_percentage: 0.0,
             ammo_record_asks: Vec::new(),

@@ -378,6 +378,10 @@ pub struct TooltipState {
     /// `SetPadding` (`+0x3bc`), in layout units (`0x530fba`): extra plate width past the content
     /// (`0x5309f4`), which the clear keeps (`ItemRef.xml:40` sets 16 for the close button).
     pub padding: f32,
+    /// `AddTexture`'s icons in use (12340 `m_numTextures`/`m_textureLines`, `Tooltip.cpp:3841`):
+    /// each a `<name>Texture<n>` region of the pool and the 0-based line it is pinned to. The
+    /// clear restores those lines' anchors and hides the icons (`Tooltip.cpp:957`).
+    pub textures: Vec<(crate::widget::RegionHandle, usize)>,
     /// Benilla-only: a sizing ran in a VM with no font engine before its lines were measured, so
     /// the next resolve runs it again ([`crate::script::tooltip`]'s headless fallback).
     pub relayout_owed: bool,
