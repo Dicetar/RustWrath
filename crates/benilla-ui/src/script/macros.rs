@@ -518,7 +518,7 @@ fn refresh_macro_limits(lua: &Lua) {
 }
 
 /// 12340's GetMacroFromLua (0x00566DF0) accepts an index or a name; donor APIs require a number.
-fn macro_index_arg(lua: &Lua, value: Value, usage: &str) -> mlua::Result<usize> {
+fn macro_index_arg(lua: &Lua, value: Value, usage: &'static str) -> mlua::Result<usize> {
     let model = lua.app_data_ref::<Model>().expect("model app_data");
     if model.target == super::UiTarget::Wrath335 {
         if let Some(n) = binding_abi::is_number(lua, value.clone()) {
