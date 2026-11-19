@@ -197,10 +197,16 @@ pub fn import_kit(
             ));
             continue;
         }
-        if !options.off_hand && (kind_name.starts_with("Left") || kind_name.starts_with("Paired")) {
+        let paired_weapon = ["Fist", "Claw"]
+            .iter()
+            .any(|name| weapon_name.eq_ignore_ascii_case(name));
+        if (kind_name.starts_with("Left") && (!options.off_hand || options.two_handed))
+            || (kind_name.starts_with("Paired")
+                && (!options.off_hand || options.two_handed || !paired_weapon))
+        {
             report.skipped.push((
                 kind_name.to_string(),
-                "off-hand and paired attacks were not asked for",
+                "the selected weapon, grip or off-hand option does not use this row",
             ));
             continue;
         }
@@ -217,7 +223,9 @@ pub fn import_kit(
         });
     }
     report.empty_windows_dropped = parser.empty_windows;
-    drafts.push(parry(backstep_cost));
+    if !options.two_handed {
+        drafts.push(parry(backstep_cost));
+    }
 
     // Leave out what the engine cannot run, then number what is left.
     drafts.retain(|draft| {
@@ -1223,7 +1231,7 @@ mod tests {
                     ),
                     (
                         "LeftLight1".to_string(),
-                        "off-hand and paired attacks were not asked for"
+                        "the selected weapon, grip or off-hand option does not use this row"
                     ),
                     ("Feint".to_string(), "costs no stamina"),
                 ],
@@ -1327,7 +1335,8 @@ mod tests {
         };
         let (kit, report) = import_kit(&sample(), Some(CONSTANTS), &two_handed).expect("import");
         assert_eq!(kit.label, "Test Blade, two-handed, light load");
-        assert_eq!((report.dodges, report.attacks), (6, 1));
+        assert_eq!((report.dodges, report.attacks), (5, 1));
+        assert!(kit.action_named("Parry").is_none());
         assert_eq!(kit.actions[5].hits[0].stamina, Milli::whole(9));
         assert_eq!(
             kit.actions[5].next_light, None,

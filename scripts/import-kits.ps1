@@ -19,6 +19,8 @@ foreach ($row in $rows) {
 }
 New-Item -ItemType Directory -Force -Path $Output | Out-Null
 foreach ($row in $rows) {
-    & $Importer --extracted $Extracted --weapon $row.weapon --grip $row.grip --off-hand --out (Join-Path $Output "$($row.name).kit")
+    $offHand = @()
+    if ($row.grip -eq 'one') { $offHand += '--off-hand' }
+    & $Importer --extracted $Extracted --weapon $row.weapon --grip $row.grip @offHand --out (Join-Path $Output "$($row.name).kit")
     if ($LASTEXITCODE -ne 0) { throw "import_kit failed for $($row.name): $LASTEXITCODE" }
 }

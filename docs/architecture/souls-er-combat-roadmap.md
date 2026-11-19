@@ -120,7 +120,7 @@ cursor_keys = ["Escape", "B", "C", "P", "M", "L", "N", "O", "I", "K", "U", "H", 
 | Poise: each hit taken costs poise and does not interrupt; at zero it breaks and staggers; refills 30 s after the last hit | done (prediction only, authored numbers) | `souls/input.rs`, `combat_playback.rs` | `poise` |
 | Hyperarmor: inside a heavy's windup and swing a hit costs half the poise | done (prediction only) | `souls/input.rs` | `poise` |
 | Crouch (toggle) and the crouch attack (light from a crouch) | done; the stealth crouch pose (StealthStand/StealthWalk) on our body, ×0.5 run speed and the pose for others from the server script | `souls/input.rs` | `crouch` |
-| Jump attacks (light/heavy in the air) | done; needs `JumpLight`/`JumpHeavy` rows, which the owner's kit lacks | `souls/input.rs` | `jump_attacks` |
+| Jump attacks (light/heavy in the air) | imports authored `JumpLightLand`/`JumpHeavyLand` rows where present | `souls/input.rs` | `jump_attacks` |
 | Left-hand chain | done; needs `LeftLight1…` or `PairedLight1…` rows (the importer's opt-in) | `souls/input.rs` | `left_hand` |
 | Parry: the `Parry` row's `iframes` window deflects a hit | done; needs a `Parry` row; with the server script a parried strike opens a ×3 riposte on that creature for 1.5 s | `souls/input.rs` | `parry` |
 | Clip retarget: each kit action plays the ER clip it was read from on our own rig (spine, head, arms, legs by role; pelvis height) | done (local and relayed player actions); needs `benilla-config/combat/player_anims.bin` | `souls/retarget.rs` | `retarget` |
@@ -144,4 +144,4 @@ Install and side effects: `.scratch/project-b/server-rebuild-batch.md` item 2.
 - Retarget checks in game: the bone roles are found from the bind pivots and attachments, not
   checked against the HumanMale skeleton; hand roll and the weapon's angle come from the forearm
   aim; the locomotion clip speeds are estimates. Remote locomotion still uses stock clips; relayed actions use the ER bake.
-- Kit rows for jumps, the left hand and the parry (`kit_import` options), then tuning.
+- Gameplay tuning of imported jumps, left-hand attacks and one-handed parries.
