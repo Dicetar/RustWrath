@@ -108,6 +108,12 @@ const ALLOWED_BEYOND: &[(&str, &str, &str)] = &[
         "GameTooltip",
         "12340's tracking line; the shared GameTooltip carries it for the Wrath UI",
     ),
+    (
+        "AddTexture",
+        "GameTooltip",
+        "12340's Texture1-10 pool line (the owner tooltip batch); the shared GameTooltip carries it \
+         for the Wrath UI",
+    ),
 ];
 
 /// The reference's widget rows, `table_va -> {name}`.
