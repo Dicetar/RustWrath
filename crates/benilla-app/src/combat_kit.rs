@@ -292,9 +292,6 @@ pub(crate) struct RollLoad {
     prefix: &'static str,
     /// The share of the roll's root motion the body travels.
     pub(crate) distance: f32,
-    /// The run speed asked of the server for the roll, over the stance's own: root motion presses
-    /// the movement keys, so the body covers the roll's distance only as fast as it can run.
-    pub(crate) speed: f32,
 }
 
 /// The highest load of the light roll, Elden Ring's fast roll.
@@ -309,10 +306,6 @@ const HEAVY_LOAD_FLOOR: u8 = 37;
 const LIGHT_DISTANCE: (f32, f32) = (2.0, 1.8);
 const MEDIUM_DISTANCE: (f32, f32) = (1.7, 1.0);
 const HEAVY_DISTANCE: (f32, f32) = (0.95, 0.7);
-/// ER's rolls travel about as fast as the WoW run (6.5-7 m/s against 7 yd/s); the speed asked
-/// keeps this headroom over the distance share, so the body keeps up with the root motion and
-/// the owed distance, not the run speed, ends the roll.
-const ROLL_SPEED_HEADROOM: f32 = 1.25;
 
 /// The roll for an equipment load score (the server's `LOAD`: 0-4 an armour slot, the weapons and
 /// gun on top); `None`, no score yet, rolls the kit's own roll the whole way.
@@ -321,7 +314,6 @@ pub(crate) fn roll_load(score: Option<u8>) -> RollLoad {
         return RollLoad {
             prefix: "",
             distance: 1.0,
-            speed: ROLL_SPEED_HEADROOM,
         };
     };
     let along = |from: u8, to: u8, (start, end): (f32, f32)| {
@@ -341,11 +333,7 @@ pub(crate) fn roll_load(score: Option<u8>) -> RollLoad {
             along(MEDIUM_LOAD_MAX + 1, HEAVY_LOAD_FLOOR, HEAVY_DISTANCE),
         )
     };
-    RollLoad {
-        prefix,
-        distance,
-        speed: distance * ROLL_SPEED_HEADROOM,
-    }
+    RollLoad { prefix, distance }
 }
 
 /// The dodge for the held direction at `load`: the load's own roll when the kit has it, else the
@@ -688,7 +676,6 @@ end
         for score in 0..=40 {
             let load = roll_load(Some(score));
             assert!(load.distance <= last, "load {score} rolls further");
-            assert!((load.speed - load.distance * ROLL_SPEED_HEADROOM).abs() < 1e-6);
             last = load.distance;
         }
         assert_eq!(roll_load(None).distance, 1.0);

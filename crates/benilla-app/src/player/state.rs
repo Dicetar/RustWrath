@@ -320,6 +320,10 @@ pub(crate) struct SoulsDrive {
     /// Replace the movement keys' forward and strafe axes (each `-1`, `0` or `1`; strafe right is
     /// positive): root motion, or `(0, 0)` while an action holds the body still.
     pub(crate) axes: Option<(i32, i32)>,
+    /// Move [`Self::axes`] at this many yards a second instead of the server's run speed: a roll
+    /// covers its root motion at the clip's own pace, from its first frame, without waiting for
+    /// a speed change from the server.
+    pub(crate) speed: Option<f32>,
     /// Hold the facing at this yaw (Bevy radians) over the keyboard and mouse turns: a turn-lock
     /// window, or the bearing to the lock-on target.
     pub(crate) face: Option<f32>,

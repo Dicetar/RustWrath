@@ -15,8 +15,8 @@
 //!   bonus and the defense curve. The action's start goes out as `SWING <action>`, which the
 //!   server relays to other Souls players, who play it on our body.
 //! - **Sprint and crouch.** `SPRINT 1|0` and `CROUCH 1|0` follow them; the server raises or
-//!   lowers the run speed, and shows the crouch to other players as the stealth pose.
-//!   `ROLL <rate>` runs the body at a roll's speed for the equipment load (`ROLL 0` ends it).
+//!   lowers the run speed, and shows the crouch to other players as the stealth pose. A roll
+//!   moves at its own pace on this side ([`super::drive`]); the server's speed is left alone.
 //! - **Enemy strikes.** `STRIKE` telegraphs a creature's blow: a bar over it fills for the windup.
 //!   A strike on us is judged at the end of the windup, from the creature's rendered facing (which
 //!   the server locked) and our own state: out of reach or the cone a miss, inside a parry window
@@ -59,6 +59,10 @@ const STRIKE_SLACK_YARDS: f32 = 0.25;
 /// a frame or two of input and render lag, and a creature clip whose contact key is estimated.
 /// The strike is judged this long after its moment, so a roll pressed just late is seen.
 const DODGE_TOLERANCE_SECONDS: f32 = 0.1;
+/// How long before a strike lands a roll pressed still covers it: the kit rolls' i-frames run
+/// about 0.4 s from the press, and the judge allows [`DODGE_TOLERANCE_SECONDS`] either side. The
+/// strike bar marks this stretch as its dodge zone.
+pub(crate) const DODGE_LEAD_SECONDS: f32 = 0.45;
 /// A strike whose `RESOLVE` never comes is dropped this long past its windup.
 const STRIKE_FORGET_SECONDS: f32 = 2.0;
 /// A remote body's network swing stays muted this long after its last relayed `SWING`.
@@ -235,6 +239,9 @@ pub(crate) struct StrikeShown {
     pub(crate) unit: Entity,
     /// How far through the windup, `0..=1`.
     pub(crate) progress: f32,
+    /// Where the dodge window opens, as a fraction of the windup: a roll pressed from here to the
+    /// end covers the strike ([`DODGE_LEAD_SECONDS`]).
+    pub(crate) dodge_from: f32,
     pub(crate) mine: bool,
     pub(crate) kind: StrikeKind,
 }
@@ -250,8 +257,6 @@ pub(crate) struct SoulsLink {
     sprint_sent: bool,
     /// The crouch state the server was last told.
     crouch_sent: bool,
-    /// The roll's run speed the server was last told, in hundredths; `None` while not rolling.
-    roll_sent: Option<u16>,
     /// The action run last reported as `SWING`.
     swing_sent: Option<Instance>,
     /// Messages waiting to go out this frame.
@@ -307,7 +312,6 @@ impl SoulsLink {
             && self.announced_at.is_none()
             && !self.sprint_sent
             && !self.crouch_sent
-            && self.roll_sent.is_none()
             && self.swing_sent.is_none()
             && self.outbox.is_empty()
             && self.strikes.is_empty()
@@ -338,6 +342,15 @@ struct Defence {
     parrying: bool,
     dodging: bool,
     guarding: bool,
+}
+
+/// Where the dodge zone opens on a strike bar of `windup` seconds, as a fraction of it.
+fn dodge_from(windup: f32) -> f32 {
+    if windup > 0.0 {
+        (1.0 - DODGE_LEAD_SECONDS / windup).clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
 /// The latest i-frame span after this frame: extended while the i-frames run (a chained dodge
@@ -675,6 +688,7 @@ pub(super) fn drive_link(
                 shown.push(StrikeShown {
                     unit,
                     progress: progress.clamp(0.0, 1.0),
+                    dodge_from: dodge_from(strike.windup),
                     mine: strike.mine,
                     kind: strike.kind,
                 });
@@ -730,20 +744,6 @@ pub(super) fn drive_link(
     if sprint != link.sprint_sent {
         link.outbox.push(format!("SPRINT\t{}", u8::from(sprint)));
         link.sprint_sent = sprint;
-    }
-    // The roll: root motion presses the movement keys, so the server runs the body at the roll's
-    // speed for the equipment load until the roll ends (or the movement cancel releases it).
-    let roll = running
-        .filter(|(_, action, _)| {
-            config.features.root_motion
-                && action.kind == ActionKind::Dodge
-                && action.name.contains("Roll")
-        })
-        .map(|_| (crate::combat_kit::roll_load(link.load).speed * 100.0).round() as u16);
-    if roll != link.roll_sent {
-        let rate = roll.map_or(0.0, |hundredths| f32::from(hundredths) / 100.0);
-        link.outbox.push(format!("ROLL	{rate:.2}"));
-        link.roll_sent = roll;
     }
     // The crouch: slower, and the crouch pose for other players.
     let crouch = souls.crouched && config.features.crouch;
@@ -829,8 +829,15 @@ mod tests {
         assert_eq!(parse("WHAT\t1"), None);
     }
 
-    /// Out of the swing is a miss whatever we do; inside it the parry beats the dodge beats the
-    /// guard.
+    /// The strike bar's dodge zone is the windup's last [`DODGE_LEAD_SECONDS`], the whole bar
+    /// for a windup shorter than that.
+    #[test]
+    fn the_dodge_zone_is_the_windups_last_lead() {
+        assert!((dodge_from(1.8) - 0.75).abs() < 1e-6);
+        assert_eq!(dodge_from(0.3), 0.0);
+        assert_eq!(dodge_from(0.0), 0.0);
+    }
+
     /// A roll's i-frames count for a strike landing inside them or within the tolerance either
     /// side, even though the strike is judged after they ended; a strike well outside is a hit.
     #[test]

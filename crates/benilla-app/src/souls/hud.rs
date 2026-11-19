@@ -6,8 +6,10 @@
 //! The bar is green; red for a moment after a press refused for stamina, blue while guarding,
 //! yellow while sprinting. The chip is gold with the kit's table, grey on the stock fallback; it
 //! turns teal while the server script answers. The marker is red, gold while a riposte is open. A
-//! strike bar fills over its windup: orange for a strike on us (red in its last fifth), grey for
-//! one on someone else.
+//! strike bar is a dark track the length of the windup. A pale zone at its end and a white tick
+//! where the zone starts mark the dodge window: a roll pressed once the fill passes the tick covers
+//! the strike. The fill is the strike's kind colour (orange, blue for a thrust, purple for a
+//! slam) and turns near-white inside the zone; dimmed for a strike on someone else.
 
 use benilla_world::view::WorldCamera;
 use bevy::prelude::*;
@@ -32,8 +34,12 @@ const MARKER_HEIGHT_YARDS: f32 = 1.6;
 /// Strike bars: how many can show at once, their full size, and the gap under the plate (or the
 /// head), px.
 const STRIKE_BARS: u8 = 4;
-const STRIKE_WIDTH: f32 = 56.0;
-const STRIKE_HEIGHT: f32 = 6.0;
+const STRIKE_WIDTH: f32 = 84.0;
+const STRIKE_HEIGHT: f32 = 8.0;
+/// The tick at the dodge zone's start: its width, and how far it reaches above and below the
+/// track, px.
+const STRIKE_TICK: f32 = 2.0;
+const STRIKE_TICK_OVERHANG: f32 = 3.0;
 const STRIKE_GAP: f32 = 3.0;
 
 /// One HUD quad.
@@ -43,8 +49,14 @@ pub(super) enum HudPart {
     Fill,
     Chip,
     Lock,
-    /// The n-th strike bar.
+    /// The n-th strike bar's track; the three below are its children.
     Strike(u8),
+    /// The dodge zone: from [`super::server::StrikeShown::dodge_from`] to the end.
+    StrikeZone(u8),
+    /// The windup so far.
+    StrikeFill(u8),
+    /// The tick where the dodge zone starts.
+    StrikeTick(u8),
 }
 
 /// Spawn the quads once, parked hidden.
@@ -112,35 +124,115 @@ pub(super) fn spawn_hud(mut commands: Commands) {
         Visibility::Hidden,
     ));
     for index in 0..STRIKE_BARS {
-        commands.spawn((
-            HudPart::Strike(index),
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Px(0.0),
-                height: Val::Px(STRIKE_HEIGHT),
-                ..default()
-            },
-            BackgroundColor(Color::srgb(0.95, 0.5, 0.1)),
-            GlobalZIndex(900),
-            Visibility::Hidden,
-        ));
+        let child = |left: Val, width: Val, top: Val, height: Val| Node {
+            position_type: PositionType::Absolute,
+            left,
+            width,
+            top,
+            height,
+            ..default()
+        };
+        commands
+            .spawn((
+                HudPart::Strike(index),
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(STRIKE_WIDTH),
+                    height: Val::Px(STRIKE_HEIGHT),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
+                GlobalZIndex(900),
+                Visibility::Hidden,
+            ))
+            .with_children(|track| {
+                // Later children draw over earlier ones: zone, then fill, then tick.
+                track.spawn((
+                    HudPart::StrikeZone(index),
+                    child(
+                        Val::Percent(100.0),
+                        Val::Percent(0.0),
+                        Val::Px(0.0),
+                        Val::Percent(100.0),
+                    ),
+                    BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.25)),
+                ));
+                track.spawn((
+                    HudPart::StrikeFill(index),
+                    child(
+                        Val::Px(0.0),
+                        Val::Percent(0.0),
+                        Val::Px(0.0),
+                        Val::Percent(100.0),
+                    ),
+                    BackgroundColor(Color::srgb(0.95, 0.5, 0.1)),
+                ));
+                track.spawn((
+                    HudPart::StrikeTick(index),
+                    child(
+                        Val::Percent(100.0),
+                        Val::Px(STRIKE_TICK),
+                        Val::Px(-STRIKE_TICK_OVERHANG),
+                        Val::Px(STRIKE_HEIGHT + 2.0 * STRIKE_TICK_OVERHANG),
+                    ),
+                    BackgroundColor(Color::WHITE),
+                ));
+            });
     }
 }
 
-/// A strike bar's colour.
-fn strike_color(kind: StrikeKind, mine: bool, progress: f32) -> Color {
-    let brightness = if mine { 1.0 } else { 0.55 };
-    let pulse = if progress >= 0.8 { 1.0 } else { 0.8 };
-    let (r, g, b) = match kind {
-        StrikeKind::Legacy | StrikeKind::Sweep => (0.95, 0.5, 0.1),
-        StrikeKind::Thrust => (0.2, 0.65, 1.0),
-        StrikeKind::Slam => (0.85, 0.2, 0.85),
-    };
-    Color::srgb(
-        r * brightness * pulse,
-        g * brightness * pulse,
-        b * brightness * pulse,
-    )
+/// One strike as the bars draw it.
+#[derive(Clone, Copy, Debug)]
+struct StrikeBar {
+    /// The track's top centre, px.
+    at: Vec2,
+    progress: f32,
+    dodge_from: f32,
+    mine: bool,
+    kind: StrikeKind,
+}
+
+impl StrikeBar {
+    /// The fill has reached the dodge zone: roll now.
+    fn dodge_now(&self) -> bool {
+        self.progress >= self.dodge_from
+    }
+
+    /// The fill's colour: the kind's colour, near-white inside the dodge zone; dimmed for a
+    /// strike on someone else.
+    fn fill(&self) -> Color {
+        let (r, g, b) = match self.kind {
+            StrikeKind::Legacy | StrikeKind::Sweep => (0.95, 0.5, 0.1),
+            StrikeKind::Thrust => (0.2, 0.65, 1.0),
+            StrikeKind::Slam => (0.85, 0.2, 0.85),
+        };
+        let (r, g, b) = if self.dodge_now() {
+            let lift = |c: f32| c + (1.0 - c) * 0.7;
+            (lift(r), lift(g), lift(b))
+        } else {
+            (r * 0.8, g * 0.8, b * 0.8)
+        };
+        let brightness = if self.mine { 1.0 } else { 0.55 };
+        Color::srgb(r * brightness, g * brightness, b * brightness)
+    }
+
+    /// The zone's colour: pale, brighter once the fill is in it.
+    fn zone(&self) -> Color {
+        let alpha = match (self.mine, self.dodge_now()) {
+            (false, _) => 0.12,
+            (true, false) => 0.3,
+            (true, true) => 0.55,
+        };
+        Color::srgba(1.0, 0.95, 0.6, alpha)
+    }
+
+    fn tick(&self) -> Color {
+        if self.mine {
+            Color::WHITE
+        } else {
+            Color::srgb(0.55, 0.55, 0.55)
+        }
+    }
 }
 
 fn shown(visible: bool) -> Visibility {
@@ -213,7 +305,7 @@ pub(super) fn drive_hud(
         .and_then(|(camera, _)| camera.logical_viewport_size())
         .map_or(0.0, |viewport| gx_px(PLATE_H, plate_basis(viewport)));
     let (units, attach, poses, fallbacks, mounts) = &heads;
-    let strikes: Vec<(Vec2, f32, bool, StrikeKind)> = link
+    let strikes: Vec<StrikeBar> = link
         .shown
         .iter()
         .filter(|_| on)
@@ -225,7 +317,13 @@ pub(super) fn drive_hud(
             } else {
                 project(head)? + Vec2::Y * STRIKE_GAP
             };
-            Some((at, strike.progress, strike.mine, strike.kind))
+            Some(StrikeBar {
+                at,
+                progress: strike.progress,
+                dodge_from: strike.dodge_from,
+                mine: strike.mine,
+                kind: strike.kind,
+            })
         })
         .take(usize::from(STRIKE_BARS))
         .collect();
@@ -250,15 +348,25 @@ pub(super) fn drive_hud(
             HudPart::Fill => (true, Some(fill)),
             HudPart::Chip => (on, Some(chip)),
             HudPart::Lock => (marker.is_some(), Some(lock_color)),
-            HudPart::Strike(index) => {
-                let strike = strikes.get(usize::from(*index));
-                (
-                    strike.is_some(),
-                    strike.map(|&(_, progress, mine, kind)| strike_color(kind, mine, progress)),
-                )
+            HudPart::Strike(index) => (strikes.get(usize::from(*index)).is_some(), None),
+            HudPart::StrikeZone(index) => {
+                (true, strikes.get(usize::from(*index)).map(StrikeBar::zone))
+            }
+            HudPart::StrikeFill(index) => {
+                (true, strikes.get(usize::from(*index)).map(StrikeBar::fill))
+            }
+            HudPart::StrikeTick(index) => {
+                (true, strikes.get(usize::from(*index)).map(StrikeBar::tick))
             }
         };
-        let visible = if *part == HudPart::Fill {
+        let child = matches!(
+            part,
+            HudPart::Fill
+                | HudPart::StrikeZone(_)
+                | HudPart::StrikeFill(_)
+                | HudPart::StrikeTick(_)
+        );
+        let visible = if child {
             Visibility::Inherited
         } else {
             shown(visible)
@@ -288,14 +396,40 @@ pub(super) fn drive_hud(
                 }
             }
             HudPart::Strike(index) => {
-                if let Some(&(at, progress, _, _)) = strikes.get(usize::from(*index)) {
-                    let left = Val::Px(at.x - STRIKE_WIDTH / 2.0);
-                    let top = Val::Px(at.y);
-                    let width = Val::Px(STRIKE_WIDTH * progress.max(0.05));
-                    if node.left != left || node.top != top || node.width != width {
+                if let Some(strike) = strikes.get(usize::from(*index)) {
+                    let left = Val::Px(strike.at.x - STRIKE_WIDTH / 2.0);
+                    let top = Val::Px(strike.at.y);
+                    if node.left != left || node.top != top {
                         node.left = left;
                         node.top = top;
+                    }
+                }
+            }
+            HudPart::StrikeZone(index) => {
+                if let Some(strike) = strikes.get(usize::from(*index)) {
+                    let from = strike.dodge_from.clamp(0.0, 1.0) * 100.0;
+                    let (left, width) = (Val::Percent(from), Val::Percent(100.0 - from));
+                    if node.left != left || node.width != width {
+                        node.left = left;
                         node.width = width;
+                    }
+                }
+            }
+            HudPart::StrikeFill(index) => {
+                if let Some(strike) = strikes.get(usize::from(*index)) {
+                    let width = Val::Percent(strike.progress.clamp(0.0, 1.0) * 100.0);
+                    if node.width != width {
+                        node.width = width;
+                    }
+                }
+            }
+            HudPart::StrikeTick(index) => {
+                if let Some(strike) = strikes.get(usize::from(*index)) {
+                    let at = strike.dodge_from.clamp(0.0, 1.0) * STRIKE_WIDTH;
+                    let left =
+                        Val::Px((at - STRIKE_TICK / 2.0).clamp(0.0, STRIKE_WIDTH - STRIKE_TICK));
+                    if node.left != left {
+                        node.left = left;
                     }
                 }
             }
