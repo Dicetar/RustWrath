@@ -442,9 +442,13 @@ fn fix_color_vertex_alpha(
     batches: &[benilla_wmo::Batch],
     transparency_count: usize,
 ) {
-    let first_exterior = batches
-        .get(transparency_count.saturating_sub(1))
-        .map_or(0, |batch| usize::from(batch.vertex_end) + 1);
+    let first_exterior = if transparency_count == 0 {
+        0
+    } else {
+        batches
+            .get(transparency_count - 1)
+            .map_or(0, |batch| usize::from(batch.vertex_end) + 1)
+    };
 
     for (index, color) in colors.iter_mut().enumerate() {
         if index >= first_exterior {
