@@ -122,4 +122,10 @@ the commit), blocked (with why), or not started. Push it to main. That is the on
 
 ## Night result
 
-(Astra writes this.)
+1. Ready queue: landed b7856200 (all six branches; CI repairs through 33dc2bc7).
+2. Stealth byte: landed 9a99ea15 (verified existing Wrath-to-donor conversion; added hover/CREEP regressions).
+3. Weapon kits: landed cc124e06.
+4. Creature strike animations: landed 7f75ea5e.
+5. Strike shapes: landed b13d3f38.
+6. Remote Souls player clips: landed 7aa2779b.
+7. Retarget gameplay validation: blocked — client/server launch is prohibited overnight; owner must check alignment, speed and crowded-scene performance.
