@@ -33,4 +33,15 @@ Execution checks described above are acceptance requirements, not authorization.
 
 Handoff: exact source identity and changed paths; externally visible behavior; evidence actually collected; unresolved acceptance; next dependent slice. Close only after acceptance is supported. See [the completion plan](D:/WOW/PROJECT_B_COMPLETION_PLAN.md) for the mandatory full stock-client replacement release gate.
 
+## Source gap list (2026-11-21, OpenCode swarm)
 
+Method: files and handoffs read; no Cargo, test, client or server run.
+
+| Acceptance line | Source that meets it | Gap |
+|---|---|---|
+| Use sampled v264 model and external skin format; verify header/array/layout requirements | `benilla-m2/src/track.rs:M2Track` | none |
+| Select creature model variant; handle texture/bone/animation dependencies | `benilla-app/src/creature_anim.rs:select` module | creature-to-model-variant selection with texture/bone/animation dependency resolution from manifest not fully verified |
+| Read external skins through manifest asset source to renderer-facing types | `benilla-assets/src/m2.rs:M2Model` loader | external skin reading through manifest asset source to renderer types not fully verified |
+| Demonstrate orientation, scale, skin indices, basic animation and relevant attachments against the matched reference profile | `benilla-m2/src/model.rs:M2Bone` | no demonstration/verification pipeline comparing parsed data against the wowdecomp-reference profile |
+| Malformed/truncated dependencies fail with useful diagnostics; preserve currently supported older formats | `benilla-m2/src/error.rs:Error` | malformed/truncated M2 dependencies may not produce useful diagnostic messages; older format preservation not explicitly verified |
+| List any other model/animation variants as compatibility ledger gaps instead of claiming universal model support | none found | compatibility ledger for model/animation variants not formally documented as a source code file; project practice per acceptance criteria |
