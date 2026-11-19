@@ -1,7 +1,7 @@
 # Wrath combat log: SWING_MISSED (miss and victim states)
 
 Status: ready to merge
-Owner: OpenCode / Particle-1
+Owner: OpenCode / Particle-1 (overseer formatted and pushed after the free model hit its rate limit)
 Branch: oc/swing-missed-victim-state
 Issue: 18 (first-loop behavior C06), 25
 Next: none; the absorb/resist slice is next.
@@ -20,6 +20,6 @@ Tests: `swing_missed_names_each_victim_state`, `feed_delivers_a_dodged_swing_as_
 `a_missed_melee_spell_round_is_dropped_by_should_show_feedback`; updated
 `feed_delivers_a_wounded_swing_and_silently_retires_the_rest` (a dodge is no longer retired).
 
-CI: not run yet. No Cargo, client or server run. Not proven in game: that a live dodge/parry
+CI 44613104542: Windows check and the changed-crate tests green; the gates job is red only on the pre-existing `player-clippy` debt in files this ticket did not touch. No Cargo, client or server run. Not proven in game: that a live dodge/parry
 reaches the stock combat-log frame, or that a blocked row with no damage is spelled 0.0 (the
 reference's amount, pushed as a number, not nil).
