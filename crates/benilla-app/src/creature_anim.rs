@@ -17,14 +17,14 @@ use benilla_world::schedule::WorldStage;
 /// The pure selection logic: the `0x5fd100` tables, the gait, swing and ready picks, the rate math.
 pub(crate) mod select;
 pub(crate) use select::{
-    ease_strafe_yaw, is_swing_id, move_flags, strafe_body_offset, swim_body_rotation, swing_anim_main,
-    MovementState,
+    ease_strafe_yaw, is_swing_id, move_flags, strafe_body_offset, swim_body_rotation,
+    swing_anim_main, MovementState,
 };
 use select::{Mode, Special};
 
 /// The strafe body counter-twist, composed onto SpineLow and Head after animation.
 mod twist;
-pub(crate) use twist::{wrap_pi, BodyTwist};
+pub(crate) use twist::{apply_body_twist, wrap_pi, BodyTwist};
 
 /// Parks an off-frustum rig's pose while its clocks run, as the reference does not tick one
 /// (`0x683dd0`); a parked unit's events fire only for a `MORE_AUDIBLE` template.
@@ -38,8 +38,9 @@ pub(crate) struct Wielded {
     pub(crate) off: Option<(u8, u8)>,
     /// The ranged-slot item's `(class, subclass)`, the auto-repeat idle's selector (`0x5fd530`).
     pub(crate) ranged: Option<(u8, u8)>,
-    /// The hand items' sheath types (0 none, 1 back 2H, 2 back staff, 3 hip, 4 shield); each picks
-    /// its arm's draw/stow clip, HipSheath 90 for types 3 and 7, else Sheath 89 (`0x611930`).
+    /// The hand items' `Item.dbc` `SheatheType` (0 none, 1 mainhand, 2 back, 3 hip, 4 shield).
+    /// Each picks its arm's draw/stow clip, HipSheath 90 for types 3 and 7, else Sheath 89
+    /// (`0x611930`).
     pub(crate) main_sheath: u8,
     pub(crate) off_sheath: u8,
     /// The ranged sheath type: it picks the draw clip (`0x6118a0`), but the stow is always
@@ -642,6 +643,8 @@ impl PlaySeq {
 #[derive(Message, Clone, Copy)]
 pub(crate) struct ActionAnim {
     pub(crate) entity: Entity,
+    /// For telegraphs, scale the clip so its impact key lands after this many seconds.
+    pub(crate) contact_in: Option<f32>,
     /// The `AnimationData.dbc` id to play, resolved through the model's own lookups.
     pub(crate) anim_id: u16,
     /// `PlaySeq` stamp, so a same-frame collision with a network swing keeps reference order.
@@ -878,9 +881,7 @@ use breath::{classify_breath, fire_breath};
 
 mod impact;
 use impact::route_swing_impacts;
-pub(crate) use impact::{
-    impact_tag, DefenseAnim, PendingImpacts, SwingImpact, SwingSlowdown,
-};
+pub(crate) use impact::{impact_tag, DefenseAnim, PendingImpacts, SwingImpact, SwingSlowdown};
 
 /// The cast and auto-repeat state the seams queue for after the pass.
 mod edits;

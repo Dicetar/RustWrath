@@ -67,7 +67,11 @@ pub fn load_server_messages_catalog(chain: &mut Chain) -> Result<ServerMessagesC
     let bytes = chain
         .read_file(SERVER_MESSAGES)
         .context("reading ServerMessages.dbc")?;
-    let locales = if field_count(&bytes) == Some(18) { 16 } else { 8 };
+    let locales = if field_count(&bytes) == Some(18) {
+        16
+    } else {
+        8
+    };
     let rs = parse(&bytes, schema(locales), "ServerMessages")?;
     let locale = chain.locale();
     let mut rows = Vec::with_capacity(rs.records().len());

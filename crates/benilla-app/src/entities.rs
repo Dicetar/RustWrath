@@ -66,8 +66,8 @@ pub(crate) use collision_height::CollisionHeight;
 
 /// Spell missiles: the projectile a cast with a `Spell.dbc` Speed above 0 flies at each target.
 mod missile;
-use missile::{attach_missile_models, move_missiles, spawn_missiles};
-pub(crate) use missile::{MissileMiss, MissileSound, PendingMissiles};
+use missile::{attach_missile_models, clear_missiles_at, move_missiles, spawn_missiles};
+pub(crate) use missile::{ClearMissilesAt, MissileMiss, MissileSound, PendingMissiles};
 
 /// A WMO-display GameObject's doodad props (a ship's sails), parented under it to ride a transport.
 mod wmo_props;
@@ -89,7 +89,7 @@ use chain_beam::{simulate_chain_beams, spawn_chain_beams};
 pub(crate) use attach::equip_slot;
 pub(crate) use equipment::ItemDisplays;
 pub(crate) use equipment::{attach_id, DressKey, HeldAttached};
-pub(crate) use equipment::{BoneAttach, Equipment};
+pub(crate) use equipment::{BoneAttach, Equipment, HandKeyBones};
 // Only the tests that build a `DressKey` name this type.
 #[cfg(test)]
 pub(crate) use equipment::ItemModelKind;
@@ -663,6 +663,7 @@ impl Plugin for EntitiesPlugin {
         .init_resource::<missile::PendingMissiles>()
         .add_message::<MissileSound>()
         .add_message::<MissileMiss>()
+        .add_message::<ClearMissilesAt>()
         .add_message::<dest_fx::GroundBurst>()
         // A display swap's rebuild edge, for the impact-kit replay the reference runs at the end
         // of `0x60abe0`.
@@ -706,7 +707,8 @@ impl Plugin for EntitiesPlugin {
                 (resolve_equipment, resolve_corpse_equipment),
                 // Spell effects and missiles create `SpellFx` entries too.
                 resolve_spell_fx,
-                move_missiles,
+                // The release's missile clear lands before the frame's flight.
+                (clear_missiles_at, move_missiles).chain(),
                 spawn_missiles,
                 // The dest-anchored lane's three independent producers also create entries.
                 (arm_ground_effects, spawn_ground_bursts, tick_shard_emitters),
@@ -997,7 +999,10 @@ fn setup_entities(
     // `ItemRandomProperties`: a random suffix's name and its enchant slots 2..6.
     match benilla_formats::load_random_property_catalog(&mut chain) {
         Ok(props) => {
-            info!("random-property catalog: {} positive-property rows", props.len());
+            info!(
+                "random-property catalog: {} positive-property rows",
+                props.len()
+            );
             if let Some(error) = props.suffix_load_error() {
                 warn!("random suffixes unavailable; positive properties remain available: {error}");
             }
@@ -1334,8 +1339,8 @@ mod world_unit_tests {
         let manifest = std::path::PathBuf::from(manifest);
         let profile = std::env::var("WM_ASSET_PROFILE").expect("WM_ASSET_PROFILE");
         let data = benilla_formats::wow_data_or_skip!();
-        let mut chain = benilla_assets::open_profile_chain(&data, &manifest, &profile)
-            .expect("profile chain");
+        let mut chain =
+            benilla_assets::open_profile_chain(&data, &manifest, &profile).expect("profile chain");
         let bytes = chain
             .read_file("DBFilesClient\\ItemDisplayInfo.dbc")
             .expect("ItemDisplayInfo");

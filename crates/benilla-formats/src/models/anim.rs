@@ -944,26 +944,24 @@ fn parse_m2_animations_wrath(
     }
 
     let constant = |keys: &[(u32, [f32; 3])]| -> Vec<(f32, [f32; 3])> {
-        keys.len()
-            .eq(&1)
-            .then(|| vec![(0.0, keys[0].1)])
-            .unwrap_or_default()
+        if keys.len() == 1 {
+            vec![(0.0, keys[0].1)]
+        } else {
+            Vec::new()
+        }
     };
     let constant_q = |keys: &[(u32, [f32; 4])]| -> Vec<(f32, [f32; 4])> {
-        keys.len()
-            .eq(&1)
-            .then(|| vec![(0.0, keys[0].1)])
-            .unwrap_or_default()
+        if keys.len() == 1 {
+            vec![(0.0, keys[0].1)]
+        } else {
+            Vec::new()
+        }
     };
     let seq_keys = |keys: &[(u32, [f32; 3])]| -> Vec<(f32, [f32; 3])> {
-        keys.iter()
-            .map(|&(t, v)| (t as f32 / 1000.0, v))
-            .collect()
+        keys.iter().map(|&(t, v)| (t as f32 / 1000.0, v)).collect()
     };
     let seq_quats = |keys: &[(u32, [f32; 4])]| -> Vec<(f32, [f32; 4])> {
-        keys.iter()
-            .map(|&(t, v)| (t as f32 / 1000.0, v))
-            .collect()
+        keys.iter().map(|&(t, v)| (t as f32 / 1000.0, v)).collect()
     };
 
     // 12340 `M2AnimateTrack` (`M2Model.cpp:3378, 3400, 5444, 5469, 5489`, `0x0082AEF0`): a bone
@@ -982,9 +980,11 @@ fn parse_m2_animations_wrath(
         .collect();
 
     let mut out = Vec::new();
-    for s in 0..seq_count {
+    for (s, &slot) in source_slots.iter().enumerate() {
         let rec = seq_ofs + s * 0x40;
-        let Some(source) = source_slots[s] else { continue };
+        let Some(source) = slot else {
+            continue;
+        };
         if sequence_data[source].is_none() {
             continue;
         }
@@ -1173,7 +1173,9 @@ pub fn parse_m2_global_sequence_bones(b: &[u8]) -> Vec<GlobalSeqBone> {
 /// selected animation and its external .anim payload. Preserve them for GlobalSeqDrive.
 fn parse_wrath_global_sequence_bones(b: &[u8]) -> Vec<GlobalSeqBone> {
     fn channel<T: Clone>(
-        b: &[u8], track: usize, stride: usize,
+        b: &[u8],
+        track: usize,
+        stride: usize,
         read: impl Fn(&[u8], usize) -> Option<T>,
     ) -> Option<GlobalSeqChannel<T>> {
         if track.checked_add(20)? > b.len() {
@@ -1193,9 +1195,13 @@ fn parse_wrath_global_sequence_bones(b: &[u8]) -> Vec<GlobalSeqBone> {
         (period_ms > 0 && keys.len() > 1).then_some(GlobalSeqChannel { period_ms, keys })
     }
     let vec3 = |bytes: &[u8], offset: usize| {
-        (offset.checked_add(12)? <= bytes.len()).then(|| [
-            le_f32(bytes, offset), le_f32(bytes, offset + 4), le_f32(bytes, offset + 8),
-        ])
+        (offset.checked_add(12)? <= bytes.len()).then(|| {
+            [
+                le_f32(bytes, offset),
+                le_f32(bytes, offset + 4),
+                le_f32(bytes, offset + 8),
+            ]
+        })
     };
     let offset = le_u32(b, 0x30) as usize;
     let count = capped(le_u32(b, 0x2c) as usize, 88, b.len().saturating_sub(offset));
@@ -1206,7 +1212,12 @@ fn parse_wrath_global_sequence_bones(b: &[u8]) -> Vec<GlobalSeqBone> {
         let rotation = channel(b, record + 36, 8, wrath_quaternion);
         let scale = channel(b, record + 56, 12, vec3);
         if translation.is_some() || rotation.is_some() || scale.is_some() {
-            out.push(GlobalSeqBone { bone: bone as u16, translation, rotation, scale });
+            out.push(GlobalSeqBone {
+                bone: bone as u16,
+                translation,
+                rotation,
+                scale,
+            });
         }
     }
     out
@@ -1219,10 +1230,25 @@ mod tests {
     fn external_talk_fixture() -> (Vec<u8>, Vec<u8>) {
         let mut model = vec![0u8; 640];
         model[..4].copy_from_slice(b"MD20");
-        for (offset, value) in [(4, 264u32), (0x1c, 2), (0x20, 320),
-            (0x2c, 1), (0x30, 448), (324, 1000), (332, 0x81),
-            (388, 1000), (396, 0xc1), (468, 2), (472, 560),
-            (476, 2), (480, 576), (560, 1), (564, 120), (576, 1), (580, 128)] {
+        for (offset, value) in [
+            (4, 264u32),
+            (0x1c, 2),
+            (0x20, 320),
+            (0x2c, 1),
+            (0x30, 448),
+            (324, 1000),
+            (332, 0x81),
+            (388, 1000),
+            (396, 0xc1),
+            (468, 2),
+            (472, 560),
+            (476, 2),
+            (480, 576),
+            (560, 1),
+            (564, 120),
+            (576, 1),
+            (580, 128),
+        ] {
             model[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         }
         model[320..322].copy_from_slice(&60u16.to_le_bytes());
@@ -1251,22 +1277,37 @@ mod tests {
         for clip in clips {
             assert_eq!(clip.bones[0].translation, vec![(0.5, [1.0, 2.0, 3.0])]);
         }
-        assert!(parse_m2_animations(&model).is_empty(), "missing .anim cannot read M2 bytes");
+        assert!(
+            parse_m2_animations(&model).is_empty(),
+            "missing .anim cannot read M2 bytes"
+        );
         let mut cyclic = model;
         cyclic[332..336].copy_from_slice(&0xc1u32.to_le_bytes());
         cyclic[382..384].copy_from_slice(&1u16.to_le_bytes());
-        assert!(parse_m2_animations(&cyclic).is_empty(), "cyclic aliases are bounded");
+        assert!(
+            parse_m2_animations(&cyclic).is_empty(),
+            "cyclic aliases are bounded"
+        );
     }
 
     #[test]
     fn wrath_global_track_keeps_its_nested_inline_keys() {
         let mut b = [0u8; 44];
-        for (offset, value) in [(4, 1u32), (8, 20), (12, 1), (16, 28),
-            (20, 1), (24, 36), (28, 1), (32, 40), (36, 123), (40, 42)] {
+        for (offset, value) in [
+            (4, 1u32),
+            (8, 20),
+            (12, 1),
+            (16, 28),
+            (20, 1),
+            (24, 36),
+            (28, 1),
+            (32, 40),
+            (36, 123),
+            (40, 42),
+        ] {
             b[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         }
-        let track = read_wrath_track(&b, 0, 4,
-            |bytes, off| Some(le_u32(bytes, off)), &[None]);
+        let track = read_wrath_track(&b, 0, 4, |bytes, off| Some(le_u32(bytes, off)), &[None]);
         assert_eq!(track.global, vec![(123, 42)]);
         assert!(track.sequences.is_empty());
     }
@@ -1287,12 +1328,25 @@ mod tests {
     fn wrath_track_keeps_valid_keys_and_bounds_truncated_timestamp_arrays() {
         let mut b = [0u8; 44];
         b[2..4].copy_from_slice(&u16::MAX.to_le_bytes());
-        for (offset, value) in [(4, 1u32), (8, 20), (12, 1), (16, 28),
-            (20, 1), (24, 36), (28, 1), (32, 40), (36, 123), (40, 42)] {
+        for (offset, value) in [
+            (4, 1u32),
+            (8, 20),
+            (12, 1),
+            (16, 28),
+            (20, 1),
+            (24, 36),
+            (28, 1),
+            (32, 40),
+            (36, 123),
+            (40, 42),
+        ] {
             b[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         }
-        let read = |bytes: &[u8], off| bytes.get(off..off + 4).map(|s|
-            u32::from_le_bytes(s.try_into().unwrap()));
+        let read = |bytes: &[u8], off| {
+            bytes
+                .get(off..off + 4)
+                .map(|s| u32::from_le_bytes(s.try_into().unwrap()))
+        };
         let track = read_wrath_track(&b, 0, 4, read, &[]);
         assert_eq!(track.sequences, vec![vec![(123, 42)]]);
         b[24..28].copy_from_slice(&44u32.to_le_bytes());

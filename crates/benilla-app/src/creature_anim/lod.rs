@@ -258,6 +258,7 @@ mod tests {
             }],
             spine_bone: None,
             head_bone: None,
+            thumb_bones: [None, None],
         };
         app.world_mut()
             .entity_mut(root)

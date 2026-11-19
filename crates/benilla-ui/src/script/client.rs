@@ -269,7 +269,11 @@ pub(super) fn install_get_text(lua: &Lua) -> mlua::Result<()> {
             let int = |v: Value| -> mlua::Result<Option<i64>> {
                 Ok(lua.coerce_number(v)?.map(|n| n.round_ties_even() as i64))
             };
-            let female = if int(gender)? == Some(3) { "_FEMALE" } else { "" };
+            let female = if int(gender)? == Some(3) {
+                "_FEMALE"
+            } else {
+                ""
+            };
             let ordinal = int(ordinal)?.unwrap_or(-1);
             let locale = lua.app_data_ref::<Model>().expect("model").locale;
             let plural = match plural_index(locale, ordinal) {
@@ -467,7 +471,12 @@ impl UiScript {
 /// The locale name table `0x8558a4` at the VM's locale index, `GetLocale`'s answer in either state.
 pub(super) fn locale_name(lua: &Lua) -> &'static str {
     let model = lua.app_data_ref::<Model>().expect("model");
-    model.target.locale_names().get(model.locale).copied().unwrap_or("enUS")
+    model
+        .target
+        .locale_names()
+        .get(model.locale)
+        .copied()
+        .unwrap_or("enUS")
 }
 
 #[cfg(test)]
@@ -548,8 +557,14 @@ mod tests {
         let glue = UiScript::glue_with_target(crate::script::UiTarget::Wrath335).unwrap();
         glue.run(r#"RACE_INFO_HUMAN = "Human lore"; RACE_INFO_HUMAN_FEMALE = "Human female lore""#)
             .unwrap();
-        assert_eq!(text(&glue, r#"GetText("RACE_INFO_HUMAN", 3)"#), "Human female lore");
-        assert_eq!(text(&glue, r#"GetText("RACE_INFO_HUMAN", 2)"#), "Human lore");
+        assert_eq!(
+            text(&glue, r#"GetText("RACE_INFO_HUMAN", 3)"#),
+            "Human female lore"
+        );
+        assert_eq!(
+            text(&glue, r#"GetText("RACE_INFO_HUMAN", 2)"#),
+            "Human lore"
+        );
     }
 
     /// Never nil: addons index with it at file scope, and a nil index errors far from the cause.

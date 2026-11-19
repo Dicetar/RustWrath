@@ -131,10 +131,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             })?,
         )?;
         // 12340 CSimpleSlider_Scripts::IsEnabled, 0x00972050: one or nil.
-        m.set("IsEnabled", lua.create_function(|lua, this: Table| {
-            with_slider(lua, &this, |s| s.enabled)
-                .map(|enabled| enabled.then_some(1))
-        })?)?;
+        m.set(
+            "IsEnabled",
+            lua.create_function(|lua, this: Table| {
+                with_slider(lua, &this, |s| s.enabled).map(|enabled| enabled.then_some(1))
+            })?,
+        )?;
     }
 
     m.set(

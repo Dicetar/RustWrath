@@ -26,7 +26,10 @@ pub struct RealmCategory {
 fn cfg_categories_schema(wrath: bool) -> Schema {
     let mut s = Schema::new("Cfg_Categories");
     s.add_field(SchemaField::new("ID", FieldType::UInt32));
-    s.add_field(SchemaField::new(if wrath { "LocaleMask" } else { "Region" }, FieldType::UInt32));
+    s.add_field(SchemaField::new(
+        if wrath { "LocaleMask" } else { "Region" },
+        FieldType::UInt32,
+    ));
     if wrath {
         s.add_field(SchemaField::new("CreateCharsetMask", FieldType::UInt32));
         s.add_field(SchemaField::new("Flags", FieldType::UInt32));

@@ -216,7 +216,11 @@ pub(super) fn damage_shield(
             (s.victim, bearer),
             (s.attacker, struck),
             fills,
-            ctx.word_for(s.attacker, struck, LineWord::with("DAMAGE_SHIELD", s.damage)),
+            ctx.word_for(
+                s.attacker,
+                struck,
+                LineWord::with("DAMAGE_SHIELD", s.damage),
+            ),
         );
     }
     super::feedback::wound(log, s.attacker, s.damage, 0, s.school);
@@ -613,7 +617,8 @@ pub(super) fn spell_log_execute(
                     let Some(kind) = combat::spell_kind(caster, victim, false) else {
                         continue;
                     };
-                    let word = ctx.word_for(target, victim, LineWord::with("INTERRUPT", &interrupted));
+                    let word =
+                        ctx.word_for(target, victim, LineWord::with("INTERRUPT", &interrupted));
                     queue_worded(
                         log,
                         ctx,
@@ -915,7 +920,11 @@ pub(super) fn environmental_damage_log(
                 }),
                 ..Default::default()
             },
-            ctx.word_for(e.victim, victim, combat::damage_word(e.damage, e.absorb, e.resist)),
+            ctx.word_for(
+                e.victim,
+                victim,
+                combat::damage_word(e.damage, e.absorb, e.resist),
+            ),
         );
     }
     let school = ENV_DAMAGE_SCHOOLS.get(usize::from(e.damage_type));

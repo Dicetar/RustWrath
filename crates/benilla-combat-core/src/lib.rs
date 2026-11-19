@@ -44,11 +44,11 @@ mod profile;
 mod stamina;
 mod time;
 
-pub use action::{dodge_action, ActionId, ActionKind, ActionSpec, ActionTable, InputWindows};
 pub use crate::core::{
-    AdvanceReport, CombatCore, CombatEvent, CombatSnapshot, MAX_ADVANCE_TICKS, MAX_PENDING_INPUTS,
-    ReconcileReport, SubmitOutcome,
+    AdvanceReport, CombatCore, CombatEvent, CombatSnapshot, ReconcileReport, SubmitOutcome,
+    MAX_ADVANCE_TICKS, MAX_PENDING_INPUTS,
 };
+pub use action::{dodge_action, ActionId, ActionKind, ActionSpec, ActionTable, InputWindows};
 pub use data::{CombatConfig, DodgeSpec, EnemySpec, StaminaConfig};
 pub use enemy::{EnemyPhase, EnemyView};
 pub use enemy_brain::{EnemyBrain, EnemyBrainConfig, EnemyEvent};
@@ -56,13 +56,14 @@ pub use engine::{ActionEnd, ActionEngine, ActionRefusal, EngineEvent, MAX_ADVANC
 pub use error::{CombatError, CombatResult};
 pub use identity::{ActionRevision, PlayerId, Sequence, SessionEpoch};
 pub use input::{
-    BufferedDodge, DodgeButton, DodgeRejection, DodgeResult, GestureOutcome, InputFrame, InputOutcome,
+    BufferedDodge, DodgeButton, DodgeRejection, DodgeResult, GestureOutcome, InputFrame,
+    InputOutcome,
 };
 pub use kit::{Kit, KitAction, KitCancels, KitError, KitHit, Milli, KIT_FORMAT_VERSION};
 pub use kit_import::{import_kit, ImportOptions, ImportReport};
+pub use player::{DodgeView, HitOutcome, PlayerPhase, PlayerView};
 pub use policy::ProfilePolicy;
 pub use profile::{
     dodge_from_clip, enemy_action, melee_action, spell_action, ClipSummary, SpellSummary,
 };
-pub use player::{DodgeView, HitOutcome, PlayerPhase, PlayerView};
 pub use time::{TickRate, TickWindow, Ticks};

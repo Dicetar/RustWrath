@@ -15,7 +15,7 @@
 //! the player's skill in the spell's own line (`0x6e384d → 0x6e3130 → [vtbl+0xa8] = 0x5ea690`,
 //! [`crate::spell::spell_skill_value`]), not the character level.
 
-use benilla_formats::{LockSlot, LOCK_KEY_ITEM, LOCK_KEY_SKILL};
+use benilla_formats::{LockSlot, LOCK_KEY_ITEM, LOCK_KEY_SKILL, LOCK_KEY_SPELL};
 use bevy::prelude::*;
 
 use crate::net::ObjectStore;
@@ -170,6 +170,20 @@ pub(crate) fn resolve_lock(
                 }
                 if me.is_some_and(|s| holds_item(&s.0, objects, slot.index)) {
                     return LockOutcome::OpenByKey(slot.index);
+                }
+            }
+            // Wrath's spell slot (12340 `IsLocked` 0x70F160, type 3): the slot's own spell opens
+            // the lock when it carries an OPEN_LOCK effect in any slot; no skill or opener list.
+            LOCK_KEY_SPELL => {
+                real = true;
+                if !slot.available(go.state, go.flag_locked) {
+                    continue;
+                }
+                if spells
+                    .and_then(|s| s.catalog.get(slot.index))
+                    .is_some_and(|spell| spell.open_lock_type().is_some())
+                {
+                    return LockOutcome::OpenBySpell(slot.index);
                 }
             }
             _ => {}

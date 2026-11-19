@@ -1165,8 +1165,7 @@ mod tests {
                 .concat(),
             ));
             deps.with_objects(|objects, items, commands| {
-                let inv =
-                    crate::wrath_inventory::PlayerInventory::new(&store.0, None, false);
+                let inv = crate::wrath_inventory::PlayerInventory::new(&store.0, None, false);
                 let r = resolve_recipe(
                     SPELL,
                     0,

@@ -18,7 +18,12 @@ fn main() -> Result<()> {
     println!("logon ok, realm_id {}", logon.realms[0].realm_id);
     let (mut world, seed) = WorldConnection::connect("127.0.0.1:8095")?;
     println!("challenge seed {seed:02x?}");
-    world.auth_session(&logon.account, &logon.session_key, &seed, logon.realms[0].realm_id as u32)?;
+    world.auth_session(
+        &logon.account,
+        &logon.session_key,
+        &seed,
+        logon.realms[0].realm_id as u32,
+    )?;
     println!("AUTH_SESSION sent; raw sniffing for 15s...");
 
     let stream = world.stream_mut();
@@ -36,8 +41,9 @@ fn main() -> Result<()> {
                 println!("RAW +{}: {:02x?}", n, &buf[..n.min(48)]);
                 total += n;
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
             Err(e) => {
                 println!("read error: {e}");
                 break;

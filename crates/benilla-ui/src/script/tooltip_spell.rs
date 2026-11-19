@@ -819,17 +819,31 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             })?,
         )?;
         m.set("SetSpellBookItem", m.get::<mlua::Function>("SetSpell")?)?;
-        m.set("SetSpellByID", lua.create_function(|lua, (this, id): (Table, Value)| {
-            let id = lua.coerce_number(id)?.filter(|id| id.is_finite() && *id >= 1.0 && *id <= f64::from(u32::MAX))
-                .ok_or_else(|| mlua::Error::runtime("Usage: GameTooltip:SetSpellByID(spellID)"))? as u32;
-            let name = {
-                let model = lua.app_data_ref::<Model>().expect("model");
-                let player_slots = if model.spell_list.is_empty() { &model.spellbook.slots } else { &model.spell_list };
-                player_slots.iter().chain(&model.pet_book.slots)
-                    .find(|slot| slot.spell_id == id).map(|slot| slot.name.clone())
-            };
-            set_spell_by_id(lua, &this, id, name, SpellRenderOpts::default())
-        })?)?;
+        m.set(
+            "SetSpellByID",
+            lua.create_function(|lua, (this, id): (Table, Value)| {
+                let id = lua
+                    .coerce_number(id)?
+                    .filter(|id| id.is_finite() && *id >= 1.0 && *id <= f64::from(u32::MAX))
+                    .ok_or_else(|| {
+                        mlua::Error::runtime("Usage: GameTooltip:SetSpellByID(spellID)")
+                    })? as u32;
+                let name = {
+                    let model = lua.app_data_ref::<Model>().expect("model");
+                    let player_slots = if model.spell_list.is_empty() {
+                        &model.spellbook.slots
+                    } else {
+                        &model.spell_list
+                    };
+                    player_slots
+                        .iter()
+                        .chain(&model.pet_book.slots)
+                        .find(|slot| slot.spell_id == id)
+                        .map(|slot| slot.name.clone())
+                };
+                set_spell_by_id(lua, &this, id, name, SpellRenderOpts::default())
+            })?,
+        )?;
     }
     // GameTooltip:SetShapeshift(index): the stance-bar hover, the form's spell tooltip. It answers
     // the builder's return value, 1 or nil, with a cooldown running (`0x532a89`).

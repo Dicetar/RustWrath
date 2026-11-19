@@ -23,7 +23,9 @@ pub(super) fn install(lua: &Lua, methods: &Table) -> mlua::Result<()> {
                 (kind == Some(FrameKind::WorldFrame), model.frame_id(h))
             };
             if !kind_ok {
-                return Err(mlua::Error::runtime("Wrong object type for member function"));
+                return Err(mlua::Error::runtime(
+                    "Wrong object type for member function",
+                ));
             }
             let depths: Table = lua.named_registry_value(REG_IGNORE_DEPTH)?;
             depths.raw_set(id, ignore.unwrap_or(false))?;

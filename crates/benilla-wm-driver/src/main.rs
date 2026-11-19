@@ -293,17 +293,26 @@ struct Cur<'a> {
 
 impl<'a> Cur<'a> {
     fn u8(&mut self) -> Result<u8> {
-        let v = *self.p.get(self.at).ok_or_else(|| anyhow!("payload cut short"))?;
+        let v = *self
+            .p
+            .get(self.at)
+            .ok_or_else(|| anyhow!("payload cut short"))?;
         self.at += 1;
         Ok(v)
     }
     fn u32(&mut self) -> Result<u32> {
-        let s = self.p.get(self.at..self.at + 4).ok_or_else(|| anyhow!("payload cut short"))?;
+        let s = self
+            .p
+            .get(self.at..self.at + 4)
+            .ok_or_else(|| anyhow!("payload cut short"))?;
         self.at += 4;
         Ok(u32::from_le_bytes(s.try_into().unwrap()))
     }
     fn u64(&mut self) -> Result<u64> {
-        let s = self.p.get(self.at..self.at + 8).ok_or_else(|| anyhow!("payload cut short"))?;
+        let s = self
+            .p
+            .get(self.at..self.at + 8)
+            .ok_or_else(|| anyhow!("payload cut short"))?;
         self.at += 8;
         Ok(u64::from_le_bytes(s.try_into().unwrap()))
     }
@@ -355,8 +364,15 @@ fn main() -> Result<()> {
         world.enable_recording();
     }
     println!("[world] challenge seed {seed:02x?}");
-    world.auth_session(&logon.account, &logon.session_key, &seed, realm.realm_id as u32)?;
-    world.stream_mut().set_read_timeout(Some(Duration::from_millis(500)))?;
+    world.auth_session(
+        &logon.account,
+        &logon.session_key,
+        &seed,
+        realm.realm_id as u32,
+    )?;
+    world
+        .stream_mut()
+        .set_read_timeout(Some(Duration::from_millis(500)))?;
     println!("[world] AUTH_SESSION sent; crypto armed");
 
     // Dispatch: wait for AUTH_RESPONSE (F01: success is AUTH_OK 0x0C), tolerating the startup
@@ -376,7 +392,11 @@ fn main() -> Result<()> {
                 println!("[world] AUTH_RESPONSE: AUTH_OK");
                 authed = true;
             }
-            Ok(p) => println!("[startup] {} ({} bytes)", name_of(p.opcode), p.payload.len()),
+            Ok(p) => println!(
+                "[startup] {} ({} bytes)",
+                name_of(p.opcode),
+                p.payload.len()
+            ),
             Err(e) if is_idle(&e) => {}
             Err(e) => return Err(e),
         }
@@ -393,7 +413,10 @@ fn main() -> Result<()> {
         }
         match world.recv() {
             Ok(p) if p.opcode == opcode::SMSG_CHAR_ENUM => {
-                let mut cur = Cur { p: &p.payload, at: 0 };
+                let mut cur = Cur {
+                    p: &p.payload,
+                    at: 0,
+                };
                 let count = cur.u8()?;
                 println!("[chars] {count} on the account");
                 if count > 0 {
@@ -413,7 +436,11 @@ fn main() -> Result<()> {
                 }
                 got_enum = true;
             }
-            Ok(p) => println!("[startup] {} ({} bytes)", name_of(p.opcode), p.payload.len()),
+            Ok(p) => println!(
+                "[startup] {} ({} bytes)",
+                name_of(p.opcode),
+                p.payload.len()
+            ),
             Err(e) if is_idle(&e) => {}
             Err(e) => return Err(e),
         }
@@ -443,7 +470,10 @@ fn main() -> Result<()> {
             }
             match world.recv() {
                 Ok(p) if p.opcode == opcode::SMSG_CHAR_ENUM => {
-                    let mut cur = Cur { p: &p.payload, at: 0 };
+                    let mut cur = Cur {
+                        p: &p.payload,
+                        at: 0,
+                    };
                     let count = cur.u8()?;
                     if count == 0 {
                         bail!("create produced no character (enum still empty)");
@@ -454,7 +484,11 @@ fn main() -> Result<()> {
                     created_guid = Some(g);
                     break;
                 }
-                Ok(p) => println!("[startup] {} ({} bytes)", name_of(p.opcode), p.payload.len()),
+                Ok(p) => println!(
+                    "[startup] {} ({} bytes)",
+                    name_of(p.opcode),
+                    p.payload.len()
+                ),
                 Err(e) if is_idle(&e) => {}
                 Err(e) => return Err(e),
             }
@@ -487,7 +521,9 @@ fn main() -> Result<()> {
         }
     };
     let mut wm_publisher = match &wm_config {
-        Some(config) => Some(benilla_wm_native::ObservationPublisher::spawn(config.clone())?),
+        Some(config) => Some(benilla_wm_native::ObservationPublisher::spawn(
+            config.clone(),
+        )?),
         None => None,
     };
     let mut wm_retiring: Vec<PublisherRetirement> = Vec::new();
@@ -526,7 +562,10 @@ fn main() -> Result<()> {
                     0x236 => logged_in = true,
                     0x0A9 => saw_update = true,
                     0x390 => {
-                        let mut cur = Cur { p: &p.payload, at: 0 };
+                        let mut cur = Cur {
+                            p: &p.payload,
+                            at: 0,
+                        };
                         let counter = cur.u32()?;
                         let mut resp = counter.to_le_bytes().to_vec();
                         resp.extend_from_slice(&0u32.to_le_bytes());
@@ -551,7 +590,10 @@ fn main() -> Result<()> {
             let mut guid_bytes = Vec::new();
             for i in 0..8 {
                 let b = (guid >> (i * 8)) as u8;
-                if b != 0 { mask |= 1 << i; guid_bytes.push(b); }
+                if b != 0 {
+                    mask |= 1 << i;
+                    guid_bytes.push(b);
+                }
             }
             ack.push(mask);
             ack.extend_from_slice(&guid_bytes);
@@ -578,12 +620,22 @@ fn main() -> Result<()> {
         // One bounded retry/export/handoff step per tick — runs on idle ticks too, so a
         // retained snapshot retries without waiting for new source traffic.
         if let Some(publisher) = wm_publisher.as_ref() {
-            let mut adapter = ProducerAdapter { session: &mut session };
-            match pump_once(publisher, &mut adapter, unix_now_ms(), session_start.elapsed().as_millis() as u64) {
+            let mut adapter = ProducerAdapter {
+                session: &mut session,
+            };
+            match pump_once(
+                publisher,
+                &mut adapter,
+                unix_now_ms(),
+                session_start.elapsed().as_millis() as u64,
+            ) {
                 Ok(PumpResult::Idle) => {}
                 Ok(PumpResult::HandedOff(receipt)) => {
                     exports += 1;
-                    println!("[wm] handed off seq {} rev {}", receipt.sequence, receipt.state_revision);
+                    println!(
+                        "[wm] handed off seq {} rev {}",
+                        receipt.sequence, receipt.state_revision
+                    );
                 }
                 Ok(PumpResult::Retained) => {
                     // Producer retains the snapshot; the next tick re-exports it.
@@ -591,14 +643,19 @@ fn main() -> Result<()> {
                 Err(PumpError::Producer(e)) => {
                     println!("[wm] export unavailable: {}", e.message());
                 }
-                Err(PumpError::Superseded { sequence, latest_sequence }) => {
+                Err(PumpError::Superseded {
+                    sequence,
+                    latest_sequence,
+                }) => {
                     println!("[wm] superseded seq {sequence} by {latest_sequence} (ordering violation under a single pump)");
                 }
                 Err(PumpError::Conversion(e)) => {
                     println!("[wm] conversion error: {e}");
                 }
                 Err(PumpError::Publisher(WmError::Disconnected)) => {
-                    println!("[wm] publisher disconnected: respawning with retire/spawn_after ordering");
+                    println!(
+                        "[wm] publisher disconnected: respawning with retire/spawn_after ordering"
+                    );
                     wm_replace(wm_config.as_ref(), &mut wm_publisher, &mut wm_retiring)?;
                 }
                 Err(PumpError::Publisher(e)) => {

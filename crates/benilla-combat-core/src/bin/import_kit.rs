@@ -53,7 +53,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
             off_hand = true;
             continue;
         }
-        let value = args.next().ok_or_else(|| format!("`{flag}` needs a value"))?;
+        let value = args
+            .next()
+            .ok_or_else(|| format!("`{flag}` needs a value"))?;
         match flag.as_str() {
             "--extracted" => extracted = Some(PathBuf::from(value)),
             "--data" => data = Some(PathBuf::from(value)),
@@ -68,10 +70,14 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
                 }
             }
             "--first-id" => {
-                first_id = value.parse().map_err(|_| format!("`--first-id` is a number, not `{value}`"))?;
+                first_id = value
+                    .parse()
+                    .map_err(|_| format!("`--first-id` is a number, not `{value}`"))?;
             }
             "--rate" => {
-                rate_hz = value.parse().map_err(|_| format!("`--rate` is a number, not `{value}`"))?;
+                rate_hz = value
+                    .parse()
+                    .map_err(|_| format!("`--rate` is a number, not `{value}`"))?;
             }
             other => return Err(format!("unknown argument `{other}`")),
         }
@@ -114,19 +120,27 @@ fn run(args: &Args) -> Result<(), String> {
 
     // The file is only worth writing if it reads back to the same kit and compiles to a table.
     let text = kit.to_text();
-    let reread = Kit::parse(&text).map_err(|error| format!("the kit does not read back: {error}"))?;
+    let reread =
+        Kit::parse(&text).map_err(|error| format!("the kit does not read back: {error}"))?;
     if reread != kit {
         return Err("the kit does not read back to itself".to_owned());
     }
-    let rate = TickRate::new(args.rate_hz).ok_or_else(|| format!("`--rate` {} is out of range", args.rate_hz))?;
+    let rate = TickRate::new(args.rate_hz)
+        .ok_or_else(|| format!("`--rate` {} is out of range", args.rate_hz))?;
     let table = kit
         .to_table(ActionRevision(1), rate)
         .map_err(|error| format!("the kit does not compile at {} Hz: {error}", args.rate_hz))?;
 
-    if let Some(parent) = args.out.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-        fs::create_dir_all(parent).map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+    if let Some(parent) = args
+        .out
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
     }
-    fs::write(&args.out, &text).map_err(|error| format!("cannot write {}: {error}", args.out.display()))?;
+    fs::write(&args.out, &text)
+        .map_err(|error| format!("cannot write {}: {error}", args.out.display()))?;
 
     println!("kit: {}", kit.label);
     println!("weapon: #{} {}", report.weapon_index, report.weapon_name);

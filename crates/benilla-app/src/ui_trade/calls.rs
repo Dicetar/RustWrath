@@ -31,7 +31,11 @@ pub(crate) struct TradeSteps<'w, 's> {
 impl TradeSteps<'_, '_> {
     /// Apply one trade call; a placement and a moved accept leave their rest to the tail, which
     /// runs with the host back wherever the call applied.
-    pub(crate) fn apply(&mut self, target: benilla_ui::script::UiTarget, call: TradeCall) -> Option<CallTail> {
+    pub(crate) fn apply(
+        &mut self,
+        target: benilla_ui::script::UiTarget,
+        call: TradeCall,
+    ) -> Option<CallTail> {
         let Self {
             trade,
             net,
@@ -106,7 +110,8 @@ impl TradeSteps<'_, '_> {
                 bag_slot,
                 place,
             } => {
-                let sent = trade.send_placement(target, net, objects, items, slot, guid, bag, bag_slot);
+                let sent =
+                    trade.send_placement(target, net, objects, items, slot, guid, bag, bag_slot);
                 return placed(place, sent);
             }
             TradeCall::ClearItem { slot, place } => {

@@ -93,9 +93,7 @@ pub fn parse_external_skin(bytes: &[u8]) -> Result<Skin> {
 
     let mut submeshes = Vec::with_capacity(capped(n_sub, 48, bytes.len().saturating_sub(o_sub)));
     for i in 0..n_sub {
-        let section = bytes
-            .bytes_at(o_sub + i * 48, 48)
-            .ok_or(Error::Truncated)?;
+        let section = bytes.bytes_at(o_sub + i * 48, 48).ok_or(Error::Truncated)?;
         submeshes.push(SkinSection {
             id: section.u16_at(0).ok_or(Error::Truncated)?,
             triangle_start: section.u16_at(8).ok_or(Error::Truncated)?,
@@ -104,9 +102,7 @@ pub fn parse_external_skin(bytes: &[u8]) -> Result<Skin> {
     }
     let mut batches = Vec::with_capacity(capped(n_bat, 24, bytes.len().saturating_sub(o_bat)));
     for i in 0..n_bat {
-        let unit = bytes
-            .bytes_at(o_bat + i * 24, 24)
-            .ok_or(Error::Truncated)?;
+        let unit = bytes.bytes_at(o_bat + i * 24, 24).ok_or(Error::Truncated)?;
         batches.push(SkinBatch {
             flags: unit.u16_at(0).ok_or(Error::Truncated)?,
             shader_id: unit.u16_at(2).ok_or(Error::Truncated)?,

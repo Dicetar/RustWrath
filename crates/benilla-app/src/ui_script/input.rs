@@ -163,6 +163,8 @@ pub(super) fn feed_ui_input(
         Option<Res<crate::quest_trace::Source>>,
         Option<Res<crate::wrath::WrathWorldView>>,
         Option<Res<super::EguiPointerOver>>,
+        // The Souls orbit hides and locks the cursor for the camera: no hover, no clicks.
+        Option<Res<crate::souls::ErControls>>,
     ),
     mut pointer: PointerFeed,
     // One param for clippy's argument ceiling, with the pasteboard the clipboard chords use.
@@ -192,6 +194,9 @@ pub(super) fn feed_ui_input(
     // capture pins it: skip the mouse half whole, else-arm included, whose `pointer_left_window`
     // would disarm the probe's gesture between its press and release.
     let synthetic = pointer.synthetic.0 || pointer.capture_pinned.0;
+    // The Souls orbit holds the cursor hidden at one spot for the camera ([`crate::souls`]): the UI
+    // under it neither hovers nor takes the attack buttons, as under a held mouselook.
+    let orbiting = diagnostics.3.as_ref().is_some_and(|er| er.hides_cursor());
     let (hover, click_consumed, press_consumed, payload_held) = (
         &mut pointer.hover,
         &mut pointer.click_consumed,
@@ -229,7 +234,7 @@ pub(super) fn feed_ui_input(
         if let Some(cursor) = window
             .cursor_position()
             .or_else(crate::target::hover_probe_point)
-            .filter(|_| !synthetic)
+            .filter(|_| !synthetic && !orbiting)
         {
             // The window cursor in the root's y-up units (`Model::screen`, source root
             // `[0, 0, 768, 1024]`: 1024 wide by 768 tall), `GetCursorPosition`'s answer.
@@ -291,7 +296,9 @@ pub(super) fn feed_ui_input(
                             MouseButton::Back => UiButton::Back,
                             _ => continue,
                         };
-                        let scope = diagnostics.1.as_ref()
+                        let scope = diagnostics
+                            .1
+                            .as_ref()
                             .map(|v| (v.session_epoch, v.world_generation));
                         trace.record_ui_press(
                             scope,
@@ -315,7 +322,9 @@ pub(super) fn feed_ui_input(
                             MouseButton::Back => UiButton::Back,
                             _ => continue,
                         };
-                        let scope = diagnostics.1.as_ref()
+                        let scope = diagnostics
+                            .1
+                            .as_ref()
                             .map(|v| (v.session_epoch, v.world_generation));
                         trace.record_ui_click(
                             scope,

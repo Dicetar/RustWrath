@@ -23,7 +23,7 @@ identify its owner before acting. Do not terminate another session to free a slo
 
 ## Start the server
 
-The live deployment is `D:\WOW\WM_BridgeLab\run\bin`. The similarly named
+The live deployment is `D:\Projects\wow\server\WM_BridgeLab\run\bin`. The similarly named
 `run\worldserver.exe` is a stale duplicate. Start only the missing services,
 in database, authentication, then world order.
 
@@ -31,17 +31,17 @@ If port 33307 is not listening and no BridgeLab MySQL process is running, start
 the existing helper with binlog maintenance disabled.
 
 ```powershell
-& 'D:\WOW\wm-project\scripts\bridge_lab\Start-BridgeLabMySql.ps1' -SkipBinlogMaintenance
+& 'D:\Projects\wow\server\wm-project\scripts\bridge_lab\Start-BridgeLabMySql.ps1' -SkipBinlogMaintenance
 ```
 
 The helper waits for database readiness. If it fails, inspect its output and
-`D:\WOW\WM_BridgeLab\logs\mysql-lab.err` before retrying.
+`D:\Projects\wow\server\WM_BridgeLab\logs\mysql-lab.err` before retrying.
 
 After the database is ready, start each missing server using its existing config.
 The working directory is the run directory, so the relative config paths resolve.
 
 ```powershell
-$run = 'D:\WOW\WM_BridgeLab\run'
+$run = 'D:\Projects\wow\server\WM_BridgeLab\run'
 Start-Process -FilePath (Join-Path $run 'bin\authserver.exe') `
     -WorkingDirectory $run -ArgumentList '-c', 'configs\authserver.conf' `
     -WindowStyle Hidden -PassThru
@@ -53,7 +53,7 @@ Start-Process -FilePath (Join-Path $run 'bin\worldserver.exe') `
 Run only the command for a service that is missing. World startup can take
 longer than authentication. Wait for both ports and confirm the owning PIDs
 match the launched processes. If a process exits, inspect
-`D:\WOW\WM_BridgeLab\run\Server.log` and the server's configured logs.
+`D:\Projects\wow\server\WM_BridgeLab\run\Server.log` and the server's configured logs.
 Do not run SQL migrations, change configuration, restart a running server, or
 delete database logs as part of a normal launch.
 
@@ -65,7 +65,7 @@ confirming the shared Cargo slot is free, build when the user has requested a
 build and the executable needs updating.
 
 ```powershell
-Set-Location 'D:\Projects\project-b-client'
+Set-Location 'D:\Projects\wow\client'
 cargo build -p benilla --features hotpatch
 ```
 
@@ -74,12 +74,12 @@ The checkout's `.cargo/config.toml` routes Cargo through sccache
 or set `RUSTC_WRAPPER` to its full path; do not bypass it. Check `sccache --show-stats` before
 claiming a cache hit. Use `CARGO_INCREMENTAL=0` when a clean build should populate the cache.
 
-The launcher uses `D:\Projects\project-b-client\target\debug\benilla.exe`.
+The launcher uses `D:\Projects\wow\client\target\debug\benilla.exe`.
 The normal `Launch RustWrath.cmd` passes `-BuildLatest` to the PowerShell launcher,
 which runs Cargo through sccache for the current local source before starting the developer executable.
 Build failure stops launch. Packaged releases keep their validated executable selection.
 For a build from a separate worktree, set `CARGO_TARGET_DIR` to
-`D:\Projects\project-b-client\target` in that build shell to update that
+`D:\Projects\wow\client\target` in that build shell to update that
 executable. Inspect Git status and do not pull or switch the primary checkout
 under its uncommitted work.
 
@@ -87,7 +87,7 @@ With no client, Cargo, or rustc process occupying the slot, launch the player
 client using the workstation's normal launcher:
 
 ```powershell
-& 'D:\Projects\project-b-client\Launch RustWrath.cmd'
+& 'D:\Projects\wow\client\Launch RustWrath.cmd'
 ```
 
 The launcher uses the Wrath login UI, local authentication at
@@ -99,3 +99,34 @@ launching if it is needed. The client launcher does not start the server.
 Confirm the client process stays alive and report the PID and launcher log
 directory. A listening port or a live process does not establish successful
 login or gameplay. Leave login and gameplay to the owner.
+
+## Live code (patch the running client)
+
+`-LiveCode` builds and starts the developer client under `dx serve --hot-patch`. Saved source
+edits in any workspace crate the client links then patch into the running process without a
+restart ([ADR-0002, "Live code"](../architecture/adr-0002-live-client-modules.md#live-code)).
+It is for the owner's own session; an agent does not start it.
+
+Once, with dx stopped, install the patched `dx` 0.7.10. Stock dx patches only `benilla` and
+`benilla-app`; the launcher warns when the patched one is missing:
+
+```powershell
+.\tools\install-live-dx.ps1
+```
+
+The launcher reads the `subsecond` version from `Cargo.lock` and refuses a `dx` that differs.
+For a version other than 0.7.10 there is no patch yet; it prints the stock install command.
+
+Then launch from the checkout whose source you will edit:
+
+```powershell
+Set-Location 'D:\Projects\wow\client'
+.\tools\launch-client.ps1 -LiveCode
+```
+
+The `dx` window stays open: it shows each patch build and its errors. The client log reports
+`live code: patch N landed` and then the template stores it re-decoded. Patches apply only on
+the `dev` profile, so `-LiveCode` refuses a release and skips `-BuildLatest` (dx builds).
+Layout changes, new
+systems or plugins, new dependencies and static initializers still need a restart. The first
+`-LiveCode` build adds `subsecond` to `Cargo.lock`; commit that lock change on a task branch.

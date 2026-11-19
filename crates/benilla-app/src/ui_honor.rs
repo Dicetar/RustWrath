@@ -146,10 +146,14 @@ fn honor_snapshot(
     // Honor/arena currency ride the Wrath player field window (fields 1277/1278); absent or
     // unsent reads 0, the reference's unsent value.
     let honor_currency = raw
-        .and_then(|r| r.0.get(benilla_protocol_wrath::fields::PLAYER_FIELD_HONOR_CURRENCY))
+        .and_then(|r| {
+            r.0.get(benilla_protocol_wrath::fields::PLAYER_FIELD_HONOR_CURRENCY)
+        })
         .unwrap_or(0);
     let arena_currency = raw
-        .and_then(|r| r.0.get(benilla_protocol_wrath::fields::PLAYER_FIELD_ARENA_CURRENCY))
+        .and_then(|r| {
+            r.0.get(benilla_protocol_wrath::fields::PLAYER_FIELD_ARENA_CURRENCY)
+        })
         .unwrap_or(0);
     Some(HonorState {
         session_hk: session.map_or(0, |(hk, _)| hk),

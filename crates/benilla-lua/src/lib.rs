@@ -3,9 +3,9 @@
 //! cloned, inspected and restored.
 
 pub mod api;
-pub mod dialect;
 mod cfmt;
 mod compile;
+pub mod dialect;
 pub mod heap;
 mod lex;
 mod lib_base;

@@ -77,7 +77,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 fn install_wrath(lua: &Lua) -> mlua::Result<()> {
     let globals = lua.globals();
     let strings: mlua::Table = globals.get("string")?;
-    for (alias, member) in [("strmatch", "match"), ("strrev", "reverse"), ("gmatch", "gmatch")] {
+    for (alias, member) in [
+        ("strmatch", "match"),
+        ("strrev", "reverse"),
+        ("gmatch", "gmatch"),
+    ] {
         globals.set(alias, strings.get::<mlua::Function>(member)?)?;
     }
     let wipe = lua.create_function(|_, table: mlua::Table| {

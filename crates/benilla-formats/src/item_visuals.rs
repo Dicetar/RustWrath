@@ -194,7 +194,11 @@ fn enchantment_schema(wrath: bool) -> Schema {
     s.add_field(SchemaField::new("Flags", FieldType::UInt32));
     if wrath {
         for field in [
-            "GemID", "Condition", "RequiredSkill", "RequiredSkillRank", "RequiredLevel",
+            "GemID",
+            "Condition",
+            "RequiredSkill",
+            "RequiredSkillRank",
+            "RequiredLevel",
         ] {
             s.add_field(SchemaField::new(field, FieldType::UInt32));
         }

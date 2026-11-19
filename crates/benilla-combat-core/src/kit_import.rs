@@ -15,13 +15,20 @@
 //! - `Backstep` and the four `Roll(<load>, <direction>)` actions, as dodges. Their stamina cost
 //!   is not in the action record; it comes from `ROLL_COST` / `BACKSTEP_COST`.
 //! - Every ground attack of the chosen weapon and grip, as light or heavy attacks.
+//! - The landing halves of the jump attacks (`JumpLightLand`, `JumpHeavyLand`; `PairedJumpLand`
+//!   with the off hand). The landing carries the hit; the client plays it when a press made in
+//!   the air comes down.
+//! - `Parry`, authored here: the donor data has no parry (in ER it is a shield skill). A dodge-
+//!   kind action whose `iframes` row is the parry window; every number is an estimate, to tune
+//!   in play.
 //! - The chain rules of the donor's player code, as data: a light swing continues into the next
 //!   one and wraps to the first after the last; running, rolling, backstep and crouch attacks
 //!   continue into the second swing; a roll continues into the roll attack and a backstep into
 //!   the backstep attack; the first heavy continues into the second charged heavy.
 //!
-//! What does not, each reported by name in [`ImportReport::skipped`]: landing halves of jump
-//! attacks (the kit has no jump), off-hand and paired attacks unless asked for, and any record
+//! What does not, each reported by name in [`ImportReport::skipped`]: the short landings (they
+//! follow an air swing that already finished, which the client does not model), off-hand and
+//! paired attacks unless asked for, and any record
 //! the engine cannot run — an attack without a hit, a dodge without i-frames, an action that
 //! costs nothing. Movement stops, landings, jumps, crouch rolls and hit reactions in `fn base`
 //! are not kit actions and are only counted.
@@ -173,17 +180,34 @@ pub fn import_kit(
     let wanted_index = i32::try_from(weapon_index).ok().map(Milli::whole);
     let wanted_grip = if options.two_handed { "true" } else { "false" };
     let arms = parser.arms("attack", |pattern| {
-        attack_kind(pattern).is_some_and(|(index, grip, _)| Some(index) == wanted_index && grip == wanted_grip)
+        attack_kind(pattern)
+            .is_some_and(|(index, grip, _)| Some(index) == wanted_index && grip == wanted_grip)
     })?;
     for (arm, line) in arms {
-        let Arm::Taken(pattern, def) = arm else { continue };
-        let Some((_, _, kind_name)) = attack_kind(&pattern) else { continue };
-        if kind_name.contains("Jump") {
-            report.skipped.push((kind_name.to_string(), "needs the jump, which a kit does not have"));
+        let Arm::Taken(pattern, def) = arm else {
+            continue;
+        };
+        let Some((_, _, kind_name)) = attack_kind(&pattern) else {
+            continue;
+        };
+        if kind_name.contains("Jump") && kind_name.ends_with("Short") {
+            report.skipped.push((
+                kind_name.to_string(),
+                "a short landing, after a finished air swing",
+            ));
             continue;
         }
-        if !options.off_hand && (kind_name.starts_with("Left") || kind_name.starts_with("Paired")) {
-            report.skipped.push((kind_name.to_string(), "off-hand and paired attacks were not asked for"));
+        let paired_weapon = ["Fist", "Claw"]
+            .iter()
+            .any(|name| weapon_name.eq_ignore_ascii_case(name));
+        if (kind_name.starts_with("Left") && (!options.off_hand || options.two_handed))
+            || (kind_name.starts_with("Paired")
+                && (!options.off_hand || options.two_handed || !paired_weapon))
+        {
+            report.skipped.push((
+                kind_name.to_string(),
+                "the selected weapon, grip or off-hand option does not use this row",
+            ));
             continue;
         }
         let kind = if kind_name.contains("Heavy") || kind_name == "GuardCounter" {
@@ -199,15 +223,27 @@ pub fn import_kit(
         });
     }
     report.empty_windows_dropped = parser.empty_windows;
+    if !options.two_handed {
+        drafts.push(parry(backstep_cost));
+    }
 
     // Leave out what the engine cannot run, then number what is left.
     drafts.retain(|draft| {
         let reason = match draft.kind {
             ActionKind::Dodge if draft.def.iframes.is_none() => Some("a dodge without i-frames"),
-            ActionKind::Dodge if draft.cost.is_some_and(|cost| cost.0 <= 0) => Some("costs no stamina"),
+            ActionKind::Dodge if draft.cost.is_some_and(|cost| cost.0 <= 0) => {
+                Some("costs no stamina")
+            }
             ActionKind::Dodge => None,
             _ if draft.def.hits.is_empty() => Some("an attack without a hit"),
-            _ if draft.def.hits.iter().map(|hit| i64::from(hit.stamina.0)).sum::<i64>() < 500 => {
+            _ if draft
+                .def
+                .hits
+                .iter()
+                .map(|hit| i64::from(hit.stamina.0))
+                .sum::<i64>()
+                < 500 =>
+            {
                 Some("costs no stamina")
             }
             _ => None,
@@ -220,7 +256,11 @@ pub fn import_kit(
     if !drafts.iter().any(|draft| draft.kind != ActionKind::Dodge) {
         return Err(KitError::general(format!(
             "no usable attacks for weapon {weapon_index} ({}) in the generated data",
-            if options.two_handed { "two-handed" } else { "one-handed" }
+            if options.two_handed {
+                "two-handed"
+            } else {
+                "one-handed"
+            }
         )));
     }
     let ids: BTreeMap<String, ActionId> = drafts
@@ -258,7 +298,10 @@ pub fn import_kit(
             }
         })
         .collect::<Vec<_>>();
-    report.dodges = actions.iter().filter(|action| action.kind == ActionKind::Dodge).count();
+    report.dodges = actions
+        .iter()
+        .filter(|action| action.kind == ActionKind::Dodge)
+        .count();
     report.attacks = actions.len() - report.dodges;
 
     let weapon_label = if weapon_name.is_empty() {
@@ -269,7 +312,11 @@ pub fn import_kit(
     let kit = Kit {
         label: format!(
             "{weapon_label}, {}, {} load",
-            if options.two_handed { "two-handed" } else { "one-handed" },
+            if options.two_handed {
+                "two-handed"
+            } else {
+                "one-handed"
+            },
             options.load.to_ascii_lowercase()
         ),
         frame_rate_hz,
@@ -281,7 +328,10 @@ pub fn import_kit(
 }
 
 /// The donor's chain rules, as `(what a light press continues into, what a heavy press does)`.
-fn continuations(name: &str, id_of: &dyn Fn(&str) -> Option<ActionId>) -> (Option<ActionId>, Option<ActionId>) {
+fn continuations(
+    name: &str,
+    id_of: &dyn Fn(&str) -> Option<ActionId>,
+) -> (Option<ActionId>, Option<ActionId>) {
     let chain = |family: &str| {
         let step = name.strip_prefix(family)?.parse::<u32>().ok()?;
         id_of(&format!("{family}{}", step + 1)).or_else(|| id_of(&format!("{family}1")))
@@ -292,7 +342,9 @@ fn continuations(name: &str, id_of: &dyn Fn(&str) -> Option<ActionId>) -> (Optio
         match name {
             "Backstep" => id_of("BackstepAttack"),
             "RunLight" | "RollAttack" | "BackstepAttack" | "CrouchAttack" => id_of("Light2"),
-            _ => chain("Light").or_else(|| chain("LeftLight")).or_else(|| chain("PairedLight")),
+            _ => chain("Light")
+                .or_else(|| chain("LeftLight"))
+                .or_else(|| chain("PairedLight")),
         }
     };
     let next_heavy = match name {
@@ -300,6 +352,40 @@ fn continuations(name: &str, id_of: &dyn Fn(&str) -> Option<ActionId>) -> (Optio
         _ => None,
     };
     (next_light, next_heavy)
+}
+
+/// The authored parry (ESTIMATE, in 30 fps frames): a 40-frame action whose window is frames 6
+/// to 14, that the dodge can cancel from 24 and anything from 30; it costs a backstep.
+fn parry(cost: Milli) -> Draft {
+    let frame = Milli::whole;
+    Draft {
+        name: "Parry".to_string(),
+        kind: ActionKind::Dodge,
+        cost: Some(cost),
+        def: ActionDef {
+            source: "authored_parry".to_string(),
+            total: frame(40),
+            input_from: Some(frame(24)),
+            input_dodge_from: Some(frame(24)),
+            cancel: KitCancels {
+                light: Some(frame(30)),
+                heavy: Some(frame(30)),
+                dodge: Some(frame(24)),
+                jump: Some(frame(30)),
+                guard: Some(frame(24)),
+                movement: Some(frame(30)),
+                left: Some(frame(30)),
+            },
+            iframes: Some((frame(6), frame(14))),
+            jump_frames: false,
+            stamina: Milli::ZERO,
+            hits: Vec::new(),
+            charge: None,
+            no_turn: vec![(Milli::ZERO, frame(30))],
+            turn: Vec::new(),
+            motion: Vec::new(),
+        },
+    }
 }
 
 struct Draft {
@@ -351,7 +437,9 @@ fn base_role<'v>(pattern: &'v Value<'_>) -> Option<BaseRole<'v>> {
 fn attack_kind<'v>(pattern: &'v Value<'_>) -> Option<(Milli, &'v str, &'v str)> {
     match pattern {
         Value::Tuple(parts) => match parts.as_slice() {
-            [Value::Num(index), Value::Path(grip), Value::Path(kind)] => Some((*index, grip.last().copied()?, kind.last().copied()?)),
+            [Value::Num(index), Value::Path(grip), Value::Path(kind)] => {
+                Some((*index, grip.last().copied()?, kind.last().copied()?))
+            }
             _ => None,
         },
         _ => None,
@@ -433,7 +521,8 @@ fn tokenize(text: &str) -> Result<Vec<Token<'_>>, KitError> {
                 while at < bytes.len() && bytes[at].is_ascii_digit() {
                     at += 1;
                 }
-                if bytes.get(at) == Some(&b'.') && bytes.get(at + 1).is_some_and(u8::is_ascii_digit) {
+                if bytes.get(at) == Some(&b'.') && bytes.get(at + 1).is_some_and(u8::is_ascii_digit)
+                {
                     at += 1;
                     while at < bytes.len() && bytes[at].is_ascii_digit() {
                         at += 1;
@@ -489,7 +578,10 @@ enum Value<'a> {
         fields: Vec<(&'a str, usize, Value<'a>)>,
     },
     /// `Some(x)`, `Roll(Load::Medium, Dir::Front)`
-    Call { name: Vec<&'a str>, args: Vec<Value<'a>> },
+    Call {
+        name: Vec<&'a str>,
+        args: Vec<Value<'a>>,
+    },
 }
 
 enum Arm<'a> {
@@ -549,10 +641,12 @@ impl<'a> Parser<'a> {
 
     /// Move to just after the first place `sequence` appears, searching from the start.
     fn seek(&mut self, sequence: &[Tok<'_>]) -> bool {
-        let found = self
-            .tokens
-            .windows(sequence.len())
-            .position(|window| window.iter().map(|token| token.tok).eq(sequence.iter().copied()));
+        let found = self.tokens.windows(sequence.len()).position(|window| {
+            window
+                .iter()
+                .map(|token| token.tok)
+                .eq(sequence.iter().copied())
+        });
         if let Some(index) = found {
             self.at = index + sequence.len();
         }
@@ -750,16 +844,30 @@ impl<'a> Parser<'a> {
         match value {
             Value::Path(path) if path.as_slice() == ["NEVER"] => Ok(None),
             Value::Num(number) => Ok((*number < self.never).then_some(*number)),
-            _ => Err(KitError::at(line, format!("`{what}` must be a number or NEVER"))),
+            _ => Err(KitError::at(
+                line,
+                format!("`{what}` must be a number or NEVER"),
+            )),
         }
     }
 
-    fn numbers<const N: usize>(&self, value: &Value<'_>, line: usize, what: &str) -> Result<[Milli; N], KitError> {
+    fn numbers<const N: usize>(
+        &self,
+        value: &Value<'_>,
+        line: usize,
+        what: &str,
+    ) -> Result<[Milli; N], KitError> {
         let (Value::Tuple(parts) | Value::List(parts)) = value else {
-            return Err(KitError::at(line, format!("`{what}` must be a group of {N} numbers")));
+            return Err(KitError::at(
+                line,
+                format!("`{what}` must be a group of {N} numbers"),
+            ));
         };
         if parts.len() != N {
-            return Err(KitError::at(line, format!("`{what}` must be a group of {N} numbers")));
+            return Err(KitError::at(
+                line,
+                format!("`{what}` must be a group of {N} numbers"),
+            ));
         }
         let mut numbers = [Milli::ZERO; N];
         for (slot, part) in numbers.iter_mut().zip(parts) {
@@ -768,7 +876,12 @@ impl<'a> Parser<'a> {
         Ok(numbers)
     }
 
-    fn items<'v>(&self, value: &'v Value<'a>, line: usize, what: &str) -> Result<&'v [Value<'a>], KitError> {
+    fn items<'v>(
+        &self,
+        value: &'v Value<'a>,
+        line: usize,
+        what: &str,
+    ) -> Result<&'v [Value<'a>], KitError> {
         match value {
             Value::List(items) => Ok(items),
             _ => Err(KitError::at(line, format!("`{what}` must be a list"))),
@@ -776,7 +889,12 @@ impl<'a> Parser<'a> {
     }
 
     /// A `(from, to)` window; one with no length is the data's "none".
-    fn window(&mut self, value: &Value<'_>, line: usize, what: &str) -> Result<Option<(Milli, Milli)>, KitError> {
+    fn window(
+        &mut self,
+        value: &Value<'_>,
+        line: usize,
+        what: &str,
+    ) -> Result<Option<(Milli, Milli)>, KitError> {
         let [from, to] = self.numbers(value, line, what)?;
         if from >= to {
             self.empty_windows += 1;
@@ -786,14 +904,30 @@ impl<'a> Parser<'a> {
     }
 
     fn hit(&mut self, value: &Value<'a>, line: usize) -> Result<Option<KitHit>, KitError> {
-        let Value::Struct { name: "Hit", fields } = value else {
+        let Value::Struct {
+            name: "Hit",
+            fields,
+        } = value
+        else {
             return Err(KitError::at(line, "`hits` must hold `Hit` records"));
         };
         let mut seen: BTreeMap<&str, &Value<'a>> = BTreeMap::new();
         for (field, field_line, value) in fields {
-            const KNOWN: [&str; 8] = ["from", "to", "mv", "guard_damage", "stamina", "stop", "radius", "blade"];
+            const KNOWN: [&str; 8] = [
+                "from",
+                "to",
+                "mv",
+                "guard_damage",
+                "stamina",
+                "stop",
+                "radius",
+                "blade",
+            ];
             if !KNOWN.contains(field) {
-                return Err(KitError::at(*field_line, format!("unknown `Hit` field `{field}`")));
+                return Err(KitError::at(
+                    *field_line,
+                    format!("unknown `Hit` field `{field}`"),
+                ));
             }
             seen.insert(*field, value);
         }
@@ -828,7 +962,11 @@ impl<'a> Parser<'a> {
     /// Read one `ActionDef` record. Every field the generator writes must be present, and a
     /// field this reader does not know is an error rather than something to lose silently.
     fn action_def(&mut self, value: &Value<'a>, line: usize) -> Result<ActionDef, KitError> {
-        let Value::Struct { name: "ActionDef", fields } = value else {
+        let Value::Struct {
+            name: "ActionDef",
+            fields,
+        } = value
+        else {
             return Err(KitError::at(line, "expected an `ActionDef` record"));
         };
         let mut seen: BTreeMap<&str, &Value<'a>> = BTreeMap::new();
@@ -856,7 +994,10 @@ impl<'a> Parser<'a> {
                 "motion",
             ];
             if !KNOWN.contains(field) {
-                return Err(KitError::at(*field_line, format!("unknown `ActionDef` field `{field}`")));
+                return Err(KitError::at(
+                    *field_line,
+                    format!("unknown `ActionDef` field `{field}`"),
+                ));
             }
             seen.insert(*field, value);
         }
@@ -880,7 +1021,12 @@ impl<'a> Parser<'a> {
             Value::Call { name, args } if name.as_slice() == ["Some"] && args.len() == 1 => {
                 self.window(&args[0], line, "charge")?
             }
-            _ => return Err(KitError::at(line, "`charge` must be None or Some((from, to))")),
+            _ => {
+                return Err(KitError::at(
+                    line,
+                    "`charge` must be None or Some((from, to))",
+                ))
+            }
         };
         let mut hits = Vec::new();
         for hit in self.items(field("hits")?, line, "hits")? {
@@ -949,7 +1095,12 @@ mod tests {
                  motion: &[[0.000, 0.000, -0.000], [0.100, 0.000, 0.500]] }}"
             )
         };
-        let dodge = |name: &str| def(name, "iframes: (0.0, 9.0), jump_frames: true, stamina: 0.0, hits: &[], charge: None");
+        let dodge = |name: &str| {
+            def(
+                name,
+                "iframes: (0.0, 9.0), jump_frames: true, stamina: 0.0, hits: &[], charge: None",
+            )
+        };
         let attack = |name: &str, cost: &str, charge: &str| {
             def(
                 name,
@@ -991,11 +1142,27 @@ mod tests {
             ("1, false, Light1", attack("Light1", "7.0", "None")),
             ("1, false, Light2", attack("Light2", "7.0", "None")),
             ("1, false, RollAttack", attack("RollAttack", "8.0", "None")),
-            ("1, false, BackstepAttack", attack("BackstepAttack", "8.0", "None")),
-            ("1, false, Heavy1Charge", attack("Heavy1Charge", "14.0", "Some((3.0, 5.0))")),
+            (
+                "1, false, BackstepAttack",
+                attack("BackstepAttack", "8.0", "None"),
+            ),
+            (
+                "1, false, Heavy1Charge",
+                attack("Heavy1Charge", "14.0", "Some((3.0, 5.0))"),
+            ),
             ("1, false, Heavy1", attack("Heavy1", "12.0", "None")),
-            ("1, false, Heavy2Charge", attack("Heavy2Charge", "14.0", "Some((0.0, 0.0))")),
-            ("1, false, JumpLightLand", attack("JumpLightLand", "7.0", "None")),
+            (
+                "1, false, Heavy2Charge",
+                attack("Heavy2Charge", "14.0", "Some((0.0, 0.0))"),
+            ),
+            (
+                "1, false, JumpLightLand",
+                attack("JumpLightLand", "7.0", "None"),
+            ),
+            (
+                "1, false, JumpLightLandShort",
+                attack("JumpLightLandShort", "7.0", "None"),
+            ),
             ("1, false, LeftLight1", attack("LeftLight1", "7.0", "None")),
             ("1, false, Feint", attack("Feint", "0.0", "None")),
             ("1, true, Light1", attack("Light1", "9.0", "None")),
@@ -1024,7 +1191,11 @@ mod tests {
         assert_eq!(kit.label, "Test Blade, one-handed, medium load");
         assert_eq!(kit.frame_rate_hz, 30);
         assert_eq!(kit.stamina_max, Some(Milli::whole(80)));
-        let names: Vec<&str> = kit.actions.iter().map(|action| action.name.as_str()).collect();
+        let names: Vec<&str> = kit
+            .actions
+            .iter()
+            .map(|action| action.name.as_str())
+            .collect();
         assert_eq!(
             names,
             [
@@ -1039,28 +1210,36 @@ mod tests {
                 "BackstepAttack",
                 "Heavy1Charge",
                 "Heavy1",
-                "Heavy2Charge"
+                "Heavy2Charge",
+                "JumpLightLand",
+                "Parry"
             ]
         );
         assert_eq!(kit.actions[0].id, ActionId(100));
-        assert_eq!(kit.actions[11].id, ActionId(111));
+        assert_eq!(kit.actions[13].id, ActionId(113));
         assert_eq!(
             report,
             ImportReport {
                 weapon_index: 1,
                 weapon_name: "Test Blade".to_string(),
-                dodges: 5,
-                attacks: 7,
+                dodges: 6,
+                attacks: 8,
                 skipped: vec![
-                    ("JumpLightLand".to_string(), "needs the jump, which a kit does not have"),
-                    ("LeftLight1".to_string(), "off-hand and paired attacks were not asked for"),
+                    (
+                        "JumpLightLandShort".to_string(),
+                        "a short landing, after a finished air swing"
+                    ),
+                    (
+                        "LeftLight1".to_string(),
+                        "the selected weapon, grip or off-hand option does not use this row"
+                    ),
                     ("Feint".to_string(), "costs no stamina"),
                 ],
                 // SprintStop. Rolls of another load are dodges, just not the ones asked for.
                 other_base_records: 1,
                 // Per attack: the i-frames and one turn lock; per dodge: one turn lock; and the
                 // second heavy's charge.
-                empty_windows_dropped: 8 * 2 + 5 + 1,
+                empty_windows_dropped: 9 * 2 + 5 + 1,
             }
         );
 
@@ -1075,16 +1254,30 @@ mod tests {
         assert_eq!(light.cancel.movement, Some(Milli::whole(21)));
         assert_eq!(light.iframes, None);
         assert_eq!(light.no_turn, [(Milli::whole(4), Milli::whole(33))]);
-        assert_eq!(light.turn, [(Milli::ZERO, Milli::whole(4), Milli::whole(540))]);
-        assert_eq!(light.motion, [[Milli::ZERO; 3], [Milli(100), Milli::ZERO, Milli(500)]]);
+        assert_eq!(
+            light.turn,
+            [(Milli::ZERO, Milli::whole(4), Milli::whole(540))]
+        );
+        assert_eq!(
+            light.motion,
+            [[Milli::ZERO; 3], [Milli(100), Milli::ZERO, Milli(500)]]
+        );
         assert_eq!(light.hits.len(), 1);
-        assert_eq!(light.hits[0].stamina, Milli::whole(7), "the one-handed record, not the two-handed one");
+        assert_eq!(
+            light.hits[0].stamina,
+            Milli::whole(7),
+            "the one-handed record, not the two-handed one"
+        );
         assert_eq!(light.hits[0].hit_stop, Milli(50));
         assert_eq!(light.hits[0].blade[0][3], Milli(-1500));
 
         let roll = kit.action(ActionId(101)).expect("RollFront");
         assert_eq!(roll.kind, ActionKind::Dodge);
-        assert_eq!(roll.stamina, Milli::whole(10), "the roll cost comes from the constants");
+        assert_eq!(
+            roll.stamina,
+            Milli::whole(10),
+            "the roll cost comes from the constants"
+        );
         assert_eq!(roll.iframes, Some((Milli::ZERO, Milli::whole(9))));
         assert!(roll.airborne);
         assert_eq!(kit.actions[0].stamina, Milli::whole(6));
@@ -1098,19 +1291,81 @@ mod tests {
         let table = kit
             .to_table(ActionRevision(1), TickRate::new(100).expect("100 Hz"))
             .expect("table");
-        assert_eq!(table.len(), 12);
+        assert_eq!(table.len(), 14);
+    }
+
+    #[test]
+    fn imports_reference_shaped_one_hand_openers_without_inventing_paired_rows() {
+        let fixture = sample()
+            .replace("Test Knife", "Dagger")
+            .replace("Test Blade", "Longsword");
+        let arm = fixture
+            .lines()
+            .find(|line| line.contains("(1, false, LeftLight1)"))
+            .unwrap();
+        let dagger = arm.replace("(1,", "(0,");
+        let extra = [
+            dagger.clone(),
+            dagger.replace("LeftLight1", "JumpLightLand"),
+            dagger.replace("LeftLight1", "JumpHeavyLand"),
+            arm.replace("LeftLight1", "JumpHeavyLand"),
+            arm.replace("LeftLight1", "PairedLight1"),
+        ]
+        .join("\n");
+        let fixture = fixture.replace(arm, &format!("{arm}\n{extra}"));
+        for weapon in ["Dagger", "Longsword"] {
+            let (kit, _) = import_kit(
+                &fixture,
+                Some(CONSTANTS),
+                &ImportOptions {
+                    weapon,
+                    off_hand: true,
+                    ..ImportOptions::default()
+                },
+            )
+            .unwrap();
+            for row in ["JumpLightLand", "JumpHeavyLand", "LeftLight1", "Parry"] {
+                assert!(kit.action_named(row).is_some(), "{weapon}: {row}");
+            }
+            assert!(kit.action_named("PairedLight1").is_none());
+        }
+        let paired = fixture.replace("Longsword", "Fist");
+        let (kit, _) = import_kit(
+            &paired,
+            Some(CONSTANTS),
+            &ImportOptions {
+                weapon: "Fist",
+                off_hand: true,
+                ..ImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(kit.action_named("PairedLight1").is_some());
     }
 
     #[test]
     fn chains_follow_the_donor_rules() {
         let (kit, _) = import_kit(&sample(), Some(CONSTANTS), &options()).expect("import");
-        let id = |name: &str| kit.actions.iter().find(|action| action.name == name).map(|action| action.id);
+        let id = |name: &str| {
+            kit.actions
+                .iter()
+                .find(|action| action.name == name)
+                .map(|action| action.id)
+        };
         let next = |name: &str| {
-            let action = kit.actions.iter().find(|action| action.name == name).expect(name);
+            let action = kit
+                .actions
+                .iter()
+                .find(|action| action.name == name)
+                .expect(name);
             (action.next_light, action.next_heavy)
         };
         assert_eq!(next("Light1"), (id("Light2"), None));
-        assert_eq!(next("Light2"), (id("Light1"), None), "past its end the chain starts again");
+        assert_eq!(
+            next("Light2"),
+            (id("Light1"), None),
+            "past its end the chain starts again"
+        );
         assert_eq!(next("RollAttack"), (id("Light2"), None));
         assert_eq!(next("BackstepAttack"), (id("Light2"), None));
         assert_eq!(next("RollLeft"), (id("RollAttack"), None));
@@ -1130,8 +1385,12 @@ mod tests {
         let (kit, report) = import_kit(&sample(), Some(CONSTANTS), &two_handed).expect("import");
         assert_eq!(kit.label, "Test Blade, two-handed, light load");
         assert_eq!((report.dodges, report.attacks), (5, 1));
+        assert!(kit.action_named("Parry").is_none());
         assert_eq!(kit.actions[5].hits[0].stamina, Milli::whole(9));
-        assert_eq!(kit.actions[5].next_light, None, "a chain of one does not continue into itself");
+        assert_eq!(
+            kit.actions[5].next_light, None,
+            "a chain of one does not continue into itself"
+        );
         assert_eq!(kit.actions[0].id, ActionId(7));
 
         let off_hand = ImportOptions {
@@ -1148,7 +1407,9 @@ mod tests {
         let fails = |text: &str, constants: Option<&str>, options: ImportOptions<'_>| {
             import_kit(text, constants, &options).expect_err("must be refused")
         };
-        assert!(fails(&sample, None, options()).message.contains("`ANIM_FPS` was not found"));
+        assert!(fails(&sample, None, options())
+            .message
+            .contains("`ANIM_FPS` was not found"));
         let unknown = ImportOptions {
             weapon: "Spoon",
             ..options()
@@ -1160,26 +1421,43 @@ mod tests {
             load: "Heavy",
             ..options()
         };
-        assert!(fails(&sample, Some(CONSTANTS), no_load).message.contains("it has: Light, Medium"));
+        assert!(fails(&sample, Some(CONSTANTS), no_load)
+            .message
+            .contains("it has: Light, Medium"));
         let no_attacks = ImportOptions {
             weapon: "0",
             two_handed: true,
             ..options()
         };
-        assert!(fails(&sample, Some(CONSTANTS), no_attacks).message.contains("no usable attacks"));
-        assert!(fails("fn main() {}", Some(CONSTANTS), ImportOptions::default())
+        assert!(fails(&sample, Some(CONSTANTS), no_attacks)
             .message
-            .contains("`fn base` was not found"));
+            .contains("no usable attacks"));
+        assert!(
+            fails("fn main() {}", Some(CONSTANTS), ImportOptions::default())
+                .message
+                .contains("`fn base` was not found")
+        );
 
         // A field this reader does not know, a missing one, and a broken record all name a line.
-        let line_of = |text: &str, needle: &str| text.lines().position(|line| line.contains(needle)).expect(needle) + 1;
+        let line_of = |text: &str, needle: &str| {
+            text.lines()
+                .position(|line| line.contains(needle))
+                .expect(needle)
+                + 1
+        };
         let backstep = line_of(&sample, "Backstep =>");
         let renamed = sample.replacen("total: 30.0", "length: 30.0", 1);
         let error = fails(&renamed, Some(CONSTANTS), options());
-        assert_eq!((error.line, error.message.as_str()), (backstep, "unknown `ActionDef` field `length`"));
+        assert_eq!(
+            (error.line, error.message.as_str()),
+            (backstep, "unknown `ActionDef` field `length`")
+        );
         let missing = sample.replacen("total: 30.0, ", "", 1);
         let error = fails(&missing, Some(CONSTANTS), options());
-        assert_eq!((error.line, error.message.as_str()), (backstep, "an `ActionDef` has no `total`"));
+        assert_eq!(
+            (error.line, error.message.as_str()),
+            (backstep, "an `ActionDef` has no `total`")
+        );
         let broken = sample.replacen("iframes: (0.0, 9.0)", "iframes: (0.0, 9.0", 1);
         let error = fails(&broken, Some(CONSTANTS), options());
         assert_eq!(error.line, backstep, "{error}");

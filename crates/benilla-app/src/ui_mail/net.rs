@@ -249,9 +249,13 @@ fn take_empties(entry: &MailListEntry, action: u32) -> bool {
         mail_action::ITEM_TAKEN => {
             !has_item
                 && entry.money == 0
-                && (auction || (entry.item_text_id == 0
-                    && entry.mail_template_id == 0
-                    && entry.inline_body.as_ref().is_none_or(|body| body.is_empty())))
+                && (auction
+                    || (entry.item_text_id == 0
+                        && entry.mail_template_id == 0
+                        && entry
+                            .inline_body
+                            .as_ref()
+                            .is_none_or(|body| body.is_empty())))
         }
         _ => false,
     }
@@ -313,7 +317,8 @@ pub(super) fn send_mail_result(
                                 }
                                 if attachments.len() == before {
                                     if let Some(mailbox) = mail.mailbox {
-                                        let _ = commands.0.send(ClientCommand::GetMailList { mailbox });
+                                        let _ =
+                                            commands.0.send(ClientCommand::GetMailList { mailbox });
                                     }
                                 }
                             } else {

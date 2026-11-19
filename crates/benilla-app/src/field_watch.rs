@@ -179,12 +179,15 @@ pub(crate) mod id {
     pub(crate) const UNIT_LEVEL: u16 = 28;
     pub(crate) const UNIT_FACTION: u16 = 29;
     pub(crate) const UNIT_DISPLAYPOWER: u16 = 30;
+    pub(crate) const UNIT_FLAGS: u16 = 40;
     pub(crate) const UNIT_AURA: u16 = 41;
     pub(crate) const UNIT_NAME_UPDATE: u16 = 183;
     pub(crate) const UNIT_INVENTORY_CHANGED: u16 = 186;
     pub(crate) const PLAYER_MONEY: u16 = 200;
     pub(crate) const PLAYERBANKSLOTS_CHANGED: u16 = 347;
     pub(crate) const UNIT_CLASSIFICATION_CHANGED: u16 = 187;
+    /// The bridge watch on `UNIT_DYNAMIC_FLAGS` (event-table id `0x89`), fired on any bit.
+    pub(crate) const UNIT_DYNAMIC_FLAGS: u16 = 137;
     pub(crate) const PLAYER_FLAGS_CHANGED: u16 = 407;
     pub(crate) const UNIT_QUEST_LOG_CHANGED: u16 = 522;
     pub(crate) const PLAYER_REGEN_DISABLED: u16 = 190;

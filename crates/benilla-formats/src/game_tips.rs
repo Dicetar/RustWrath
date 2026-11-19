@@ -49,7 +49,11 @@ fn schema(locales: usize) -> Schema {
 
 pub fn load_game_tips(chain: &mut Chain) -> Result<GameTipsCatalog> {
     let bytes = chain.read_file(GAME_TIPS).context("reading GameTips.dbc")?;
-    let locales = if field_count(&bytes) == Some(18) { 16 } else { 8 };
+    let locales = if field_count(&bytes) == Some(18) {
+        16
+    } else {
+        8
+    };
     let rs = parse(&bytes, schema(locales), "GameTips")?;
     let locale = chain.locale();
     let mut tips = Vec::with_capacity(rs.records().len());

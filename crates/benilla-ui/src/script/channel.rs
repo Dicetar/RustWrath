@@ -350,10 +350,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         // `JoinTemporaryChannel` is a 3.3.5a verb; 1.12.1 has only `JoinChannelByName`, and an
         // addon's feature test must not see the newer name on the donor target.
         if verb == "JoinTemporaryChannel"
-            && lua
-                .app_data_ref::<Model>()
-                .expect("model app_data")
-                .target
+            && lua.app_data_ref::<Model>().expect("model app_data").target
                 != super::UiTarget::Wrath335
         {
             continue;
@@ -733,11 +730,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "GetChannelDisplayInfo",
         lua.create_function(|lua, index: Value| {
-            let n = super::binding_abi::number_arg(
-                lua,
-                index,
-                "Usage: GetChannelDisplayInfo(index)",
-            )?;
+            let n =
+                super::binding_abi::number_arg(lua, index, "Usage: GetChannelDisplayInfo(index)")?;
             let pos = match usize::try_from(n as i64 - 1) {
                 Ok(p) => p,
                 Err(_) => return Ok(MultiValue::new()),
@@ -763,9 +757,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let mut out = Vec::with_capacity(9);
             match pos {
                 0 => {
-                    out.push(Value::String(lua.create_string(&localized(
-                        "CHANNEL_CATEGORY_GROUP",
-                    ))?));
+                    out.push(Value::String(
+                        lua.create_string(&localized("CHANNEL_CATEGORY_GROUP"))?,
+                    ));
                     out.push(Value::Number(1.0));
                     out.push(Value::Nil);
                     out.push(Value::Nil);
@@ -776,9 +770,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     out.push(Value::Nil);
                 }
                 1 => {
-                    out.push(Value::String(lua.create_string(&localized(
-                        "CHANNEL_CATEGORY_WORLD",
-                    ))?));
+                    out.push(Value::String(
+                        lua.create_string(&localized("CHANNEL_CATEGORY_WORLD"))?,
+                    ));
                     out.push(Value::Number(1.0));
                     out.push(Value::Nil);
                     out.push(Value::Nil);
@@ -793,9 +787,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     out.push(Value::Nil);
                 }
                 2 => {
-                    out.push(Value::String(lua.create_string(&localized(
-                        "CHANNEL_CATEGORY_CUSTOM",
-                    ))?));
+                    out.push(Value::String(
+                        lua.create_string(&localized("CHANNEL_CATEGORY_CUSTOM"))?,
+                    ));
                     out.push(Value::Number(1.0));
                     out.push(Value::Nil);
                     out.push(Value::Nil);
@@ -1144,16 +1138,12 @@ mod tests {
         // All returns, nils included: a table constructor would lose the holes to `#`, so ask
         // the VM for the count and then for each position.
         let n = s
-            .eval::<i64>(&format!(
-                "return select('#', GetChannelDisplayInfo({i}))"
-            ))
+            .eval::<i64>(&format!("return select('#', GetChannelDisplayInfo({i}))"))
             .unwrap();
         (1..=n)
             .map(|k| {
-                s.eval::<Value>(&format!(
-                    "return select({k}, GetChannelDisplayInfo({i}))"
-                ))
-                .unwrap()
+                s.eval::<Value>(&format!("return select({k}, GetChannelDisplayInfo({i}))"))
+                    .unwrap()
             })
             .collect()
     }
@@ -1184,7 +1174,10 @@ mod tests {
              CHANNEL_CATEGORY_CUSTOM = 'Custom'",
         )
         .unwrap();
-        assert_eq!(s.eval::<f64>("return GetNumDisplayChannels()").unwrap(), 3.0);
+        assert_eq!(
+            s.eval::<f64>("return GetNumDisplayChannels()").unwrap(),
+            3.0
+        );
         for i in 1..=3 {
             let v = vals(&s, i);
             assert_eq!(v.len(), 9, "index {i}");
@@ -1204,11 +1197,11 @@ mod tests {
              CHANNEL_CATEGORY_CUSTOM = 'Custom'",
         )
         .unwrap();
-        s.set_joined_channels(vec![
-            slot("ZoneChan", 1, true),
-            slot("CustomChan", 0, true),
-        ]);
-        assert_eq!(s.eval::<f64>("return GetNumDisplayChannels()").unwrap(), 5.0);
+        s.set_joined_channels(vec![slot("ZoneChan", 1, true), slot("CustomChan", 0, true)]);
+        assert_eq!(
+            s.eval::<f64>("return GetNumDisplayChannels()").unwrap(),
+            5.0
+        );
 
         let g = vals(&s, 1);
         assert_eq!(g.len(), 9);
@@ -1263,7 +1256,8 @@ mod tests {
         let s = UiScript::new().unwrap();
         let e = s.run("GetChannelDisplayInfo('x')").unwrap_err();
         assert!(
-            e.to_string().contains("Usage: GetChannelDisplayInfo(index)"),
+            e.to_string()
+                .contains("Usage: GetChannelDisplayInfo(index)"),
             "{e}"
         );
     }
@@ -1271,11 +1265,11 @@ mod tests {
     #[test]
     fn unconfirmed_slot_is_excluded() {
         let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
-        s.set_joined_channels(vec![
-            slot("Pending", 1, false),
-            slot("CustomChan", 0, true),
-        ]);
-        assert_eq!(s.eval::<f64>("return GetNumDisplayChannels()").unwrap(), 4.0);
+        s.set_joined_channels(vec![slot("Pending", 1, false), slot("CustomChan", 0, true)]);
+        assert_eq!(
+            s.eval::<f64>("return GetNumDisplayChannels()").unwrap(),
+            4.0
+        );
         let z = vals(&s, 2);
         assert!(matches!(z[4], Value::Nil));
         let c = vals(&s, 3);

@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use benilla_formats::{
-    hand_grip_finger_poses, parse_m2_animations_with_external, parse_m2_attachments, parse_m2_bounds,
-    parse_m2_collision_hull, parse_m2_global_sequence_bones, parse_m2_lights,
+    hand_grip_finger_poses, parse_m2_animations_with_external, parse_m2_attachments,
+    parse_m2_bounds, parse_m2_collision_hull, parse_m2_global_sequence_bones, parse_m2_lights,
     parse_m2_particle_emitters, parse_m2_playable_animation_lookup, parse_m2_portrait_camera,
     parse_m2_render_submeshes, parse_m2_render_submeshes_with_skin, parse_m2_skeleton,
     CollisionMesh, M2Bounds, M2Light, ParticleEmitterDef,
@@ -238,12 +238,19 @@ impl AssetLoader for M2ModelLoader {
             let source = ctx.path().source().clone_owned();
             let path = bevy::asset::AssetPath::from(sibling).with_source(source);
             match ctx.read_asset_bytes(path).await {
-                Ok(data) => { external.insert((id, variation), data); }
-                Err(_) => { missing += 1; }
+                Ok(data) => {
+                    external.insert((id, variation), data);
+                }
+                Err(_) => {
+                    missing += 1;
+                }
             }
         }
         if missing != 0 {
-            warn!("{}: {missing} external animations unavailable; those sequences are omitted", ctx.path());
+            warn!(
+                "{}: {missing} external animations unavailable; those sequences are omitted",
+                ctx.path()
+            );
         }
 
         // The textures open as the model did (`0x71da64` pushes the model's own flag).
@@ -257,12 +264,19 @@ impl AssetLoader for M2ModelLoader {
         // models store geometry in a sibling `Foo00.skin`; the actor route uses LOD 0.
         let subs = if bytes.get(4..8) == Some(&264u32.to_le_bytes()) {
             let path = ctx.path().path().to_path_buf();
-            let stem = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+            let stem = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
             let skin_path = path.with_file_name(format!("{stem}00.skin"));
             let source = ctx.path().source().clone_owned();
             let skin_asset = bevy::asset::AssetPath::from(skin_path.clone()).with_source(source);
             let skin_bytes = ctx.read_asset_bytes(skin_asset).await.map_err(|e| {
-                std::io::Error::other(format!("reading companion skin {}: {e}", skin_path.display()))
+                std::io::Error::other(format!(
+                    "reading companion skin {}: {e}",
+                    skin_path.display()
+                ))
             })?;
             let skin = benilla_formats::parse_external_skin(&skin_bytes)
                 .map_err(|e| std::io::Error::other(format!("parsing skin: {e}")))?;

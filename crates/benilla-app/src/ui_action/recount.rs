@@ -17,8 +17,18 @@ use crate::net::{NetCommands, ObjectStore, Objects, SelfPlayer, WorldEnterCascad
 use crate::query_cache::Ask;
 use crate::ui_items::action_count_in_player;
 
-/// The bar's 120 slots, as Lua action ids.
+/// The donor bar's 120 slots, as Lua action ids.
 const ACTION_SLOTS: std::ops::RangeInclusive<u32> = 1..=120;
+
+/// The target's slot range: 12340's action table is 144 words (`MAX_ACTION_BUTTONS`), which the
+/// bonus/vehicle pages 7..12 use; the donor stops at 120.
+fn action_slots(target: benilla_ui::script::UiTarget) -> std::ops::RangeInclusive<u32> {
+    if target == benilla_ui::script::UiTarget::Wrath335 {
+        1..=144
+    } else {
+        ACTION_SLOTS
+    }
+}
 
 /// Our own player's arrival pass, if it arrived ([`arrival_counts`]).
 pub(crate) fn recount_item_actions(
@@ -55,7 +65,7 @@ pub(crate) fn recount_item_actions(
 /// player, outside the world latch, and run no record set-up.
 fn arrival_counts(script: &mut UiScript, counter: &Counter) {
     let mut counts = std::collections::HashMap::new();
-    for action in ACTION_SLOTS {
+    for action in action_slots(script.target()) {
         let Some(mut slot) = script
             .action_slot(action)
             .filter(|s| s.kind == ACTION_KIND_ITEM)
@@ -100,7 +110,7 @@ impl Counter<'_> {
 /// when its turn comes, so a handler that rewrites a later slot is seen.
 pub(crate) fn recount(script: &mut UiScript, counter: &Counter, entry: u32) {
     let count = counter.count(script.target(), entry);
-    for action in ACTION_SLOTS {
+    for action in action_slots(script.target()) {
         let Some(mut slot) = script
             .action_slot(action)
             .filter(|s| s.kind == ACTION_KIND_ITEM && s.action == entry)

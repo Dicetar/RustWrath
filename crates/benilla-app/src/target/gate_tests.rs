@@ -197,7 +197,7 @@ impl Fix {
             Held::Row => {
                 script.set_merchant(Some(MerchantState {
                     items: vec![MerchantItem {
-                extended_cost: None,
+                        extended_cost: None,
                         name: None,
                         texture: None,
                         price: 25,
@@ -240,9 +240,7 @@ fn swung_at(sent: &[ClientCommand], guid: u64) -> bool {
 fn greeted(sent: &[ClientCommand], guid: u64) -> bool {
     sent.iter().any(|c| match c {
         ClientCommand::GossipHello { guid: g } => *g == guid,
-        ClientCommand::QuestgiverOpenTracked { receipt, gossip } => {
-            *gossip && receipt.npc == guid
-        }
+        ClientCommand::QuestgiverOpenTracked { receipt, gossip } => *gossip && receipt.npc == guid,
         _ => false,
     })
 }

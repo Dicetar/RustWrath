@@ -10,7 +10,7 @@ use std::io::Read;
 use anyhow::{bail, Context, Result};
 
 use crate::opcode;
-use crate::updates::{movement_block, values_block, Reader, MovementSnapshot};
+use crate::updates::{movement_block, values_block, MovementSnapshot, Reader};
 
 /// Hard cap on the inflated size of one compressed update packet: server-side, one buffered
 /// send never exceeds 65536 bytes per write, so 1 MiB leaves orders of magnitude of headroom
@@ -171,7 +171,9 @@ impl ObjectEntry {
     /// observed zero.
     pub fn field_delivered(&self, index: u16) -> bool {
         let (word, bit) = (index as usize / 64, index as usize % 64);
-        self.delivered.get(word).is_some_and(|w| w & (1 << bit) != 0)
+        self.delivered
+            .get(word)
+            .is_some_and(|w| w & (1 << bit) != 0)
     }
     /// Two adjacent fields as the 64-bit GUID the object writes for itself
     /// (`fields[OBJECT_FIELD_GUID] | fields[+1] << 32`).
@@ -379,7 +381,10 @@ impl WorldState {
             }
         }
         if !r.done() {
-            bail!("{} trailing bytes after the last update block", r.p.len() - r.at);
+            bail!(
+                "{} trailing bytes after the last update block",
+                r.p.len() - r.at
+            );
         }
         Ok((events, changed))
     }
@@ -467,7 +472,9 @@ impl WorldState {
                         entry.auras.sort_by_key(|held| held.slot);
                     }
                 }
-                entry.aura_receipts.insert(slot, receipt.expect("add/update carries a receipt"));
+                entry
+                    .aura_receipts
+                    .insert(slot, receipt.expect("add/update carries a receipt"));
                 true
             }
             None => {
@@ -554,7 +561,8 @@ impl WorldState {
         };
         match entry.movement.as_mut() {
             Some(movement) => {
-                let changed = movement.position != Some(next_pos) || movement.create_spline.is_some();
+                let changed =
+                    movement.position != Some(next_pos) || movement.create_spline.is_some();
                 movement.position = Some(next_pos);
                 movement.create_spline = None;
                 changed || transport_changed
@@ -637,7 +645,11 @@ mod tests {
     }
 
     fn values_wire(values: &[(u16, u32)]) -> Vec<u8> {
-        let words = values.iter().map(|(i, _)| *i as usize / 32 + 1).max().unwrap_or(1);
+        let words = values
+            .iter()
+            .map(|(i, _)| *i as usize / 32 + 1)
+            .max()
+            .unwrap_or(1);
         let mut mask = vec![0u32; words];
         for (i, _) in values {
             mask[*i as usize / 32] |= 1u32 << (*i % 32);
@@ -715,28 +727,62 @@ mod tests {
         let guid = 7;
         let mut state = WorldState::new();
         state
-            .reduce(opcode::SMSG_UPDATE_OBJECT, &stationary_create(guid, 3, 1.0, &[(fields::UNIT_FIELD_HEALTH, 100)]))
+            .reduce(
+                opcode::SMSG_UPDATE_OBJECT,
+                &stationary_create(guid, 3, 1.0, &[(fields::UNIT_FIELD_HEALTH, 100)]),
+            )
             .unwrap();
         state
-            .reduce(opcode::SMSG_UPDATE_OBJECT, &values_update(guid, &[(fields::UNIT_FIELD_HEALTH, 42)]))
+            .reduce(
+                opcode::SMSG_UPDATE_OBJECT,
+                &values_update(guid, &[(fields::UNIT_FIELD_HEALTH, 42)]),
+            )
             .unwrap();
-        assert_eq!(state.get(guid).unwrap().field(fields::UNIT_FIELD_HEALTH), Some(42));
+        assert_eq!(
+            state.get(guid).unwrap().field(fields::UNIT_FIELD_HEALTH),
+            Some(42)
+        );
     }
 
     #[test]
     fn guid_survives_destroy_and_recreate_with_a_generation() {
         let guid = 0xAA;
         let mut state = WorldState::new();
-        state.reduce(opcode::SMSG_UPDATE_OBJECT, &stationary_create(guid, 3, 1.0, &[])).unwrap();
+        state
+            .reduce(
+                opcode::SMSG_UPDATE_OBJECT,
+                &stationary_create(guid, 3, 1.0, &[]),
+            )
+            .unwrap();
         assert_eq!(state.generation_of(guid), 0);
-        let events = state.reduce(opcode::SMSG_UPDATE_OBJECT, &out_of_range(&[guid])).unwrap();
+        let events = state
+            .reduce(opcode::SMSG_UPDATE_OBJECT, &out_of_range(&[guid]))
+            .unwrap();
         assert_eq!(events, vec![ChangeEvent::Removed { guid }]);
         assert!(state.get(guid).is_none());
         assert_eq!(state.generation_of(guid), 1);
-        state.reduce(opcode::SMSG_UPDATE_OBJECT, &stationary_create(guid, 3, 2.0, &[])).unwrap();
+        state
+            .reduce(
+                opcode::SMSG_UPDATE_OBJECT,
+                &stationary_create(guid, 3, 2.0, &[]),
+            )
+            .unwrap();
         let entry = state.get(guid).unwrap();
-        assert_eq!(entry.generation, 1, "recreate inherits the tombstone generation");
-        assert_eq!(entry.movement.as_ref().unwrap().position.as_ref().unwrap().x, 2.0);
+        assert_eq!(
+            entry.generation, 1,
+            "recreate inherits the tombstone generation"
+        );
+        assert_eq!(
+            entry
+                .movement
+                .as_ref()
+                .unwrap()
+                .position
+                .as_ref()
+                .unwrap()
+                .x,
+            2.0
+        );
     }
 
     #[test]
@@ -770,8 +816,13 @@ mod tests {
         let mut packet = (payload.len() as u32).to_le_bytes().to_vec();
         packet.extend_from_slice(&compressed);
         let mut state = WorldState::new();
-        state.reduce(opcode::SMSG_COMPRESSED_UPDATE_OBJECT, &packet).unwrap();
-        assert_eq!(state.get(guid).unwrap().field(fields::UNIT_FIELD_HEALTH), Some(33));
+        state
+            .reduce(opcode::SMSG_COMPRESSED_UPDATE_OBJECT, &packet)
+            .unwrap();
+        assert_eq!(
+            state.get(guid).unwrap().field(fields::UNIT_FIELD_HEALTH),
+            Some(33)
+        );
     }
 
     #[test]

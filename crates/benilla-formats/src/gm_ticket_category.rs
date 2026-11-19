@@ -57,8 +57,16 @@ pub fn load_gm_ticket_categories(chain: &mut Chain) -> Result<GmTicketCategoryCa
     let bytes = chain
         .read_file(GM_TICKET_CATEGORY)
         .with_context(|| format!("reading {GM_TICKET_CATEGORY}"))?;
-    let locales = if field_count(&bytes) == Some(18) { 16 } else { 8 };
-    let rs = parse(&bytes, gm_ticket_category_schema(locales), "GMTicketCategory")?;
+    let locales = if field_count(&bytes) == Some(18) {
+        16
+    } else {
+        8
+    };
+    let rs = parse(
+        &bytes,
+        gm_ticket_category_schema(locales),
+        "GMTicketCategory",
+    )?;
     let locale = chain.locale();
     let mut categories = Vec::with_capacity(rs.records().len());
     for r in rs.records() {

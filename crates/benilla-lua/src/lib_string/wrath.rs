@@ -31,12 +31,17 @@ pub(super) fn open(vm: &mut Vm) {
 }
 
 fn c_len(bytes: &[u8]) -> usize {
-    bytes.iter().position(|&byte| byte == 0).unwrap_or(bytes.len())
+    bytes
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(bytes.len())
 }
 
 fn charset(bytes: &[u8]) -> [bool; 256] {
     let mut set = [false; 256];
-    for &byte in &bytes[..c_len(bytes)] { set[usize::from(byte)] = true; }
+    for &byte in &bytes[..c_len(bytes)] {
+        set[usize::from(byte)] = true;
+    }
     set
 }
 
@@ -45,7 +50,9 @@ fn push_slice(vm: &mut Vm, string: StrRef, first: usize, end: usize, bytes: &mut
     vm.reserve(bytes, end - first)?;
     bytes.extend_from_slice(&vm.heap.str(string)[first..end]);
     let result = vm.str(bytes);
-    if vm.heap.oom { return Err(vm.memory_error()); }
+    if vm.heap.oom {
+        return Err(vm.memory_error());
+    }
     vm.push(result);
     Ok(())
 }
@@ -81,14 +88,19 @@ fn split_args(vm: &mut Vm, nargs: usize, delimiters_first: bool) -> R<usize> {
             return Err(vm.error_at(1, "stack overflow (strsplit())"));
         }
         let remainder = limit != 0 && (limit <= 1 || count >= (limit - 1) as usize);
-        let end = if remainder { length } else {
-            vm.heap.str(string)[first..length].iter()
+        let end = if remainder {
+            length
+        } else {
+            vm.heap.str(string)[first..length]
+                .iter()
                 .position(|&byte| delimiters[usize::from(byte)])
                 .map_or(length, |offset| first + offset)
         };
         push_slice(vm, string, first, end, &mut bytes)?;
         count += 1;
-        if end == length { return Ok(count); }
+        if end == length {
+            return Ok(count);
+        }
         first = end + 1;
     }
 }
@@ -102,8 +114,12 @@ fn trim(vm: &mut Vm, nargs: usize) -> R<usize> {
     let bytes = vm.heap.str(string);
     let mut first = 0;
     let mut end = bytes.len();
-    while first < end && delimiters[usize::from(bytes[first])] { first += 1; }
-    while end > first && delimiters[usize::from(bytes[end - 1])] { end -= 1; }
+    while first < end && delimiters[usize::from(bytes[first])] {
+        first += 1;
+    }
+    while end > first && delimiters[usize::from(bytes[end - 1])] {
+        end -= 1;
+    }
     push_slice(vm, string, first, end, &mut Vec::new())?;
     Ok(1)
 }
@@ -111,9 +127,13 @@ fn trim(vm: &mut Vm, nargs: usize) -> R<usize> {
 /// lua_concat's zero/one cases matter: one value is returned untouched, while two or more
 /// use the existing right-associative __concat and numeric formatting owner.
 fn concat(vm: &mut Vm, nargs: usize) -> R<usize> {
-    if nargs == 0 { return Ok(vm.ret_str(b"")); }
+    if nargs == 0 {
+        return Ok(vm.ret_str(b""));
+    }
     let first = vm.top - nargs;
-    if nargs > 1 { vm.concat(first, vm.top - 1)?; }
+    if nargs > 1 {
+        vm.concat(first, vm.top - 1)?;
+    }
     vm.top = first + 1;
     Ok(1)
 }

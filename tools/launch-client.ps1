@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$DataPath = 'D:\WOW\world of warcraft 3.3.5a hd\data',
+    [string]$DataPath = 'D:\Projects\wow\server\world of warcraft 3.3.5a hd\data',
     [string]$AuthServer = '127.0.0.1:3724',
     [string]$WorldServer = '127.0.0.1:8095',
     [bool]$WithAddons = $true,
@@ -13,8 +13,11 @@ param(
     [switch]$SkipHealthCheck,
     [scriptblock]$HealthPredicate = $null,
     [switch]$WithMulticlass,
-    [string]$MulticlassGluePath = 'D:\WOW\wm-project\client_extensions\multiclass\multiclass_glue.lua',
-    [bool]$WithMovementHotpatch = $true
+    [string]$MulticlassGluePath = 'D:\Projects\wow\server\wm-project\client_extensions\multiclass\multiclass_glue.lua',
+    [bool]$WithMovementHotpatch = $true,
+    # Whole-client live code (ADR-0002): dx builds the dev client with `live_code` and patches
+    # every saved source edit into it. Runs in this window; close the game or Ctrl+C to stop.
+    [switch]$LiveCode
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -81,7 +84,13 @@ if ($releaseRequested) {
 $isRelease = Test-Path -LiteralPath (Join-Path $repo 'release-manifest.json') -PathType Leaf
 if ($isRelease -and $releaseRequested) { throw 'Choose an assembled release or a release set, not both' }
 if ($isRelease) { $binary = Join-Path $repo 'bin\benilla.exe' }
-if ($BuildLatest -and !$isRelease -and !$releaseRequested) {
+if ($LiveCode -and ($isRelease -or $releaseRequested)) {
+    throw 'Live code patches a source build; it cannot run an assembled release or a release set.'
+}
+if ($LiveCode -and $BuildLatest) {
+    Write-Host 'Live code builds through dx; -BuildLatest is skipped.'
+}
+if ($BuildLatest -and !$LiveCode -and !$isRelease -and !$releaseRequested) {
     if (Get-Process benilla,cargo,rustc -ErrorAction SilentlyContinue) {
         throw 'Close the running client or wait for the active build before rebuilding.'
     }
@@ -134,7 +143,7 @@ if ($BuildLatest -and !$isRelease -and !$releaseRequested) {
         $env:CARGO_INCREMENTAL = $previousIncremental
     }
 }
-if (!(Test-Path -LiteralPath $binary)) {
+if (!$LiveCode -and !(Test-Path -LiteralPath $binary)) {
     if ($releaseContext) {
         throw "Release executable is missing: $binary"
     }
@@ -260,6 +269,65 @@ foreach ($old in @($previousRuns | Select-Object -Skip 2)) {
 $run = Join-Path $logs (Get-Date -Format 'yyyyMMdd-HHmmss-fff')
 New-Item -ItemType Directory -Path $run | Out-Null
 Set-Location -LiteralPath $workingDirectory
+if ($LiveCode) {
+    # dx's build goes through Cargo, which the repo config points at sccache.
+    $cache = Get-Command sccache -ErrorAction SilentlyContinue
+    if (!$cache) {
+        $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin\sccache.exe'
+        if (Test-Path -LiteralPath $cargoBin -PathType Leaf) { $cache = Get-Command $cargoBin -ErrorAction SilentlyContinue }
+    }
+    if (!$cache) {
+        throw "sccache is required by .cargo/config.toml, but was not found in PATH or at $env:USERPROFILE\.cargo\bin\sccache.exe.`nInstall it by running:`n  `$env:RUSTC_WRAPPER=''; cargo install sccache --locked"
+    }
+    $env:RUSTC_WRAPPER = $cache.Source
+    # dx patches only a client whose subsecond matches it exactly; the lock names the client's.
+    $lock = Get-Content -LiteralPath (Join-Path $repo 'Cargo.lock') -Raw
+    $subsecond = [regex]::Match($lock, 'name = "subsecond"\r?\nversion = "([^"]+)"')
+    $wanted = if ($subsecond.Success) { $subsecond.Groups[1].Value } else { $null }
+    $dx = Get-Command dx -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (!$dx) {
+        $dxBin = Join-Path $env:USERPROFILE '.cargo\bin\dx.exe'
+        if (Test-Path -LiteralPath $dxBin -PathType Leaf) { $dx = Get-Command $dxBin -ErrorAction SilentlyContinue }
+    }
+    # The patched dx (tools/install-live-dx.ps1) exists for one version; stock dx patches only
+    # `benilla` and `benilla-app`, so another version falls back to a stock install.
+    $patchedVersion = '0.7.10'
+    $dxPatch = Join-Path $PSScriptRoot "live-code\dx-${patchedVersion}-workspace-crates.patch"
+    $install = if (!$wanted -or $wanted -eq $patchedVersion) {
+        "& '$(Join-Path $PSScriptRoot 'install-live-dx.ps1')'"
+    } else {
+        "`$env:RUSTC_WRAPPER=''; cargo install dioxus-cli --version $wanted --locked"
+    }
+    if (!$dx) {
+        throw "Live code needs the dioxus CLI (dx). Install it by running:`n  $install"
+    }
+    $dxVersion = [regex]::Match((& $dx.Source --version | Out-String), '\d+\.\d+\.\d+[^\s)]*').Value
+    if ($wanted -and $dxVersion -ne $wanted) {
+        throw "dx $dxVersion cannot patch a client built with subsecond $wanted. Install the matching CLI:`n  $install"
+    }
+    if (!$wanted) {
+        Write-Warning 'Cargo.lock has no subsecond yet: the first live-code build adds it. If dx then refuses to patch, install the CLI the lock names and launch again.'
+    }
+    # install-live-dx.ps1 leaves the patch's hash beside dx.exe; stock dx has none.
+    $dxPatched = 'stock'
+    if ($dxVersion -eq $patchedVersion) {
+        $marker = Join-Path (Split-Path -Parent $dx.Source) 'dx.rustwrath-patch'
+        $expected = (Get-FileHash -LiteralPath $dxPatch -Algorithm SHA256).Hash
+        if ((Test-Path -LiteralPath $marker -PathType Leaf) -and ((Get-Content -LiteralPath $marker -Raw).Trim() -eq $expected)) {
+            $dxPatched = $expected
+        } else {
+            Write-Warning "This dx is stock or an older patch: edits outside benilla and benilla-app will not patch the running client. Stop here and run:`n  $install"
+        }
+    }
+    @('mode=live_code', "dx=$($dx.Source)", "dx_version=$dxVersion", "dx_patch=$dxPatched", "subsecond=$wanted") |
+        Set-Content -LiteralPath (Join-Path $run 'launch.txt')
+    Write-Host 'Live code: dx builds the dev client and starts it here. Save a source file to patch the running client.'
+    Write-Host 'A changed struct layout, static, or system/plugin registration still needs a restart (ADR-0002, "Live code").'
+    # dx.log keeps dx's own trace (which files and crates each patch saw), unlike the TUI.
+    & $dx.Source serve --hot-patch --package benilla --bin benilla --features 'hotpatch,live_code' `
+        --log-to-file (Join-Path $run 'dx.log')
+    exit $LASTEXITCODE
+}
 $client = Start-Process -FilePath $binary -WorkingDirectory $workingDirectory -PassThru `
     -RedirectStandardOutput (Join-Path $run 'stdout.log') `
     -RedirectStandardError (Join-Path $run 'stderr.log')

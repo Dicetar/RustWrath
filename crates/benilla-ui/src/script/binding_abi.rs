@@ -684,7 +684,9 @@ mod tests {
             Some(Value::Nil),
             Some(Value::Boolean(true)),
             Some(Value::Table(lua.create_table().unwrap())),
-            Some(Value::Function(lua.create_function(|_, ()| Ok(())).unwrap())),
+            Some(Value::Function(
+                lua.create_function(|_, ()| Ok(())).unwrap(),
+            )),
         ] {
             assert_eq!(tolstring_arg(&lua, v), None);
         }

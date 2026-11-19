@@ -1,14 +1,30 @@
-# The gates of scripts/gates.sh that need neither a WoW install nor a display, on Linux, and the
-# workspace tests on Windows, for development pushes, pull requests or a dispatch: a red one is seen
-# before anyone builds it. The data-gated tests, the engine boot checks and a live run happen on
-# the maintainer's machine before it lands.
+# The gates of scripts/gates.sh that need neither a WoW install nor a display, on Linux, and a
+# Windows compile, for development pushes, pull requests or a dispatch: a red one is seen before
+# anyone builds it. The data-gated tests, the engine boot checks and a live run happen on the
+# maintainer's machine before it lands.
+#
+# Every push compiles the whole workspace with its test targets (clippy on Linux, a check on
+# Windows), and runs only the tests of the crates it changed (scripts/ci-changed-packages.py), by
+# the owner's choice: the whole suite on every push cost ~20 minutes. A dispatch with `all` runs
+# every test. Agents do not run Cargo locally, so this is where their focused tests are first
+# compiled and run. Pushes that only touch notes and docs are skipped. How to read a run is in
+# docs/agents/sync.md ("Reading CI").
 name: CI
 
 on:
   push:
-    branches: [wotlk]
+    branches: ['**']
+    paths-ignore:
+      - '.scratch/**'
+      - 'docs/**'
+      - '**/*.md'
   pull_request:
   workflow_dispatch:
+    inputs:
+      all:
+        description: Test the whole workspace, not only the crates the commit changed
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -41,15 +57,44 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq pkg-config libasound2-dev libudev-dev
       - name: Toolchain
         run: rustup toolchain install && rustc -V
+      # Saved on failure too: main carries known failing gates, and a cache saved only on green
+      # was never saved, so every run compiled all ~490 crates from nothing.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
       - name: sccache
         uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - name: fmt
         run: cargo fmt --all -- --check
+      # Warnings, not `-D warnings`: a crate's findings do not stop the build, so every crate is
+      # linted and the whole list shows in one run. The replay (Cargo keeps each crate's
+      # diagnostics) in the short format fails the step on any finding in crates/.
       - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: |
+          set -o pipefail
+          cargo clippy --workspace --all-targets
+          cargo clippy --workspace --all-targets --message-format=short --color never 2>&1 \
+            | tee clippy.txt
+          if grep -qE '^crates/[^ ]+:[0-9]+:[0-9]+: (warning|error)' clippy.txt; then
+            echo "::error::$(grep -cE '^crates/[^ ]+:[0-9]+:[0-9]+: (warning|error)' clippy.txt) clippy findings"
+            exit 1
+          fi
+      # The crates this push changed, whose tests run (scripts/ci-changed-packages.py): a dependent
+      # crate's tests and a root-only change run none. A dispatch with `all` tests the workspace.
+      - name: changed
+        id: changed
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          ALL: ${{ inputs.all }}
+        run: python scripts/ci-changed-packages.py
+      - name: test-build
+        if: steps.changed.outputs.args != ''
+        run: cargo test ${{ steps.changed.outputs.args }} --no-run
+      # The owner's budget for running the tests: three minutes.
       - name: test
-        run: cargo test --workspace
+        if: steps.changed.outputs.args != ''
+        timeout-minutes: 3
+        run: cargo test ${{ steps.changed.outputs.args }}
       - name: doc-links
         run: scripts/doc-links.py
       - name: message-catalog
@@ -68,7 +113,17 @@ jobs:
       - name: player-clippy
         run: cargo clippy -p benilla -p benilla-app --no-default-features -- -D warnings
       - name: player-tests
+        if: >-
+          contains(steps.changed.outputs.packages, ' benilla-app ')
+          || contains(steps.changed.outputs.packages, ' benilla-formats ')
         run: cargo test -p benilla-formats -p benilla-app --no-default-features --lib
+      # The live-code build (`launch-client.ps1 -LiveCode`), checked only: `bevy/hotpatching` changes
+      # bevy_ecs and bevy_app, so this rebuilds the Bevy stack once more. It runs after an earlier
+      # gate's failure too: it is the only compile of the feature, and fmt alone must not hide it.
+      # A check, not clippy: the lint debt the clippy step reports would stop it before the app.
+      - name: live-code-check
+        if: ${{ !cancelled() }}
+        run: cargo check -p benilla -p benilla-app --features live_code
 
   windows:
     # The workspace tests on a Windows checkout, which no macOS or Linux gate runs: path separators,
@@ -83,19 +138,51 @@ jobs:
       # The repo config selects sccache; the action below installs it and backs it with GHA cache.
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
+      # The toolchain's own lld, not MSVC link.exe: the build links ~160 test executables, and
+      # neither cache keeps a link. CI only; a local build keeps the default linker.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld.exe
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Toolchain
         run: rustup toolchain install && rustc -V
+      # Saved on failure too, as on the Linux job.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
       - name: sccache
         uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-      # Every crate runs, so one binary's crash does not hide the rest of the workspace.
+      # Every push: every crate and test target compiles (no codegen, no link), so a compile error
+      # anywhere shows here, in a dependent of the changed crate too.
+      - name: check
+        run: cargo check --workspace --all-targets
+      # The crates this push changed, whose tests run (scripts/ci-changed-packages.py): a dependent
+      # crate's tests and a root-only change run none. A dispatch with `all` tests the workspace.
+      - name: changed
+        id: changed
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          ALL: ${{ inputs.all }}
+        run: python scripts/ci-changed-packages.py
+      # `--timings`: where the build's time goes, per crate and per test binary, kept as the
+      # `windows-build-timings` artifact (target/cargo-timings/cargo-timing.html).
+      - name: test-build
+        if: steps.changed.outputs.args != ''
+        run: cargo test ${{ steps.changed.outputs.args }} --no-run --timings
+      - name: timings
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-build-timings
+          path: target/cargo-timings/cargo-timing.html
+          if-no-files-found: ignore
+          retention-days: 14
+      # Every crate runs, so one binary's crash does not hide the rest of the workspace. The owner's
+      # budget for running the tests: three minutes. A binary that dies whole is named by the
+      # `Running` line before it; the single-threaded rerun that used to follow every failure is
+      # gone (main always has failures, so it ran every time).
       - name: test
-        run: cargo test --workspace --no-fail-fast
-      # A binary that dies whole names no test; on one thread each test's name prints before it runs.
-      - name: name the test a crash took down
-        if: failure()
-        run: cargo test --workspace --no-fail-fast -- --test-threads=1
+        if: steps.changed.outputs.args != ''
+        timeout-minutes: 3
+        run: cargo test ${{ steps.changed.outputs.args }} --no-fail-fast

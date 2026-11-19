@@ -542,8 +542,8 @@ fn kit_from_record(r: &benilla_dbc::Record) -> VisualKit {
 fn wrath_kit_from_record(r: &benilla_dbc::Record) -> VisualKit {
     // WotLK's 9/10 are left/right weapon effects, not the three special-effect slots.
     // Those added attachment behaviors need renderer support; do not bind them as specials.
-    let effect_slots = [3, 4, 5, 6, 7, 8, 11, 12, 13]
-        .map(|column| u32_at(r, column).and_then(some_unless_none));
+    let effect_slots =
+        [3, 4, 5, 6, 7, 8, 11, 12, 13].map(|column| u32_at(r, column).and_then(some_unless_none));
     VisualKit {
         anim_id: u32_at(r, 2).and_then(kit_anim_id),
         sound: u32_at(r, 15).and_then(some_unless_none),
@@ -562,9 +562,9 @@ pub fn load_spell_visual_catalog(chain: &mut Chain) -> Result<SpellVisualCatalog
     let wrath_visual = match field_count(&sv_bytes) {
         Some(SPELL_VISUAL_FIELDS) => false,
         Some(WRATH_SPELL_VISUAL_FIELDS) => true,
-        Some(columns) => bail!(
-            "unsupported SpellVisual.dbc layout: {columns} fields (expected 16 or 32)"
-        ),
+        Some(columns) => {
+            bail!("unsupported SpellVisual.dbc layout: {columns} fields (expected 16 or 32)")
+        }
         None => bail!("parsing SpellVisual.dbc header: truncated field count"),
     };
     let schema = if wrath_visual {
@@ -629,9 +629,9 @@ pub fn load_spell_visual_catalog(chain: &mut Chain) -> Result<SpellVisualCatalog
     let wrath_kit = match field_count(&svk_bytes) {
         Some(SPELL_VISUAL_KIT_FIELDS) => false,
         Some(WRATH_SPELL_VISUAL_KIT_FIELDS) => true,
-        Some(columns) => bail!(
-            "unsupported SpellVisualKit.dbc layout: {columns} fields (expected 35 or 38)"
-        ),
+        Some(columns) => {
+            bail!("unsupported SpellVisualKit.dbc layout: {columns} fields (expected 35 or 38)")
+        }
         None => bail!("parsing SpellVisualKit.dbc header: truncated field count"),
     };
     let schema = if wrath_kit {

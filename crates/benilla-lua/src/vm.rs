@@ -155,7 +155,11 @@ pub(crate) struct ThreadObj {
 
 impl ThreadObj {
     pub(crate) fn dead() -> Self {
-        Self { context: None, entry: Value::Nil, status: ThreadStatus::Dead }
+        Self {
+            context: None,
+            entry: Value::Nil,
+            status: ThreadStatus::Dead,
+        }
     }
 
     pub(crate) fn roots(&self, values: &mut Vec<Value>, upvalues: &mut Vec<u32>) {
@@ -170,34 +174,50 @@ impl ThreadObj {
     }
 
     pub(crate) fn stack_value(&self, index: usize) -> Value {
-        self.context.as_ref().and_then(|context| context.stack.get(index))
-            .copied().unwrap_or(Value::Nil)
+        self.context
+            .as_ref()
+            .and_then(|context| context.stack.get(index))
+            .copied()
+            .unwrap_or(Value::Nil)
     }
 
     pub(crate) fn set_stack_value(&mut self, index: usize, value: Value) {
-        if let Some(slot) = self.context.as_mut().and_then(|context| context.stack.get_mut(index)) {
+        if let Some(slot) = self
+            .context
+            .as_mut()
+            .and_then(|context| context.stack.get_mut(index))
+        {
             *slot = value;
         }
     }
 
     pub(crate) fn closed_upvalues(&self) -> Vec<(u32, Value)> {
         self.context.as_ref().map_or_else(Vec::new, |context| {
-            context.open.iter().map(|&(index, upvalue)| (upvalue, context.stack[index])).collect()
+            context
+                .open
+                .iter()
+                .map(|&(index, upvalue)| (upvalue, context.stack[index]))
+                .collect()
         })
     }
 
     pub(crate) fn has_frames(&self) -> bool {
-        self.context.as_ref().is_some_and(|context| !context.frames.is_empty())
+        self.context
+            .as_ref()
+            .is_some_and(|context| !context.frames.is_empty())
     }
 
     pub(crate) fn blocks(&self) -> [Block; 2] {
-        self.context.as_ref().map_or([Block::None; 2], |context| [context.stack_block, context.ci_block])
+        self.context.as_ref().map_or([Block::None; 2], |context| {
+            [context.stack_block, context.ci_block]
+        })
     }
 
     pub(crate) fn bytes(&self) -> usize {
-        std::mem::size_of::<Self>() + self.context.as_ref().map_or(0, |context| {
-            STACK_SLOT_BYTES * context.stack.len() + CI_BYTES * context.ci_size
-        })
+        std::mem::size_of::<Self>()
+            + self.context.as_ref().map_or(0, |context| {
+                STACK_SLOT_BYTES * context.stack.len() + CI_BYTES * context.ci_size
+            })
     }
 }
 
@@ -506,10 +526,14 @@ impl Vm {
         Self::with_dialect(crate::Dialect::Vanilla50)
     }
 
-    pub fn dialect(&self) -> crate::Dialect { self.dialect }
+    pub fn dialect(&self) -> crate::Dialect {
+        self.dialect
+    }
 
     pub fn set_string_metatable(&mut self, table: Option<TableRef>) {
-        if self.dialect.is_51() { self.heap.string_meta = table; }
+        if self.dialect.is_51() {
+            self.heap.string_meta = table;
+        }
     }
 
     pub fn with_dialect(dialect: crate::Dialect) -> Vm {
@@ -611,7 +635,9 @@ impl Vm {
         self.check_gc();
     }
 
-    pub fn set_gc_running(&mut self, running: bool) { self.gc_running = running; }
+    pub fn set_gc_running(&mut self, running: bool) {
+        self.gc_running = running;
+    }
 
     pub fn set_gc_pause(&mut self, pause: u32) -> u32 {
         let previous = self.gc_pause;
@@ -666,7 +692,13 @@ impl Vm {
     pub fn tonumber(&self, v: Value) -> Option<f64> {
         match v.unpack() {
             V::Num(n) => Some(n),
-            V::Str(s) => if self.dialect.is_51() { crate::number::str2d_51(self.heap.str(s)) } else { str2d(self.heap.str(s)) },
+            V::Str(s) => {
+                if self.dialect.is_51() {
+                    crate::number::str2d_51(self.heap.str(s))
+                } else {
+                    str2d(self.heap.str(s))
+                }
+            }
             _ => None,
         }
     }
@@ -730,7 +762,8 @@ impl Vm {
 
     /// Compile a chunk into a function over the globals.
     pub fn load(&mut self, src: &[u8], chunkname: &[u8]) -> Result<Value, crate::SyntaxError> {
-        let proto = crate::compile::compile_with_dialect(src, chunkname, &mut self.heap, self.dialect)?;
+        let proto =
+            crate::compile::compile_with_dialect(src, chunkname, &mut self.heap, self.dialect)?;
         self.heap.charge_proto(&proto);
         // A constant the compiler could not make: 5.1's `LUA_ERRMEM`.
         if self.heap.oom {
@@ -898,11 +931,10 @@ impl Vm {
                 }
                 Ok(())
             },
-            &capture,
+            capture,
         );
-        let called = set.and_then(|()| {
-            self.protected_map(|vm| vm.call_value(f, args, 0).map(|_| ()), &capture)
-        });
+        let called = set
+            .and_then(|()| self.protected_map(|vm| vm.call_value(f, args, 0).map(|_| ()), capture));
         let mut failed = called.err();
         if let Some((value, _)) = &failed {
             // A restore metamethod can collect before the host roots the raised value.
@@ -915,7 +947,7 @@ impl Vm {
                 let _ = self.heap.table_mut(self.globals).set(Value::Str(k), old);
                 continue;
             }
-            let r = self.protected_map(|vm| vm.setindex(g, Value::Str(k), old, None), &capture);
+            let r = self.protected_map(|vm| vm.setindex(g, Value::Str(k), old, None), capture);
             if let (None, Err((value, error))) = (&failed, r) {
                 self.push(value);
                 failed = Some((value, error));
@@ -1229,7 +1261,10 @@ impl Vm {
     fn upval_set(&mut self, u: u32, v: Value) {
         match self.heap.upval(u) {
             UpvalObj::Open(i) => self.stack[i as usize] = v,
-            UpvalObj::Suspended { thread, index } => self.heap.thread_mut(thread).set_stack_value(index as usize, v),
+            UpvalObj::Suspended { thread, index } => self
+                .heap
+                .thread_mut(thread)
+                .set_stack_value(index as usize, v),
             UpvalObj::Closed(_) => *self.heap.upval_mut(u) = UpvalObj::Closed(v),
         }
     }
@@ -1408,7 +1443,13 @@ impl Vm {
                 Arith::Mul => crate::number::x87_op(x * y, x, y),
                 Arith::Div => crate::number::x87_op(x / y, x, y),
                 Arith::Mod => x - (x / y).floor() * y,
-                Arith::Pow => if self.dialect.is_51() { x.powf(y) } else { return self.pow_global(x, y) },
+                Arith::Pow => {
+                    if self.dialect.is_51() {
+                        x.powf(y)
+                    } else {
+                        return self.pow_global(x, y);
+                    }
+                }
             }));
         }
         let name = match op {
@@ -1855,12 +1896,18 @@ impl Vm {
                 let np = proto.nparams as usize;
                 let original_base = func_idx + 1;
                 let shifted_varargs = self.dialect.is_51() && proto.vararg;
-                let base = if shifted_varargs { original_base + nargs.max(np) } else { original_base };
+                let base = if shifted_varargs {
+                    original_base + nargs.max(np)
+                } else {
+                    original_base
+                };
                 let frame_top = base + proto.maxstack as usize;
                 self.checkstack(precall_top50(base, nargs, proto), proto.c_maxstack as usize);
                 self.ensure(frame_top + 1);
                 if shifted_varargs {
-                    for i in nargs..np { self.stack[original_base + i] = Value::Nil; }
+                    for i in nargs..np {
+                        self.stack[original_base + i] = Value::Nil;
+                    }
                     for i in 0..np {
                         self.stack[base + i] = self.stack[original_base + i];
                         self.stack[original_base + i] = Value::Nil;
@@ -1884,7 +1931,11 @@ impl Vm {
                         .table_mut(t)
                         .set(n, Value::Num(extra as f64))
                         .unwrap();
-                    if !shifted_varargs { for i in nargs..np { self.stack[base + i] = Value::Nil; } }
+                    if !shifted_varargs {
+                        for i in nargs..np {
+                            self.stack[base + i] = Value::Nil;
+                        }
+                    }
                     self.stack[base + np] = Value::Table(t);
                     fill_from = base + np + 1;
                 } else if shifted_varargs {
@@ -2131,7 +2182,9 @@ impl Vm {
     pub fn read_upvalue(&self, u: u32) -> Value {
         match self.heap.upval(u) {
             UpvalObj::Open(i) => self.stack.get(i as usize).copied().unwrap_or(Value::Nil),
-            UpvalObj::Suspended { thread, index } => self.heap.thread(thread).stack_value(index as usize),
+            UpvalObj::Suspended { thread, index } => {
+                self.heap.thread(thread).stack_value(index as usize)
+            }
             UpvalObj::Closed(v) => v,
         }
     }
@@ -2144,7 +2197,10 @@ impl Vm {
                     *slot = v;
                 }
             }
-            UpvalObj::Suspended { thread, index } => self.heap.thread_mut(thread).set_stack_value(index as usize, v),
+            UpvalObj::Suspended { thread, index } => self
+                .heap
+                .thread_mut(thread)
+                .set_stack_value(index as usize, v),
             UpvalObj::Closed(_) => *self.heap.upval_mut(u) = UpvalObj::Closed(v),
         }
     }
@@ -2389,10 +2445,7 @@ impl Vm {
                 .map(|(name, &u)| (name.to_vec(), self.read_upvalue(u)))
                 .collect(),
             // 5.1's `aux_upvalue` names a C closure's upvalues `""`.
-            FuncObj::Native { upvals, .. } => upvals
-                .iter()
-                .map(|&v| (Vec::new(), v))
-                .collect(),
+            FuncObj::Native { upvals, .. } => upvals.iter().map(|&v| (Vec::new(), v)).collect(),
         };
         Some(FrameScope { locals, upvalues })
     }
@@ -2593,7 +2646,9 @@ impl Vm {
         let mut roots: Vec<Value> = self.stack[..self.top].to_vec();
         roots.push(Value::Table(self.globals));
         roots.push(Value::Table(self.registry));
-        if let Some(meta) = self.heap.string_meta { roots.push(Value::Table(meta)); }
+        if let Some(meta) = self.heap.string_meta {
+            roots.push(Value::Table(meta));
+        }
         for f in &self.frames {
             roots.push(Value::Func(f.func));
         }
@@ -2642,7 +2697,9 @@ impl Vm {
         if self.dialect.is_51() {
             let threshold = (self.heap.bytes() / 100).saturating_mul(self.gc_pause as usize);
             self.heap.set_threshold(threshold);
-        } else { self.heap.pace(); }
+        } else {
+            self.heap.pace();
+        }
         // The host closures it freed drop last, with no arena borrowed, as host code: their
         // captures' destructors may use the state.
         if !self.heap.freed_hosts.is_empty() {
@@ -3083,7 +3140,9 @@ impl Vm {
                                 unsafe { *regs.sub(base!()).add(i as usize) }
                             }
                             UpvalObj::Closed(v) => v,
-                            UpvalObj::Suspended { thread, index } => self.heap.thread(thread).stack_value(index as usize),
+                            UpvalObj::Suspended { thread, index } => {
+                                self.heap.thread(thread).stack_value(index as usize)
+                            }
                         };
                         r!(a) = v;
                     }
@@ -3276,7 +3335,13 @@ impl Vm {
                                 let name = self.heap.intern(b"__len");
                                 match slow!(self.bin_tm(x, Value::Nil, name))? {
                                     Some(value) => value,
-                                    None => return Err(self.type_error(x, Some(b as usize), "get length of")),
+                                    None => {
+                                        return Err(self.type_error(
+                                            x,
+                                            Some(b as usize),
+                                            "get length of",
+                                        ))
+                                    }
                                 }
                             }
                         };
@@ -3583,12 +3648,18 @@ impl Vm {
                         let available = frame_base - fr!().func_idx() - 1 - parameters;
                         let source = frame_base - available;
                         let destination = frame_base + a as usize;
-                        let wanted = if count == 0 { available } else { count as usize - 1 };
+                        let wanted = if count == 0 {
+                            available
+                        } else {
+                            count as usize - 1
+                        };
                         slow!(self.ensure(destination + wanted + 1));
                         let copied = available.min(wanted);
                         self.stack.copy_within(source..source + copied, destination);
                         self.stack[destination + copied..destination + wanted].fill(Value::Nil);
-                        if count == 0 { self.top = destination + wanted; }
+                        if count == 0 {
+                            self.top = destination + wanted;
+                        }
                     }
                     // The client's `OP_FORLOOP` (`0x6f9262`): the loop's own variable is the
                     // counter, so the body may move it; each pass checks it is a number, makes
@@ -3625,19 +3696,29 @@ impl Vm {
                         }
                     }
                     Op::ForPrep51(a, off) => {
-                        for (offset, label) in ["initial value", "limit", "step"].iter().enumerate() {
+                        for (offset, label) in ["initial value", "limit", "step"].iter().enumerate()
+                        {
                             let register = a as usize + offset;
-                            let number = self.tonumber(r!(register)).ok_or_else(|| self.rt_error(&format!("'for' {label} must be a number")))?;
+                            let number = self.tonumber(r!(register)).ok_or_else(|| {
+                                self.rt_error(&format!("'for' {label} must be a number"))
+                            })?;
                             r!(register) = Value::Num(number);
                         }
-                        r!(a) = Value::Num(r!(a).as_num().unwrap_or(f64::NAN) - r!(a + 2).as_num().unwrap_or(f64::NAN));
+                        r!(a) = Value::Num(
+                            r!(a).as_num().unwrap_or(f64::NAN)
+                                - r!(a + 2).as_num().unwrap_or(f64::NAN),
+                        );
                         jump!(off);
                     }
                     Op::ForLoop51(a, off) => {
                         let step = r!(a + 2).as_num().unwrap_or(f64::NAN);
                         let index = r!(a).as_num().unwrap_or(f64::NAN) + step;
                         let limit = r!(a + 1).as_num().unwrap_or(f64::NAN);
-                        if if step > 0.0 { index <= limit } else { limit <= index } {
+                        if if step > 0.0 {
+                            index <= limit
+                        } else {
+                            limit <= index
+                        } {
                             r!(a) = Value::Num(index);
                             r!(a + 3) = Value::Num(index);
                             jump!(off);
@@ -3652,11 +3733,14 @@ impl Vm {
                         let call_at = base!() + call;
                         slow!(self.call_at(call_at, 2, nvar as i32))?;
                         self.top = base!() + maxstack!();
-                        if r!(call).is_nil() { skip!(1); }
-                        else {
+                        if r!(call).is_nil() {
+                            skip!(1);
+                        } else {
                             r!(a + 2) = r!(call);
                             // SAFETY: verified TForLoop51 is followed by its back jump.
-                            let Op::Jmp(back) = (unsafe { *ip }) else { unreachable!() };
+                            let Op::Jmp(back) = (unsafe { *ip }) else {
+                                unreachable!()
+                            };
                             jump!(1 + back);
                         }
                     }

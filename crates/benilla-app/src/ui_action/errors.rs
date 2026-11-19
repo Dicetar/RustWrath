@@ -1063,17 +1063,14 @@ mod totem_reagent_tests {
     /// [`crate::wrath_inventory::PlayerInventory`].
     #[test]
     fn a_wrath_keyring_tail_reagent_satisfies_the_cast_gate() {
-        use benilla_protocol::field::{FIELD_ITEM_STACK_COUNT, FIELD_OBJECT_ENTRY};
         use crate::wrath_inventory::{PlayerInventory, WrathFieldWindow, WrathInventory};
+        use benilla_protocol::field::{FIELD_ITEM_STACK_COUNT, FIELD_OBJECT_ENTRY};
         use benilla_protocol_wrath::fields::PLAYER_FIELD_KEYRING_SLOT_1;
 
         let mut objs = objects();
         objs.spawn(
             0xB1,
-            ObjectFields::from_pairs(&[
-                (FIELD_OBJECT_ENTRY, 17056),
-                (FIELD_ITEM_STACK_COUNT, 2),
-            ]),
+            ObjectFields::from_pairs(&[(FIELD_OBJECT_ENTRY, 17056), (FIELD_ITEM_STACK_COUNT, 2)]),
         );
         let st = store();
         let slot31 = PLAYER_FIELD_KEYRING_SLOT_1 + 31 * 2;

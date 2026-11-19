@@ -11,7 +11,7 @@
 
 use crate::action::{ActionId, ActionKind, ActionSpec, ActionTable};
 use crate::error::{CombatError, CombatResult};
-use crate::time::{Ticks, TickWindow};
+use crate::time::{TickWindow, Ticks};
 
 /// Authored enemy pacing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -141,9 +141,7 @@ impl EnemyBrain {
                 events.push(EnemyEvent::Telegraphed {
                     id,
                     tick: now,
-                    window: spec
-                        .contact
-                        .unwrap_or(TickWindow { from: 0, to: 0 }),
+                    window: spec.contact.unwrap_or(TickWindow { from: 0, to: 0 }),
                 });
             }
         }

@@ -32,8 +32,12 @@ pub enum HotpatchReason {
 /// Structured host milestones. Free-form loader errors remain in the local log.
 #[derive(Message, Clone, Copy, Debug)]
 pub enum HotpatchEvent {
-    CandidateStaged { attempt: PatchAttemptId },
-    CandidateWithdrawn { attempt: PatchAttemptId },
+    CandidateStaged {
+        attempt: PatchAttemptId,
+    },
+    CandidateWithdrawn {
+        attempt: PatchAttemptId,
+    },
     PublicationRejected {
         attempt: Option<PatchAttemptId>,
         reason: HotpatchReason,
@@ -45,7 +49,10 @@ pub enum HotpatchEvent {
         /// Fine evaluation code; `Unknown`/future variants fall back to `reason`.
         detail: PatchEvaluationReason,
     },
-    Activated { attempt: Option<PatchAttemptId>, digest: Option<[u8; 20]> },
+    Activated {
+        attempt: Option<PatchAttemptId>,
+        digest: Option<[u8; 20]>,
+    },
     FrameFailed {
         attempt: Option<PatchAttemptId>,
         reason: HotpatchReason,
@@ -68,7 +75,10 @@ pub enum HotpatchEvent {
         /// Fine evaluation code from the restore outcome.
         detail: PatchEvaluationReason,
     },
-    RetentionFailed { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
+    RetentionFailed {
+        attempt: Option<PatchAttemptId>,
+        reason: HotpatchReason,
+    },
 }
 
 pub struct HotpatchPlugin {
@@ -168,42 +178,42 @@ impl Plugin for HotpatchPlugin {
             last_state_error = Some(message);
         }
         app.add_message::<HotpatchEvent>()
-        .insert_resource(Runtime {
-            host,
-            next_poll: 0.0,
-            last_error: None,
-            last_publication_detail: None,
-            last_frame_detail: None,
-            last_quarantine_error,
-            last_sentinel_error,
-            last_state_error,
-            last_movement_error: None,
-            movement_stage_outcome: None,
-            reported_revision: None,
-            reported_digest: None,
-            refresh: false,
-            restore_pending: false,
-            bones: Vec::new(),
-            spans: Vec::new(),
-            entities: Vec::new(),
-            output: Vec::new(),
-            probe: self.probe,
-            next_probe: 0.0,
-            sample: None,
-            next_attempt: 1,
-            candidate_attempt: None,
-            active_attempt: None,
-            restored_attempt: None,
-            activations: VecDeque::new(),
-        })
-        .add_systems(Update, poll)
-        .add_systems(PostUpdate, apply_pose.in_set(PoseModulePass))
-        .add_systems(Last, (capture_pose, restore_pose).chain())
-        // Declared ahead of the pose chain: all three systems take `ResMut<Runtime>` and this
-        // edge's clear must not be skipped because a pose system panicked on the exit frame. An
-        // explicit `AppExit` is the clean-exit signal; `Runtime::drop` stays the fallback for a
-        // bare `App` drop.
-        .add_systems(Last, clear_active_sentinel_on_app_exit.before(capture_pose));
+            .insert_resource(Runtime {
+                host,
+                next_poll: 0.0,
+                last_error: None,
+                last_publication_detail: None,
+                last_frame_detail: None,
+                last_quarantine_error,
+                last_sentinel_error,
+                last_state_error,
+                last_movement_error: None,
+                movement_stage_outcome: None,
+                reported_revision: None,
+                reported_digest: None,
+                refresh: false,
+                restore_pending: false,
+                bones: Vec::new(),
+                spans: Vec::new(),
+                entities: Vec::new(),
+                output: Vec::new(),
+                probe: self.probe,
+                next_probe: 0.0,
+                sample: None,
+                next_attempt: 1,
+                candidate_attempt: None,
+                active_attempt: None,
+                restored_attempt: None,
+                activations: VecDeque::new(),
+            })
+            .add_systems(Update, poll)
+            .add_systems(PostUpdate, apply_pose.in_set(PoseModulePass))
+            .add_systems(Last, (capture_pose, restore_pose).chain())
+            // Declared ahead of the pose chain: all three systems take `ResMut<Runtime>` and this
+            // edge's clear must not be skipped because a pose system panicked on the exit frame. An
+            // explicit `AppExit` is the clean-exit signal; `Runtime::drop` stays the fallback for a
+            // bare `App` drop.
+            .add_systems(Last, clear_active_sentinel_on_app_exit.before(capture_pose));
     }
 }
 
@@ -439,9 +449,7 @@ impl Drop for Runtime {
         match self.host.clear_active_sentinel_on_clean_shutdown() {
             Ok(true) => {}
             Ok(false) => {
-                warn!(
-                    "hotpatch: clean shutdown retained active-sentinel.toml for the next launch"
-                );
+                warn!("hotpatch: clean shutdown retained active-sentinel.toml for the next launch");
             }
             Err(error) => {
                 warn!("hotpatch: clean shutdown active sentinel clear failed: {error:#}");
@@ -531,22 +539,14 @@ fn attempt_for_digest(runtime: &Runtime, digest: Option<[u8; 20]>) -> Option<Pat
         .find_map(|(known, attempt)| (*known == Some(digest)).then_some(*attempt))
 }
 
-fn remember_activation(
-    runtime: &mut Runtime,
-    digest: Option<[u8; 20]>,
-    attempt: PatchAttemptId,
-) {
+fn remember_activation(runtime: &mut Runtime, digest: Option<[u8; 20]>, attempt: PatchAttemptId) {
     if runtime.activations.len() == MAX_ACTIVATION_HISTORY {
         runtime.activations.pop_front();
     }
     runtime.activations.push_back((digest, attempt));
 }
 
-fn poll(
-    time: Res<Time>,
-    mut runtime: ResMut<Runtime>,
-    mut events: MessageWriter<HotpatchEvent>,
-) {
+fn poll(time: Res<Time>, mut runtime: ResMut<Runtime>, mut events: MessageWriter<HotpatchEvent>) {
     let now = time.elapsed_secs_f64();
     if now < runtime.next_poll {
         return;
@@ -733,8 +733,7 @@ fn apply_pose(
                 events.write(HotpatchEvent::FrameFailed {
                     attempt: failed_attempt,
                     reason: HotpatchReason::Frame,
-                    detail: active_failure_detail
-                        .unwrap_or(PatchEvaluationReason::Unknown),
+                    detail: active_failure_detail.unwrap_or(PatchEvaluationReason::Unknown),
                 });
                 events.write(HotpatchEvent::RestoredPrevious {
                     failed_attempt,

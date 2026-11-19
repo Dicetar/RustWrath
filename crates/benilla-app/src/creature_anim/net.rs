@@ -150,9 +150,15 @@ fn on_attacker_state(
     mut sinks: ImpactSinks,
     mut play_seq: ResMut<PlaySeq>,
     tutorials: Option<Res<crate::tutorial::Tutorials>>,
+    swing_mute: Option<Res<crate::souls::SwingMute>>,
 ) {
     if let SessionEvent::AttackerState(s) = ev {
+        let muted = index
+            .0
+            .get(&s.attacker)
+            .is_some_and(|&e| swing_mute.as_deref().is_some_and(|mute| mute.muted(e)));
         attacker_state(
+            muted,
             tutorials.as_deref(),
             s,
             &index,
@@ -280,6 +286,7 @@ fn ai_reaction(
 /// feedback waits for the clip's attack-hit key (`0x6247d0`); the combat-log line and its
 /// `COMBAT_TEXT_UPDATE` word come off the same packet in [`crate::combat_log`], after this.
 fn attacker_state(
+    muted: bool,
     tutorials: Option<&crate::tutorial::Tutorials>,
     s: AttackerState,
     index: &GuidIndex,
@@ -337,6 +344,17 @@ fn attacker_state(
             attacker: e,
             ..swing
         };
+        if muted {
+            // A Souls body (`souls::server::SwingMute`): its swing is its kit clip, already
+            // played, so the stock swing is not replayed and the victim's feedback fires now.
+            sinks.fire(SwingImpact {
+                swing,
+                text_only: false,
+                natural: None,
+                pos: None,
+            });
+            return;
+        }
         receive_swing(swing, pending, sinks);
         swings.write(swing);
     } else if swing.victim.is_some_and(|v| {

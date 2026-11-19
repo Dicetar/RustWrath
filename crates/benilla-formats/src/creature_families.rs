@@ -216,8 +216,7 @@ pub fn load_creature_families(chain: &mut Chain) -> Result<CreatureFamilies> {
     for r in rs.records() {
         let Some(id) = u32_at(r, 0) else { continue };
         // A nameless row is dropped: `UnitCreatureFamily` answers a word or nil, never "".
-        let Some(name) = loc_str(&rs, r, name_field, locale).filter(|n| !n.is_empty())
-        else {
+        let Some(name) = loc_str(&rs, r, name_field, locale).filter(|n| !n.is_empty()) else {
             continue;
         };
         by_id.insert(

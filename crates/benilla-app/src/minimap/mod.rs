@@ -618,9 +618,9 @@ fn emit_minimap(
         })
         .unwrap_or_default();
     let tracked_info = blips::TrackedInfo::from_cvar(
-        cvars.as_deref().and_then(|c| {
-            c.get(benilla_ui::script::minimap_tracking::TRACKED_INFO_CVAR)
-        }),
+        cvars
+            .as_deref()
+            .and_then(|c| c.get(benilla_ui::script::minimap_tracking::TRACKED_INFO_CVAR)),
     );
     let blip_ctx = (blip_px_per_yd > 0.0).then(|| {
         static BLIP_PROBE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();

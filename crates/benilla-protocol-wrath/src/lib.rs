@@ -19,15 +19,15 @@
 //! deadlines belong to the caller, so the same code serves a live client, a script, and the
 //! deterministic reducer replay (H2) unchanged.
 
-mod crypt;
-mod digest;
-mod header;
 pub mod auth;
 pub mod cast_failure;
-pub mod logon;
-pub mod multiclass;
+mod crypt;
+mod digest;
 pub mod fields;
 pub mod gameplay;
+mod header;
+pub mod logon;
+pub mod multiclass;
 pub mod opcode;
 pub mod quest_poi;
 pub mod reducer;

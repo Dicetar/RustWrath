@@ -280,9 +280,10 @@ impl TradeSession {
         bag_slot: u32,
     ) -> bool {
         let fields = objects.player().and(objects.object(guid));
-        let (Some(fields), Some((wire_bag, wire_slot))) =
-            (fields, crate::ui_items::wire_pos_in_target(target, bag, bag_slot))
-        else {
+        let (Some(fields), Some((wire_bag, wire_slot))) = (
+            fields,
+            crate::ui_items::wire_pos_in_target(target, bag, bag_slot),
+        ) else {
             info!(target: "trade", "set item: slot {} <- bag {bag}/{bag_slot} not sent", slot + 1);
             return false;
         };
@@ -971,7 +972,12 @@ struct TradeRows<'w> {
 
 impl TradeRows<'_> {
     /// [`snapshot`] over these.
-    fn snapshot(&self, trade: &TradeSession, names: &NameCache, target: benilla_ui::script::UiTarget) -> Option<TradeState> {
+    fn snapshot(
+        &self,
+        trade: &TradeSession,
+        names: &NameCache,
+        target: benilla_ui::script::UiTarget,
+    ) -> Option<TradeState> {
         snapshot(
             trade,
             target,
@@ -1089,7 +1095,14 @@ pub(crate) fn touch_trade(
                     slot: wire_slot,
                 },
             );
-            let row = resolve_own_slot(&item, script.target(), items, icons.as_deref(), names, rolls.get());
+            let row = resolve_own_slot(
+                &item,
+                script.target(),
+                items,
+                icons.as_deref(),
+                names,
+                rolls.get(),
+            );
             script.replace_trade_slot(slot, row);
         }
     }

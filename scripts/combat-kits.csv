@@ -1,0 +1,22 @@
+subclass,name,weapon,grip
+0,axe,Battle Axe,one
+1,axe-two,Greataxe,two
+2,bow,Curved Sword,two
+3,gun,Great Hammer,two
+4,mace,Club,one
+5,mace-two,Great Hammer,two
+6,polearm,Halberd,two
+7,sword,Longsword,one
+8,sword-two,Greatsword,two
+10,staff,Twinblade,two
+11,exotic,Curved Sword,one
+12,exotic-two,Curved Greatsword,two
+13,fist,Fist,one
+14,misc,Club,one
+15,dagger,Dagger,one
+16,thrown,Dagger,one
+17,spear,Short Spear,two
+18,crossbow,Club,two
+19,wand,Torch,one
+20,fishing-pole,Whip,two
+255,unarmed,Fist,one

@@ -28,7 +28,8 @@ impl UiTarget {
     }
 
     pub(crate) fn event_key(self, vm: super::VmKind, name: &str) -> Option<&'static str> {
-        self.events(vm).find(|event| event.eq_ignore_ascii_case(name))
+        self.events(vm)
+            .find(|event| event.eq_ignore_ascii_case(name))
     }
 
     pub(crate) fn inheritance(self) -> crate::framexml::Inheritance {
@@ -161,24 +162,46 @@ mod wrath_regressions {
     }
 
     fn class(id: u8, file: &str, male: &str, female: &str) -> LocalizedClassName {
-        LocalizedClassName { id, file: file.into(), male: male.into(), female: female.into() }
+        LocalizedClassName {
+            id,
+            file: file.into(),
+            male: male.into(),
+            female: female.into(),
+        }
     }
 
     #[test]
     fn observed_class_labels_preserve_tables_and_reject_invalid_replacement() {
         let mut script = host();
         assert!(script.run("FillLocalizedClassList({})").is_err());
-        script.set_localized_class_names(0, vec![class(1, "WARRIOR", "male", "female")]).unwrap();
-        script.run(r#"
+        script
+            .set_localized_class_names(0, vec![class(1, "WARRIOR", "male", "female")])
+            .unwrap();
+        script
+            .run(
+                r#"
             local male, female = { keep = 42 }, {}
             assert(FillLocalizedClassList(male, false) == male)
             assert(FillLocalizedClassList(female, true) == female)
             assert(male.keep == 42 and male.WARRIOR == "male" and female.WARRIOR == "female")
-        "#).unwrap();
-        assert!(script.set_localized_class_names(0, vec![
-            class(1, "WARRIOR", "wrong", "wrong"), class(1, "MAGE", "wrong", "wrong"),
-        ]).is_err());
-        assert_eq!(script.eval::<String>("return FillLocalizedClassList({}).WARRIOR").unwrap(), "male");
+        "#,
+            )
+            .unwrap();
+        assert!(script
+            .set_localized_class_names(
+                0,
+                vec![
+                    class(1, "WARRIOR", "wrong", "wrong"),
+                    class(1, "MAGE", "wrong", "wrong"),
+                ]
+            )
+            .is_err());
+        assert_eq!(
+            script
+                .eval::<String>("return FillLocalizedClassList({}).WARRIOR")
+                .unwrap(),
+            "male"
+        );
         script.set_locale(8);
         assert_eq!(script.eval::<String>("return GetLocale()").unwrap(), "ruRU");
         assert!(script.run("FillLocalizedClassList({})").is_err());
@@ -187,7 +210,9 @@ mod wrath_regressions {
     #[test]
     fn wrath_table_boundaries_and_binary_formats_follow_the_selected_dialect() {
         let script = host();
-        script.run(r#"
+        script
+            .run(
+                r#"
             local t = { "one", "two", "three" }
             assert(select('#', table.remove(t, 99)) == 0 and #t == 3 and t[3] == "three")
             assert(select('#', table.remove(t, 0)) == 0 and #t == 3)
@@ -198,13 +223,17 @@ mod wrath_regressions {
             assert(format("%q", "\r") == '"\\r"')
             assert(format("%10$s", "1", "2", "3", "4", "5", "6", "7", "8", "9", "ten") == "ten")
             assert(format("%F", 1.25) == format("%f", 1.25))
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
     }
 
     #[test]
     fn event_queries_keep_wrapper_identity_order_and_unregister_membership() {
         let script = host();
-        script.run(r#"
+        script
+            .run(
+                r#"
             local a, b = CreateFrame("Frame"), CreateFrame("Frame")
             a:RegisterEvent("CHAT_MSG_WHISPER"); b:RegisterEvent("CHAT_MSG_WHISPER")
             local first, second = GetFramesRegisteredForEvent("chat_msg_whisper")
@@ -220,46 +249,64 @@ mod wrath_regressions {
             assert(GetFramesRegisteredForEvent("RUNE_POWER_UPDATE") == a)
             a:UnregisterAllEvents()
             assert(select('#', GetFramesRegisteredForEvent("RUNE_POWER_UPDATE")) == 0)
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
     }
 
     #[test]
     fn wrath_admits_the_combat_log_event_for_addons() {
         let script = host();
-        script.run(r#"
+        script
+            .run(
+                r#"
             local listener = CreateFrame("Frame", "WrathCombatLogAdmission")
             assert(not listener:IsEventRegistered("COMBAT_LOG_EVENT_UNFILTERED"))
             listener:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
             assert(listener:IsEventRegistered("COMBAT_LOG_EVENT_UNFILTERED"))
             listener:UnregisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
             assert(not listener:IsEventRegistered("COMBAT_LOG_EVENT_UNFILTERED"))
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
     }
 
     #[test]
     fn mouse_over_uses_scaled_region_geometry_without_mouse_enablement() {
         let mut script = host();
-        script.run(r#"
+        script
+            .run(
+                r#"
             area = CreateFrame("Frame")
             area:SetPoint("BOTTOMLEFT", 100, 100); area:SetSize(100, 100); area:SetScale(2)
             texture = area:CreateTexture(); texture:SetAllPoints(area)
             label = area:CreateFontString(); label:SetAllPoints(area)
             assert(not area:IsMouseEnabled())
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
         script.resolve();
         script.mouse_move(300.0, 300.0);
-        script.run("assert(area:IsMouseOver() and texture:IsMouseOver() and label:IsMouseOver())").unwrap();
+        script
+            .run("assert(area:IsMouseOver() and texture:IsMouseOver() and label:IsMouseOver())")
+            .unwrap();
         script.mouse_move(50.0, 50.0);
-        script.run(r#"
+        script
+            .run(
+                r#"
             assert(not area:IsMouseOver())
             assert(area:IsMouseOver(1000, -1000, -1000, 1000))
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
     }
 
     #[test]
     fn installed_mod_setters_reuse_visibility_and_button_state() {
         let script = host();
-        script.run(r#"
+        script
+            .run(
+                r#"
             local button = CreateFrame("Button")
             local texture, label = button:CreateTexture(), button:CreateFontString()
             button:SetShown(false); assert(not button:IsShown())
@@ -271,13 +318,17 @@ mod wrath_regressions {
             button:SetEnabled(false); assert(button:IsEnabled() == 0)
             button:SetEnabled(0); assert(button:IsEnabled() == 1)
             button:SetShown(nil); assert(not button:IsShown())
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
     }
 
     #[test]
     fn disabled_motion_delivers_tooltip_scripts_without_enabling_clicks_or_visuals() {
         let mut script = host();
-        script.run(r#"
+        script
+            .run(
+                r#"
             enters, leaves, clicks = 0, 0, 0
             button = CreateFrame("Button")
             button:SetPoint("BOTTOMLEFT", 0, 0); button:SetSize(100, 100)
@@ -288,19 +339,32 @@ mod wrath_regressions {
             button:SetScript("OnLeave", function() leaves = leaves + 1 end)
             button:SetScript("OnClick", function() clicks = clicks + 1 end)
             button:Disable()
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
         script.resolve();
         script.mouse_move(50.0, 50.0);
         script.mouse_move(200.0, 200.0);
         script.run("assert(enters == 0 and leaves == 0)").unwrap();
-        script.run("button:SetMotionScriptsWhileDisabled(true)").unwrap();
+        script
+            .run("button:SetMotionScriptsWhileDisabled(true)")
+            .unwrap();
         script.mouse_move(50.0, 50.0);
         script.mouse_button(50.0, 50.0, "LeftButton", true);
         script.mouse_button(50.0, 50.0, "LeftButton", false);
-        script.run("assert(enters == 1 and clicks == 0 and button:IsEnabled() == 0)").unwrap();
-        let paths: Vec<_> = script.extract().into_iter().filter_map(|quad| match quad.content {
-            QuadContent::Texture { path: Some(path), .. } => Some(path), _ => None,
-        }).collect();
+        script
+            .run("assert(enters == 1 and clicks == 0 and button:IsEnabled() == 0)")
+            .unwrap();
+        let paths: Vec<_> = script
+            .extract()
+            .into_iter()
+            .filter_map(|quad| match quad.content {
+                QuadContent::Texture {
+                    path: Some(path), ..
+                } => Some(path),
+                _ => None,
+            })
+            .collect();
         assert!(paths.contains(&"Interface\\D.blp".to_string()));
         assert!(!paths.contains(&"Interface\\N.blp".to_string()));
         assert!(!paths.contains(&"Interface\\H.blp".to_string()));
@@ -318,10 +382,14 @@ mod wrath_regressions {
         </Ui>"#).unwrap();
         let report = crate::loader::load(&script, &document, &|_| None);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
-        script.run(r#"
+        script
+            .run(
+                r#"
             assert(InheritedMotion:GetMotionScriptsWhileDisabled())
             assert(not OverriddenMotion:GetMotionScriptsWhileDisabled())
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
     }
 
     #[test]
@@ -339,13 +407,21 @@ mod wrath_regressions {
         script.resolve();
         script.mouse_move(50.0, 50.0);
         script.mouse_move(250.0, 50.0);
-        script.run("assert(enters == 1 and nextButton:IsEnabled() == 1)").unwrap();
-        script.run("nextButton:Hide(); assert(leaves == 1)").unwrap();
+        script
+            .run("assert(enters == 1 and nextButton:IsEnabled() == 1)")
+            .unwrap();
+        script
+            .run("nextButton:Hide(); assert(leaves == 1)")
+            .unwrap();
         let vanilla = UiScript::new().unwrap();
-        vanilla.run(r#"
+        vanilla
+            .run(
+                r#"
             local button = CreateFrame("Button")
             assert(button.SetMotionScriptsWhileDisabled == nil and button.SetShown == nil)
             assert(button.IsMouseOver == nil and GetFramesRegisteredForEvent == nil)
-        "#).unwrap();
+        "#,
+            )
+            .unwrap();
     }
 }

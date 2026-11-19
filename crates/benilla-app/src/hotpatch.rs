@@ -11,10 +11,10 @@ use bevy::prelude::*;
 
 use crate::player::camera::FlyCam;
 use crate::player::{
-    MoveSpeed, MovementProcessor, MovementProcessorOutcome,
-    MovementProcessorRefusal, MovementProcessorState, MovementProposal as AppMovementProposal,
-    Player, PlayerControlSet, MODULE_OWNED_FLAGS, MODULE_SPEED_SLACK, MODULE_STEP_FLOOR,
-    MODULE_STEP_SLACK, TERMINAL_VELOCITY,
+    MoveSpeed, MovementProcessor, MovementProcessorOutcome, MovementProcessorRefusal,
+    MovementProcessorState, MovementProposal as AppMovementProposal, Player, PlayerControlSet,
+    MODULE_OWNED_FLAGS, MODULE_SPEED_SLACK, MODULE_STEP_FLOOR, MODULE_STEP_SLACK,
+    TERMINAL_VELOCITY,
 };
 use crate::quest_trace::{HotpatchReason, PatchEvent, Stage};
 
@@ -135,10 +135,8 @@ fn prepare_movement_hotpatch(
     let bounds = MovementBounds {
         max_step: (body_speed * dt.max(0.0) * MODULE_STEP_SLACK + MODULE_STEP_FLOOR).max(0.05),
         max_horizontal_speed: (body_speed * MODULE_SPEED_SLACK + MODULE_STEP_FLOOR).max(0.05),
-        max_vertical_speed: (TERMINAL_VELOCITY.max(velocity.y.abs()) * MODULE_SPEED_SLACK)
-            .max(1.0),
-        max_abs_facing: std::f32::consts::TAU
-            .max(player.facing().abs() + std::f32::consts::TAU),
+        max_vertical_speed: (TERMINAL_VELOCITY.max(velocity.y.abs()) * MODULE_SPEED_SLACK).max(1.0),
+        max_abs_facing: std::f32::consts::TAU.max(player.facing().abs() + std::f32::consts::TAU),
         permitted_flags: MODULE_OWNED_FLAGS,
     };
     drive_movement_proposal(&mut runtime, &mut processor, &frame, &bounds);
@@ -295,49 +293,27 @@ fn capture_hotpatch_events(
                     attempt,
                     reason,
                     detail,
-                } => {
-                    PatchEvent::PublicationRejected {
-                        attempt,
-                        reason: match detail {
-                            PatchRejectReason::TransientIoPending => {
-                                HotpatchReason::TransientIoPending
-                            }
-                            PatchRejectReason::ManifestUnreadable => {
-                                HotpatchReason::ManifestUnreadable
-                            }
-                            PatchRejectReason::ManifestMalformed => {
-                                HotpatchReason::ManifestMalformed
-                            }
-                            PatchRejectReason::InvalidBasename => {
-                                HotpatchReason::InvalidBasename
-                            }
-                            PatchRejectReason::EmptyRevision => HotpatchReason::EmptyRevision,
-                            PatchRejectReason::ArtifactTooLarge => {
-                                HotpatchReason::ArtifactTooLarge
-                            }
-                            PatchRejectReason::DigestMismatch => HotpatchReason::DigestMismatch,
-                            PatchRejectReason::ImmutableFilename => {
-                                HotpatchReason::ImmutableFilename
-                            }
-                            PatchRejectReason::ArtifactRejected => {
-                                HotpatchReason::ArtifactRejected
-                            }
-                            PatchRejectReason::Quarantined => HotpatchReason::Quarantined,
-                            PatchRejectReason::ModuleLoadFailed => {
-                                HotpatchReason::ModuleLoadFailed
-                            }
-                            PatchRejectReason::MissingEntryPoint => {
-                                HotpatchReason::MissingEntryPoint
-                            }
-                            PatchRejectReason::AbiMismatch => HotpatchReason::AbiMismatch,
-                            PatchRejectReason::MissingProcessor => {
-                                HotpatchReason::MissingProcessor
-                            }
-                            PatchRejectReason::LoadFailed => HotpatchReason::LoadFailed,
-                            _ => trace_coarse_reason(reason),
-                        },
-                    }
-                }
+                } => PatchEvent::PublicationRejected {
+                    attempt,
+                    reason: match detail {
+                        PatchRejectReason::TransientIoPending => HotpatchReason::TransientIoPending,
+                        PatchRejectReason::ManifestUnreadable => HotpatchReason::ManifestUnreadable,
+                        PatchRejectReason::ManifestMalformed => HotpatchReason::ManifestMalformed,
+                        PatchRejectReason::InvalidBasename => HotpatchReason::InvalidBasename,
+                        PatchRejectReason::EmptyRevision => HotpatchReason::EmptyRevision,
+                        PatchRejectReason::ArtifactTooLarge => HotpatchReason::ArtifactTooLarge,
+                        PatchRejectReason::DigestMismatch => HotpatchReason::DigestMismatch,
+                        PatchRejectReason::ImmutableFilename => HotpatchReason::ImmutableFilename,
+                        PatchRejectReason::ArtifactRejected => HotpatchReason::ArtifactRejected,
+                        PatchRejectReason::Quarantined => HotpatchReason::Quarantined,
+                        PatchRejectReason::ModuleLoadFailed => HotpatchReason::ModuleLoadFailed,
+                        PatchRejectReason::MissingEntryPoint => HotpatchReason::MissingEntryPoint,
+                        PatchRejectReason::AbiMismatch => HotpatchReason::AbiMismatch,
+                        PatchRejectReason::MissingProcessor => HotpatchReason::MissingProcessor,
+                        PatchRejectReason::LoadFailed => HotpatchReason::LoadFailed,
+                        _ => trace_coarse_reason(reason),
+                    },
+                },
                 HotpatchEvent::CandidateRejected {
                     attempt,
                     reason,
@@ -373,15 +349,16 @@ fn capture_hotpatch_events(
                     failed_attempt,
                     reason: trace_evaluation_reason(detail, BevyReason::Frame),
                 },
-                HotpatchEvent::RetentionFailed { attempt, reason } => {
-                    PatchEvent::RetentionFailed {
-                        attempt,
-                        reason: trace_coarse_reason(reason),
-                    }
-                }
+                HotpatchEvent::RetentionFailed { attempt, reason } => PatchEvent::RetentionFailed {
+                    attempt,
+                    reason: trace_coarse_reason(reason),
+                },
             };
-            trace.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
-                Stage::Hotpatch { event });
+            trace.observe(
+                view.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+                None,
+                Stage::Hotpatch { event },
+            );
         }
     }
 }
@@ -497,7 +474,10 @@ mod tests {
             trace_coarse_reason(BevyReason::Retention),
             HotpatchReason::Retention
         );
-        assert_eq!(trace_coarse_reason(BevyReason::Unknown), HotpatchReason::Unknown);
+        assert_eq!(
+            trace_coarse_reason(BevyReason::Unknown),
+            HotpatchReason::Unknown
+        );
     }
 
     #[test]

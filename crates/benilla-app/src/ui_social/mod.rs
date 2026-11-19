@@ -729,7 +729,9 @@ pub(crate) mod net {
         if let SessionEvent::WhoisText { text } = ev {
             // The original handler reads into a 256-byte buffer, including its terminator.
             let mut end = text.len().min(255);
-            while !text.is_char_boundary(end) { end -= 1; }
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
             crate::console::write_line(&text[..end]);
         }
     }

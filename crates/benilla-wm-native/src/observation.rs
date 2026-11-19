@@ -1,4 +1,4 @@
-﻿use std::fmt;
+use std::fmt;
 
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::ser::{SerializeStruct, Serializer};
@@ -180,16 +180,14 @@ impl<'de> Visitor<'de> for TargetVisitor {
             }
             TargetState::None => {
                 if guid.is_some() {
-                    return Err(de::Error::custom(
-                        "none target state must not carry a guid",
-                    ));
+                    return Err(de::Error::custom("none target state must not carry a guid"));
                 }
                 Ok(TargetObservation::None)
             }
             TargetState::Target => match guid {
-                Some(Some(0)) | Some(None) | None => Err(de::Error::custom(
-                    "target state requires a non-zero guid",
-                )),
+                Some(Some(0)) | Some(None) | None => {
+                    Err(de::Error::custom("target state requires a non-zero guid"))
+                }
                 Some(Some(guid)) => Ok(TargetObservation::Target { guid }),
             },
         }
@@ -425,7 +423,9 @@ impl SpellTargetsObservation {
         }
         if let Some(dest) = self.dest {
             if dest.iter().any(|value| !value.is_finite()) {
-                return Err(Error::InvalidObservation("spell targets dest must be finite"));
+                return Err(Error::InvalidObservation(
+                    "spell targets dest must be finite",
+                ));
             }
         }
         Ok(())
@@ -549,8 +549,7 @@ impl CastObservation {
                         "cast start clock must not be negative",
                     ));
                 }
-                if self.last_update_ui_now_seconds.is_some()
-                    && self.start_ui_now_seconds.is_none()
+                if self.last_update_ui_now_seconds.is_some() && self.start_ui_now_seconds.is_none()
                 {
                     return Err(Error::InvalidObservation(
                         "a cast update clock requires a start clock",
@@ -563,9 +562,7 @@ impl CastObservation {
                         .last_update_ui_now_seconds
                         .is_some_and(|clock| !clock.is_finite())
                 {
-                    return Err(Error::InvalidObservation(
-                        "cast UI clocks must be finite",
-                    ));
+                    return Err(Error::InvalidObservation("cast UI clocks must be finite"));
                 }
                 if let Some(targets) = &self.targets {
                     targets.validate()?;
@@ -641,9 +638,9 @@ impl ChannelObservation {
                 }
             }
             ActivityState::Active => {
-                let spell_id = self
-                    .spell_id
-                    .ok_or_else(|| Error::InvalidObservation("an active channel requires a spell id"))?;
+                let spell_id = self.spell_id.ok_or_else(|| {
+                    Error::InvalidObservation("an active channel requires a spell id")
+                })?;
                 if spell_id == 0 {
                     return Err(Error::InvalidObservation(
                         "an active channel requires a non-zero spell id",
@@ -661,8 +658,7 @@ impl ChannelObservation {
                 self.update_observed_at_unix_ms.ok_or_else(|| {
                     Error::InvalidObservation("an active channel requires an update clock")
                 })?;
-                if self.last_update_ui_now_seconds.is_some()
-                    && self.start_ui_now_seconds.is_none()
+                if self.last_update_ui_now_seconds.is_some() && self.start_ui_now_seconds.is_none()
                 {
                     return Err(Error::InvalidObservation(
                         "a channel update clock requires a start clock",
@@ -773,9 +769,9 @@ impl LastCastEndObservation {
                         "a terminal cast edge requires an outcome",
                     ));
                 }
-                let spell_id = self
-                    .spell_id
-                    .ok_or_else(|| Error::InvalidObservation("a terminal cast edge requires a spell id"))?;
+                let spell_id = self.spell_id.ok_or_else(|| {
+                    Error::InvalidObservation("a terminal cast edge requires a spell id")
+                })?;
                 if spell_id == 0 {
                     return Err(Error::InvalidObservation(
                         "a terminal cast edge requires a non-zero spell id",
@@ -990,9 +986,7 @@ impl Observation {
             ));
         }
         if self.session_epoch == 0 {
-            return Err(Error::InvalidObservation(
-                "session_epoch must be non-zero",
-            ));
+            return Err(Error::InvalidObservation("session_epoch must be non-zero"));
         }
         if self.world_generation == 0 {
             return Err(Error::InvalidObservation(

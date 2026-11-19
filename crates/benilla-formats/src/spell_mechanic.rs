@@ -57,9 +57,9 @@ pub fn load_spell_mechanic_catalog(chain: &mut Chain) -> Result<SpellMechanicCat
     let columns = match field_count(&bytes) {
         Some(SPELL_MECHANIC_FIELDS) => SPELL_MECHANIC_FIELDS,
         Some(WRATH_SPELL_MECHANIC_FIELDS) => WRATH_SPELL_MECHANIC_FIELDS,
-        Some(columns) => bail!(
-            "unsupported SpellMechanic.dbc layout: {columns} fields (expected 10 or 18)"
-        ),
+        Some(columns) => {
+            bail!("unsupported SpellMechanic.dbc layout: {columns} fields (expected 10 or 18)")
+        }
         None => bail!("parsing SpellMechanic.dbc header: truncated field count"),
     };
     let rs = parse(&bytes, schema(columns), "SpellMechanic.dbc")?;

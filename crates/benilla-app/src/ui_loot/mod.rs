@@ -996,7 +996,14 @@ fn receive_line(
     owner_name: Option<&str>,
     get: &dyn Fn(&str) -> Option<String>,
 ) -> Option<String> {
-    receive_line_in_target(benilla_ui::script::UiTarget::Vanilla112, r, name, quality, owner_name, get)
+    receive_line_in_target(
+        benilla_ui::script::UiTarget::Vanilla112,
+        r,
+        name,
+        quality,
+        owner_name,
+        get,
+    )
 }
 
 fn receive_line_in_target(
@@ -1182,7 +1189,12 @@ impl LootReads<'_, '_> {
     }
 
     /// `w` as the VM shows it.
-    fn view(&self, w: &Window, ask: Ask<'_>, target: benilla_ui::script::UiTarget) -> Option<LootSnapshot> {
+    fn view(
+        &self,
+        w: &Window,
+        ask: Ask<'_>,
+        target: benilla_ui::script::UiTarget,
+    ) -> Option<LootSnapshot> {
         let who = Candidates {
             group: &self.group,
             names: &self.names,
@@ -1201,8 +1213,13 @@ impl LootReads<'_, '_> {
                 for row in snap.rows.iter_mut().flatten().filter(|row| !row.is_coin) {
                     if let (Some(name), Some(quality)) = (&row.name, row.quality) {
                         row.link = Some(crate::ui_items::item_link_full_in_target(
-                            target, row.item_id, 0, row.random_property_id, row.suffix_factor,
-                            name, quality,
+                            target,
+                            row.item_id,
+                            0,
+                            row.random_property_id,
+                            row.suffix_factor,
+                            name,
+                            quality,
                         ));
                     }
                 }
@@ -1572,13 +1589,8 @@ fn end_open<X: bevy::ecs::system::SystemParam + 'static>(
     vm.turn(|script, (mut steps, _)| {
         let scope = steps.trace_scope();
         let trace = steps.trace.as_deref();
-        let closed = close_on_move_start(
-            &mut steps.loot,
-            &mut steps.latch,
-            &steps.net,
-            trace,
-            scope,
-        );
+        let closed =
+            close_on_move_start(&mut steps.loot, &mut steps.latch, &steps.net, trace, scope);
         if closed.is_some() {
             steps.dead.after_close(closed);
             if let Some(script) = script {
@@ -1622,7 +1634,9 @@ fn show(script: &mut UiScript, fresh: Option<LootSnapshot>) {
                 if gone {
                     script.fire_event("LOOT_SLOT_CLEARED", vec![ScriptValue::Int(i as i64 + 1)]);
                 } else if script.target() == benilla_ui::script::UiTarget::Wrath335
-                    && was.as_ref().zip(after.rows.get(i).and_then(Option::as_ref))
+                    && was
+                        .as_ref()
+                        .zip(after.rows.get(i).and_then(Option::as_ref))
                         .is_some_and(|(old, new)| old != new)
                 {
                     // 12340 LootButtonItemStatsCallback (0x00589460) repaints the row
@@ -1726,13 +1740,11 @@ fn bind_confirm_required(items: &Items, item_id: u32, slot_type: u8, wrath: bool
     if wrath && slot_type == benilla_protocol::messages::slot_type::OWNER {
         return false;
     }
-    items
-        .template(item_id, 0, Ask::Read)
-        .is_some_and(|t| {
-            t.bonding == BIND_WHEN_PICKED_UP
-                && t.quality >= BIND_CONFIRM_MIN_QUALITY
-                && (!wrath || t.flags & MULTI_DROP == 0)
-        })
+    items.template(item_id, 0, Ask::Read).is_some_and(|t| {
+        t.bonding == BIND_WHEN_PICKED_UP
+            && t.quality >= BIND_CONFIRM_MIN_QUALITY
+            && (!wrath || t.flags & MULTI_DROP == 0)
+    })
 }
 
 /// `CloseInteraction 0x48f200` past its early returns, the one close every loot close shares: the
@@ -1761,9 +1773,11 @@ pub(crate) fn close_interaction(
             )
         });
         let command = match &interaction {
-            Some(interaction) => {
-                ClientCommand::tracked(Some((*interaction).clone()), true, ClientCommand::LootRelease { guid: source })
-            }
+            Some(interaction) => ClientCommand::tracked(
+                Some((*interaction).clone()),
+                true,
+                ClientCommand::LootRelease { guid: source },
+            ),
             None => ClientCommand::LootRelease { guid: source },
         };
         let result = commands.0.send(command);
@@ -1946,13 +1960,8 @@ fn drain_loot(mut vm: VmWith<(LootSteps<'static, 'static>, OwedCloses)>) {
         if std::mem::take(&mut move_start.0) {
             let scope = steps.trace_scope();
             let trace = steps.trace.as_deref();
-            let closed = close_on_move_start(
-                &mut steps.loot,
-                &mut steps.latch,
-                &steps.net,
-                trace,
-                scope,
-            );
+            let closed =
+                close_on_move_start(&mut steps.loot, &mut steps.latch, &steps.net, trace, scope);
             steps.dead.after_close(closed);
         }
         // After the move-start close, which it subsumes: whichever runs first, a window either

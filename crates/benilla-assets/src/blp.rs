@@ -61,18 +61,19 @@ impl AssetLoader for BlpImageLoader {
             BlpVariant::WorldArt => {
                 // Deviation: retain valid art when a custom archive's optional mip tail is
                 // corrupt (wm-hd piinetree01.blp); never recover a corrupt base image.
-                let (chain, rejected) = benilla_formats::blp_bytes_to_native_prefix(&bytes)
-                    .map_err(to_io)?;
+                let (chain, rejected) =
+                    benilla_formats::blp_bytes_to_native_prefix(&bytes).map_err(to_io)?;
                 if let Some(level) = rejected {
                     bevy::log::warn!(
                         "BLP {}: rejected mip {level}; keeping {} valid levels",
-                        ctx.path(), chain.mips.len()
+                        ctx.path(),
+                        chain.mips.len()
                     );
                 }
                 world_art_image(
                     for_upload(chain),
-                // The address mode rides the asset path (`crate::texture_url`): one `.blp` can be
-                // uploaded under two samplers.
+                    // The address mode rides the asset path (`crate::texture_url`): one `.blp` can be
+                    // uploaded under two samplers.
                     crate::sampler_mode_of(&ctx.path().to_string()),
                 )
             }
@@ -89,8 +90,8 @@ impl AssetLoader for BlpImageLoader {
                 effect_image(w, h, rgba)
             }
             BlpVariant::PointSprite => {
-                let (chain, rejected) = benilla_formats::blp_bytes_to_native_prefix(&bytes)
-                    .map_err(to_io)?;
+                let (chain, rejected) =
+                    benilla_formats::blp_bytes_to_native_prefix(&bytes).map_err(to_io)?;
                 if let Some(level) = rejected {
                     bevy::log::warn!(
                         "BLP {}: rejected mip {level}; keeping {} valid levels",

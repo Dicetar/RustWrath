@@ -18,8 +18,11 @@ impl Inheritance {
     pub(crate) fn names(self, text: &str) -> Vec<&str> {
         match self {
             Self::Single => vec![text],
-            Self::List => text.split(',').map(str::trim)
-                .filter(|name| !name.is_empty()).collect(),
+            Self::List => text
+                .split(',')
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .collect(),
         }
     }
 }
@@ -56,7 +59,8 @@ impl Element {
     }
 
     /// Case-insensitive attribute lookup.
-    pub fn attr(&self, name: &str) -> Option<&str> {        self.attrs
+    pub fn attr(&self, name: &str) -> Option<&str> {
+        self.attrs
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case(name))
             .map(|(_, v)| v.as_str())
@@ -567,7 +571,14 @@ pub(crate) fn expand_known_for(
     inheritance: Inheritance,
 ) -> Element {
     let mut active = HashSet::new();
-    expand_inner(element, templates, is_font, warnings, &mut active, inheritance)
+    expand_inner(
+        element,
+        templates,
+        is_font,
+        warnings,
+        &mut active,
+        inheritance,
+    )
 }
 
 fn expand_inner(
@@ -587,7 +598,11 @@ fn expand_inner(
     // skipped, `" "` misses) and matched case-insensitively, ASCII only: `_strnicmp` at
     // `0x6ee747`, reached despite a mis-cased name because `SStrHash 0x64b3f0` uppercases.
     let mut base: Option<Element> = None;
-    for name in inheritance.names(inherits).into_iter().filter(|s| !s.is_empty()) {
+    for name in inheritance
+        .names(inherits)
+        .into_iter()
+        .filter(|s| !s.is_empty())
+    {
         let key = if inheritance == Inheritance::List {
             name.to_ascii_lowercase()
         } else {
@@ -609,7 +624,8 @@ fn expand_inner(
             active.remove(&key);
             continue;
         };
-        let expanded_template = expand_inner(template, templates, is_font, warnings, active, inheritance);
+        let expanded_template =
+            expand_inner(template, templates, is_font, warnings, active, inheritance);
         active.remove(&key);
         base = Some(match base {
             None => expanded_template,

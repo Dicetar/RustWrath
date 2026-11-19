@@ -1,7 +1,7 @@
 //! The session-state producer: owns the replicated [`WorldState`] for one live client session
 //! and exports typed self-state snapshots for OpenCode's `benilla_wm_native` v2 bridge
 //! (`wm.native.observation.v2`, contract:
-//! `D:/Projects/project-b-opencode/docs/opencode/convergence-consumer.md`).
+//! `D:/Projects/wow/worktrees-legacy/project-b-opencode/docs/opencode/convergence-consumer.md`).
 //!
 //! Time semantics (the core of the v2 contract):
 //! - The driver stamps every reduced packet with its arrival wall-clock
@@ -34,7 +34,7 @@ use anyhow::{Context, Result};
 use crate::fields;
 use crate::opcode;
 use crate::reducer::{ChangeEvent, WorldState};
-use crate::updates::{Reader, PositionSnapshot};
+use crate::updates::{PositionSnapshot, Reader};
 
 /// The bridge's per-observation visibility bound (v2 `observation.rs`).
 pub const MAX_VISIBLE_GUIDS: usize = 256;
@@ -431,8 +431,9 @@ impl SessionState {
                 // Only the outstanding destination can restore the phase it interrupted.
                 // Malformed refusals go through the gameplay decoder's rejection path.
                 if let Some((destination, previous)) = self.pending_transfer {
-                    if let Ok(Some(crate::gameplay::ServerEvent::TransferAborted { map_id, .. })) =
-                        crate::gameplay::decode_server(op, payload)
+                    if let Ok(Some(crate::gameplay::ServerEvent::TransferAborted {
+                        map_id, ..
+                    })) = crate::gameplay::decode_server(op, payload)
                     {
                         if destination == map_id {
                             self.pending_transfer = None;
@@ -504,10 +505,9 @@ impl SessionState {
                 let _on_death = payload
                     .get(8)
                     .context("destroy object on-death flag cut short")?;
-                let (evs, ch) = self.world.reduce_changed(
-                    opcode::SMSG_UPDATE_OBJECT,
-                    &destroy_as_out_of_range(guid),
-                )?;
+                let (evs, ch) = self
+                    .world
+                    .reduce_changed(opcode::SMSG_UPDATE_OBJECT, &destroy_as_out_of_range(guid))?;
                 events = evs;
                 changed = ch;
             }
@@ -560,7 +560,8 @@ impl SessionState {
                     let mut r = Reader::new(payload);
                     if let Ok(guid) = r.packed_guid() {
                         if Some(guid) != self.player_guid {
-                            if let Ok(snapshot) = crate::updates::standalone_movement_block(&mut r) {
+                            if let Ok(snapshot) = crate::updates::standalone_movement_block(&mut r)
+                            {
                                 if self.world.apply_movement(guid, snapshot) {
                                     changed = true;
                                     events.push(ChangeEvent::Moved { guid });
@@ -578,9 +579,9 @@ impl SessionState {
             self.state_revision += 1;
             self.last_state_change_at = Some(observed_at_unix_ms);
             let position_changed = op == opcode::SMSG_LOGIN_VERIFY_WORLD
-                || events
-                    .iter()
-                    .any(|e| matches!(e, ChangeEvent::Moved { guid } if Some(*guid) == self.player_guid));
+                || events.iter().any(
+                    |e| matches!(e, ChangeEvent::Moved { guid } if Some(*guid) == self.player_guid),
+                );
             if position_changed && self.player_guid.is_some() {
                 self.position_observed_at = Some(observed_at_unix_ms);
             }
@@ -618,7 +619,9 @@ impl SessionState {
     ) -> Result<Option<SelfObservation>> {
         // A newer state always supersedes a retained snapshot (latest-only coalescing).
         if self.state_revision > self.handoff_revision {
-            let mut snapshot = self.build_snapshot().map_err(|reason| anyhow::Error::new(reason))?;
+            let mut snapshot = self
+                .build_snapshot()
+                .map_err(|reason| anyhow::Error::new(reason))?;
             snapshot.sequence = self.next_sequence;
             snapshot.client_uptime_ms = client_uptime_ms;
             self.next_sequence += 1;
@@ -693,7 +696,7 @@ impl SessionState {
     }
 
     /// The session phase.
-    
+
     fn build_snapshot(&self) -> std::result::Result<SelfObservation, SkipReason> {
         let player_guid = self.player_guid.ok_or(SkipReason::NoPlayer)?;
         let map_id = self.map_id.ok_or(SkipReason::NoPosition)?;
@@ -758,20 +761,26 @@ impl SessionState {
             .collect();
         let total = all.len();
         let complete = total <= MAX_VISIBLE_GUIDS;
-        let guids = if complete { all } else { all[..MAX_VISIBLE_GUIDS].to_vec() };
+        let guids = if complete {
+            all
+        } else {
+            all[..MAX_VISIBLE_GUIDS].to_vec()
+        };
 
         let observed = |index: u16| -> Option<u32> {
             let entry = self_entry?;
-            entry.field_delivered(index).then(|| entry.field(index)).flatten()
+            entry
+                .field_delivered(index)
+                .then(|| entry.field(index))
+                .flatten()
         };
         let health = observed(fields::UNIT_FIELD_HEALTH);
         let max_health = observed(fields::UNIT_FIELD_MAXHEALTH);
         let power_type = observed(fields::UNIT_FIELD_BYTES_0)
             .map(|bytes| ((bytes >> 24) & 0xff) as u8)
             .filter(|power_type| *power_type <= 6);
-        let power = power_type.and_then(|power_type| {
-            observed(fields::UNIT_FIELD_POWER1 + u16::from(power_type))
-        });
+        let power = power_type
+            .and_then(|power_type| observed(fields::UNIT_FIELD_POWER1 + u16::from(power_type)));
         let mut powers = [None; 7];
         let mut max_powers = [None; 7];
         for index in 0..7u16 {

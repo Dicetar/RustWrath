@@ -9,9 +9,9 @@
 //! the client cannot store, values the record's own contract forbids, and trailing bytes instead
 //! of skipping or clamping them.
 //!
-//! Source anchors (pinned `D:/WOW/WM_BridgeLab/src/azerothcore` at
+//! Source anchors (pinned `D:/Projects/wow/server/WM_BridgeLab/src/azerothcore` at
 //! `5e741c37364f4ec5e3bc2860bcf21f13812fb66d` and
-//! `D:/Projects/wowdecomp-reference` at `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`):
+//! `D:/Projects/wow/reference/wowdecomp-reference` at `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`):
 //!
 //! * group list: `src/server/game/Groups/Group.cpp:1696-1745`,
 //!   `WoW/Source/Object/ObjectClient/Player_C.cpp:11572-11812`
@@ -638,10 +638,7 @@ pub enum ChannelNotifyTail {
         extra: Option<String>,
     },
     /// `CHAT_YOU_LEFT_NOTICE` (`0x03`): zone-channel id and the suspended/constant byte.
-    Left {
-        zone_channel_id: u32,
-        suspended: u8,
-    },
+    Left { zone_channel_id: u32, suspended: u8 },
     /// A player name string (`CHAT_PLAYER_NOT_FOUND`, `CHAT_CHANNEL_OWNER`, and the
     /// invited/not-banned notices).
     PlayerName { name: String },
@@ -702,9 +699,7 @@ pub fn read_channel_notify(body: &[u8]) -> Result<ChannelNotify> {
         | 0x21 => ChannelNotifyTail::None,
         // 0x09 player-not-found, 0x0B channel owner, 0x16 player-not-banned,
         // 0x1D player invited, 0x1E player invite banned.
-        0x09 | 0x0B | 0x16 | 0x1D | 0x1E => ChannelNotifyTail::PlayerName {
-            name: r.cstring()?,
-        },
+        0x09 | 0x0B | 0x16 | 0x1D | 0x1E => ChannelNotifyTail::PlayerName { name: r.cstring()? },
         // 0x0C mode change: guid plus old and new rights bytes.
         0x0C => ChannelNotifyTail::ModeChange {
             guid: r.u64()?,
@@ -835,9 +830,11 @@ pub fn read_guild_roster(body: &[u8]) -> Result<GuildRosterWire> {
     let mut r = Reader::new(body);
     let member_count = r.u32()?;
     if member_count > MAX_GUILD_MEMBERS {
-        return Err(DecodeError::invalid_count("guild member count exceeds 1000")
-            .with_value(member_count)
-            .into());
+        return Err(
+            DecodeError::invalid_count("guild member count exceeds 1000")
+                .with_value(member_count)
+                .into(),
+        );
     }
     let motd = r.cstring()?;
     let guild_info = r.cstring()?;
@@ -923,9 +920,11 @@ pub fn read_guild_event(body: &[u8]) -> Result<GuildEventWire> {
     let event = r.u8()?;
     let count = r.u8()?;
     if count > MAX_GUILD_EVENT_PARAMS {
-        return Err(DecodeError::invalid_count("guild event has more than three strings")
-            .with_value(u32::from(count))
-            .into());
+        return Err(
+            DecodeError::invalid_count("guild event has more than three strings")
+                .with_value(u32::from(count))
+                .into(),
+        );
     }
     let mut args = Vec::with_capacity(usize::from(count));
     for _ in 0..count {
@@ -997,15 +996,19 @@ pub fn read_raid_target_update(body: &[u8]) -> Result<RaidTargetUpdate> {
                 entries.push((icon, guid));
             }
             if entries.len() > usize::from(MAX_RAID_TARGET_ICONS) {
-                return Err(DecodeError::invalid_count("raid target list exceeds eight icons")
-                    .with_value(entries.len() as u32)
-                    .into());
+                return Err(
+                    DecodeError::invalid_count("raid target list exceeds eight icons")
+                        .with_value(entries.len() as u32)
+                        .into(),
+                );
             }
             Ok(RaidTargetUpdate::List { entries })
         }
-        other => Err(DecodeError::invalid_value("raid target update kind is neither 0 nor 1")
-            .with_value(u32::from(other))
-            .into()),
+        other => Err(
+            DecodeError::invalid_value("raid target update kind is neither 0 nor 1")
+                .with_value(u32::from(other))
+                .into(),
+        ),
     }
 }
 
@@ -1153,7 +1156,13 @@ mod tests {
         assert_eq!(list.sub_group, 2);
         assert_eq!(list.flags, 4);
         assert_eq!(list.roles, 5);
-        assert_eq!(list.lfg, Some(LfgGroupTail { status: 2, dungeon_id: 574 }));
+        assert_eq!(
+            list.lfg,
+            Some(LfgGroupTail {
+                status: 2,
+                dungeon_id: 574
+            })
+        );
         assert_eq!(list.group_guid, 0x1122_3344_5566_7788);
         assert_eq!(list.counter, 7);
         assert_eq!(list.members.len(), 1);
@@ -1314,8 +1323,16 @@ mod tests {
             Some(PartyAuras {
                 mask: 0b101,
                 auras: vec![
-                    PartyAura { slot: 0, spell_id: 1234, flags: 1 },
-                    PartyAura { slot: 2, spell_id: 5678, flags: 2 },
+                    PartyAura {
+                        slot: 0,
+                        spell_id: 1234,
+                        flags: 1
+                    },
+                    PartyAura {
+                        slot: 2,
+                        spell_id: 5678,
+                        flags: 2
+                    },
                 ],
             })
         );
@@ -1331,7 +1348,11 @@ mod tests {
             f.pet_auras,
             Some(PartyAuras {
                 mask: 1,
-                auras: vec![PartyAura { slot: 0, spell_id: 99, flags: 1 }],
+                auras: vec![PartyAura {
+                    slot: 0,
+                    spell_id: 99,
+                    flags: 1
+                }],
             })
         );
         assert_eq!(f.vehicle_seat, Some(5));
@@ -1578,10 +1599,7 @@ mod tests {
         assert_eq!(list.flags, 0x04);
         assert_eq!(
             list.members,
-            vec![
-                (0x1000_0000_0000_0001, 0x01),
-                (0x1000_0000_0000_0002, 0x02),
-            ]
+            vec![(0x1000_0000_0000_0001, 0x01), (0x1000_0000_0000_0002, 0x02),]
         );
         assert_truncated(read_channel_list, &body);
         assert_trailing_rejected(read_channel_list, &body);
@@ -1640,7 +1658,10 @@ mod tests {
         assert_eq!(roster.ranks.len(), 10);
         assert_eq!(roster.ranks[3].rights, 0x103);
         assert_eq!(roster.ranks[3].gold_limit_per_day, 3000);
-        assert_eq!(roster.ranks[3].bank_tab_flags, [0x200, 0x201, 0x202, 0x203, 0x204, 0x205]);
+        assert_eq!(
+            roster.ranks[3].bank_tab_flags,
+            [0x200, 0x201, 0x202, 0x203, 0x204, 0x205]
+        );
         assert_eq!(
             roster.ranks[3].bank_tab_withdraw_limits,
             [5, 6, 7, 8, 9, 10]
@@ -1741,16 +1762,16 @@ mod tests {
         assert_eq!(
             read_raid_target_update(&full).unwrap(),
             RaidTargetUpdate::List {
-                entries: vec![
-                    (0, 0x4000_0000_0000_0001),
-                    (3, 0x4000_0000_0000_0002),
-                ],
+                entries: vec![(0, 0x4000_0000_0000_0001), (3, 0x4000_0000_0000_0002),],
             }
         );
         // A full list stops at the last complete pair, so only partial-pair cuts must fail.
         for end in 0..full.len() {
             if end % 9 != 1 {
-                assert!(read_raid_target_update(&full[..end]).is_err(), "cut at {end}");
+                assert!(
+                    read_raid_target_update(&full[..end]).is_err(),
+                    "cut at {end}"
+                );
             }
         }
         let mut full_trailing = full.clone();

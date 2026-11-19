@@ -270,12 +270,7 @@ pub(crate) fn create_group(lua: &Lua, owner: &Table, name: Option<&str>) -> mlua
 }
 
 /// `group:CreateAnimation(type[, name])`: append a child owned by the group's owner.
-fn create_child(
-    lua: &Lua,
-    group: &Table,
-    kind: &str,
-    name: Option<&str>,
-) -> mlua::Result<Table> {
+fn create_child(lua: &Lua, group: &Table, kind: &str, name: Option<&str>) -> mlua::Result<Table> {
     let owner: Table = group.get(ANIMATION_OWNER)?;
     let child = build(lua, kind, name, &[], &owner, Some(group))?;
     let children = match group.get::<Option<Table>>(ANIMATION_CHILDREN)? {
@@ -460,7 +455,10 @@ pub(super) fn update(lua: &Lua) {
         if !group.get::<bool>(ANIMATION_PLAYING).unwrap_or(false) {
             continue;
         }
-        let Some(children) = group.get::<Option<Table>>(ANIMATION_CHILDREN).unwrap_or(None) else {
+        let Some(children) = group
+            .get::<Option<Table>>(ANIMATION_CHILDREN)
+            .unwrap_or(None)
+        else {
             if let Err(error) = finish(lua, &group) {
                 record(lua, &error);
             }
@@ -849,7 +847,11 @@ mod tests {
 
         s.tick(0.1);
         let rect = frame_rect(&s, h);
-        assert!((rect.left - 45.0).abs() < 0.01, "x half-moved: {}", rect.left);
+        assert!(
+            (rect.left - 45.0).abs() < 0.01,
+            "x half-moved: {}",
+            rect.left
+        );
         assert!(
             (rect.bottom - 42.0).abs() < 0.01,
             "y half-moved: {}",
@@ -1058,9 +1060,7 @@ mod tests {
         s.extract()
             .into_iter()
             .find_map(|quad| match quad.target {
-                ZTarget::Frame(fh)
-                    if fh == h && matches!(quad.content, QuadContent::Frame) =>
-                {
+                ZTarget::Frame(fh) if fh == h && matches!(quad.content, QuadContent::Frame) => {
                     quad.rect
                 }
                 _ => None,

@@ -55,10 +55,9 @@ impl<'a> Reader<'a> {
         Reader { p, at: 0 }
     }
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        let s = self
-    .p
-    .get(self.at..self.at + n)
-    .ok_or_else(|| crate::gameplay::DecodeError::truncated(self.p.len().saturating_sub(self.at)))?;
+        let s = self.p.get(self.at..self.at + n).ok_or_else(|| {
+            crate::gameplay::DecodeError::truncated(self.p.len().saturating_sub(self.at))
+        })?;
         self.at += n;
         Ok(s)
     }
@@ -347,4 +346,3 @@ pub fn values_block(r: &mut Reader) -> Result<Vec<(u16, u32)>> {
     }
     Ok(out)
 }
-

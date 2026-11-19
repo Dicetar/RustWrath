@@ -51,7 +51,7 @@ impl Enemy {
             max_hp: self.max_hp,
             phase: self.phase,
             telegraph_started_at: self.telegraph.map(|telegraph| telegraph.started_at),
-            active_resolved: self.telegraph.map_or(false, |telegraph| telegraph.resolved),
+            active_resolved: self.telegraph.is_some_and(|telegraph| telegraph.resolved),
         }
     }
 
@@ -64,7 +64,7 @@ impl Enemy {
     }
 
     pub(crate) fn active_resolved(&self) -> bool {
-        self.telegraph.map_or(false, |telegraph| telegraph.resolved)
+        self.telegraph.is_some_and(|telegraph| telegraph.resolved)
     }
 
     pub(crate) fn begin_telegraph(&mut self, now: Ticks) -> bool {

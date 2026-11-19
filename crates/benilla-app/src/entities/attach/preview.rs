@@ -582,10 +582,9 @@ fn assemble(spec: &PreviewSpec, ctx: &mut PreviewCtx<'_, '_>) -> Option<Assemble
     // `GeosRenderPrep` (`0x4ED900`) forces 1703 for a Death Knight or a face whose CharSections
     // flags carry 0x4; the preview body is always the live composite, so the face row applies.
     let eye_glow = spec.class == 6
-        || ctx.sections.is_some_and(|s| {
-            s.tables
-                .face_eye_glow(race, sex, spec.face, spec.skin)
-        });
+        || ctx
+            .sections
+            .is_some_and(|s| s.tables.face_eye_glow(race, sex, spec.face, spec.skin));
     let eg = equip_geosets(
         ctx.displays.as_deref(),
         &bodyslots,

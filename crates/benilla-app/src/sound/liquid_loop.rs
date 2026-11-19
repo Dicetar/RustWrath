@@ -1,13 +1,19 @@
-//! The above-water liquid ambient loops: ocean, river, lava and slime beds as 3D loops over the
-//! zone ambience, as the reference's driver `0x462b50` (groups `0xb230b8`) plays them. Liquid near
-//! the player, not the camera, arms its class's loop; the class is the cell's MCLQ/MLIQ low
-//! nibble, mapped to a kit by `SoundWaterType.dbc`. Submerging stops them hard
-//! (`0x458650` → `0x462e10` → `0x462b10`); resurfacing restarts them at full volume.
+//! The above-water liquid ambient loop, as 3.3.5 drives it (`SI2::HandleWaterSounds`, `0x4D2390`):
+//! one loop only, at the nearest liquid point within 60 yd of the player, at that liquid's
+//! `SoundEntries` kit. The reference keeps a single record (`s_nearestWaterSounds[1]` /
+//! `s_waterSounds[1]`), queries `World::QueryLiquidSounds(entity, 60.0f)` at most every 500 ms and
+//! only after the player moved (`_OkToQueryLiquidSounds`, `0x4D2230`), fades in and out over 1.0 s
+//! (`FADEINTIME`/`FADEOUTTIME`), and stops hard when the listener is underwater
+//! (`SI2::IsUnderwater`).
 //!
-//! The nearest point is the footprint's AABB clamp where the reference walks cells, so a fade-in
-//! can lead by a couple of yards on L-shaped shores; the tick is a frame. The reference's own
-//! `MapWaterSounds` switch (registered at `0x462a40`) is not built; the loops ride the ambience
-//! bucket, so `EnableAmbience` and the ambience slider gate them.
+//! Deviation: the 3.3.5 kit is the liquid type row's own `m_soundID`, while this client carries no
+//! `LiquidType.dbc` per wet cell and resolves the cell's sound nibble through `SoundWaterType.dbc`
+//! instead (the donor table, which names the same River/Ocean/Magma/Slime loops). A liquid flagged
+//! `m_flags & 0x80` and inside a map object is skipped by the reference; that flag is not in our
+//! liquid data either, so an indoor pool whose cell carries a loop will still be heard.
+//!
+//! The reference's own `MapWaterSounds` switch (registered at `0x462a40` in 1.12) is not built; the
+//! loop rides the ambience bucket, so `EnableAmbience` and the ambience slider gate it.
 
 use bevy::prelude::*;
 
@@ -24,22 +30,19 @@ use super::kit::{
 };
 use super::{SoundConfig, SoundOutput};
 
-/// The scan radius (yd) around the player (`0x462b50`).
-const TRIGGER_RADIUS: f32 = 9.0;
-/// The emitter's slew step per tick (yd, `0x462960`).
-const SLEW_PER_TICK: f32 = 0.166_67;
-/// The emitter's near-field clamp (yd): √2·4.16667, the cell diagonal.
-const NEAR_CLAMP: f32 = 5.892_557;
-/// Fade in and out (s): `[0x80355c]`/`[0x803560]`.
-const FADE_SECS: f32 = 5.0;
-/// Concurrent class loops, by priority River > Ocean > Magma > Slime.
-const MAX_CONCURRENT: usize = 2;
+/// The scan radius (yd) around the player: `World::QueryLiquidSounds(entity, 60.0f)`.
+const TRIGGER_RADIUS: f32 = 60.0;
+/// Fade in and out (s): `FADEINTIME` / `FADEOUTTIME` in `SoundInterface2Water.cpp`.
+const FADE_SECS: f32 = 1.0;
+/// The query throttle (s): `_OkToQueryLiquidSounds` (`0x4D2230`) scans at most every 500 ms, and
+/// only when the player has moved since the last scan.
+const QUERY_INTERVAL_SECS: f32 = 0.5;
 
 /// The `SoundWaterType.dbc` class → kit map.
 #[derive(Resource)]
 pub(super) struct WaterSounds(WaterSoundCatalog);
 
-/// One class's armed loop.
+/// The one loop the reference keeps (`s_waterSounds[1]`): the nearest liquid point's bed.
 struct ClassLoop {
     /// The slewed emitter; the pump's tracked-follow reads its `Transform`.
     emitter: Entity,
@@ -49,13 +52,32 @@ struct ClassLoop {
     /// A superseded kit (the nearest cell's speed nibble changed) fading out on the same
     /// emitter: `(kit, gain)`.
     retiring: Option<(u32, f32)>,
+    /// The last 500 ms scan found this kit in range: the fade target, so a stationary player keeps
+    /// the bed without re-scanning (`_OkToQueryLiquidSounds`).
+    wet: bool,
 }
 
-/// The four class slots (index `nibble & 3`) and the submerge edge latch.
-#[derive(Resource, Default)]
+/// The loop slot, the submerge edge latch and the 500 ms query gate.
+#[derive(Resource)]
 struct LiquidLoopState {
-    classes: [Option<ClassLoop>; 4],
+    live: Option<ClassLoop>,
     was_underwater: bool,
+    /// `s_lastPosition`: the player position at the last scan; an unchanged one skips the scan.
+    last_query: Option<[f32; 3]>,
+    /// `s_timeSinceQuery`, in seconds.
+    since_query: f32,
+}
+
+impl Default for LiquidLoopState {
+    fn default() -> Self {
+        Self {
+            live: None,
+            was_underwater: false,
+            last_query: None,
+            // `s_timeSinceQuery` starts at 999999: the first scan is not throttled.
+            since_query: QUERY_INTERVAL_SECS,
+        }
+    }
 }
 
 fn load_water_sounds(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
@@ -73,7 +95,22 @@ fn load_water_sounds(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     }
 }
 
-/// The per-frame driver: scan, arm or retire by priority, slew, fade.
+/// `_OkToQueryLiquidSounds` (`0x4D2230`): the 500 ms throttle and the moved-player gate.
+fn query_due(since_query: f32, moved: bool) -> bool {
+    since_query >= QUERY_INTERVAL_SECS && moved
+}
+
+/// The per-frame gain step: `FADE_SECS` to cross the whole range.
+fn fade_step(dt: f32) -> f32 {
+    if FADE_SECS > 0.0 {
+        dt / FADE_SECS
+    } else {
+        1.0
+    }
+}
+
+/// The per-frame driver: the submerge edge, the 500 ms scan, arm/move/retire, and the fades.
+#[allow(clippy::too_many_arguments)]
 fn drive_liquid_loops(
     mut state: ResMut<LiquidLoopState>,
     water_sounds: Option<Res<WaterSounds>>,
@@ -96,16 +133,19 @@ fn drive_liquid_loops(
     if out.mixer.is_none() {
         return;
     }
+    let dt = time.delta_secs();
+    let step = fade_step(dt);
 
-    // Submerged: a hard stop with no fade, and the resurface edge restarts at full.
+    // Submerged: a hard stop with no fade (`SI2::IsUnderwater` short-circuits the driver), and the
+    // resurface edge restarts the bed at full.
     if world.submersion().is_water() {
-        for slot in &mut state.classes {
-            if let Some(cl) = slot.take() {
-                stop_source_kit(&mut out, cl.emitter, cl.kit);
-                if let Some((old, _)) = cl.retiring {
-                    stop_source_kit(&mut out, cl.emitter, old);
-                }
+        if let Some(cl) = state.live.take() {
+            stop_source_kit(&mut out, cl.emitter, cl.kit);
+            if let Some((old, _)) = cl.retiring {
+                stop_source_kit(&mut out, cl.emitter, old);
             }
+            // The 1.12 driver left this emitter alive on every dive; the loop owns it.
+            commands.entity(cl.emitter).despawn();
         }
         state.was_underwater = true;
         return;
@@ -118,29 +158,22 @@ fn drive_liquid_loops(
     let player_pos = player_tf.translation;
     let player_wow = bevy_to_wow(player_pos);
 
-    // The nearest wet point per class within the radius (the reference walk is `0x6723f0`).
-    let best = world.nearest_liquid_per_class(player_wow, TRIGGER_RADIUS);
-
-    // The class indices are the priority order.
-    let mut budget = MAX_CONCURRENT;
-    let dt = time.delta_secs();
-    let fade_step = if FADE_SECS > 0.0 { dt / FADE_SECS } else { 1.0 };
-
-    for (class, scanned) in best.into_iter().enumerate() {
-        let candidate = scanned.filter(|_| budget > 0);
-        let desired_kit = candidate
+    // The scan: throttled and gated on movement, exactly as `_OkToQueryLiquidSounds` gates
+    // `World::QueryLiquidSounds`. A held frame keeps the current bed and position.
+    state.since_query += dt;
+    let moved = state.last_query != Some(player_wow);
+    if query_due(state.since_query, moved) {
+        state.since_query = 0.0;
+        state.last_query = Some(player_wow);
+        let candidate = world.nearest_liquid(player_wow, TRIGGER_RADIUS);
+        let desired = candidate
             .as_ref()
             .and_then(|c| water_sounds.0.kit_for_nibble(c.nibble));
-        if desired_kit.is_some() {
-            budget -= 1;
-        }
-
-        let slot = &mut state.classes[class];
-        match (slot.as_mut(), desired_kit) {
+        match (state.live.take(), desired) {
             (None, Some(kit_id)) => {
-                // Arm: spawn the emitter at the near-clamped nearest point and start the loop.
-                let point = candidate.expect("desired_kit implies a candidate").point;
-                let pos = near_clamped(wow_to_bevy(point), player_pos);
+                // Arm at the nearest wet point, at full gain on the resurface edge.
+                let point = candidate.expect("a kit implies a candidate").point;
+                let pos = wow_to_bevy(point);
                 let emitter = commands.spawn((Transform::from_translation(pos),)).id();
                 let gain = if resurfaced { 1.0 } else { 0.0 };
                 start_loop(
@@ -154,113 +187,97 @@ fn drive_liquid_loops(
                     emitter,
                     gain,
                 );
-                *slot = Some(ClassLoop {
+                state.live = Some(ClassLoop {
                     emitter,
                     kit: kit_id,
                     gain,
                     retiring: None,
+                    wet: true,
                 });
             }
-            (Some(cl), Some(kit_id)) => {
+            (Some(mut cl), Some(kit_id)) => {
                 if cl.kit != kit_id {
                     // The speed nibble changed (still → fast river): the old kit fades out on
                     // the same emitter while the new one fades in.
-                    if let Some((old, g)) = cl.retiring.take() {
+                    if let Some((old, _)) = cl.retiring.take() {
                         // A second swap mid-fade drops the oldest outright.
-                        let _ = g;
                         stop_source_kit(&mut out, cl.emitter, old);
                     }
                     cl.retiring = Some((cl.kit, cl.gain));
                     cl.kit = kit_id;
                     cl.gain = 0.0;
                 }
-                // Slew the emitter toward the nearest point.
-                let point = candidate.expect("desired_kit implies a candidate").point;
+                // `SI2::Set3DPosition`: the bed follows the nearest wet point.
+                let point = candidate.expect("a kit implies a candidate").point;
                 if let Ok(mut tf) = emitters.get_mut(cl.emitter) {
-                    let target = near_clamped(wow_to_bevy(point), player_pos);
-                    let step = target - tf.translation;
-                    let len = step.length();
-                    tf.translation += if len > SLEW_PER_TICK {
-                        step * (SLEW_PER_TICK / len)
-                    } else {
-                        step
-                    };
+                    tf.translation = wow_to_bevy(point);
                 }
-                // Fade in (at full on the resurface edge), and re-arm a channel the device
-                // dropped.
-                cl.gain = if resurfaced {
-                    1.0
-                } else {
-                    (cl.gain + fade_step).min(1.0)
-                };
-                if !source_kit_playing(&out, cl.emitter, cl.kit) {
-                    let pos = emitters
-                        .get(cl.emitter)
-                        .map(|t| t.translation)
-                        .unwrap_or(player_pos);
-                    start_loop(
-                        &mut kits,
-                        &assets,
-                        &mut out,
-                        &config,
-                        listener.pos,
-                        cl.kit,
-                        pos,
-                        cl.emitter,
-                        cl.gain,
-                    );
-                }
-                set_source_kit_gain(&mut out, cl.emitter, cl.kit, cl.gain);
+                cl.wet = true;
+                state.live = Some(cl);
             }
-            (Some(cl), None) => {
-                // Out of range or out-prioritised: fade out, then stop.
-                cl.gain -= fade_step;
-                if cl.gain <= 0.0 {
-                    stop_source_kit(&mut out, cl.emitter, cl.kit);
-                    if let Some((old, _)) = cl.retiring.take() {
-                        stop_source_kit(&mut out, cl.emitter, old);
-                    }
-                    let emitter = cl.emitter;
-                    *slot = None;
-                    commands.entity(emitter).despawn();
-                } else {
-                    set_source_kit_gain(&mut out, cl.emitter, cl.kit, cl.gain);
-                }
+            (Some(mut cl), None) => {
+                // Nothing wet in range: fade out, then stop.
+                cl.wet = false;
+                state.live = Some(cl);
             }
             (None, None) => {}
         }
+    }
 
-        // The retiring kit's fade-out, independent of the live one.
-        if let Some(cl) = state.classes[class].as_mut() {
-            if let Some((old, mut g)) = cl.retiring.take() {
-                g -= fade_step;
-                if g <= 0.0 {
-                    stop_source_kit(&mut out, cl.emitter, old);
-                } else {
-                    set_source_kit_gain(&mut out, cl.emitter, old, g);
-                    cl.retiring = Some((old, g));
-                }
+    // The fades advance every frame, whatever the scan did: the backend ramps them, not the
+    // query. A kit whose channel the device dropped is restarted in place.
+    let Some(mut cl) = state.live.take() else {
+        return;
+    };
+    if !cl.wet {
+        cl.gain -= step;
+    } else if resurfaced {
+        cl.gain = 1.0;
+    } else {
+        cl.gain = (cl.gain + step).min(1.0);
+    }
+    if cl.gain <= 0.0 {
+        stop_source_kit(&mut out, cl.emitter, cl.kit);
+        if let Some((old, _)) = cl.retiring.take() {
+            stop_source_kit(&mut out, cl.emitter, old);
+        }
+        commands.entity(cl.emitter).despawn();
+    } else {
+        if !source_kit_playing(&out, cl.emitter, cl.kit) {
+            let pos = emitters
+                .get(cl.emitter)
+                .map(|t| t.translation)
+                .unwrap_or(player_pos);
+            start_loop(
+                &mut kits,
+                &assets,
+                &mut out,
+                &config,
+                listener.pos,
+                cl.kit,
+                pos,
+                cl.emitter,
+                cl.gain,
+            );
+        }
+        set_source_kit_gain(&mut out, cl.emitter, cl.kit, cl.gain);
+        if let Some((old, mut g)) = cl.retiring.take() {
+            g -= step;
+            if g <= 0.0 {
+                stop_source_kit(&mut out, cl.emitter, old);
+            } else {
+                set_source_kit_gain(&mut out, cl.emitter, old, g);
+                cl.retiring = Some((old, g));
             }
         }
+        state.live = Some(cl);
     }
 }
 
-/// Keep the emitter at least [`NEAR_CLAMP`] from the player, pushed out along player → emitter.
-fn near_clamped(pos: Vec3, player: Vec3) -> Vec3 {
-    let d = pos - player;
-    let len = d.length();
-    if len >= NEAR_CLAMP {
-        pos
-    } else if len > 1e-4 {
-        player + d * (NEAR_CLAMP / len)
-    } else {
-        player + Vec3::X * NEAR_CLAMP
-    }
-}
-
-/// Start one class loop on the ambience bucket, tagged to its emitter, at an initial gain.
+/// Start one bed on the ambience bucket, tagged to its emitter, at an initial gain.
 /// Force-looped: the type-22 kits are all authored loops but the lava pool's lacks the `0x200`
 /// flag; how the reference loops that one is untraced.
+#[allow(clippy::too_many_arguments)]
 fn start_loop(
     kits: &mut SoundKits,
     assets: &WorldAssets,
@@ -303,4 +320,34 @@ pub(super) fn plugin(app: &mut App) {
                 .in_set(WorldStage::Present)
                 .before(kit::pump_channels),
         );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `_OkToQueryLiquidSounds`: 500 ms between scans, and none at all while the player stands
+    /// still, however long the frame gap.
+    #[test]
+    fn the_water_scan_waits_half_a_second_and_a_moved_player() {
+        assert!(
+            !query_due(0.0, true),
+            "a scan on the same frame is throttled"
+        );
+        assert!(!query_due(0.49, true), "still inside the 500 ms window");
+        assert!(query_due(0.5, true), "half a second and a step: scan");
+        assert!(query_due(9.0, true));
+        assert!(
+            !query_due(9.0, false),
+            "a standing player is never re-scanned"
+        );
+    }
+
+    /// `FADEINTIME`/`FADEOUTTIME` are 1.0 s: a 0.25 s frame moves a quarter of the range.
+    #[test]
+    fn the_bed_fades_over_one_second() {
+        assert!((fade_step(0.25) - 0.25).abs() < 1e-6);
+        assert!((fade_step(1.0) - 1.0).abs() < 1e-6);
+        assert!(fade_step(0.0).abs() < 1e-6);
+    }
 }

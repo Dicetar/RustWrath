@@ -453,16 +453,21 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     if model(lua).is_wrath() {
         // 12340 Script_GetSelectBackgroundModel, 0x004E3620: DK uses its class scene,
         // gnomes share Dwarf, trolls share Orc; an invalid index uses the Orc race row.
-        g.set("GetSelectBackgroundModel", lua.create_function(|lua, args: MultiValue| {
-            let index = number_arg(lua, arg(&args, 0), "Usage: GetSelectBackgroundModel(index)")?
-                .wrapping_sub(1);
-            let m = model(lua);
-            let name = usize::try_from(index).ok()
-                .and_then(|i| m.glue.roster.records.get(i))
-                .map(|r| r.character.background_model.as_str())
-                .unwrap_or_else(|| m.glue.create.race_file(2));
-            lua.create_string(name)
-        })?)?;
+        g.set(
+            "GetSelectBackgroundModel",
+            lua.create_function(|lua, args: MultiValue| {
+                let index =
+                    number_arg(lua, arg(&args, 0), "Usage: GetSelectBackgroundModel(index)")?
+                        .wrapping_sub(1);
+                let m = model(lua);
+                let name = usize::try_from(index)
+                    .ok()
+                    .and_then(|i| m.glue.roster.records.get(i))
+                    .map(|r| r.character.background_model.as_str())
+                    .unwrap_or_else(|| m.glue.create.race_file(2));
+                lua.create_string(name)
+            })?,
+        )?;
     } else {
         // CharacterSelect.lua calls this from the glue VM during a return from world. A vanilla
         // glue VM still needs the global; the Human scene is the stock default.
@@ -474,23 +479,35 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
     if model(lua).is_wrath() {
         // 12340 0x004DE2E0 queries the server even when it reports a normal realm.
-        g.set("RequestRealmSplitInfo", lua.create_function(|lua, _: MultiValue| {
-            super::glue_core::queue(lua, super::GlueRequest::RealmSplit(u32::MAX));
-            Ok(())
-        })?)?;
-        g.set("SetRealmSplitState", lua.create_function(|lua, value: Value| {
-            let number = super::binding_abi::float_arg(lua, value,
-                "Usage: SetRealmSplitState(1 or 2)")?;
-            // The client narrows through a signed 64-bit integer before taking the low word.
-            // Non-finite and out-of-range conversion follows the x87 indefinite integer.
-            let integer = if number.is_finite() && number >= -9223372036854775808.0
-                && number < 9223372036854775808.0 { number as i64 } else { i64::MIN };
-            let state = integer as u32;
-            if state <= 2 {
-                super::glue_core::queue(lua, super::GlueRequest::RealmSplit(state));
-            }
-            Ok(())
-        })?)?;
+        g.set(
+            "RequestRealmSplitInfo",
+            lua.create_function(|lua, _: MultiValue| {
+                super::glue_core::queue(lua, super::GlueRequest::RealmSplit(u32::MAX));
+                Ok(())
+            })?,
+        )?;
+        g.set(
+            "SetRealmSplitState",
+            lua.create_function(|lua, value: Value| {
+                let number =
+                    super::binding_abi::float_arg(lua, value, "Usage: SetRealmSplitState(1 or 2)")?;
+                // The client narrows through a signed 64-bit integer before taking the low word.
+                // Non-finite and out-of-range conversion follows the x87 indefinite integer.
+                let integer = if number.is_finite()
+                    && number >= -9223372036854775808.0
+                    && number < 9223372036854775808.0
+                {
+                    number as i64
+                } else {
+                    i64::MIN
+                };
+                let state = integer as u32;
+                if state <= 2 {
+                    super::glue_core::queue(lua, super::GlueRequest::RealmSplit(state));
+                }
+                Ok(())
+            })?,
+        )?;
     }
 
     // `0x4731c0`: a string or number (`0x6f3510`) or the usage error (`0x838720`); the global of
@@ -843,19 +860,27 @@ mod tests {
         use crate::script::{GlueCreateCatalog, GlueCreateRace, UiTarget};
         let mut s = UiScript::glue_with_target(UiTarget::Wrath335).unwrap();
         s.set_glue_create_catalog(std::rc::Rc::new(GlueCreateCatalog {
-            races: vec![GlueCreateRace { id: 2, file: "Orc".into(), ..Default::default() }],
+            races: vec![GlueCreateRace {
+                id: 2,
+                file: "Orc".into(),
+                ..Default::default()
+            }],
             ..Default::default()
         }));
         let mut human = character(1, "Firna");
         human.background_model = "Human".into();
         s.load_glue_roster(vec![human]);
         s.set_glue_account_expansion(1);
-        assert!(s.eval::<bool>(r#"
+        assert!(s
+            .eval::<bool>(
+                r#"
             return IsStreamingTrial() == false and RealmListUpdateRate() == 5
                 and GetSelectBackgroundModel(1) == 'Human'
                 and GetSelectBackgroundModel(0) == 'Orc'
                 and GetAccountExpansionLevel() == 1
-        "#).unwrap());
+        "#
+            )
+            .unwrap());
         s.run("SetPreferredInfo(1, true, false)").unwrap();
         assert!(s.run("GetSelectBackgroundModel()").is_err());
     }

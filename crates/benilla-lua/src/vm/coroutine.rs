@@ -16,26 +16,42 @@ impl Vm {
     pub(crate) fn create_thread(&mut self, entry: Value) -> ThreadRef {
         let (stack_block, ci_block) = {
             let mut pools = self.heap.pools();
-            (pools.alloc(STACK_SLOT_BYTES * BASIC_STACK_SIZE),
-             pools.alloc(CI_BYTES * BASIC_CI_SIZE))
+            (
+                pools.alloc(STACK_SLOT_BYTES * BASIC_STACK_SIZE),
+                pools.alloc(CI_BYTES * BASIC_CI_SIZE),
+            )
         };
         self.heap.new_thread(ThreadObj {
             entry,
             status: ThreadStatus::Fresh,
             context: Some(ThreadContext {
-                stack: vec![Value::Nil; BASIC_STACK_SIZE], top: 0,
-                frames: Vec::new(), open: Vec::new(), globals: self.globals,
-                c_depth: 0, ci_size: BASIC_CI_SIZE, ci_limit: BASIC_CI_SIZE - 1,
-                clear_below: 0, in_handler: 0, stack_base: 0,
-                handlers: Vec::new(), stack_block, ci_block, in_hook: false,
+                stack: vec![Value::Nil; BASIC_STACK_SIZE],
+                top: 0,
+                frames: Vec::new(),
+                open: Vec::new(),
+                globals: self.globals,
+                c_depth: 0,
+                ci_size: BASIC_CI_SIZE,
+                ci_limit: BASIC_CI_SIZE - 1,
+                clear_below: 0,
+                in_handler: 0,
+                stack_base: 0,
+                handlers: Vec::new(),
+                stack_block,
+                ci_block,
+                in_hook: false,
             }),
         })
     }
 
-    pub(crate) fn running_thread(&self) -> Option<ThreadRef> { self.active_thread }
+    pub(crate) fn running_thread(&self) -> Option<ThreadRef> {
+        self.active_thread
+    }
 
     pub(crate) fn thread_status(&self, thread: ThreadRef) -> &'static [u8] {
-        if self.active_thread == Some(thread) { return b"running"; }
+        if self.active_thread == Some(thread) {
+            return b"running";
+        }
         match self.heap.thread(thread).status {
             ThreadStatus::Fresh | ThreadStatus::Suspended => b"suspended",
             ThreadStatus::Normal | ThreadStatus::Running => b"normal",
@@ -47,56 +63,115 @@ impl Vm {
     // threads' open cells address their parked stacks; only the active thread uses Open.
     fn exchange_thread_context(&mut self, context: &mut ThreadContext, parked: ThreadRef) {
         for &(index, upvalue) in &self.open {
-            *self.heap.upval_mut(upvalue) = UpvalObj::Suspended { thread: parked, index: index as u32 };
+            *self.heap.upval_mut(upvalue) = UpvalObj::Suspended {
+                thread: parked,
+                index: index as u32,
+            };
         }
         macro_rules! exchange {
             ($($field:ident),* $(,)?) => { $(std::mem::swap(&mut self.$field, &mut context.$field);)* };
         }
-        exchange!(stack, top, frames, open, globals, c_depth, ci_size, ci_limit,
-            clear_below, in_handler, stack_base, handlers, stack_block, ci_block, in_hook);
+        exchange!(
+            stack,
+            top,
+            frames,
+            open,
+            globals,
+            c_depth,
+            ci_size,
+            ci_limit,
+            clear_below,
+            in_handler,
+            stack_base,
+            handlers,
+            stack_block,
+            ci_block,
+            in_hook
+        );
         for &(index, upvalue) in &self.open {
             *self.heap.upval_mut(upvalue) = UpvalObj::Open(index as u32);
         }
     }
 
-    pub(crate) fn resume_thread(&mut self, thread: ThreadRef, args: &[Value]) -> Result<Vec<Value>, ResumeError> {
+    pub(crate) fn resume_thread(
+        &mut self,
+        thread: ThreadRef,
+        args: &[Value],
+    ) -> Result<Vec<Value>, ResumeError> {
         let status = self.heap.thread(thread).status;
         if !matches!(status, ThreadStatus::Fresh | ThreadStatus::Suspended) {
-            let message = [b"cannot resume ".as_slice(), self.thread_status(thread), b" coroutine"].concat();
-            return Err(ResumeError::Failed(LuaError { value: self.str(&message) }));
+            let message = [
+                b"cannot resume ".as_slice(),
+                self.thread_status(thread),
+                b" coroutine",
+            ]
+            .concat();
+            return Err(ResumeError::Failed(LuaError {
+                value: self.str(&message),
+            }));
         }
-        let context = self.heap.thread(thread).context.as_ref().expect("resumable context");
+        let context = self
+            .heap
+            .thread(thread)
+            .context
+            .as_ref()
+            .expect("resumable context");
         let base = context.frames.last().map_or(0, |frame| frame.base());
         // A fresh thread retains its entry separately, but lua_checkstack counts that slot.
-        let occupied = if status == ThreadStatus::Fresh { 1 } else { context.top - base };
-        if args.len() > crate::api::MAX_C_STACK
-            || occupied + args.len() > crate::api::MAX_C_STACK
-        {
-            return Err(ResumeError::Raised(self.rt_error("too many arguments to resume")));
+        let occupied = if status == ThreadStatus::Fresh {
+            1
+        } else {
+            context.top - base
+        };
+        if args.len() > crate::api::MAX_C_STACK || occupied + args.len() > crate::api::MAX_C_STACK {
+            return Err(ResumeError::Raised(
+                self.rt_error("too many arguments to resume"),
+            ));
         }
         // Per-thread call depths alone cannot bound a chain of native resume calls.
         let marker = 0u8;
         let here = std::ptr::addr_of!(marker) as usize;
         let root_base = if self.resume_parents.is_empty() {
-            if self.stack_base == 0 { here } else { self.stack_base }
-        } else { self.resume_stack_base };
-        let used = if cfg!(miri) { 0 } else { root_base.abs_diff(here) };
+            if self.stack_base == 0 {
+                here
+            } else {
+                self.stack_base
+            }
+        } else {
+            self.resume_stack_base
+        };
+        let used = if cfg!(miri) {
+            0
+        } else {
+            root_base.abs_diff(here)
+        };
         if self.resume_parents.len() >= MAXCCALLS as usize || used > MAX_RUST_STACK {
-            return Err(ResumeError::Failed(LuaError { value: self.str(b"C stack overflow") }));
+            return Err(ResumeError::Failed(LuaError {
+                value: self.str(b"C stack overflow"),
+            }));
         }
         let previous = self.active_thread;
         self.resume_stack_base = root_base;
         let parent = previous.unwrap_or_else(|| {
-            if let Some(main) = self.main_thread { return main; }
+            if let Some(main) = self.main_thread {
+                return main;
+            }
             let main = self.heap.new_thread(ThreadObj {
-                context: None, entry: Value::Nil, status: ThreadStatus::Running,
+                context: None,
+                entry: Value::Nil,
+                status: ThreadStatus::Running,
             });
             self.main_thread = Some(main);
             main
         });
         let source = self.heap.cur_source;
         let identity = self.identity();
-        let mut context = self.heap.thread_mut(thread).context.take().expect("suspended thread owns its stack");
+        let mut context = self
+            .heap
+            .thread_mut(thread)
+            .context
+            .take()
+            .expect("suspended thread owns its stack");
         self.exchange_thread_context(&mut context, parent);
         self.heap.thread_mut(parent).context = Some(context);
         self.heap.thread_mut(parent).status = ThreadStatus::Normal;
@@ -123,7 +198,9 @@ impl Vm {
             // old arguments: resume arguments replace them, and abandoned results must not root.
             self.top = first;
             values
-        } else { Vec::new() };
+        } else {
+            Vec::new()
+        };
         if !suspended {
             self.close_upvals(0);
             self.frames.clear();
@@ -132,15 +209,26 @@ impl Vm {
             self.heap.thread_mut(thread).entry = Value::Nil;
         }
         self.c_depth = 0;
-        let mut context = self.heap.thread_mut(parent).context.take().expect("resumer owns its parked stack");
+        let mut context = self
+            .heap
+            .thread_mut(parent)
+            .context
+            .take()
+            .expect("resumer owns its parked stack");
         self.exchange_thread_context(&mut context, thread);
         self.heap.thread_mut(thread).context = Some(context);
-        self.heap.thread_mut(thread).status = if suspended { ThreadStatus::Suspended } else { ThreadStatus::Dead };
+        self.heap.thread_mut(thread).status = if suspended {
+            ThreadStatus::Suspended
+        } else {
+            ThreadStatus::Dead
+        };
         self.heap.thread_mut(parent).status = ThreadStatus::Running;
         self.active_thread = previous;
         self.resume_parents.pop();
         self.heap.cur_source = source;
-        if self.hooked { self.prof_switch(); }
+        if self.hooked {
+            self.prof_switch();
+        }
         match result {
             Err(payload) => std::panic::resume_unwind(payload),
             Ok(_) if suspended => Ok(values),
@@ -148,12 +236,19 @@ impl Vm {
         }
     }
 
-    fn run_thread(&mut self, thread: ThreadRef, status: ThreadStatus, args: &[Value]) -> Result<Vec<Value>, LuaError> {
+    fn run_thread(
+        &mut self,
+        thread: ThreadRef,
+        status: ThreadStatus,
+        args: &[Value],
+    ) -> Result<Vec<Value>, LuaError> {
         self.c_depth = 1;
         if status == ThreadStatus::Fresh {
             let entry = self.heap.thread(thread).entry;
             self.push(entry);
-            for &arg in args { self.push(arg); }
+            for &arg in args {
+                self.push(arg);
+            }
             match self.precall(0, args.len(), -1)? {
                 Called::Lua => self.frames.last_mut().unwrap().boundary = true,
                 Called::Done => return Ok(self.stack[..self.top].to_vec()),
@@ -162,7 +257,9 @@ impl Vm {
             let frame = self.frames.pop().expect("yield retains its native frame");
             debug_assert!(frame.proto.is_null());
             let first = self.top;
-            for &arg in args { self.push(arg); }
+            for &arg in args {
+                self.push(arg);
+            }
             self.poscall(frame.func_idx(), first, args.len(), frame.nresults);
             if frame.nresults >= 0 {
                 let caller = self.frames.last().expect("yield has a Lua caller");
@@ -185,5 +282,7 @@ impl Vm {
         Err(LuaError { value: Value::Nil })
     }
 
-    pub(crate) fn coroutine_aborted(&self) -> bool { self.abort.is_some() }
+    pub(crate) fn coroutine_aborted(&self) -> bool {
+        self.abort.is_some()
+    }
 }

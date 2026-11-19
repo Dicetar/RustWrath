@@ -444,7 +444,7 @@ impl CombatCore {
         if let Some(current) = self.last_sequence {
             if snapshot
                 .last_sequence
-                .map_or(true, |accepted| accepted < current)
+                .is_none_or(|accepted| accepted < current)
             {
                 return Err(CombatError::SnapshotStaleSequence {
                     current: self.last_sequence,
@@ -505,7 +505,10 @@ impl CombatCore {
             return Err(CombatError::DuplicateSequence { last });
         }
         if sequence < last {
-            return Err(CombatError::StaleSequence { last, got: sequence });
+            return Err(CombatError::StaleSequence {
+                last,
+                got: sequence,
+            });
         }
         if sequence.0 - last.0 > self.config.max_sequence_gap {
             return Err(CombatError::SequenceGapTooLarge {
@@ -521,10 +524,7 @@ impl CombatCore {
         let ending_revision = self.player.active_revision();
         if self.player.sync_phase(now, &self.config) {
             if let Some(revision) = ending_revision {
-                events.push(CombatEvent::DodgeEnded {
-                    at: now,
-                    revision,
-                });
+                events.push(CombatEvent::DodgeEnded { at: now, revision });
             }
         }
 
@@ -544,10 +544,7 @@ impl CombatCore {
     }
 
     fn apply_due_inputs(&mut self, now: Ticks, events: &mut Vec<CombatEvent>) {
-        loop {
-            let Some(index) = self.pending.iter().position(|frame| frame.tick <= now) else {
-                break;
-            };
+        while let Some(index) = self.pending.iter().position(|frame| frame.tick <= now) {
             let frame = self.pending.remove(index);
             let _ = self.apply_input(frame, events);
         }
@@ -602,11 +599,9 @@ impl CombatCore {
             return self.start_or_reject(now, revision, events);
         }
 
-        let buffered = self.buffer.push(
-            revision,
-            now,
-            self.config.input_buffer_ttl_ticks,
-        );
+        let buffered = self
+            .buffer
+            .push(revision, now, self.config.input_buffer_ttl_ticks);
         events.push(CombatEvent::DodgeBuffered {
             at: now,
             expires_at: buffered.expires_at,
@@ -725,11 +720,7 @@ impl CombatCore {
         }
     }
 
-    fn reject(
-        now: Ticks,
-        reason: DodgeRejection,
-        events: &mut Vec<CombatEvent>,
-    ) -> DodgeResult {
+    fn reject(now: Ticks, reason: DodgeRejection, events: &mut Vec<CombatEvent>) -> DodgeResult {
         events.push(CombatEvent::DodgeRejected { at: now, reason });
         DodgeResult::Rejected(reason)
     }

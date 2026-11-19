@@ -4,8 +4,8 @@
 //! packet proves the kill; both endpoint names still come from the VM's own unit views or the
 //! existing name-query cache, never from a guess.
 
-use bevy::prelude::*;
 use benilla_ui::script::{ScriptValue, UiScript, UiTarget};
+use bevy::prelude::*;
 
 use crate::names::NameCache;
 use crate::net::NetCommands;
@@ -200,7 +200,7 @@ fn combat_log_flags(guid: u64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use benilla_ui::script::{UnitState, UiScript};
+    use benilla_ui::script::{UiScript, UnitState};
 
     fn script_with_units() -> UiScript {
         let mut script = UiScript::with_target(UiTarget::Wrath335).unwrap();
@@ -357,35 +357,57 @@ mod tests {
         app.world_mut().run_system_once(feed).unwrap();
         {
             let script = app.world().non_send_resource::<UiScript>();
-            assert_eq!(script.eval::<i64>("return SEEN").unwrap(), 0, "unknown victim names hold delivery");
+            assert_eq!(
+                script.eval::<i64>("return SEEN").unwrap(),
+                0,
+                "unknown victim names hold delivery"
+            );
         }
         {
             let world = app.world().resource::<WrathWorldView>();
-            assert_eq!(world.party_kills.len(), 2, "the stale row is gone, the live burst remains");
+            assert_eq!(
+                world.party_kills.len(),
+                2,
+                "the stale row is gone, the live burst remains"
+            );
         }
         app.world_mut()
             .non_send_resource_mut::<UiScript>()
-            .set_unit_by_guid(0xF130_0000_0000_0022, Some(UnitState {
-                name: Some("Kobold Vermin".to_owned()),
-                guid: 0xF130_0000_0000_0022,
-                ..UnitState::default()
-            }));
+            .set_unit_by_guid(
+                0xF130_0000_0000_0022,
+                Some(UnitState {
+                    name: Some("Kobold Vermin".to_owned()),
+                    guid: 0xF130_0000_0000_0022,
+                    ..UnitState::default()
+                }),
+            );
         app.world_mut().run_system_once(feed).unwrap();
         {
             let script = app.world().non_send_resource::<UiScript>();
-            assert_eq!(script.eval::<i64>("return SEEN").unwrap(), 1, "the late name releases one kill");
+            assert_eq!(
+                script.eval::<i64>("return SEEN").unwrap(),
+                1,
+                "the late name releases one kill"
+            );
         }
         app.world_mut()
             .non_send_resource_mut::<UiScript>()
-            .set_unit_by_guid(0xF130_0000_0000_0023, Some(UnitState {
-                name: Some("Kobold Worker".to_owned()),
-                guid: 0xF130_0000_0000_0023,
-                ..UnitState::default()
-            }));
+            .set_unit_by_guid(
+                0xF130_0000_0000_0023,
+                Some(UnitState {
+                    name: Some("Kobold Worker".to_owned()),
+                    guid: 0xF130_0000_0000_0023,
+                    ..UnitState::default()
+                }),
+            );
         app.world_mut().run_system_once(feed).unwrap();
         {
             let script = app.world().non_send_resource::<UiScript>();
-            assert_eq!(script.eval::<i64>("return SEEN").unwrap(), 2, "the second kill still arrives");
+            assert_eq!(
+                script.eval::<i64>("return SEEN").unwrap(),
+                2,
+                "the second kill still arrives"
+            );
             assert_eq!(
                 app.world().resource::<WrathWorldView>().party_kills.len(),
                 0,
@@ -473,7 +495,9 @@ mod tests {
                 "the delivered row is retired"
             );
             assert_eq!(
-                app.world().resource::<WrathWorldView>().party_kill_unresolved,
+                app.world()
+                    .resource::<WrathWorldView>()
+                    .party_kill_unresolved,
                 1,
                 "the fallback counts as a resolved-with-fallback delivery"
             );

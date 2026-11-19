@@ -691,14 +691,15 @@ fn a_far_spell_at_a_selection_with_no_object_sends_with_no_target() {
                 },
             )
             .expect("the ladder runs");
-        let sent: Vec<_> = f
-            .rx
-            .try_iter()
-            .filter_map(|c| match c {
-                ClientCommand::CastSpell { spell_id, target, .. } if spell_id == spell => Some(target),
-                _ => None,
-            })
-            .collect();
+        let sent: Vec<_> =
+            f.rx.try_iter()
+                .filter_map(|c| match c {
+                    ClientCommand::CastSpell {
+                        spell_id, target, ..
+                    } if spell_id == spell => Some(target),
+                    _ => None,
+                })
+                .collect();
         (sent, f.cursor_is_up())
     };
     assert_eq!(cast(MIND_VISION_2), (vec![None], false), "Mind Vision 2");

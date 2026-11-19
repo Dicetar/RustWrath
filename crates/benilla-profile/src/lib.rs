@@ -25,7 +25,7 @@ use anyhow::{bail, Context, Result};
 use benilla_mpq::Archive;
 
 mod classify;
-pub use classify::{Class, Side, classify, classify_sides};
+pub use classify::{classify, classify_sides, Class, Side};
 
 /// One manifest line: an archive's disk name and its declared origin.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -60,9 +60,12 @@ impl Manifest {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let (origin, name) = line
-                .split_once(char::is_whitespace)
-                .with_context(|| format!("line {}: expected `stock <name.mpq>` or `wm <name.mpq>`", number + 1))?;
+            let (origin, name) = line.split_once(char::is_whitespace).with_context(|| {
+                format!(
+                    "line {}: expected `stock <name.mpq>` or `wm <name.mpq>`",
+                    number + 1
+                )
+            })?;
             let origin = match origin {
                 "stock" => Origin::Stock,
                 "wm" => Origin::Wm,
@@ -77,7 +80,10 @@ impl Manifest {
         if entries.is_empty() {
             bail!("manifest for `{profile}` lists no archives");
         }
-        Ok(Self { profile: profile.to_string(), entries })
+        Ok(Self {
+            profile: profile.to_string(),
+            entries,
+        })
     }
 }
 
@@ -121,9 +127,17 @@ impl Profile {
                         path.with_extension("mpq.disabled").display()
                     );
                 }
-                bail!("archive {} of profile `{}` not found in {}", name.display(), self.manifest.profile, self.data_dir.display());
+                bail!(
+                    "archive {} of profile `{}` not found in {}",
+                    name.display(),
+                    self.manifest.profile,
+                    self.data_dir.display()
+                );
             }
-            archives.push((*origin, Archive::open(&path).with_context(|| format!("opening {}", path.display()))?));
+            archives.push((
+                *origin,
+                Archive::open(&path).with_context(|| format!("opening {}", path.display()))?,
+            ));
         }
         self.archives = archives;
         Ok(())
@@ -160,9 +174,9 @@ impl Profile {
     /// Resolve one internal path (`/` or `\`, any case) to its status and provenance.
     pub fn status(&self, name: &str) -> Status {
         match self.resolve(name) {
-            Some((_, archive)) if archive.is_delete_marker(name) => {
-                Status::Tombstoned { archive: archive.path().to_path_buf() }
-            }
+            Some((_, archive)) if archive.is_delete_marker(name) => Status::Tombstoned {
+                archive: archive.path().to_path_buf(),
+            },
             Some((_, archive)) => Status::Found {
                 archive: archive.path().to_path_buf(),
                 size: archive.file_size(name).unwrap_or(0) as u64,
@@ -173,11 +187,15 @@ impl Profile {
 
     /// Read one internal path from its winning archive, with provenance in every error.
     pub fn read(&self, name: &str) -> Result<Vec<u8>> {
-        let (_, archive) = self
-            .resolve(name)
-            .ok_or_else(|| anyhow::anyhow!("file not in profile `{}`: {name}", self.manifest.profile))?;
+        let (_, archive) = self.resolve(name).ok_or_else(|| {
+            anyhow::anyhow!("file not in profile `{}`: {name}", self.manifest.profile)
+        })?;
         if archive.is_delete_marker(name) {
-            bail!("file tombstoned in `{}` by {}: {name}", self.manifest.profile, archive.path().display());
+            bail!(
+                "file tombstoned in `{}` by {}: {name}",
+                self.manifest.profile,
+                archive.path().display()
+            );
         }
         archive
             .read_file(name)
@@ -195,7 +213,9 @@ impl Profile {
 impl Profile {
     /// The opened archives with their declared origins, ascending precedence (dev/CLI access).
     pub fn archives(&self) -> impl Iterator<Item = (Origin, &Archive)> {
-        self.archives.iter().map(|(origin, archive)| (*origin, archive))
+        self.archives
+            .iter()
+            .map(|(origin, archive)| (*origin, archive))
     }
 }
 
@@ -205,11 +225,7 @@ mod tests {
 
     #[test]
     fn a_manifest_parses_origins_comments_and_order() {
-        let m = Manifest::parse(
-            "# comment\nstock common.mpq\n\nwm patch-z.mpq\n",
-            "test",
-        )
-        .unwrap();
+        let m = Manifest::parse("# comment\nstock common.mpq\n\nwm patch-z.mpq\n", "test").unwrap();
         assert_eq!(m.entries.len(), 2);
         assert_eq!(m.entries[0], (Origin::Stock, PathBuf::from("common.mpq")));
         assert_eq!(m.entries[1], (Origin::Wm, PathBuf::from("patch-z.mpq")));
@@ -228,17 +244,37 @@ mod tests {
         use classify::{classify_sides, Class, Side};
         use Status::{Found, Missing, Tombstoned};
         let found = |origin| Side {
-            status: Found { archive: PathBuf::from("a.mpq"), size: 1 },
+            status: Found {
+                archive: PathBuf::from("a.mpq"),
+                size: 1,
+            },
             origin: Some(origin),
         };
-        let missing = || Side { status: Missing, origin: None };
+        let missing = || Side {
+            status: Missing,
+            origin: None,
+        };
         assert_eq!(classify_sides(&missing(), &missing()), Class::Missing);
-        assert_eq!(classify_sides(&missing(), &found(Origin::Wm)), Class::WmOnly);
-        assert_eq!(classify_sides(&missing(), &found(Origin::Stock)), Class::StockOnly);
-        assert_eq!(classify_sides(&found(Origin::Stock), &found(Origin::Wm)), Class::Shared);
+        assert_eq!(
+            classify_sides(&missing(), &found(Origin::Wm)),
+            Class::WmOnly
+        );
+        assert_eq!(
+            classify_sides(&missing(), &found(Origin::Stock)),
+            Class::StockOnly
+        );
+        assert_eq!(
+            classify_sides(&found(Origin::Stock), &found(Origin::Wm)),
+            Class::Shared
+        );
         assert_eq!(
             classify_sides(
-                &Side { status: Tombstoned { archive: PathBuf::from("p.mpq") }, origin: None },
+                &Side {
+                    status: Tombstoned {
+                        archive: PathBuf::from("p.mpq")
+                    },
+                    origin: None
+                },
                 &missing(),
             ),
             Class::Missing,

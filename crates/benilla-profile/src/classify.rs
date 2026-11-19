@@ -40,7 +40,9 @@ pub fn classify(base: &Profile, hd: &Profile, name: &str) -> (Class, Side, Side)
 pub fn classify_sides(base: &Side, hd: &Side) -> Class {
     use Status::{Found, Missing, Tombstoned};
     match (&base.status, &hd.status) {
-        (Missing, Missing) | (Missing, Tombstoned { .. }) | (Tombstoned { .. }, Missing) => Class::Missing,
+        (Missing, Missing) | (Missing, Tombstoned { .. }) | (Tombstoned { .. }, Missing) => {
+            Class::Missing
+        }
         (Missing, Found { .. }) => match hd.origin {
             Some(Origin::Wm) => Class::WmOnly,
             Some(Origin::Stock) | None => Class::StockOnly,
@@ -56,5 +58,8 @@ pub fn classify_sides(base: &Side, hd: &Side) -> Class {
 }
 
 fn side(profile: &Profile, name: &str) -> Side {
-    Side { status: profile.status(name), origin: profile.origin_of(name) }
+    Side {
+        status: profile.status(name),
+        origin: profile.origin_of(name),
+    }
 }

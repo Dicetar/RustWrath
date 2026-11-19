@@ -719,7 +719,9 @@ fn periodic_heal(
             amount: i64::from(amount),
             ..Default::default()
         },
-        worded.then(|| ctx.word_for(target.0, target.1, word)).flatten(),
+        worded
+            .then(|| ctx.word_for(target.0, target.1, word))
+            .flatten(),
     );
 }
 

@@ -10,8 +10,8 @@ use benilla_protocol::messages::{
 };
 use bevy::prelude::*;
 
-use benilla_ui::script::{QuestExtraView, QuestItemView, QuestPanel, QuestRewardSpell, QuestState};
 use benilla_assets::{AssetSet, LockRecover, WorldAssets};
+use benilla_ui::script::{QuestExtraView, QuestItemView, QuestPanel, QuestRewardSpell, QuestState};
 
 #[derive(Resource)]
 pub(crate) struct QuestTitles(pub(crate) benilla_formats::QuestTitleNames);
@@ -26,11 +26,17 @@ pub(crate) fn seed_title_count(world: &World, script: &mut benilla_ui::script::U
 }
 
 fn load_quest_titles(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
-    if !crate::wrath::selected_from_env() { return; }
-    let Some(assets) = assets else { return; };
+    if !crate::wrath::selected_from_env() {
+        return;
+    }
+    let Some(assets) = assets else {
+        return;
+    };
     let result = benilla_formats::load_quest_title_names(&mut assets.chain.lock_recover());
     match result {
-        Ok(names) => { commands.insert_resource(QuestTitles(names)); }
+        Ok(names) => {
+            commands.insert_resource(QuestTitles(names));
+        }
         Err(error) => warn!("quest title names unavailable: {error:#}"),
     }
 }
@@ -172,7 +178,10 @@ impl QuestGiver {
                 if !pending.stalled_reported
                     && pending.started.elapsed() >= std::time::Duration::from_secs(10)
                 {
-                    errors.push("Quest selection has no delivery confirmation yet. Check your connection.".into());
+                    errors.push(
+                        "Quest selection has no delivery confirmation yet. Check your connection."
+                            .into(),
+                    );
                     pending.stalled_reported = true;
                 }
                 self.pending_selection = Some(pending);
@@ -498,18 +507,22 @@ pub(crate) fn close_core(world: &mut World, report: bool) {
 /// (`0x500d74`), so a panel replacing the giver's own closes it, `QUEST_FINISHED` ahead of the new
 /// panel's event; then the cell (`0x500d86`).
 pub(crate) fn open_panel(world: &mut World, npc: u64, view: QuestView) {
-    let observation = world.get_resource::<crate::quest_trace::Source>().cloned().map(|trace| {
-        use crate::quest_trace::Stage;
-        let (quest, stage) = match &view {
-            QuestView::Greeting(_) => (None, Stage::GreetingPanel),
-            QuestView::Detail(detail) => (Some(detail.quest_id), Stage::DetailPanel),
-            QuestView::Progress(progress) => (Some(progress.quest_id), Stage::ProgressPanel),
-            QuestView::Reward(reward) => (Some(reward.quest_id), Stage::RewardPanel),
-        };
-        let scope = world.get_resource::<crate::wrath::WrathWorldView>()
-            .map(|v| (v.session_epoch, v.world_generation));
-        (trace, scope, quest, stage)
-    });
+    let observation = world
+        .get_resource::<crate::quest_trace::Source>()
+        .cloned()
+        .map(|trace| {
+            use crate::quest_trace::Stage;
+            let (quest, stage) = match &view {
+                QuestView::Greeting(_) => (None, Stage::GreetingPanel),
+                QuestView::Detail(detail) => (Some(detail.quest_id), Stage::DetailPanel),
+                QuestView::Progress(progress) => (Some(progress.quest_id), Stage::ProgressPanel),
+                QuestView::Reward(reward) => (Some(reward.quest_id), Stage::RewardPanel),
+            };
+            let scope = world
+                .get_resource::<crate::wrath::WrathWorldView>()
+                .map(|v| (v.session_epoch, v.world_generation));
+            (trace, scope, quest, stage)
+        });
     crate::ui_session::register(world, npc);
     world.resource_mut::<QuestGiver>().open(npc, view);
     if let Some((trace, scope, quest, stage)) = observation {
@@ -619,7 +632,14 @@ fn snapshot(
     spells: Option<&Spells>,
 ) -> Option<QuestState> {
     snapshot_in_target(
-        giver, items, icons, ask, macros, spells, None, benilla_ui::script::UiTarget::Vanilla112,
+        giver,
+        items,
+        icons,
+        ask,
+        macros,
+        spells,
+        None,
+        benilla_ui::script::UiTarget::Vanilla112,
     )
 }
 
@@ -636,10 +656,19 @@ fn snapshot_in_target(
     // The wire sends quest text unexpanded; the client substitutes `$N`, `$B` and `$G`.
     let sub = |t: &str| crate::npc_text::substitute(t, macros);
     let extra = |meta: &benilla_protocol::messages::QuestPanelExtra| QuestExtraView {
-        flags: meta.flags, suggested_players: meta.suggested_players, xp: meta.xp,
-        honor_tenths: meta.honor_tenths, talents: meta.talents, arena_points: meta.arena_points,
-        title: titles.and_then(|titles| macros.subject.and_then(|subject|
-            titles.0.render(meta.title_id, subject.gender == 1, &subject.name))),
+        flags: meta.flags,
+        suggested_players: meta.suggested_players,
+        xp: meta.xp,
+        honor_tenths: meta.honor_tenths,
+        talents: meta.talents,
+        arena_points: meta.arena_points,
+        title: titles.and_then(|titles| {
+            macros.subject.and_then(|subject| {
+                titles
+                    .0
+                    .render(meta.title_id, subject.gender == 1, &subject.name)
+            })
+        }),
     };
     // The cell zero is a closed window, whatever panel its kind still names.
     giver.npc?;
@@ -730,7 +759,11 @@ pub(crate) fn feed_quest(
     names: Res<NameCache>,
     states: Res<crate::world_state::WorldStates>,
     self_q: Query<(&ObjectStore, &Guid), With<SelfPlayer>>,
-    (spells, unit_names, titles): (Option<Res<Spells>>, crate::ui_unit::NameTables, Option<Res<QuestTitles>>),
+    (spells, unit_names, titles): (
+        Option<Res<Spells>>,
+        crate::ui_unit::NameTables,
+        Option<Res<QuestTitles>>,
+    ),
     go_templates: Res<crate::go_templates::GameObjectTemplates>,
     materials: Option<Res<crate::ui_item_text::PageMaterials>>,
     mut sink: MessageSink,
@@ -1195,7 +1228,8 @@ mod tests {
     #[test]
     fn the_greeting_snapshot_keeps_each_quests_level_beside_its_title() {
         let row = |quest_id, icon, level, title: &str| benilla_protocol::messages::QuestListEntry {
-            flags: 0, repeatable: false,
+            flags: 0,
+            repeatable: false,
             quest_id,
             icon,
             level,

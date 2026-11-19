@@ -315,7 +315,10 @@ impl WidgetArena {
 
     /// 12340 CSimpleFrame::SetParent shifts descendant levels with the parent.
     pub fn reparent_finish_with_levels(
-        &mut self, h: FrameHandle, new_parent: Option<FrameHandle>, shift_children: bool,
+        &mut self,
+        h: FrameHandle,
+        new_parent: Option<FrameHandle>,
+        shift_children: bool,
     ) {
         if self.frame(h).is_none() {
             return; // died inside an OnHide: nothing to move

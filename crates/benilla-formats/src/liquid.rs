@@ -335,10 +335,7 @@ fn build_mh2o_instance(instance: &Mh2oInstance, position: [f32; 3]) -> Option<Li
             if authored_uvs {
                 let [s, t] = instance.uvs[i];
                 let scale = f64::from(MAGMA_TEXCOORD_SCALE);
-                uvs.push([
-                    (f64::from(s) * scale) as f32,
-                    (f64::from(t) * scale) as f32,
-                ]);
+                uvs.push([(f64::from(s) * scale) as f32, (f64::from(t) * scale) as f32]);
             } else {
                 uvs.push([col as f32 * 0.25, row as f32 * 0.25]);
             }

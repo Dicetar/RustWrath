@@ -186,16 +186,24 @@ pub(super) fn move_axes(
     let strafe_right = binds.pressed(crate::bindings::Input::StrafeRight);
     let turn_left = binds.pressed(crate::bindings::Input::TurnLeft);
     let turn_right = binds.pressed(crate::bindings::Input::TurnRight);
+    // Souls lock-on ([`super::state::SoulsDrive`]) holds the facing on the target, so the turn
+    // keys strafe around it as they do under right-mouse look.
+    let turn_keys_strafe = mouselook || player.souls.turn_keys_strafe;
     let side_axis = i32::from(strafe_right) - i32::from(strafe_left)
-        + if mouselook {
+        + if turn_keys_strafe {
             i32::from(turn_right) - i32::from(turn_left)
         } else {
             0
         };
+    // A Souls action drives (root motion) or holds the body in place of the keys; the controller's
+    // own gates (a root, a stun, death) still stop the translation downstream.
+    let (fwd_axis, side_axis) = player.souls.axes.unwrap_or((fwd_axis, side_axis));
     // A keyboard turn yaws left-positive, like the mouse, and never while `may_turn` is down: the
     // reference skips its turn emitter `0x514f50`, and stops one in flight, behind `0x514755`. A
     // corpse fails the precondition both predicates share (`0x5144e0`), so it cannot turn either.
-    let turning = !mouselook && may_turn && (turn_left || turn_right);
+    // A Souls facing hold turns nothing either.
+    let turning =
+        !turn_keys_strafe && player.souls.face.is_none() && may_turn && (turn_left || turn_right);
     let translating = fwd_axis != 0 || side_axis != 0;
 
     MoveAxes {

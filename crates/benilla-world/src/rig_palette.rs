@@ -164,8 +164,6 @@ fn rebase(mut world: Affine3A, origin: Vec3) -> Affine3A {
     world
 }
 
-
-
 /// [`rebase`] for a `GlobalTransform`.
 pub(crate) fn rebase_global(g: GlobalTransform, origin: Vec3) -> GlobalTransform {
     GlobalTransform::from(rebase(g.affine(), origin))
@@ -329,7 +327,10 @@ impl RigPalettes {
             } else {
                 if !self.non_finite_warned {
                     self.non_finite_warned = true;
-                    warn!("rig {} bone {b}: non-finite joint; bind pose used", rig.slot);
+                    warn!(
+                        "rig {} bone {b}: non-finite joint; bind pose used",
+                        rig.slot
+                    );
                 }
                 Affine3A::IDENTITY
             };

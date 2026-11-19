@@ -94,13 +94,8 @@ impl PetPersonalities {
 }
 
 /// `PetLoyalty.dbc`: loyalty level to its localized name.
+#[derive(Default)]
 pub struct PetLoyaltyNames(HashMap<u32, String>);
-
-impl Default for PetLoyaltyNames {
-    fn default() -> Self {
-        Self(HashMap::new())
-    }
-}
 
 impl PetLoyaltyNames {
     /// The name for a loyalty level. `None` is `GetPetLoyalty`'s nil, for level `0` and past the
@@ -118,7 +113,11 @@ impl PetLoyaltyNames {
     }
 }
 
-fn personality_schema(fields: usize, damage_field: usize, loyalty_rate_field: Option<usize>) -> Schema {
+fn personality_schema(
+    fields: usize,
+    damage_field: usize,
+    loyalty_rate_field: Option<usize>,
+) -> Schema {
     let mut s = Schema::new("PetPersonality");
     for i in 0..fields {
         let ty = match i {

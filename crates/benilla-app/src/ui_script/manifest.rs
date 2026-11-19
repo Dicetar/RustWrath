@@ -658,7 +658,10 @@ mod tests {
         benilla_formats::wow_data_or_skip!();
         let bytes = reference_ui::read(reference_ui::TOC).expect("installed FrameXML.toc");
         let text = benilla_ui::source::decode(&bytes);
-        assert_eq!(benilla_ui::toc::Toc::parse(&text).interface_version(), 30300);
+        assert_eq!(
+            benilla_ui::toc::Toc::parse(&text).interface_version(),
+            30300
+        );
         let core = reference_ui::core_from(&text);
         let chat_file = r"Interface\FrameXML\FloatingChatFrame.xml";
         assert!(
@@ -685,7 +688,12 @@ mod tests {
             s.register_cvars(crate::cvars::registered_pairs());
             let mut toc = benilla_ui::status::Status::default();
             let all = std::time::Instant::now();
-            for file in core.toc.files.iter().filter(|f| !reference_ui::wrath_skipped(f)) {
+            for file in core
+                .toc
+                .files
+                .iter()
+                .filter(|f| !reference_ui::wrath_skipped(f))
+            {
                 let chat = file.eq_ignore_ascii_case(chat_file);
                 if chat {
                     eprintln!("CORE_FILE_START {kind} {file}");

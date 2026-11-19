@@ -35,17 +35,27 @@ pub fn open(vm: &mut Vm) {
 }
 
 pub(crate) fn open_51(vm: &mut Vm) {
-    let table = vm.get_global("string").as_table().expect("string library installed");
-    let functions: [(&'static str, crate::heap::NativeFn); 3] = [("match", match_), ("gmatch", gfind), ("reverse", reverse)];
+    let table = vm
+        .get_global("string")
+        .as_table()
+        .expect("string library installed");
+    let functions: [(&'static str, crate::heap::NativeFn); 3] =
+        [("match", match_), ("gmatch", gfind), ("reverse", reverse)];
     for (name, function) in functions {
         let value = vm.new_native(name, function);
         let key = vm.str(name.as_bytes());
-        vm.heap.table_mut(table).set(key, value).expect("library key");
+        vm.heap
+            .table_mut(table)
+            .set(key, value)
+            .expect("library key");
     }
     let meta = vm.heap.new_table(0, 0);
     vm.set_string_metatable(Some(meta));
     let index = vm.str(b"__index");
-    vm.heap.table_mut(meta).set(index, Value::Table(table)).expect("string method index");
+    vm.heap
+        .table_mut(meta)
+        .set(index, Value::Table(table))
+        .expect("string method index");
     wrath::open(vm);
 }
 
@@ -260,7 +270,9 @@ fn byte_51(vm: &mut Vm, nargs: usize) -> R<usize> {
     let first = posrelat(vm.opt_integer(nargs, 2, 1)?, length);
     let last = posrelat(vm.opt_integer(nargs, 3, first)?, length).min(length as i64);
     let first = first.max(1);
-    if first > last { return Ok(0); }
+    if first > last {
+        return Ok(0);
+    }
     let count = (last - first + 1) as usize;
     if count > 8000usize.saturating_sub(vm.top - vm.native_base()) {
         return Err(vm.error_at(1, "string slice too long"));
@@ -329,14 +341,18 @@ fn format_in(vm: &mut Vm, nargs: usize, [f, out]: &mut [Vec<u8>; 2]) -> R<usize>
     let mut i = 0;
     while i < f.len() {
         if f[i] != b'%' {
-            if wrath { vm.reserve(out, 1)?; }
+            if wrath {
+                vm.reserve(out, 1)?;
+            }
             out.push(f[i]);
             i += 1;
             continue;
         }
         i += 1;
         if at(i) == b'%' {
-            if wrath { vm.reserve(out, 1)?; }
+            if wrath {
+                vm.reserve(out, 1)?;
+            }
             out.push(b'%');
             i += 1;
             continue;
@@ -450,7 +466,11 @@ fn format_in(vm: &mut Vm, nargs: usize, [f, out]: &mut [Vec<u8>; 2]) -> R<usize>
                 vm.reserve(out, len.saturating_add(99))?;
                 let b = vm.heap.str(s);
                 // No precision digits and 100 bytes or more: the string whole (`0x7fd609`).
-                let no_precision = if wrath { spec.precision.is_none() } else { prec_len == 0 };
+                let no_precision = if wrath {
+                    spec.precision.is_none()
+                } else {
+                    prec_len == 0
+                };
                 if no_precision && b.len() >= 100 {
                     out.extend_from_slice(b);
                 } else {
@@ -889,7 +909,9 @@ fn find_in(vm: &mut Vm, nargs: usize, [src, pat, cpat]: &mut [Vec<u8>; 3]) -> R<
     if init < 0 {
         init = 0;
     } else if init as usize > l1 {
-        if vm.dialect().is_51() { return Ok(vm.ret1(Value::Nil)); }
+        if vm.dialect().is_51() {
+            return Ok(vm.ret1(Value::Nil));
+        }
         init = l1 as i64;
     }
     let init = init as usize;
@@ -960,7 +982,9 @@ fn match_in(vm: &mut Vm, nargs: usize, [subject, pattern]: &mut [Vec<u8>; 2]) ->
     let pat = vm.check_str(nargs, 2)?;
     let length = vm.heap.str(string).len();
     let initial = (posrelat(vm.opt_integer(nargs, 3, 1)?, length) - 1).max(0) as usize;
-    if initial > length { return Ok(vm.ret1(Value::Nil)); }
+    if initial > length {
+        return Ok(vm.ret1(Value::Nil));
+    }
     subject.extend_from_slice(vm.heap.str(string));
     c_pattern(vm.heap.str(pat), pattern);
     let anchored = pattern[0] == b'^';
@@ -971,13 +995,19 @@ fn match_in(vm: &mut Vm, nargs: usize, [subject, pattern]: &mut [Vec<u8>; 2]) ->
         match state.do_match(position, start) {
             Err(error) => return Err(pat_err(vm, error)),
             Ok(Some(end)) => {
-                let values = state.captures(vm, Some((position, end))).map_err(|e| pat_err(vm, e))?;
-                for value in &values { vm.push(*value); }
+                let values = state
+                    .captures(vm, Some((position, end)))
+                    .map_err(|e| pat_err(vm, e))?;
+                for value in &values {
+                    vm.push(*value);
+                }
                 return Ok(values.len());
             }
             Ok(None) => {}
         }
-        if anchored { break; }
+        if anchored {
+            break;
+        }
     }
     Ok(vm.ret1(Value::Nil))
 }
@@ -1172,7 +1202,9 @@ fn add_value(
         .map_err(|err| pat_err(vm, err))?;
     let v = if kind == 2 {
         vm.index(repl, caps[0], None)?
-    } else { vm.call_value(repl, &caps, 1)?[0] };
+    } else {
+        vm.call_value(repl, &caps, 1)?[0]
+    };
     if vm.dialect().is_51() && !v.truthy() {
         vm.reserve(out, e - s)?;
         out.extend_from_slice(&ms.src[s..e]);

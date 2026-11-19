@@ -5,7 +5,7 @@ Windows Task Scheduler task `RustWrath source backup every 8 hours` runs
 The machine must be running and the user logged in. StartWhenAvailable is enabled for missed
 starts; no password is stored. The task does not run Cargo, Git pulls, or client processes.
 
-Backups live outside the checkout in `D:/Projects/RustWrath-backups`. Keep at most three
+Backups live outside the checkout in `D:/Projects/wow/backups`. Keep at most three
 completed copies total. Each copy contains a full-history/ref Git bundle, a zip of available
 tracked and unignored source files including dirty edits, a manifest, working status and
 restoration instructions. This is a source/history backup, not a copy of target or the install.

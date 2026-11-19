@@ -95,7 +95,9 @@ impl CombatConfig {
             return Err(CombatError::InvalidConfig("player_max_hp must be non-zero"));
         }
         if self.dodge.total_ticks == 0 {
-            return Err(CombatError::InvalidConfig("dodge.total_ticks must be non-zero"));
+            return Err(CombatError::InvalidConfig(
+                "dodge.total_ticks must be non-zero",
+            ));
         }
         if self.dodge.input_from_tick > self.dodge.total_ticks {
             return Err(CombatError::InvalidConfig(
@@ -128,7 +130,9 @@ impl CombatConfig {
             ));
         }
         if self.dodge.stamina_cost == 0 {
-            return Err(CombatError::InvalidConfig("dodge.stamina_cost must be non-zero"));
+            return Err(CombatError::InvalidConfig(
+                "dodge.stamina_cost must be non-zero",
+            ));
         }
         if self.dodge.stamina_cost > self.stamina.max {
             return Err(CombatError::InvalidConfig(

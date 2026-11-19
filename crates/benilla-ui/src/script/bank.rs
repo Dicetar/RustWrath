@@ -121,13 +121,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let is_bag = is_bag
                 .and_then(|v| lua.coerce_number(v).ok().flatten())
                 .is_some();
-            let wrath = lua
-                .app_data_ref::<Model>()
-                .expect("model app_data")
-                .target
+            let wrath = lua.app_data_ref::<Model>().expect("model app_data").target
                 == super::UiTarget::Wrath335;
             let step = if is_bag {
-                if wrath { 63 } else { 59 }
+                if wrath {
+                    63
+                } else {
+                    59
+                }
             } else {
                 39
             };

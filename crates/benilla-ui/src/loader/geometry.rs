@@ -17,14 +17,17 @@ impl Loader<'_> {
         for attributes in children_named(el, "Attributes") {
             for attribute in children_named(attributes, "Attribute") {
                 let Some(name) = attribute.attr("name") else {
-                    self.report.fault(format!("{dbg}: XML Attribute has no name"));
+                    self.report
+                        .fault(format!("{dbg}: XML Attribute has no name"));
                     continue;
                 };
                 let raw = attribute.attr("value").unwrap_or_default();
                 let kind = attribute.attr("type").unwrap_or("string");
                 let value: Result<Value, String> = match kind {
                     "nil" => Ok(Value::Nil),
-                    "string" => self.lua().create_string(raw)
+                    "string" => self
+                        .lua()
+                        .create_string(raw)
                         .map(Value::String)
                         .map_err(|error| error.to_string()),
                     "boolean" => match raw.trim() {
@@ -32,24 +35,30 @@ impl Loader<'_> {
                         "false" | "0" => Ok(Value::Boolean(false)),
                         _ => Err(format!("invalid boolean {raw:?}")),
                     },
-                    "number" => self.lua().create_string(raw)
+                    "number" => self
+                        .lua()
+                        .create_string(raw)
                         .and_then(|text| self.lua().coerce_number(Value::String(text)))
                         .map_err(|error| error.to_string())
                         .and_then(|number| {
-                            number.map(Value::Number)
+                            number
+                                .map(Value::Number)
                                 .ok_or_else(|| format!("invalid number {raw:?}"))
                         }),
                     _ => Err(format!("unsupported type {kind:?}")),
                 };
                 match value {
                     Ok(value) => {
-                        if let Err(error) = wrapper.call_method::<()>(
-                            "SetAttribute", (name.to_string(), value),
-                        ) {
-                            self.report.raise(format!("{dbg}: Attribute {name:?}: {error}"), &error);
+                        if let Err(error) =
+                            wrapper.call_method::<()>("SetAttribute", (name.to_string(), value))
+                        {
+                            self.report
+                                .raise(format!("{dbg}: Attribute {name:?}: {error}"), &error);
                         }
                     }
-                    Err(error) => self.report.fault(format!("{dbg}: Attribute {name:?}: {error}")),
+                    Err(error) => self
+                        .report
+                        .fault(format!("{dbg}: Attribute {name:?}: {error}")),
                 }
             }
         }
@@ -307,7 +316,8 @@ impl Loader<'_> {
                 args,
                 offset: children_named(anchor, "Offset").next().cloned(),
                 inline_offset: if self.model().target == crate::script::UiTarget::Wrath335 {
-                    ["x", "y"].map(|key| Len::Script(super::xml_float_attr(anchor, key).unwrap_or(0.0)))
+                    ["x", "y"]
+                        .map(|key| Len::Script(super::xml_float_attr(anchor, key).unwrap_or(0.0)))
                 } else {
                     [Len::Script(0.0); 2]
                 },

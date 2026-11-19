@@ -97,6 +97,7 @@ pub mod testing {
                 .collect(),
             spine_bone: None,
             head_bone: None,
+            thumb_bones: [None, None],
         };
         crate::rig_anim::RigPose::new(root, &skeleton)
     }

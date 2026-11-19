@@ -1079,7 +1079,8 @@ impl PendingCombat {
     /// The word visible to the combat-text addon in this VM.
     pub(crate) fn visible_word(&self, script: &benilla_ui::script::UiScript) -> Option<&LineWord> {
         self.word.as_ref().filter(|word| {
-            word.recipient.is_none_or(|guid| script.combat_text_tracks(guid))
+            word.recipient
+                .is_none_or(|guid| script.combat_text_tracks(guid))
         })
     }
 

@@ -152,8 +152,8 @@ where
         return Ok(PumpResult::Idle);
     };
 
-    let observation = observation_from_producer(&snapshot, exported_at_unix_ms)
-        .map_err(PumpError::Conversion)?;
+    let observation =
+        observation_from_producer(&snapshot, exported_at_unix_ms).map_err(PumpError::Conversion)?;
 
     match publisher.publish(observation) {
         Ok(PublishOutcome::HandedOff(receipt)) => {

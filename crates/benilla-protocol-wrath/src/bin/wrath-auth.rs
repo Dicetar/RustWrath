@@ -30,15 +30,19 @@ fn main() -> Result<()> {
             );
         }
         "logon" => {
-            let logon = logon("127.0.0.1:3724", &account, &password)
-                .context("logon failed")?;
+            let logon = logon("127.0.0.1:3724", &account, &password).context("logon failed")?;
             println!("authenticated as {}", logon.account);
             println!("session key fingerprint: {}", hex(&logon.session_key[..8]));
             for realm in &logon.realms {
                 println!(
                     "realm #{} `{}` type {} flags {:#04x} at {} (pop {:.1}, chars {})",
-                    realm.realm_id, realm.name, realm.realm_type, realm.flags,
-                    realm.address, realm.population, realm.characters
+                    realm.realm_id,
+                    realm.name,
+                    realm.realm_type,
+                    realm.flags,
+                    realm.address,
+                    realm.population,
+                    realm.characters
                 );
             }
         }

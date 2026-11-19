@@ -53,9 +53,9 @@ pub fn load_spell_dispel_types(chain: &mut Chain) -> Result<SpellDispelTypes> {
     let (locales, named_column, internal_name_column) = match field_count(&bytes) {
         Some(12) => (8, 10, 11),
         Some(21) => (16, 18, 20),
-        Some(columns) => bail!(
-            "unsupported SpellDispelType.dbc layout: {columns} fields (expected 12 or 21)"
-        ),
+        Some(columns) => {
+            bail!("unsupported SpellDispelType.dbc layout: {columns} fields (expected 12 or 21)")
+        }
         None => bail!("parsing SpellDispelType.dbc header: truncated field count"),
     };
     let mut schema = Schema::new("SpellDispelType");

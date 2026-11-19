@@ -99,24 +99,22 @@ impl Chain {
                 .collect();
             let mut names: Vec<String> = entries
                 .iter()
-                .filter_map(|e| {
-                    e.path().is_file().then(|| e.file_name().into_string().ok())
-                })
-                .flatten()
+                .filter(|e| e.path().is_file())
+                .filter_map(|e| e.file_name().into_string().ok())
                 .collect();
             names.sort();
 
             if is_wrath_install(&names) {
-                let find_in_names = |want: &str| {
-                    names.iter().find(|n| n.eq_ignore_ascii_case(want)).cloned()
-                };
+                let find_in_names =
+                    |want: &str| names.iter().find(|n| n.eq_ignore_ascii_case(want)).cloned();
 
                 // 1. Base root archives (lowest priority)
                 for base in WRATH_BASE_ORDER {
                     if let Some(matched) = find_in_names(base) {
                         let mpq = path.join(&matched);
                         archives.push(
-                            Archive::open(&mpq).with_context(|| format!("opening {}", mpq.display()))?,
+                            Archive::open(&mpq)
+                                .with_context(|| format!("opening {}", mpq.display()))?,
                         );
                     }
                 }
@@ -125,7 +123,8 @@ impl Chain {
                 if let Some(p) = find_in_names("patch.mpq") {
                     let mpq = path.join(&p);
                     archives.push(
-                        Archive::open(&mpq).with_context(|| format!("opening {}", mpq.display()))?,
+                        Archive::open(&mpq)
+                            .with_context(|| format!("opening {}", mpq.display()))?,
                     );
                 }
                 let mut root_patches: Vec<String> = names
@@ -142,7 +141,8 @@ impl Chain {
                 for p in root_patches {
                     let mpq = path.join(&p);
                     archives.push(
-                        Archive::open(&mpq).with_context(|| format!("opening {}", mpq.display()))?,
+                        Archive::open(&mpq)
+                            .with_context(|| format!("opening {}", mpq.display()))?,
                     );
                 }
 
@@ -166,7 +166,7 @@ impl Chain {
                     }
                 }
                 locale_dirs.sort_by_key(|(name, _)| name.to_ascii_lowercase());
-                let configured = configured_locale(&path);
+                let configured = configured_locale(path);
                 let chosen = configured
                     .as_deref()
                     .and_then(|want| {
@@ -190,11 +190,16 @@ impl Chain {
                     if let Ok(loc_entries) = std::fs::read_dir(&loc_dir) {
                         let loc_files: Vec<String> = loc_entries
                             .flatten()
-                            .filter_map(|e| e.path().is_file().then(|| e.file_name().into_string().ok()))
+                            .filter_map(|e| {
+                                e.path().is_file().then(|| e.file_name().into_string().ok())
+                            })
                             .flatten()
                             .collect();
                         let find_loc = |want: &str| {
-                            loc_files.iter().find(|n| n.eq_ignore_ascii_case(want)).cloned()
+                            loc_files
+                                .iter()
+                                .find(|n| n.eq_ignore_ascii_case(want))
+                                .cloned()
                         };
 
                         // Locale base archives
@@ -222,8 +227,10 @@ impl Chain {
                             .iter()
                             .filter(|n| {
                                 let lower = n.to_ascii_lowercase();
-                                lower.starts_with(&format!("patch-{}-", loc_name.to_ascii_lowercase()))
-                                    && lower.ends_with(".mpq")
+                                lower.starts_with(&format!(
+                                    "patch-{}-",
+                                    loc_name.to_ascii_lowercase()
+                                )) && lower.ends_with(".mpq")
                                     && !lower.ends_with(".disabled")
                             })
                             .cloned()
@@ -264,10 +271,7 @@ impl Chain {
                 Archive::open(path).with_context(|| format!("opening MPQ {}", path.display()))?,
             );
         }
-        let mut chain = Self {
-            archives,
-            locale,
-        };
+        let mut chain = Self { archives, locale };
         chain.locale = crate::wow_ini::client_locale(&chain);
         Ok(chain)
     }

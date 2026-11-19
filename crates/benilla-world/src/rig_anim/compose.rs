@@ -273,7 +273,8 @@ pub fn plugin(app: &mut App) {
         PostUpdate,
         (
             PosePost.after(bevy::app::AnimationSystems),
-            PoseModulePass.after(PosePost)
+            PoseModulePass
+                .after(PosePost)
                 .before(bevy::transform::TransformSystems::Propagate),
         ),
     )
@@ -297,6 +298,7 @@ mod tests {
             joints,
             spine_bone: None,
             head_bone: None,
+            thumb_bones: [None, None],
         }
     }
 

@@ -199,7 +199,11 @@ fn clear_content(model: &mut Model, h: FrameHandle) {
         let used = t.num_lines.min(t.wrapped.len());
         t.wrapped[..used].fill(false);
         t.num_lines = 0;
-        t.min_width = 0.0;
+        // The clear drops an unforced floor only (`0x530258`, 12340 `Tooltip.cpp:986`); a forced
+        // one survives the clear until a later `SetMinimumWidth` replaces it.
+        if !t.min_width_force {
+            t.min_width = 0.0;
+        }
         // Clear drops the subject and unregisters its health watcher (`0x5300ad`, `0x53007c`).
         t.unit_guid = None;
         t.unit_token = None;
@@ -255,11 +259,15 @@ pub(super) fn fire_cleared(lua: &Lua, h: FrameHandle) {
 pub(super) fn fire_content(lua: &Lua, h: FrameHandle, script: &str) {
     let id = {
         let mut model = lua.app_data_mut::<Model>().expect("model");
-        if model.target != super::UiTarget::Wrath335 { return; }
+        if model.target != super::UiTarget::Wrath335 {
+            return;
+        }
         model.frame_id(h)
     };
     if let Err(error) = event::fire_widget_handler(lua, id, script, Vec::new()) {
-        lua.app_data_mut::<Model>().expect("model").record_lua_error(&error);
+        lua.app_data_mut::<Model>()
+            .expect("model")
+            .record_lua_error(&error);
     }
 }
 

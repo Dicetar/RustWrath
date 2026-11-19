@@ -340,7 +340,12 @@ fn feed_craft(
                     let mut reagents = Vec::new();
                     let mut num_available = u32::MAX;
                     for &(entry, need) in d.reagents.iter().filter(|&&(e, n)| e != 0 && n != 0) {
-                        let have = count_of_in_player(&inventory_view, &objects, entry, InventoryScope::DEFAULT);
+                        let have = count_of_in_player(
+                            &inventory_view,
+                            &objects,
+                            entry,
+                            InventoryScope::DEFAULT,
+                        );
                         // A reagent's icon is the shared item chain (`0x5d88b0`) through its
                         // display.
                         let (name, icon) = match items.template(entry, 0, ask) {
@@ -375,7 +380,12 @@ fn feed_craft(
                     }
                     let mut tools_pending = Vec::new();
                     for &t in d.totems.iter().filter(|&&t| t != 0) {
-                        let have = count_of_in_player(&inventory_view, &objects, t, InventoryScope::DEFAULT) > 0;
+                        let have = count_of_in_player(
+                            &inventory_view,
+                            &objects,
+                            t,
+                            InventoryScope::DEFAULT,
+                        ) > 0;
                         match items.template(t, 0, ask) {
                             Some(info) => tools.push((info.name.clone(), have)),
                             None => tools_pending.push(t),

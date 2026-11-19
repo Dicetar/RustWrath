@@ -15,7 +15,10 @@ pub struct ProcRng {
 
 impl ProcRng {
     pub fn new(seed: u64) -> Self {
-        Self { master: seed, state: seed }
+        Self {
+            master: seed,
+            state: seed,
+        }
     }
 
     /// Next value in the stream (SplitMix64).

@@ -1,10 +1,10 @@
 //! Wrath power notifications over the existing native resource owner. No power prediction or
 //! rune cooldown simulation lives here; this is a scoped memo of what the UI has been notified of.
 
-use std::collections::BTreeMap;
-use bevy::prelude::*;
-use benilla_ui::script::{ScriptValue, UiTarget};
 use crate::wrath_native::WrathUnitResources;
+use benilla_ui::script::{ScriptValue, UiTarget};
+use bevy::prelude::*;
+use std::collections::BTreeMap;
 
 #[derive(Default)]
 pub(crate) struct PowerMemo {
@@ -32,12 +32,17 @@ pub(crate) fn feed(
             *memo = PowerMemo::default();
             return;
         };
-        let Some(world) = world.filter(|world|
-            world.phase == Some(benilla_protocol_wrath::session::Phase::InWorld)) else {
+        let Some(world) = world
+            .filter(|world| world.phase == Some(benilla_protocol_wrath::session::Phase::InWorld))
+        else {
             *memo = PowerMemo::default();
             return;
         };
-        let scope = (script.session(), world.session_epoch, world.world_generation);
+        let scope = (
+            script.session(),
+            world.session_epoch,
+            world.world_generation,
+        );
         if memo.scope != Some(scope) {
             memo.visible.clear();
             memo.scope = Some(scope);
@@ -46,25 +51,45 @@ pub(crate) fn feed(
         let mut visible = script.held_unit_guids();
         visible.sort_unstable();
         for guid in visible {
-            let Some(unit) = world.entities.get(&guid) else { continue; };
-            let Some(resources) = world.resources(guid) else { continue; };
-            let previous = memo.visible.get(&guid).filter(|(generation, _)| *generation == unit.generation)
+            let Some(unit) = world.entities.get(&guid) else {
+                continue;
+            };
+            let Some(resources) = world.resources(guid) else {
+                continue;
+            };
+            let previous = memo
+                .visible
+                .get(&guid)
+                .filter(|(generation, _)| *generation == unit.generation)
                 .map(|(_, resources)| resources);
             let mut changed = Vec::new();
             if resources.power_type.is_some()
                 && previous.is_none_or(|previous| previous.power_type != resources.power_type)
-            { changed.push("UNIT_DISPLAYPOWER"); }
+            {
+                changed.push("UNIT_DISPLAYPOWER");
+            }
             for (kind, events) in EVENTS.iter().enumerate() {
-                let Some((current, maximum)) = events else { continue; };
+                let Some((current, maximum)) = events else {
+                    continue;
+                };
                 if resources.powers[kind].is_some()
-                    && previous.is_none_or(|previous| previous.powers[kind] != resources.powers[kind])
-                { changed.push(*current); }
+                    && previous
+                        .is_none_or(|previous| previous.powers[kind] != resources.powers[kind])
+                {
+                    changed.push(*current);
+                }
                 if resources.max_powers[kind].is_some()
-                    && previous.is_none_or(|previous| previous.max_powers[kind] != resources.max_powers[kind])
-                { changed.push(*maximum); }
+                    && previous.is_none_or(|previous| {
+                        previous.max_powers[kind] != resources.max_powers[kind]
+                    })
+                {
+                    changed.push(*maximum);
+                }
             }
             for token in script.unit_tokens_of(guid) {
-                for event in &changed { fires.post(event, vec![ScriptValue::Str(token.clone())]); }
+                for event in &changed {
+                    fires.post(event, vec![ScriptValue::Str(token.clone())]);
+                }
             }
             retained.insert(guid, (unit.generation, resources));
         }

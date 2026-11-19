@@ -61,7 +61,13 @@ impl MaterialCatalog {
 
 fn schema() -> Schema {
     let mut s = Schema::new("Material");
-    for name in ["ID", "Flags", "FoleySoundID", "SheatheSoundID", "UnsheatheSoundID"] {
+    for name in [
+        "ID",
+        "Flags",
+        "FoleySoundID",
+        "SheatheSoundID",
+        "UnsheatheSoundID",
+    ] {
         s.add_field(SchemaField::new(name, FieldType::UInt32));
     }
     s

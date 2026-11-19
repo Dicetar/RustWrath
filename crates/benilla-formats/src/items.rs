@@ -11,9 +11,9 @@ use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, RecordSet, Schema, SchemaField};
 
-use crate::dbc::{field_count, parse_with_trailing_fields, str_at, u32_at};
 #[cfg(test)]
 use crate::dbc::parse;
+use crate::dbc::{field_count, parse_with_trailing_fields, str_at, u32_at};
 use crate::models::model_name;
 
 const ITEM_DISPLAY_INFO: &str = "DBFilesClient\\ItemDisplayInfo.dbc";
@@ -164,7 +164,10 @@ fn catalog_from_layout(rs: RecordSet, shift: usize) -> ItemDisplayCatalog {
             u32_at(r, 8 + shift).unwrap_or(0),
         ];
         let region_textures = std::array::from_fn(|i| str_at(&rs, r, 14 + shift + i));
-        let helmet_vis = [u32_at(r, 12 + shift).unwrap_or(0), u32_at(r, 13 + shift).unwrap_or(0)];
+        let helmet_vis = [
+            u32_at(r, 12 + shift).unwrap_or(0),
+            u32_at(r, 13 + shift).unwrap_or(0),
+        ];
         let icon = str_at(&rs, r, 5).map(|i| format!("Interface\\Icons\\{i}"));
         let group_sounds = u32_at(r, 11 + shift).unwrap_or(0);
         let spell_visual = u32_at(r, 10 + shift).unwrap_or(0);
@@ -201,11 +204,17 @@ fn parse_item_display_catalog(bytes: &[u8]) -> Result<ItemDisplayCatalog> {
     // Build 12340 has InventoryIcon[2], shifting geosets and all subsequent fields by one;
     // WoWDBDefs ItemDisplayInfo, 3.0.1.8303–3.3.5.12340. ParticleColorID is the final field.
     let fields = field_count(bytes).context("ItemDisplayInfo field count missing")?;
-    anyhow::ensure!(matches!(fields, 23..=25), "unsupported ItemDisplayInfo field count {fields}");
+    anyhow::ensure!(
+        matches!(fields, 23..=25),
+        "unsupported ItemDisplayInfo field count {fields}"
+    );
     let wrath = fields == 25;
     let mut schema = item_display_info_schema();
     if wrath {
-        schema.fields.insert(6, SchemaField::new("InventoryIconSecond", FieldType::String));
+        schema.fields.insert(
+            6,
+            SchemaField::new("InventoryIconSecond", FieldType::String),
+        );
     }
     let rs = parse_with_trailing_fields(bytes, schema, "ItemDisplayInfo")?;
     Ok(catalog_from_layout(rs, usize::from(wrath)))

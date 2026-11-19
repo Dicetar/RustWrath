@@ -8,8 +8,7 @@
 use std::collections::HashMap;
 
 use benilla_formats::{
-    adt_to_tile_mesh, blp_bytes_to_native_prefix, ChunkMesh, Doodad,
-    WmoInstance, ALPHA_MAP_SIZE,
+    adt_to_tile_mesh, blp_bytes_to_native_prefix, ChunkMesh, Doodad, WmoInstance, ALPHA_MAP_SIZE,
     SHADOW_MAP_SIZE,
 };
 use bevy::asset::io::Reader;

@@ -222,9 +222,13 @@ pub(super) fn render_view_flagged(
         full_mask(&CLASS_NAMES)
     };
     let class_names = if target == crate::script::UiTarget::Wrath335
-        && v.allowable_class > 0 && v.allowable_class & class_mask != class_mask
+        && v.allowable_class > 0
+        && v.allowable_class & class_mask != class_mask
     {
-        Some(crate::script::class_names::requirement_names(lua, v.allowable_class)?)
+        Some(crate::script::class_names::requirement_names(
+            lua,
+            v.allowable_class,
+        )?)
     } else {
         None
     };
@@ -234,9 +238,13 @@ pub(super) fn render_view_flagged(
         full_mask(&RACE_NAMES)
     };
     let race_names = if target == crate::script::UiTarget::Wrath335
-        && v.allowable_race > 0 && v.allowable_race & race_mask != race_mask
+        && v.allowable_race > 0
+        && v.allowable_race & race_mask != race_mask
     {
-        Some(crate::script::class_names::race_requirement_names(lua, v.allowable_race)?)
+        Some(crate::script::class_names::race_requirement_names(
+            lua,
+            v.allowable_race,
+        )?)
     } else {
         None
     };
@@ -697,14 +705,14 @@ pub(super) fn render_view_flagged(
             live = true;
         }
     }
-    if v.allowable_class > 0
-        && (v.allowable_class & class_mask) != class_mask
-    {
+    if v.allowable_class > 0 && (v.allowable_class & class_mask) != class_mask {
         let list: Vec<&str> = match &class_names {
             Some(names) => names.iter().map(String::as_str).collect(),
-            None => CLASS_NAMES.iter()
+            None => CLASS_NAMES
+                .iter()
                 .filter(|&&(id, _)| v.allowable_class & (1 << (id - 1)) != 0)
-                .map(|&(_, name)| name).collect(),
+                .map(|&(_, name)| name)
+                .collect(),
         };
         if !list.is_empty() {
             let ok = req.class_id > 0 && v.allowable_class & (1 << (req.class_id - 1)) != 0;
@@ -716,13 +724,14 @@ pub(super) fn render_view_flagged(
             )?;
         }
     }
-    if v.allowable_race > 0 && (v.allowable_race & race_mask) != race_mask
-    {
+    if v.allowable_race > 0 && (v.allowable_race & race_mask) != race_mask {
         let list: Vec<&str> = match &race_names {
             Some(names) => names.iter().map(String::as_str).collect(),
-            None => RACE_NAMES.iter()
+            None => RACE_NAMES
+                .iter()
                 .filter(|&&(id, _)| v.allowable_race & (1 << (id - 1)) != 0)
-                .map(|&(_, name)| name).collect(),
+                .map(|&(_, name)| name)
+                .collect(),
         };
         if !list.is_empty() {
             let ok = req.race_id > 0 && v.allowable_race & (1 << (req.race_id - 1)) != 0;
@@ -805,8 +814,12 @@ pub(super) fn render_view_flagged(
             if value == 0 {
                 continue;
             }
-            let Some(template) = wrath_equip_stat_key(kind).and_then(&get) else { continue };
-            let Some(text) = wrath_stat_text(&template, value) else { continue };
+            let Some(template) = wrath_equip_stat_key(kind).and_then(&get) else {
+                continue;
+            };
+            let Some(text) = wrath_stat_text(&template, value) else {
+                continue;
+            };
             let prefix = get("ITEM_SPELL_TRIGGER_ONEQUIP").unwrap_or_default();
             addw((format!("{prefix} {text}"), GREEN))?;
         }

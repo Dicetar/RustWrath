@@ -42,8 +42,8 @@
 
 use std::time::Instant;
 
-use bevy::prelude::*;
 use benilla_world::schedule::WorldStage;
+use bevy::prelude::*;
 
 use crate::spell::{ActiveChannel, Cooldowns, PendingCast};
 use crate::ui_action::Spells;

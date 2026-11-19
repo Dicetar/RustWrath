@@ -17,28 +17,57 @@ fn player_frame_script() -> Option<UiScript> {
 #[test]
 fn stock_wrath_spellbook_maps_displayed_ranks_to_known_slots() {
     use benilla_ui::script::{SpellBookState, SpellSlotView, SpellTabView};
-    let Some(mut s) = stock_script_through("SpellBookFrame.xml", true) else { return; };
-    assert!(s.eval::<bool>("return GetCVarBool('ShowAllSpellRanks')").unwrap());
+    let Some(mut s) = stock_script_through("SpellBookFrame.xml", true) else {
+        return;
+    };
+    assert!(s
+        .eval::<bool>("return GetCVarBool('ShowAllSpellRanks')")
+        .unwrap());
     s.set_spellbook(SpellBookState {
         tabs: vec![SpellTabView {
-            name: "Fire".into(), offset: 0, num_spells: 2, ..Default::default()
+            name: "Fire".into(),
+            offset: 0,
+            num_spells: 2,
+            ..Default::default()
         }],
         slots: vec![
-            SpellSlotView { spell_id: 133, name: "Fireball".into(), rank: Some("Rank 1".into()), ..Default::default() },
-            SpellSlotView { spell_id: 143, name: "Fireball".into(), rank: Some("Rank 2".into()), ..Default::default() },
+            SpellSlotView {
+                spell_id: 133,
+                name: "Fireball".into(),
+                rank: Some("Rank 1".into()),
+                ..Default::default()
+            },
+            SpellSlotView {
+                spell_id: 143,
+                name: "Fireball".into(),
+                rank: Some("Rank 2".into()),
+                ..Default::default()
+            },
         ],
     });
     s.run("SetCVar('ShowAllSpellRanks', '0')").unwrap();
-    assert_eq!(s.eval::<(i64, i64)>(
-        "local _,_,offset,count=SpellBook_GetTabInfo(1) return offset,count"
-    ).unwrap(), (0, 1));
-    assert_eq!(s.eval::<(i64, i64)>("return SpellBook_GetSpellID(1)").unwrap(), (2, 1));
+    assert_eq!(
+        s.eval::<(i64, i64)>("local _,_,offset,count=SpellBook_GetTabInfo(1) return offset,count")
+            .unwrap(),
+        (0, 1)
+    );
+    assert_eq!(
+        s.eval::<(i64, i64)>("return SpellBook_GetSpellID(1)")
+            .unwrap(),
+        (2, 1)
+    );
     s.run("SpellButton_UpdateSelection(SpellButton1)").unwrap();
     s.run("SetCVar('ShowAllSpellRanks', '1')").unwrap();
-    assert_eq!(s.eval::<(i64, i64)>(
-        "local _,_,offset,count=SpellBook_GetTabInfo(1) return offset,count"
-    ).unwrap(), (0, 2));
-    assert_eq!(s.eval::<(i64, i64)>("return SpellBook_GetSpellID(1)").unwrap(), (1, 1));
+    assert_eq!(
+        s.eval::<(i64, i64)>("local _,_,offset,count=SpellBook_GetTabInfo(1) return offset,count")
+            .unwrap(),
+        (0, 2)
+    );
+    assert_eq!(
+        s.eval::<(i64, i64)>("return SpellBook_GetSpellID(1)")
+            .unwrap(),
+        (1, 1)
+    );
 }
 
 /// The TOC prefix through `leaf`, the production order the chosen profile lists.
@@ -52,15 +81,31 @@ fn stock_script_through(leaf: &str, strict: bool) -> Option<UiScript> {
         .expect("selected Wrath UI smoke manifest requires WM_ASSET_PROFILE");
     assert!(!profile.trim().is_empty(), "Wrath UI profile must be named");
     let data = benilla_formats::wow_data_or_skip!(None);
-    let mut chain = benilla_assets::open_profile_chain(&data, &manifest, &profile)
-        .unwrap_or_else(|error| panic!("Wrath UI profile {profile} / {}: {error:#}", manifest.display()));
-    let toc_bytes = chain.read(super::reference_ui::TOC)
+    let mut chain =
+        benilla_assets::open_profile_chain(&data, &manifest, &profile).unwrap_or_else(|error| {
+            panic!(
+                "Wrath UI profile {profile} / {}: {error:#}",
+                manifest.display()
+            )
+        });
+    let toc_bytes = chain
+        .read(super::reference_ui::TOC)
         .expect("selected Wrath profile must supply FrameXML.toc");
     let toc = benilla_ui::toc::Toc::parse(&benilla_ui::source::decode(&toc_bytes));
-    assert_eq!(toc.interface_version(), 30300, "selected FrameXML must be the Wrath interface");
-    let last = toc.files.iter().position(|path|
-        path.replace('\\', "/").rsplit('/').next()
-            .is_some_and(|name| name.eq_ignore_ascii_case(leaf)))
+    assert_eq!(
+        toc.interface_version(),
+        30300,
+        "selected FrameXML must be the Wrath interface"
+    );
+    let last = toc
+        .files
+        .iter()
+        .position(|path| {
+            path.replace('\\', "/")
+                .rsplit('/')
+                .next()
+                .is_some_and(|name| name.eq_ignore_ascii_case(leaf))
+        })
         .expect("selected FrameXML.toc must list the requested leaf");
 
     let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
@@ -94,40 +139,67 @@ fn stock_script_through(leaf: &str, strict: bool) -> Option<UiScript> {
             ..Default::default()
         }),
     );
-    eprintln!("WRATH_UI_SMOKE_DATA target={:?} interface=30300 profile={profile} manifest={} data={}",
-        s.target(), manifest.display(), data.display());
+    eprintln!(
+        "WRATH_UI_SMOKE_DATA target={:?} interface=30300 profile={profile} manifest={} data={}",
+        s.target(),
+        manifest.display(),
+        data.display()
+    );
     let toc_path = super::reference_ui::TOC.replace('\\', "/");
-    let (directory, _) = toc_path.rsplit_once('/').expect("FrameXML TOC has a directory");
+    let (directory, _) = toc_path
+        .rsplit_once('/')
+        .expect("FrameXML TOC has a directory");
     for entry in &toc.files[..=last] {
         // The host's permanent skip: benilla has no voice chat (`reference_ui::WRATH_SKIPPED_FILES`).
         if super::reference_ui::wrath_skipped(entry) {
             continue;
         }
         let path = benilla_ui::loader::join_ref(directory, entry);
-        let bytes = chain.read(&path).unwrap_or_else(|error| panic!("{path}: {error:#}"));
+        let bytes = chain
+            .read(&path)
+            .unwrap_or_else(|error| panic!("{path}: {error:#}"));
         if path.to_ascii_lowercase().ends_with(".lua") {
             s.run_chunk_named(&bytes, &format!("@{path}"))
                 .unwrap_or_else(|error| panic!("{path}: {error}"));
         } else {
             let doc = benilla_ui::framexml::parse(&benilla_ui::source::decode(&bytes))
                 .unwrap_or_else(|error| panic!("{path}: {error}"));
-            let report = benilla_ui::loader::load_in(&s, &doc, &path, &|request| chain.read(request).ok());
+            let report =
+                benilla_ui::loader::load_in(&s, &doc, &path, &|request| chain.read(request).ok());
             if !strict {
                 // A wider TOC prefix pulls in windows whose own incomplete wrath APIs error at
                 // load (party, pet, spellbook). Only the quest log's own files must be clean.
-                assert!(report.missing_files.is_empty(), "{path}: missing files: {:?}", report.missing_files);
+                assert!(
+                    report.missing_files.is_empty(),
+                    "{path}: missing files: {:?}",
+                    report.missing_files
+                );
                 for error in &report.errors {
                     assert!(
-                        !["QuestLogFrame", "QuestFrame", "QuestInfo", "UIPanelTemplates", "GameTooltip"]
-                            .iter()
-                            .any(|k| error.contains(k)),
+                        ![
+                            "QuestLogFrame",
+                            "QuestFrame",
+                            "QuestInfo",
+                            "UIPanelTemplates",
+                            "GameTooltip"
+                        ]
+                        .iter()
+                        .any(|k| error.contains(k)),
                         "{path}: quest log loader error: {error}"
                     );
                 }
                 continue;
             }
-            assert!(report.errors.is_empty(), "{path}: loader errors: {:?}", report.errors);
-            assert!(report.missing_files.is_empty(), "{path}: missing files: {:?}", report.missing_files);
+            assert!(
+                report.errors.is_empty(),
+                "{path}: loader errors: {:?}",
+                report.errors
+            );
+            assert!(
+                report.missing_files.is_empty(),
+                "{path}: missing files: {:?}",
+                report.missing_files
+            );
             // The wrath FrameXML text sinks reach for keys the FrameXML locale stream no longer
             // defines (`OptionsFrameTemplates.xml`'s OPTIONS header, `BattlefieldFrame.xml`'s
             // BATTLEGROUND_LORETEXT_1); the real client answers a miss with an empty GetText and
@@ -157,7 +229,9 @@ fn stock_script_through(leaf: &str, strict: bool) -> Option<UiScript> {
 /// client boots it.
 #[test]
 fn stock_questlog_share_button_spans_the_control_panel_gap() {
-    let Some(mut s) = stock_script_through("QuestLogFrame.xml", false) else { return };
+    let Some(mut s) = stock_script_through("QuestLogFrame.xml", false) else {
+        return;
+    };
     s.run("ShowUIPanel(QuestLogFrame)").unwrap();
     s.resolve();
     let (width, left, right, abandon_right, track_left) = s
@@ -194,9 +268,16 @@ fn stock_questlog_share_button_spans_the_control_panel_gap() {
 
 #[test]
 fn stock_player_frame_host_smoke_test() {
-    let Some(mut s) = player_frame_script() else { return; };
+    let Some(mut s) = player_frame_script() else {
+        return;
+    };
 
-    for name in ["targetStatusText", "partyStatusText", "petStatusText", "threatShowNumeric"] {
+    for name in [
+        "targetStatusText",
+        "partyStatusText",
+        "petStatusText",
+        "threatShowNumeric",
+    ] {
         let value: String = s.eval(&format!("return GetCVar('{name}')")).unwrap();
         assert_eq!(value, "0", "Wrath startup CVar {name} must be registered");
     }
@@ -210,13 +291,15 @@ fn stock_player_frame_host_smoke_test() {
     assert!(
         s.eval::<bool>(
             "return PlayerHitIndicator ~= nil and PlayerFrame.feedbackText == PlayerHitIndicator"
-        ).unwrap(),
+        )
+        .unwrap(),
         "PlayerFrame_OnLoad must finish combat feedback initialization"
     );
 
     // 2. Manual event-delivery smoke: fire `UNIT_HEALTH` with the stock player token and read
     //    the host's UnitHealth path. This does not prove the session produced the event.
-    s.run(r#"
+    s.run(
+        r#"
         seen_event = nil
         seen_unit = nil
         seen_health = nil
@@ -228,7 +311,9 @@ fn stock_player_frame_host_smoke_test() {
             seen_health = UnitHealth("player")
         end)
         health_at_hook = UnitHealth("player")
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
 
     // The host has seeded unit state for the stock frame; this is a host readback, not a
     // session-fed health assertion.
@@ -274,7 +359,8 @@ fn stock_player_frame_host_smoke_test() {
     //    loader from the real prefix, plays on the host clock, moves its owner's alpha, and
     //    fires OnFinished once. This runs after the load-error assertion because a tick also
     //    runs stock OnUpdate handlers whose later TOC files this prefix deliberately omits.
-    s.run(r#"
+    s.run(
+        r#"
         assert(TutorialFrameCallOutPulser, "the stock pulser animation is built")
         ANIM_FINISHED = 0
         TutorialFrameCallOutPulser:SetDuration(0.01)
@@ -283,7 +369,9 @@ fn stock_player_frame_host_smoke_test() {
         end)
         TutorialFrameCallOutPulser:Play()
         assert(TutorialFrameCallOutPulser:IsPlaying(), "the stock pulser reports playing")
-    "#).expect("the stock pulser animation exists and plays");
+    "#,
+    )
+    .expect("the stock pulser animation exists and plays");
     s.tick(0.02);
     assert_eq!(
         s.eval::<i64>("return ANIM_FINISHED").unwrap(),

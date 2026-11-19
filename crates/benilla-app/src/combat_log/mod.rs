@@ -67,7 +67,10 @@ impl Ctx<'_> {
     fn ctx(&self) -> chat::ChatCtx<'_> {
         chat::ChatCtx {
             self_guid: &self.self_guid,
-            wrath: self.wrath_tokens.as_ref().is_some_and(|tokens| tokens.active),
+            wrath: self
+                .wrath_tokens
+                .as_ref()
+                .is_some_and(|tokens| tokens.active),
             group: Some(&self.group),
             index: &self.index,
             factions: self.factions.as_deref(),

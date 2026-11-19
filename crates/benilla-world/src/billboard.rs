@@ -902,6 +902,7 @@ mod tests {
                 ],
                 spine_bone: None,
                 head_bone: None,
+                thumb_bones: [None, None],
             };
             let host = app
                 .world_mut()
@@ -1083,6 +1084,7 @@ mod tests {
             ],
             spine_bone: None,
             head_bone: None,
+            thumb_bones: [None, None],
         };
         let rig = BillboardJointRig::new(&skeleton, &[j0, j1], host)
             .expect("has an ignore-parent-rotation bone");
@@ -1159,6 +1161,7 @@ mod tests {
                 }],
                 spine_bone: None,
                 head_bone: None,
+                thumb_bones: [None, None],
             };
             // The nested effect: its root one local X under the helper, its one joint a spherical
             // billboard whose propagated global still carries the host twist.
@@ -1182,6 +1185,7 @@ mod tests {
                 }],
                 spine_bone: None,
                 head_bone: None,
+                thumb_bones: [None, None],
             };
             let outer_rig = BillboardJointRig::new(&outer_skeleton, &[j0], host).unwrap();
             let nested_rig = BillboardJointRig::new(&nested_skeleton, &[fj0], fx_root).unwrap();

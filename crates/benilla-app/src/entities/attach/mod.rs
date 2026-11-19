@@ -634,15 +634,24 @@ pub(super) fn attach_entity_visuals(
                         .entity(entity)
                         .insert(crate::creature_anim::BodyTwist::new(spine, head));
                 }
+                let thumbs = d.skeleton.thumb_bones.map(in_range);
+                if thumbs.iter().any(Option::is_some) {
+                    commands
+                        .entity(entity)
+                        .insert(super::HandKeyBones { thumbs });
+                } else {
+                    commands.entity(entity).remove::<super::HandKeyBones>();
+                }
             }
             // The worn geoset selectors, the helm's hide-mask rows included (`0x4799a0`).
             let eye_glow = look.as_ref().is_some_and(|l| {
-                l.class == 6 || match &l.body {
-                    char_skin::BodySkin::Composite { face } => sections.as_deref().is_some_and(|s| {
-                        s.tables.face_eye_glow(l.race, l.sex, *face, l.skin)
-                    }),
-                    char_skin::BodySkin::Baked(_) => false,
-                }
+                l.class == 6
+                    || match &l.body {
+                        char_skin::BodySkin::Composite { face } => sections
+                            .as_deref()
+                            .is_some_and(|s| s.tables.face_eye_glow(l.race, l.sex, *face, l.skin)),
+                        char_skin::BodySkin::Baked(_) => false,
+                    }
             });
             let equip_geosets = equip_geosets(
                 displays.as_deref(),
@@ -1029,6 +1038,7 @@ mod tests {
                 }],
                 spine_bone: None,
                 head_bone: None,
+                thumb_bones: [None, None],
             },
             inverse_bindposes: Some(
                 ibps.add(SkinnedMeshInverseBindposes::from(vec![Mat4::IDENTITY])),

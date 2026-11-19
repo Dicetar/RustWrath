@@ -746,11 +746,9 @@ fn service_probe(
                     return;
                 };
                 let slot0 = u8::try_from(held.slot.saturating_sub(1)).unwrap_or(0);
-                let Some(item_guid) = self_store
-                    .single()
-                    .ok()
-                    .and_then(|s| crate::ui_items::slot_guid_donor(&s.0, held.bag, slot0, &objects))
-                else {
+                let Some(item_guid) = self_store.single().ok().and_then(|s| {
+                    crate::ui_items::slot_guid_donor(&s.0, held.bag, slot0, &objects)
+                }) else {
                     error!(
                         "PROBE_SERVICE: FAIL (vendor fork, held cursor) — bag {} slot {} is on the \
                          cursor but resolves to no item guid, so the arm cannot address the packet",

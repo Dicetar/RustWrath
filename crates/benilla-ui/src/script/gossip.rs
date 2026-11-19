@@ -237,39 +237,36 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         .app_data_ref::<Model>()
         .is_some_and(|model| model.is_wrath())
     {
-    g.set(
-        "GetNumGossipOptions",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.gossip.as_ref().map_or(0, |m| m.options.len()) as i64)
-        })?,
-    )?;
-    g.set(
-        "GetNumGossipAvailableQuests",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model
-                .gossip
-                .as_ref()
-                .map_or(0, |m| m.quests.iter().filter(|q| !q.active).count())
-                as i64)
-        })?,
-    )?;
-    g.set(
-        "GetNumGossipActiveQuests",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model
-                .gossip
-                .as_ref()
-                .map_or(0, |m| m.quests.iter().filter(|q| q.active).count())
-                as i64)
-        })?,
-    )?;
-    g.set(
-        "ForceGossip",
-        lua.create_function(|_, ()| Ok(false))?,
-    )?;
+        g.set(
+            "GetNumGossipOptions",
+            lua.create_function(|lua, ()| {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                Ok(model.gossip.as_ref().map_or(0, |m| m.options.len()) as i64)
+            })?,
+        )?;
+        g.set(
+            "GetNumGossipAvailableQuests",
+            lua.create_function(|lua, ()| {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                Ok(model
+                    .gossip
+                    .as_ref()
+                    .map_or(0, |m| m.quests.iter().filter(|q| !q.active).count())
+                    as i64)
+            })?,
+        )?;
+        g.set(
+            "GetNumGossipActiveQuests",
+            lua.create_function(|lua, ()| {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                Ok(model
+                    .gossip
+                    .as_ref()
+                    .map_or(0, |m| m.quests.iter().filter(|q| q.active).count())
+                    as i64)
+            })?,
+        )?;
+        g.set("ForceGossip", lua.create_function(|_, ()| Ok(false))?)?;
     }
 
     // A select's index is 1-based within its own list, as `GossipFrame.lua:73` numbers the
@@ -480,7 +477,8 @@ mod tests {
         s.set_gossip(Some(m));
         assert_eq!(s.eval::<i64>("return GetNumGossipOptions()").unwrap(), 2);
         assert_eq!(
-            s.eval::<i64>("return GetNumGossipAvailableQuests()").unwrap(),
+            s.eval::<i64>("return GetNumGossipAvailableQuests()")
+                .unwrap(),
             1
         );
         assert_eq!(

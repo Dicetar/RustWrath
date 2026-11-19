@@ -144,7 +144,7 @@ pub(crate) fn render_emitters(bytes: &[u8]) -> Result<Vec<crate::ParticleEmitter
     let model = format.model();
     let sequence_data = array(bytes, 0x1c, 64)?;
     let mut slots = Vec::new();
-    for (index, sequence) in sequence_data.chunks_exact(64).enumerate() {
+    for (index, sequence) in sequence_data.as_chunks::<64>().0.iter().enumerate() {
         slots.push(SeqSlot {
             index,
             band: (0, sequence.u32_at(4).context("sequence duration")?),
@@ -159,8 +159,10 @@ pub(crate) fn render_emitters(bytes: &[u8]) -> Result<Vec<crate::ParticleEmitter
         });
     }
     let global = array(bytes, 0x14, 4)?
-        .chunks_exact(4)
-        .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| u32::from_le_bytes(*b))
         .collect::<Vec<_>>();
     let mut output = Vec::with_capacity(records.len());
     for record in records {
@@ -170,7 +172,10 @@ pub(crate) fn render_emitters(bytes: &[u8]) -> Result<Vec<crate::ParticleEmitter
             .and_then(|t| t.filename.string.to_str().ok())
             .map(str::to_owned)
             .unwrap_or_default();
-        if texture.is_empty() && record.geometry_model.is_empty() && record.recursion_model.is_empty() {
+        if texture.is_empty()
+            && record.geometry_model.is_empty()
+            && record.recursion_model.is_empty()
+        {
             continue;
         }
         let tracks = record.tracks.each_ref().map(scalar_track);
@@ -197,8 +202,10 @@ pub(crate) fn render_emitters(bytes: &[u8]) -> Result<Vec<crate::ParticleEmitter
         } else {
             None
         };
-        let geometry_model = (!record.geometry_model.is_empty()).then(|| record.geometry_model.clone());
-        let recursion_model = (!record.recursion_model.is_empty()).then(|| record.recursion_model.clone());
+        let geometry_model =
+            (!record.geometry_model.is_empty()).then(|| record.geometry_model.clone());
+        let recursion_model =
+            (!record.recursion_model.is_empty()).then(|| record.recursion_model.clone());
         let sampled = record.sample_age(0.0);
         output.push(ParticleEmitterDef {
             flags: record.flags,
@@ -285,7 +292,9 @@ fn track(bytes: &[u8], at: usize, boolean: bool, remaining: &mut usize) -> Resul
     let mut sequences = Vec::with_capacity(times.len() / 8);
     // Bound aggregate expansion as well as individual arrays: aliased forged descriptors must
     // not expand the same file bytes quadratically.
-    for (ts, vs) in times.chunks_exact(8).zip(values.chunks_exact(8)) {
+    let (time_rows, _) = times.as_chunks::<8>();
+    let (value_rows, _) = values.as_chunks::<8>();
+    for (ts, vs) in time_rows.iter().zip(value_rows) {
         let read_inner = |descriptor: &[u8], stride: usize| -> Result<&[u8]> {
             let count = descriptor.u32_at(0).context("inner count")? as usize;
             let offset = descriptor.u32_at(4).context("inner offset")? as usize;
@@ -379,7 +388,7 @@ pub fn parse_wrath_particle_records(bytes: &[u8]) -> Result<Vec<WrathParticleEmi
     let records = array(bytes, 0x128, RECORD_SIZE)?;
     let mut remaining = bytes.len();
     let mut output = Vec::with_capacity(records.len() / RECORD_SIZE);
-    for (index, rec) in records.chunks_exact(RECORD_SIZE).enumerate() {
+    for (index, rec) in records.as_chunks::<RECORD_SIZE>().0.iter().enumerate() {
         let base = bytes.u32_at(0x12c).context("particle base")? as usize + index * RECORD_SIZE;
         let mut text = |at| -> Result<String> {
             let raw = array(bytes, base + at, 1)?;

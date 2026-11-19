@@ -18,13 +18,15 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         }
         Ok(())
     })?;
-    let (factory, invoke_factory): (Function, Function) = lua.load(FACTORY)
+    let (factory, invoke_factory): (Function, Function) = lua
+        .load(FACTORY)
         .set_name("=[benilla posthook factory]")
         .set_mode(mlua::ChunkMode::Text)
         .call(run_hook)?;
     lua.set_named_registry_value(REG_FACTORY, factory)?;
     lua.set_named_registry_value(REG_INVOKE_FACTORY, invoke_factory)?;
-    lua.globals().set("hooksecurefunc", lua.create_function(register)?)
+    lua.globals()
+        .set("hooksecurefunc", lua.create_function(register)?)
 }
 
 pub(super) fn invocation(lua: &Lua, hook: Function) -> mlua::Result<Function> {
@@ -38,18 +40,25 @@ fn register(lua: &Lua, args: MultiValue) -> mlua::Result<()> {
     let invalid = || mlua::Error::RuntimeError(USAGE.into());
     let (table, name, hook) = match args.front() {
         Some(Value::String(name)) => {
-            let Some(Value::Function(hook)) = args.get(1) else { return Err(invalid()) };
+            let Some(Value::Function(hook)) = args.get(1) else {
+                return Err(invalid());
+            };
             (lua.globals(), name.clone(), hook.clone())
         }
         Some(Value::Table(table)) => {
-            let (Some(Value::String(name)), Some(Value::Function(hook))) = (args.get(1), args.get(2))
-                else { return Err(invalid()) };
+            let (Some(Value::String(name)), Some(Value::Function(hook))) =
+                (args.get(1), args.get(2))
+            else {
+                return Err(invalid());
+            };
             (table.clone(), name.clone(), hook.clone())
         }
         _ => return Err(invalid()),
     };
     let original: Value = table.get(name.clone())?;
-    let Value::Function(original) = original else { return Err(invalid()) };
+    let Value::Function(original) = original else {
+        return Err(invalid());
+    };
     let factory: Function = lua.named_registry_value(REG_FACTORY)?;
     let (wrapper, invoke): (Function, Function) = factory.call((original, hook))?;
     // Attribute the post-hook invocation only. Registering an insecure hook must not stamp the

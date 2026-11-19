@@ -1752,9 +1752,7 @@ mod tests {
             "the attached body wins; the hidden nearer one is not a candidate"
         );
 
-        world
-            .entity_mut(mob_e)
-            .insert(InheritedVisibility::HIDDEN);
+        world.entity_mut(mob_e).insert(InheritedVisibility::HIDDEN);
         assert!(pool(&mut world).is_empty(), "a whole hidden scene is empty");
     }
 

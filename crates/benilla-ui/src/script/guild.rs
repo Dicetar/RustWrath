@@ -1084,7 +1084,8 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(
-            s.eval::<Option<i64>>("return CanGuildBankRepair()").unwrap(),
+            s.eval::<Option<i64>>("return CanGuildBankRepair()")
+                .unwrap(),
             Some(1)
         );
         assert_eq!(s.arity("CanGuildBankRepair()").unwrap(), 1);
@@ -1096,7 +1097,8 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(
-            s.eval::<Option<i64>>("return CanGuildBankRepair()").unwrap(),
+            s.eval::<Option<i64>>("return CanGuildBankRepair()")
+                .unwrap(),
             None
         );
         assert_eq!(s.arity("CanGuildBankRepair()").unwrap(), 1);
@@ -1108,7 +1110,8 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(
-            s.eval::<Option<i64>>("return CanGuildBankRepair()").unwrap(),
+            s.eval::<Option<i64>>("return CanGuildBankRepair()")
+                .unwrap(),
             None
         );
 
@@ -1119,7 +1122,8 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(
-            s.eval::<Option<i64>>("return CanGuildBankRepair()").unwrap(),
+            s.eval::<Option<i64>>("return CanGuildBankRepair()")
+                .unwrap(),
             None
         );
     }

@@ -158,8 +158,8 @@ mod tests {
     /// must interop with the server's client-decrypt stream and nothing else.
     fn server_side(session_key: &[u8; 40]) -> (Rc4, Rc4) {
         (
-            stream(&SERVER_ENCRYPTION_KEY, session_key),  // server encrypt → our recv
-            stream(&SERVER_DECRYPTION_KEY, session_key),  // server decrypt → our send
+            stream(&SERVER_ENCRYPTION_KEY, session_key), // server encrypt → our recv
+            stream(&SERVER_DECRYPTION_KEY, session_key), // server decrypt → our send
         )
     }
 

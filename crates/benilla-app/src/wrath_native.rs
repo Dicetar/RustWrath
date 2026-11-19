@@ -319,32 +319,15 @@ pub struct WrathCastEvent {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum WrathCastEventKind {
-    Started {
-        remaining_ms: Option<u32>,
-    },
-    Delayed {
-        delay_ms: u32,
-        accumulated_ms: u32,
-    },
-    Launched {
-        server_time_ms: u32,
-    },
-    Failed {
-        reason: u8,
-    },
-    Interrupted {
-        reason: u8,
-    },
-    ChannelStarted {
-        duration_ms: u32,
-    },
-    ChannelUpdated {
-        remaining_ms: u32,
-    },
+    Started { remaining_ms: Option<u32> },
+    Delayed { delay_ms: u32, accumulated_ms: u32 },
+    Launched { server_time_ms: u32 },
+    Failed { reason: u8 },
+    Interrupted { reason: u8 },
+    ChannelStarted { duration_ms: u32 },
+    ChannelUpdated { remaining_ms: u32 },
     ChannelEnded,
-    ScopeInvalidated {
-        reason: WrathScopeLoss,
-    },
+    ScopeInvalidated { reason: WrathScopeLoss },
 }
 
 /// The caster whose entry an update can change.
@@ -611,6 +594,24 @@ impl NativeCastState {
                 reason,
                 observed_at_unix_ms,
             } => {
+                // AC's `Spell::cancel` sends `SendCastResult(SPELL_FAILED_INTERRUPTED)` and then
+                // `SendInterrupted(SPELL_FAILED_INTERRUPTED)` for the same cast count in the same
+                // instant (`Spell.cpp:3678-3692`). The failed packet already resolved that
+                // attempt's one terminal (and, for a self cast, the 1.12 failure result), so the
+                // broadcast interruption is the same fact and must not resolve a second terminal.
+                // The cast count is monotonic within a session, so the same (caster, spell,
+                // count) in the same scope is the same attempt even if the two packets land in
+                // different milliseconds.
+                if self.last_cast_end.as_ref().is_some_and(|ended| {
+                    ended.scope.session_epoch == scope.session_epoch
+                        && ended.scope.world_generation == scope.world_generation
+                        && ended.identity.caster == caster
+                        && ended.identity.spell_id == spell_id
+                        && ended.identity.cast_count == Some(cast_count)
+                        && matches!(ended.outcome, WrathCastEnd::Failed)
+                }) {
+                    return None;
+                }
                 let ended = self.take_matching_cast(caster, spell_id, cast_count);
                 let (identity, target, targets, attempt_serial, start_ui_now_seconds) = match ended
                 {
@@ -820,14 +821,12 @@ pub(crate) fn update_from_gameplay(
             ammo_display_id: *ammo_display_id,
             observed_at_unix_ms,
         },
-        WrathGameplayEvent::SpellDelayed { caster, delay_ms } => {
-            WrathNativeUpdate::CastDelayed {
-                scope,
-                caster: *caster,
-                delay_ms: *delay_ms,
-                observed_at_unix_ms,
-            }
-        }
+        WrathGameplayEvent::SpellDelayed { caster, delay_ms } => WrathNativeUpdate::CastDelayed {
+            scope,
+            caster: *caster,
+            delay_ms: *delay_ms,
+            observed_at_unix_ms,
+        },
         WrathGameplayEvent::SpellGo {
             caster,
             spell_id,
@@ -856,6 +855,11 @@ pub(crate) fn update_from_gameplay(
             reason: *raw_reason,
             observed_at_unix_ms,
         },
+        // 12340's `Spell::SendInterrupted(0)` accompanies the real `SMSG_CAST_FAILED`
+        // (`Spell.cpp:3808`, `:3828`, `:3851`); zero is the success sentinel, never a
+        // failure reason (`cast_failure::reason`). The attempt's terminal already arrived as
+        // `CastFailed`, so a second `CastInterrupted` would terminate one cast twice.
+        WrathGameplayEvent::SpellFailure { raw_reason: 0, .. } => return None,
         WrathGameplayEvent::SpellFailure {
             caster,
             spell_id,
@@ -1083,14 +1087,28 @@ mod tests {
         let guid = 0xA11CE;
         let mut state = NativeCastState::default();
 
-        let started = state.apply(start(guid, 133, 4, 0xBEEF)).expect("start resolves");
-        assert_eq!(started.event.kind, WrathCastEventKind::Started { remaining_ms: Some(1_500) });
+        let started = state
+            .apply(start(guid, 133, 4, 0xBEEF))
+            .expect("start resolves");
+        assert_eq!(
+            started.event.kind,
+            WrathCastEventKind::Started {
+                remaining_ms: Some(1_500)
+            }
+        );
         let (caster, cast) = started.casting.expect("authority holds the active cast");
         assert_eq!(caster, guid);
         assert_ne!(cast.attempt_serial, 0);
         assert_eq!(cast.identity.cast_count, Some(4));
-        assert_eq!(cast.targets.unit, Some(0xBEEF), "the complete target block survives");
-        assert_eq!(cast.start_ui_now_seconds, None, "the authority has no UI clock");
+        assert_eq!(
+            cast.targets.unit,
+            Some(0xBEEF),
+            "the complete target block survives"
+        );
+        assert_eq!(
+            cast.start_ui_now_seconds, None,
+            "the authority has no UI clock"
+        );
         assert_eq!(started.last_cast_end, None);
 
         let block = cast_observation(&state, guid);
@@ -1118,7 +1136,10 @@ mod tests {
         );
         let (_, cast) = delayed.casting.expect("still casting");
         assert_eq!(cast.attempt_serial, started.event.attempt_serial.unwrap());
-        assert_eq!(cast.observed_at_unix_ms, 10_000, "pushback never rewrites the origin");
+        assert_eq!(
+            cast.observed_at_unix_ms, 10_000,
+            "pushback never rewrites the origin"
+        );
         assert_eq!(cast_observation(&state, guid).pushback_ms, 250);
 
         let launched = state
@@ -1131,27 +1152,110 @@ mod tests {
                 observed_at_unix_ms: 10_200,
             })
             .expect("launch resolves");
-        assert_eq!(launched.casting, None, "the terminal edge removes the active entry");
-        let ended = launched.last_cast_end.expect("the terminal edge is retained");
+        assert_eq!(
+            launched.casting, None,
+            "the terminal edge removes the active entry"
+        );
+        let ended = launched
+            .last_cast_end
+            .expect("the terminal edge is retained");
         assert_eq!(ended.outcome, WrathCastEnd::Launched);
         assert_eq!(ended.attempt_serial, started.event.attempt_serial);
         assert_eq!(ended.targets.as_ref().and_then(|t| t.unit), Some(0xBEEF));
 
         let channel = channel_observation(&state, guid);
         assert_eq!(channel.state, benilla_wm_native::ActivityState::None);
-        channel.validate().expect("an observed no-channel is schema-valid");
+        channel
+            .validate()
+            .expect("an observed no-channel is schema-valid");
         let block = cast_observation(&state, guid);
         assert_eq!(block.state, benilla_wm_native::ActivityState::None);
-        block.validate().expect("an observed no-cast is schema-valid");
+        block
+            .validate()
+            .expect("an observed no-cast is schema-valid");
         let terminal = last_cast_end_observation(&state, guid, 7, 3);
         assert_eq!(terminal.state, benilla_wm_native::TerminalState::Present);
         assert_eq!(terminal.outcome, benilla_wm_native::CastOutcome::Launched);
         assert_eq!(terminal.attempt_serial, started.event.attempt_serial);
-        terminal.validate().expect("the terminal block is schema-valid");
+        terminal
+            .validate()
+            .expect("the terminal block is schema-valid");
         assert_eq!(
             last_cast_end_observation(&state, guid, 7, 4).state,
             benilla_wm_native::TerminalState::Unknown,
             "an edge from a retired world scope is never presented as current"
+        );
+    }
+
+    /// AC's `Spell::cancel` sends the failed result and then the broadcast interruption for the
+    /// same cast count in the same instant (`Spell.cpp:3678-3692`); one attempt terminates once.
+    #[test]
+    fn a_cancel_resolves_one_terminal_not_a_failed_and_an_interrupted_pair() {
+        let guid = 0xA11CE;
+        let mut state = NativeCastState::default();
+        let failed = state
+            .apply(WrathNativeUpdate::CastFailed {
+                scope: scope(),
+                caster: guid,
+                spell_id: 75,
+                cast_count: 1,
+                reason: 40,
+                observed_at_unix_ms: 20_000,
+            })
+            .expect("the failed packet resolves");
+        assert_eq!(failed.event.kind, WrathCastEventKind::Failed { reason: 40 });
+
+        assert!(
+            state
+                .apply(WrathNativeUpdate::CastInterrupted {
+                    scope: scope(),
+                    caster: guid,
+                    spell_id: 75,
+                    cast_count: 1,
+                    reason: 40,
+                    observed_at_unix_ms: 20_000,
+                })
+                .is_none(),
+            "the broadcast interruption names the terminal the failed packet just resolved"
+        );
+        assert!(
+            state
+                .apply(WrathNativeUpdate::CastInterrupted {
+                    scope: scope(),
+                    caster: guid,
+                    spell_id: 75,
+                    cast_count: 2,
+                    reason: 40,
+                    observed_at_unix_ms: 20_500,
+                })
+                .is_some(),
+            "a different attempt still resolves its own interruption"
+        );
+    }
+
+    /// 12340's `Spell::SendInterrupted(0)` follows the real `SMSG_CAST_FAILED`
+    /// (`Spell.cpp:3808/3828/3851`); zero is the success sentinel. The attempt already
+    /// terminated on the failed packet, so the authority must not resolve a second interruption
+    /// edge for it. A non-zero interruption reason still resolves one.
+    #[test]
+    fn a_zero_reason_interrupt_is_not_a_second_native_terminal() {
+        const SELF: u64 = 0xA11CE;
+        let failure = |raw_reason: u8| WrathGameplayEvent::SpellFailure {
+            caster: SELF,
+            spell_id: 133,
+            cast_count: 4,
+            raw_reason,
+        };
+        assert!(
+            update_from_gameplay(&failure(0), scope(), 10_000, SELF).is_none(),
+            "reason 0 is not an interruption of a fresh attempt"
+        );
+        assert!(
+            matches!(
+                update_from_gameplay(&failure(40), scope(), 10_000, SELF),
+                Some(WrathNativeUpdate::CastInterrupted { reason: 40, .. })
+            ),
+            "12340 SPELL_FAILED_INTERRUPTED (40) is a real interruption edge"
         );
     }
 
@@ -1169,7 +1273,10 @@ mod tests {
                 observed_at_unix_ms: 20_000,
             })
             .expect("the failure resolves");
-        assert_eq!(resolved.event.kind, WrathCastEventKind::Failed { reason: 100 });
+        assert_eq!(
+            resolved.event.kind,
+            WrathCastEventKind::Failed { reason: 100 }
+        );
         assert_eq!(resolved.casting, None);
         let ended = resolved.last_cast_end.expect("retained");
         assert_eq!(ended.outcome, WrathCastEnd::Failed);
@@ -1216,10 +1323,16 @@ mod tests {
             .expect("channel update resolves");
         assert_eq!(
             updated.event.kind,
-            WrathCastEventKind::ChannelUpdated { remaining_ms: 2_500 }
+            WrathCastEventKind::ChannelUpdated {
+                remaining_ms: 2_500
+            }
         );
         let block = channel_observation(&state, guid);
-        assert_eq!(block.start_observed_at_unix_ms, Some(30_000), "the anchor survives");
+        assert_eq!(
+            block.start_observed_at_unix_ms,
+            Some(30_000),
+            "the anchor survives"
+        );
         assert_eq!(block.update_observed_at_unix_ms, Some(31_500));
         assert_eq!(block.remaining_ms, Some(2_500));
 
@@ -1243,11 +1356,18 @@ mod tests {
         let guid = 0xA11CE;
         let mut state = NativeCastState::default();
         state.apply(start(guid, 133, 4, 0xBEEF)).expect("start");
-        assert!(!state.note_cancel_requested(guid, 999), "another spell does not match");
+        assert!(
+            !state.note_cancel_requested(guid, 999),
+            "another spell does not match"
+        );
         assert!(state.note_cancel_requested(guid, 133));
         let block = cast_observation(&state, guid);
         assert!(block.cancel_requested);
-        assert_eq!(block.state, benilla_wm_native::ActivityState::Active, "not an outcome");
+        assert_eq!(
+            block.state,
+            benilla_wm_native::ActivityState::Active,
+            "not an outcome"
+        );
         block.validate().expect("schema-valid");
         assert_eq!(state.last_cast_end.as_ref().map(|e| e.outcome), None);
     }
@@ -1299,17 +1419,26 @@ mod tests {
         slots[0].slot = slots[1].slot; // a duplicate slot keeps the last row only
         let export = auras_observation(&slots, true);
         assert_eq!(export.state, benilla_wm_native::AuraKnowledge::Known);
-        assert!(!export.complete, "the bound cut the set; never silently complete");
+        assert!(
+            !export.complete,
+            "the bound cut the set; never silently complete"
+        );
         assert_eq!(export.slots.len(), benilla_wm_native::MAX_AURA_SLOTS);
         assert!(
-            export.slots.windows(2).all(|pair| pair[0].slot < pair[1].slot),
+            export
+                .slots
+                .windows(2)
+                .all(|pair| pair[0].slot < pair[1].slot),
             "slots sorted ascending and unique"
         );
         export.validate().expect("schema-valid");
 
         let empty = auras_observation(&[], true);
         assert_eq!(empty.state, benilla_wm_native::AuraKnowledge::Known);
-        assert!(empty.slots.is_empty(), "an observed zero-aura state is not unknown");
+        assert!(
+            empty.slots.is_empty(),
+            "an observed zero-aura state is not unknown"
+        );
         assert!(empty.complete);
     }
 }

@@ -106,7 +106,8 @@ pub struct CharSections {
 impl CharSections {
     /// Whether the selected face row requests the 12340 eye-glow effect.
     pub fn face_eye_glow(&self, race: u8, sex: u8, face: u8, skin: u8) -> bool {
-        self.flags.get(&(race, sex, SECTION_FACE, face, skin))
+        self.flags
+            .get(&(race, sex, SECTION_FACE, face, skin))
             .is_some_and(|flags| flags & 0x4 != 0)
     }
 
@@ -355,11 +356,7 @@ impl CompositePlan {
             }
             if let Some(overlay) = overlay {
                 let (x, y, w, h) = *tile;
-                blit_over(
-                    &mut atlas,
-                    &overlay,
-                    (x * sx, y * sy, w * sx, h * sy),
-                );
+                blit_over(&mut atlas, &overlay, (x * sx, y * sy, w * sx, h * sy));
             } else {
                 missing.push(CompositeMissingLayer {
                     tile: *tile,
@@ -702,8 +699,7 @@ fn has_blp_skin_row(rs: &RecordSet, wrath: bool) -> bool {
     let tex_i = if wrath { 4 } else { 6 };
     rs.records().iter().any(|r| {
         u32_at(r, 3) == Some(0)
-            && str_at(rs, r, tex_i)
-                .is_some_and(|t| t.to_ascii_lowercase().ends_with(".blp"))
+            && str_at(rs, r, tex_i).is_some_and(|t| t.to_ascii_lowercase().ends_with(".blp"))
     })
 }
 
@@ -831,9 +827,8 @@ mod tests {
         for file_wrath in [false, true] {
             let bytes = skin_row_dbc(file_wrath);
             for hint in [false, true] {
-                let cs = CharSections::parse_table(&bytes, hint).unwrap_or_else(|e| {
-                    panic!("file_wrath={file_wrath} hint={hint}: {e:#}")
-                });
+                let cs = CharSections::parse_table(&bytes, hint)
+                    .unwrap_or_else(|e| panic!("file_wrath={file_wrath} hint={hint}: {e:#}"));
                 assert_eq!(
                     cs.skin_texture(1, 0, 0),
                     Some("Character\\Human\\Male\\HumanMaleSkin00_00.blp"),
@@ -878,7 +873,10 @@ mod tests {
                 String::new(),
             ],
         );
-        let cs = CharSections { sections, flags: HashMap::new() };
+        let cs = CharSections {
+            sections,
+            flags: HashMap::new(),
+        };
         assert_eq!(
             cs.skin_texture(1, 0, 3),
             Some("Character\\Human\\Male\\HumanMaleSkin00_03.blp")
@@ -1457,16 +1455,7 @@ mod tests {
             [0, 0, 0],
         );
         for sex in [0u8, 1] {
-            let eq = [
-                None,
-                Some(&chest),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            ];
+            let eq = [None, Some(&chest), None, None, None, None, None, None];
             let plan = equip_blits(&eq, None, false);
             let front: Vec<_> = plan.iter().filter(|s| s.layer == 3).collect();
             assert_eq!(front.len(), 1, "sex {sex}: one TorsoUpper contribution");
@@ -1565,8 +1554,16 @@ mod tests {
         let px = |x: usize, y: usize| &atlas.mips[0][(y * 512 + x) * 4..][..4];
         assert_eq!(px(0, 320), &[200, 100, 50, 255], "G8 at y 160×2");
         assert_eq!(px(255, 383), &[200, 100, 50, 255], "128×32 doubled");
-        assert_eq!(px(0, 160), &[10, 20, 30, 255], "the vanilla position is body");
-        assert_eq!(px(0, 384), &[10, 20, 30, 255], "one row past the scaled tile");
+        assert_eq!(
+            px(0, 160),
+            &[10, 20, 30, 255],
+            "the vanilla position is body"
+        );
+        assert_eq!(
+            px(0, 384),
+            &[10, 20, 30, 255],
+            "one row past the scaled tile"
+        );
     }
 
     /// On an HD 512² base the reference's section tiles double to 256×128, while the shipped
@@ -1593,8 +1590,16 @@ mod tests {
         assert_eq!(px(256, 0), &[200, 100, 50, 255], "the tile's top-left");
         assert_eq!(px(511, 0), &[200, 100, 50, 255], "the tile's right edge");
         assert_eq!(px(256, 127), &[200, 100, 50, 255], "the tile's bottom-left");
-        assert_eq!(px(511, 127), &[200, 100, 50, 255], "the whole tile is armour");
-        assert_eq!(px(255, 0), &[10, 20, 30, 255], "one column before it is body");
+        assert_eq!(
+            px(511, 127),
+            &[200, 100, 50, 255],
+            "the whole tile is armour"
+        );
+        assert_eq!(
+            px(255, 0),
+            &[10, 20, 30, 255],
+            "one column before it is body"
+        );
         assert_eq!(px(256, 128), &[10, 20, 30, 255], "one row past it is body");
     }
 
@@ -1671,8 +1676,14 @@ mod tests {
                 .count()
         };
         let area = scale * scale;
-        assert!(changed(TILE_G9) > 4000 * area, "face lower overlaid into g9");
-        assert!(changed(TILE_G8) > 2000 * area, "face upper overlaid into g8");
+        assert!(
+            changed(TILE_G9) > 4000 * area,
+            "face lower overlaid into g9"
+        );
+        assert!(
+            changed(TILE_G8) > 2000 * area,
+            "face upper overlaid into g8"
+        );
         assert!(changed(TILE_G5) > 4000 * area, "pelvis overlaid into g5");
         // No male underwear row authors `TextureName[1]`, the torso.
         assert_eq!(
@@ -1966,7 +1977,8 @@ mod tests {
             ] {
                 let n = differing(&rect(&comp, scaled_tile(tile)), want);
                 assert_eq!(
-                    n, 0,
+                    n,
+                    0,
                     "{label}: the {name} tile is not {want_name} ({n}/{} texels)",
                     (tile.2 * scale * tile.3 * scale)
                 );
@@ -2166,7 +2178,10 @@ mod tests {
                 other => panic!("unexpected path {other}"),
             })
             .expect("composite succeeds without the optional layer");
-        assert_eq!(atlas.mips[0], base.mips[0], "base atlas is returned unchanged");
+        assert_eq!(
+            atlas.mips[0], base.mips[0],
+            "base atlas is returned unchanged"
+        );
         assert_eq!(report.missing.len(), 1, "exactly one lost layer");
         assert_eq!(report.missing[0].tile, TILE_G8);
         assert_eq!(

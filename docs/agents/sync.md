@@ -15,7 +15,7 @@ other agents, so the owner should never have to carry it between them by hand.
    agent and the branch; the commands are in the [issue tracker](issue-tracker.md). A sandbox
    without `gh` skips the issue; the pushed branch and its note are the claim.
 3. **Branch.** Start from `origin/main` in your own worktree or clone:
-   `git worktree add -b <type>/<slug> <path> origin/main`. `D:/Projects/project-b-client` is the
+   `git worktree add -b <type>/<slug> <path> origin/main`. `D:/Projects/wow/client` is the
    integration checkout; do not edit, build or switch branches in it.
 4. **Write the task note first.** `.scratch/project-b/handoffs/<date>-<slug>.md`, committed on
    the branch, starting with the header below. Push it with the first commit.
@@ -56,6 +56,33 @@ update it in place rather than adding a new file per session.
   fetched. Bring in `main` with a merge when you need it.
 - A cloud agent has no game data, no client and no local Cargo slot. It works on source and
   focused tests that need no install, and reports data-gated checks as unrun.
+
+## Reading CI
+
+Every push of code to any branch runs [CI](../../.github/workflows/ci.yml) on GitHub: `fmt`,
+clippy and the workspace tests on Linux (`gates`), and the workspace tests on Windows
+(`windows`). Pushes that change only `.scratch/`, `docs/` or Markdown are skipped. This is the
+first place an agent's tests are compiled and run, and it uses no local Cargo slot.
+
+- After pushing code, read the run: `gh run list --branch <branch> -L 1`, then
+  `gh run view <id> --log-failed`. A cloud agent without `gh` reads the branch's Actions page.
+- The 53 workspace tests that failed on `main` on 2026-11-18 are `#[ignore]`d with the reason
+  `known failure on main (2026-11-18 CI baseline)`, so a failing test in a run is a new failure
+  and yours, as is any compile error. Fixing one means removing its `#[ignore]` in the same
+  commit; `cargo test -p <crate> -- --ignored` runs them. `clippy` still fails on old lint debt;
+  a clippy finding in a line you did not touch is not yours.
+- Write the result in the note's verification line: `CI <run id>: compiles; tests pass` (for the
+  crates the run tested, named by its `changed` step) or `CI: not run yet`.
+- A branch whose code does not compile in CI is not `ready to merge`.
+- Every push compiles the whole workspace and its test targets, but runs only the tests of the
+  crates it changed (a path under `crates/<dir>/`); a dependent crate's tests do not run, and a
+  root-only change (`Cargo.toml`, `Cargo.lock`, `third_party/`) runs none. The run's `changed`
+  step names the tested crates. For the whole suite, dispatch the workflow with `all`:
+  `gh workflow run CI --ref <branch> -f all=true`.
+- Every ref a commit is pushed to starts its own run. When landing, push `HEAD:main` alone, not
+  the task branch in the same push.
+- Where the Windows build's time goes: the run's `windows-build-timings` artifact (Cargo's
+  `--timings` report). `gh run download <id> -n windows-build-timings`.
 
 ## Taking over a branch
 

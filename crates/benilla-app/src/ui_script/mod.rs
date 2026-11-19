@@ -15,11 +15,6 @@ use benilla_world::schedule::WorldStage;
 /// The addon folder: discovery, manifests, the enable file and the load walk.
 pub(crate) mod addons;
 mod content;
-pub(crate) mod wrath_queries;
-pub(crate) mod wrath_combat_log_feed;
-mod wrath_cast;
-mod wrath_aura_feed;
-mod wrath_power_feed;
 pub(crate) mod extract;
 /// The stock glue screens as the session and the instruments see them.
 pub(crate) mod glue;
@@ -31,6 +26,11 @@ pub(crate) mod glue_scene;
 mod input;
 /// The server alert's fetch and `LaunchURL`'s browser, for the stock glue screens.
 pub(crate) mod server_alert;
+mod wrath_aura_feed;
+mod wrath_cast;
+pub(crate) mod wrath_combat_log_feed;
+mod wrath_power_feed;
+pub(crate) mod wrath_queries;
 #[cfg(test)]
 pub(crate) use input::feed_keys;
 // Test-only: the bindings tests run the UI's wheel sweep ahead of the dispatch pass.
@@ -431,8 +431,20 @@ impl Plugin for UiScriptPlugin {
             .init_resource::<WorldFrameTimes>()
             .add_systems(Update, feed_framerate.in_set(UiFeed))
             .add_systems(Update, wrath_cast::feed.in_set(UiFeed).after(UnitFeed))
-            .add_systems(Update, wrath_aura_feed::feed.in_set(UiFeed).after(UnitFeed).run_if(ingame_ui_up))
-            .add_systems(Update, wrath_power_feed::feed.in_set(UiFeed).after(UnitFeed).run_if(ingame_ui_up))
+            .add_systems(
+                Update,
+                wrath_aura_feed::feed
+                    .in_set(UiFeed)
+                    .after(UnitFeed)
+                    .run_if(ingame_ui_up),
+            )
+            .add_systems(
+                Update,
+                wrath_power_feed::feed
+                    .in_set(UiFeed)
+                    .after(UnitFeed)
+                    .run_if(ingame_ui_up),
+            )
             .add_systems(
                 Update,
                 record_world_frame_time

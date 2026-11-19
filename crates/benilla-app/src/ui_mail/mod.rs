@@ -384,30 +384,42 @@ fn resolve_row(
     let player_mail = entry.message_type == mail_message_type::NORMAL;
     let can_reply = player_mail && !is_gm;
 
-    let attachments: Vec<_> = entry.attachments.iter().map(|att| {
-        let template = items.template(att.entry, 0, ask);
-        let name = template.map(|t| rolls.name(&t.name, att.random_prop_id));
-        let quality = template.map(|t| t.quality);
-        let texture = template
-            .and_then(|t| icons.and_then(|i| i.catalog.get(t.display_info_id)))
-            .and_then(|d| d.icon.clone());
-        let link = name.as_ref().zip(quality).map(|(name, quality)| {
-            crate::ui_items::item_link_full_in_target(
-                benilla_ui::script::UiTarget::Wrath335, att.entry, att.perm_enchant,
-                att.random_prop_id, att.suffix_factor, name, quality,
-            )
-        });
-        benilla_ui::script::MailInboxAttachment {
-            index: att.index,
-            guid_low: att.guid_low,
-            entry: att.entry,
-            count: u32::from(att.count),
-            random_property_id: att.random_prop_id,
-            charges: att.charges as i32,
-            durability: (att.durability, att.durability_max),
-            name, texture, quality, link,
-        }
-    }).collect();
+    let attachments: Vec<_> = entry
+        .attachments
+        .iter()
+        .map(|att| {
+            let template = items.template(att.entry, 0, ask);
+            let name = template.map(|t| rolls.name(&t.name, att.random_prop_id));
+            let quality = template.map(|t| t.quality);
+            let texture = template
+                .and_then(|t| icons.and_then(|i| i.catalog.get(t.display_info_id)))
+                .and_then(|d| d.icon.clone());
+            let link = name.as_ref().zip(quality).map(|(name, quality)| {
+                crate::ui_items::item_link_full_in_target(
+                    benilla_ui::script::UiTarget::Wrath335,
+                    att.entry,
+                    att.perm_enchant,
+                    att.random_prop_id,
+                    att.suffix_factor,
+                    name,
+                    quality,
+                )
+            });
+            benilla_ui::script::MailInboxAttachment {
+                index: att.index,
+                guid_low: att.guid_low,
+                entry: att.entry,
+                count: u32::from(att.count),
+                random_property_id: att.random_prop_id,
+                charges: att.charges as i32,
+                durability: (att.durability, att.durability_max),
+                name,
+                texture,
+                quality,
+                link,
+            }
+        })
+        .collect();
     let primary_att = entry.item.as_ref().or_else(|| entry.attachments.first());
     let (item_id, item_roll, item_count, item_name, item_texture, item_quality) = match primary_att
     {
@@ -482,9 +494,11 @@ fn resolve_row(
         .map(str::to_string);
 
     // The raw body: the invoice parses it before any `$`-macro expansion.
-    let raw_body = entry.inline_body.as_ref().or_else(|| (entry.item_text_id != 0)
-        .then(|| bodies.get(entry.item_text_id))
-        .flatten());
+    let raw_body = entry.inline_body.as_ref().or_else(|| {
+        (entry.item_text_id != 0)
+            .then(|| bodies.get(entry.item_text_id))
+            .flatten()
+    });
 
     // ── The auction house's mail (`0x4ace70`, `0x4af360`) ──
     // Every notice gets its displayed subject; only a won or sold one has an invoice, once its
@@ -1007,8 +1021,8 @@ mod tests {
                             None,
                         )
                         .into_iter()
-                            .map(|v| v.cost)
-                            .collect::<Vec<_>>()
+                        .map(|v| v.cost)
+                        .collect::<Vec<_>>()
                     },
                 )
                 .unwrap()
@@ -1081,8 +1095,8 @@ mod tests {
                         None,
                     )
                     .into_iter()
-                        .map(|v| v.id)
-                        .collect::<Vec<_>>()
+                    .map(|v| v.id)
+                    .collect::<Vec<_>>()
                 },
             )
             .unwrap();

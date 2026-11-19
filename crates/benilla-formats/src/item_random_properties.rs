@@ -76,13 +76,20 @@ impl RandomPropertyCatalog {
     /// Negative-suffix enchant IDs and their seed-scaled amounts. AzerothCore's
     /// PlayerStorage.cpp applies AllocationPct * GetItemSuffixFactor() / 10000 using u32.
     /// These are catalog facts, not a claim that the tooltip has rendered the amounts.
-    pub fn scaled_suffix(&self, id: i32, factor: u32) -> Option<[(u32, u32); RANDOM_PROPERTY_SLOTS]> {
+    pub fn scaled_suffix(
+        &self,
+        id: i32,
+        factor: u32,
+    ) -> Option<[(u32, u32); RANDOM_PROPERTY_SLOTS]> {
         if id >= 0 {
             return None;
         }
         let row = self.suffix_rows.get(&id.unsigned_abs())?;
         Some(std::array::from_fn(|i| {
-            (row.enchants[i], row.allocation[i].wrapping_mul(factor) / 10000)
+            (
+                row.enchants[i],
+                row.allocation[i].wrapping_mul(factor) / 10000,
+            )
         }))
     }
 
@@ -160,7 +167,8 @@ fn load_suffix_rows(chain: &mut Chain) -> Result<HashMap<u32, RandomSuffix>> {
         rows.insert(
             id,
             RandomSuffix {
-                name: column.and_then(|column| loc_str_index(&rs, r, 1, column))
+                name: column
+                    .and_then(|column| loc_str_index(&rs, r, 1, column))
                     .filter(|name| !name.is_empty()),
                 enchants: std::array::from_fn(|i| u32_at(r, 19 + i).unwrap_or(0)),
                 allocation: std::array::from_fn(|i| u32_at(r, 24 + i).unwrap_or(0)),
@@ -212,7 +220,11 @@ pub fn load_random_property_catalog(chain: &mut Chain) -> Result<RandomPropertyC
     } else {
         (HashMap::new(), None)
     };
-    Ok(RandomPropertyCatalog { rows, suffix_rows, suffix_load_error })
+    Ok(RandomPropertyCatalog {
+        rows,
+        suffix_rows,
+        suffix_load_error,
+    })
 }
 
 #[cfg(test)]

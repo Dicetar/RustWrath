@@ -129,8 +129,7 @@ mod tests {
         assert_eq!(parsed_two[0].id, 10);
         assert_eq!(parsed_two[0].pattern, r"gold\s*4\s*u");
 
-        let three_field =
-            synthetic_filter_dbc(&[(42, r"\<twat\>", Some(0))], true);
+        let three_field = synthetic_filter_dbc(&[(42, r"\<twat\>", Some(0))], true);
         let parsed_three = parse_rows(&three_field, "SpamMessages").expect("3-field SpamMessages");
         assert_eq!(parsed_three.len(), 1);
         assert_eq!(parsed_three[0].id, 42);

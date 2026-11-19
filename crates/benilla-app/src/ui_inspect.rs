@@ -136,11 +136,9 @@ fn inspect_slot_view(
     // The link names the permanent enchant, the block's `+0xc`, and the suffix at `+0x28`
     // (`0x4c8d5c`-`0x4c8d74` → `0x52adb0`).
     let perm = store.0.player_visible_item_enchant(slot0, 0).unwrap_or(0);
-    let link = name
-        .as_ref()
-        .map(|n| {
-            crate::ui_items::item_link_full_in_target(target, entry, perm, roll, 0, n, quality)
-        });
+    let link = name.as_ref().map(|n| {
+        crate::ui_items::item_link_full_in_target(target, entry, perm, roll, 0, n, quality)
+    });
     Some(InvSlotView {
         item_id: entry,
         icon: icons

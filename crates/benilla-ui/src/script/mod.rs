@@ -15,8 +15,8 @@
 
 mod action;
 mod action_bar_toggles;
-pub(crate) mod animation;
 mod addon_message;
+pub(crate) mod animation;
 mod auction;
 mod aura;
 mod backdrop;
@@ -45,8 +45,8 @@ mod chat_send;
 mod chat_types;
 mod chat_window;
 mod clip;
-mod combat_log;
 mod colorselect;
+mod combat_log;
 mod console_exec;
 mod container;
 mod craft;
@@ -64,23 +64,23 @@ pub(crate) use tooltip::post_load as tooltip_post_load;
 pub(crate) mod addon;
 mod addon_enable;
 pub mod addon_gate;
-mod target;
 mod posthook;
 mod secure;
-mod wrath_spell;
+mod target;
 mod wrath_aura;
+mod wrath_spell;
 pub use wrath_aura::WrathAuraView;
 mod wrath_unit;
-pub use wrath_spell::{SpellInfoView, UnitCastView};
 pub use target::UiTarget;
+pub use wrath_spell::{SpellInfoView, UnitCastView};
 mod char_name;
-mod client;
 mod class_names;
+mod client;
 pub use class_names::LocalizedClassName;
+mod multiclass;
 mod newproxy;
 mod static_constants;
 mod wrath_natives;
-mod multiclass;
 pub use multiclass::MulticlassHost;
 mod wrath_security;
 mod wrath_world;
@@ -179,9 +179,10 @@ mod pet;
 mod petition;
 mod pointer;
 pub use pointer::{
-    UiBlockReason, UiBlockerFacts, UiBoundsBucket, UiBoundsState, UiClickBlock, UiClickMask, UiEdge,
-    UiFamily, UiFrameFacts, UiHitFacts,
+    UiBlockReason, UiBlockerFacts, UiBoundsBucket, UiBoundsState, UiClickBlock, UiClickMask,
+    UiEdge, UiFamily, UiFrameFacts, UiHitFacts,
 };
+mod cooldown;
 mod pvp;
 mod quest;
 mod quest_log;
@@ -197,7 +198,6 @@ mod skills;
 mod slash;
 mod slider;
 mod social;
-mod cooldown;
 mod sound;
 mod spellbook;
 mod stable;
@@ -352,17 +352,17 @@ pub use lock_check::{check_lock, LockCheck, LockOpener, LockOpeners, LockSlotVie
 pub use loot::{LootCall, LootRow, LootState, LOOT_PORTRAIT_UNIT};
 pub use loot_roll::{LootRollCall, LootRollEntry, LootRollsState, WrathLootRollTooltip};
 pub use macros::{
-    macro_lines, MacroBinding, MacroDerives, MacroState, MacroView, CHARACTER_ID_BASE, MAX_MACROS,
-    MAX_MACRO_BODY, MAX_MACRO_NAME,
+    macro_lines, MacroBinding, MacroDerives, MacroLimits, MacroState, MacroView, CHARACTER_ID_BASE,
+    MAX_MACROS, MAX_MACRO_BODY, MAX_MACRO_NAME,
 };
 pub use mail::{
-    MailCall, MailInboxAttachment, MailInboxRow, MailInvoice, MailRowVerb, MailSendRequest, MailState, PackageView,
-    StationeryView,
+    MailCall, MailInboxAttachment, MailInboxRow, MailInvoice, MailRowVerb, MailSendRequest,
+    MailState, PackageView, StationeryView,
 };
 pub use measure::TextMeasure;
 pub use merchant::{
-    ExtendedCostItemView, ExtendedCostView, ItemStatsHead, MerchantCall, MerchantItem, MerchantState,
-    RepairCosts,
+    ExtendedCostItemView, ExtendedCostView, ItemStatsHead, MerchantCall, MerchantItem,
+    MerchantState, RepairCosts,
 };
 pub(crate) use minimap::apply_model_attrs as apply_minimap_model_attrs;
 pub use minimap::{
@@ -383,7 +383,9 @@ pub use pet::{PetActionView, PetCall, PetStats, PET_DISMISS_WORD};
 pub use pvp::{
     decorated_name, pvp_name_global_keys, HonorState, InspectHonorData, PvpCall, RankTitle,
 };
-pub use quest::{QuestCall, QuestExtraView, QuestItemView, QuestPanel, QuestRewardSpell, QuestSelect, QuestState};
+pub use quest::{
+    QuestCall, QuestExtraView, QuestItemView, QuestPanel, QuestRewardSpell, QuestSelect, QuestState,
+};
 pub use quest_log::{
     QuestLogCarry, QuestObjectiveView, QuestRecordView, QuestSlotView, QUEST_LOG_SLOTS,
 };
@@ -874,6 +876,8 @@ fn install_in_game(lua: &Lua) -> mlua::Result<()> {
         wrath_spell::install(lua)?;
         wrath_unit::install(lua)?;
         wrath_aura::install(lua)?;
+        // The DEATH and RESURRECT dialogs' own 3.3.5 natives (StaticPopup.lua).
+        death::install_wrath(lua)?;
     }
     Ok(())
 }
@@ -1436,7 +1440,10 @@ impl UiScript {
         Self::set_measured_text_model(&mut model, measures);
     }
 
-    pub(crate) fn set_measured_text_model(model: &mut Model, measures: &[(u32, f32, f32, f32, u64)]) {
+    pub(crate) fn set_measured_text_model(
+        model: &mut Model,
+        measures: &[(u32, f32, f32, f32, u64)],
+    ) {
         for &(id, w, h, natural_w, key) in measures {
             let Some(&rh) = model.id_to_region.get(&id) else {
                 continue;

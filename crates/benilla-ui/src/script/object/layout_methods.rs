@@ -166,37 +166,53 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
         },
     )?;
     if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
-        set_shared(lua, m, Side::Frame, "SetSize", |lua, (this, width, height): (Table, f32, f32)| {
-            let h = frame_handle_of(lua, &this)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            let width = crate::layout::Len::Script(width);
-            let height = crate::layout::Len::Script(height);
-            let input = model.layout_inputs.entry(h).or_default();
-            let changed = input.width.bits() != width.bits() || input.height.bits() != height.bits();
-            input.width = width;
-            input.height = height;
-            if let Some(record) = model.drag_authored.get_mut(&h) {
-                record.1 = width;
-                record.2 = height;
-            }
-            model.invalidate_frame(h, changed);
-            model.note_authored_size(h);
-            Ok(())
-        })?;
+        set_shared(
+            lua,
+            m,
+            Side::Frame,
+            "SetSize",
+            |lua, (this, width, height): (Table, f32, f32)| {
+                let h = frame_handle_of(lua, &this)?;
+                let mut model = lua.app_data_mut::<Model>().expect("model");
+                let width = crate::layout::Len::Script(width);
+                let height = crate::layout::Len::Script(height);
+                let input = model.layout_inputs.entry(h).or_default();
+                let changed =
+                    input.width.bits() != width.bits() || input.height.bits() != height.bits();
+                input.width = width;
+                input.height = height;
+                if let Some(record) = model.drag_authored.get_mut(&h) {
+                    record.1 = width;
+                    record.2 = height;
+                }
+                model.invalidate_frame(h, changed);
+                model.note_authored_size(h);
+                Ok(())
+            },
+        )?;
         set_shared(lua, m, Side::Frame, "GetSize", |lua, this: Table| {
             let h = frame_handle_of(lua, &this)?;
             Ok((size_read(lua, h, true), size_read(lua, h, false)))
         })?;
-        set_shared(lua, m, Side::Frame, "IsMouseOver", |lua, (this, rest): (Table, MultiValue)| {
-            let h = frame_handle_of(lua, &this)?;
-            let offsets = crate::script::region_map::mouse_over_offsets(lua, &rest)?;
-            // Resolving can fire OnSizeChanged: borrow the Model only afterward.
-            settle_frame(lua, h);
-            let model = lua.app_data_ref::<Model>().expect("model");
-            Ok(crate::script::region_map::mouse_over(
-                &model, model.frame_rects.get(&h), layout_scale(&model, h), offsets,
-            ))
-        })?;
+        set_shared(
+            lua,
+            m,
+            Side::Frame,
+            "IsMouseOver",
+            |lua, (this, rest): (Table, MultiValue)| {
+                let h = frame_handle_of(lua, &this)?;
+                let offsets = crate::script::region_map::mouse_over_offsets(lua, &rest)?;
+                // Resolving can fire OnSizeChanged: borrow the Model only afterward.
+                settle_frame(lua, h);
+                let model = lua.app_data_ref::<Model>().expect("model");
+                Ok(crate::script::region_map::mouse_over(
+                    &model,
+                    model.frame_rects.get(&h),
+                    layout_scale(&model, h),
+                    offsets,
+                ))
+            },
+        )?;
     }
     set_shared(lua, m, Side::Frame, "GetWidth", |lua, this: Table| {
         let h = frame_handle_of(lua, &this)?;
@@ -214,10 +230,12 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
         settle_frame(lua, h);
         let model = lua.app_data_ref::<Model>().expect("model");
         let (units, s) = (model.layout_units(), layout_scale(&model, h));
-        let center = model
-            .frame_rects
-            .get(&h)
-            .map(|r| (units.center(r.left, r.right, s), units.center(r.bottom, r.top, s)));
+        let center = model.frame_rects.get(&h).map(|r| {
+            (
+                units.center(r.left, r.right, s),
+                units.center(r.bottom, r.top, s),
+            )
+        });
         let wrath = model.is_wrath();
         drop(model);
         Ok(match center {

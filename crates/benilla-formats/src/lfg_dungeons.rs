@@ -53,7 +53,10 @@ fn schema(wrath_335: bool) -> Schema {
             s.add_field(SchemaField::new(name, FieldType::UInt32));
         }
         for i in 0..16 {
-            s.add_field(SchemaField::new(format!("Description{i}"), FieldType::String));
+            s.add_field(SchemaField::new(
+                format!("Description{i}"),
+                FieldType::String,
+            ));
         }
         s.add_field(SchemaField::new("DescriptionFlags", FieldType::UInt32));
     } else {

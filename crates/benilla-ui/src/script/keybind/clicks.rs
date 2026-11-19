@@ -75,7 +75,10 @@ impl ClickChord {
         }
         let (modifiers, mut rest) = leading_modifiers(text);
         let mut button = None;
-        if rest.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("BUTTON")) {
+        if rest
+            .get(..6)
+            .is_some_and(|p| p.eq_ignore_ascii_case("BUTTON"))
+        {
             let mut after = rest[6..].chars();
             let c = after.next()?;
             button = c.to_digit(10).filter(|&d| d >= 1).map(|d| d as u8);
@@ -157,7 +160,9 @@ pub(crate) struct ClickState {
 
 impl ClickState {
     fn row(&self, action: &str) -> Option<&Row> {
-        self.rows.iter().find(|r| r.action.eq_ignore_ascii_case(action))
+        self.rows
+            .iter()
+            .find(|r| r.action.eq_ignore_ascii_case(action))
     }
 
     /// The action's live chord; `None` for an action no file declared.
@@ -283,7 +288,9 @@ fn is_modified_click(model: &Model, action: Option<&str>) -> bool {
     };
     let (bits, _) = leading_modifiers(action);
     if bits == 0 {
-        return clicks.chord(action).is_some_and(|c| c.active(held, clicking));
+        return clicks
+            .chord(action)
+            .is_some_and(|c| c.active(held, clicking));
     }
     (bits & 0x03 == 0 || held.0) && (bits & 0x0C == 0 || held.1) && (bits & 0x30 == 0 || held.2)
 }
@@ -342,7 +349,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let binding = super::super::binding_abi::tolstring_arg(lua, binding);
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             let clicks = &mut model.keybinds.clicks;
-            let chord = binding.as_deref().map_or(Some(ClickChord::default()), ClickChord::parse);
+            let chord = binding
+                .as_deref()
+                .map_or(Some(ClickChord::default()), ClickChord::parse);
             match (clicks.row(&action).is_some(), chord) {
                 (true, Some(chord)) => {
                     clicks.live.insert(action.to_ascii_uppercase(), chord);

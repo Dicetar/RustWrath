@@ -403,7 +403,10 @@ fn faction_schema(wrath: bool) -> Schema {
     // 12340 FactionRec: ParentFactionMod[2], ParentFactionCap[2], then 16 locales.
     if wrath {
         for i in 0..2 {
-            s.add_field(SchemaField::new(format!("ParentMod{i}"), FieldType::Float32));
+            s.add_field(SchemaField::new(
+                format!("ParentMod{i}"),
+                FieldType::Float32,
+            ));
         }
         for i in 0..2 {
             s.add_field(SchemaField::new(format!("ParentCap{i}"), FieldType::UInt32));
@@ -511,7 +514,11 @@ pub fn load_faction_catalog(chain: &mut Chain) -> Result<FactionCatalog> {
     let bytes = chain
         .read_file(FACTION_GROUP)
         .with_context(|| format!("reading {FACTION_GROUP}"))?;
-    let rs = parse(&bytes, faction_group_schema(field_count(&bytes) == Some(20)), "FactionGroup")?;
+    let rs = parse(
+        &bytes,
+        faction_group_schema(field_count(&bytes) == Some(20)),
+        "FactionGroup",
+    )?;
     let mut group_names = HashMap::with_capacity(rs.records().len());
     let mut group_internal_names = HashMap::with_capacity(rs.records().len());
     let groups = rs
@@ -794,7 +801,10 @@ mod tests {
             assert_eq!(rep_count, 54);
         } else {
             // Wrath expands the reputation list beyond 1.12's 64-slot limit.
-            assert!(rep_count > 64, "expected >64 Wrath reputation rows, got {rep_count}");
+            assert!(
+                rep_count > 64,
+                "expected >64 Wrath reputation rows, got {rep_count}"
+            );
         }
 
         // The four Alliance cities sit under Alliance (469), the four Horde ones under Horde (67).

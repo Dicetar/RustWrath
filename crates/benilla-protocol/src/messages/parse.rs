@@ -595,10 +595,11 @@ fn parse_server_body(
             sound_id: read_u32_le(&mut r)?,
             guid: read_u64_le(&mut r)?,
         },
+        // 3.3.5: `u32 weatherId, f32 grade, u8 abrupt` (9 bytes). The ambience kit comes from the
+        // `Weather.dbc` row, so a fourth u32 read here would run past a live packet.
         opcode::SMSG_WEATHER => ServerPacket::Weather {
-            weather_type: read_u32_le(&mut r)?,
+            weather_id: read_u32_le(&mut r)?,
             grade: read_f32_le(&mut r)?,
-            sound_id: read_u32_le(&mut r)?,
             instant: read_u8(&mut r)? != 0,
         },
         opcode::SMSG_TEXT_EMOTE => {
@@ -1679,6 +1680,55 @@ fn parse_server_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 3.3.5 `SMSG_WEATHER` is nine bytes: `u32 weatherId, f32 grade, u8 abrupt`. A 1.12 layout
+    /// with a `u32 soundId` between the grade and the flag leaves four bytes unread instead of
+    /// decoding as weather: the tail exposes the mismatch.
+    #[test]
+    fn the_wrath_weather_body_is_a_state_id_grade_and_one_flag_byte() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&1u32.to_le_bytes()); // Weather.dbc Rain
+        body.extend_from_slice(&1.0f32.to_le_bytes());
+        body.push(0); // smooth
+        let (packet, tail) =
+            parse_server_with_tail(opcode::SMSG_WEATHER, &body).expect("nine bytes parse");
+        match packet {
+            ServerPacket::Weather {
+                weather_id,
+                grade,
+                instant,
+            } => {
+                assert_eq!(weather_id, 1);
+                assert!((grade - 1.0).abs() < 1e-6);
+                assert!(!instant, "0 is smooth, as the client reads abrupt == 0");
+            }
+            _ => panic!("SMSG_WEATHER decodes as Weather"),
+        }
+        assert_eq!(tail, 0, "the whole nine-byte body is consumed");
+
+        // The 1.12 body: a soundId u32 where 3.3.5 has none, then the flag. Reading 3.3.5's nine
+        // bytes takes the sound id's first byte as the flag and leaves four bytes unread, so the
+        // tail exposes the mismatch instead of shifting the grade.
+        let mut donor = Vec::new();
+        donor.extend_from_slice(&1u32.to_le_bytes());
+        donor.extend_from_slice(&1.0f32.to_le_bytes());
+        donor.extend_from_slice(&8533u32.to_le_bytes());
+        donor.push(0);
+        let (packet, tail) =
+            parse_server_with_tail(opcode::SMSG_WEATHER, &donor).expect("decodes what it reads");
+        assert_eq!(
+            tail, 4,
+            "a donor body leaves its spare sound-id bytes unread"
+        );
+        assert!(matches!(
+            packet,
+            ServerPacket::Weather {
+                weather_id: 1,
+                instant: true,
+                ..
+            }
+        ));
+    }
 
     /// `SMSG_AUTH_RESPONSE` as vmangos writes its four shapes: the admitting `AUTH_OK` and the first
     /// `AUTH_WAIT_QUEUE` with the billing group (`World.cpp:325-331`, `:374-381`), then the queue's

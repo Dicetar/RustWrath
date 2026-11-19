@@ -818,7 +818,7 @@ fn merchant_tabs_drive_buyback_page_and_repair_pair() {
     s.set_money(500);
 
     let buyback_item = |name: &str, price: u32| MerchantItem {
-                extended_cost: None,
+        extended_cost: None,
         name: Some(name.into()),
         texture: Some("Interface\\Icons\\INV_Misc_Cape_01".into()),
         price,
@@ -831,7 +831,7 @@ fn merchant_tabs_drive_buyback_page_and_repair_pair() {
     };
     s.set_merchant(Some(MerchantState {
         items: vec![MerchantItem {
-                extended_cost: None,
+            extended_cost: None,
             name: Some("Refreshing Spring Water".into()),
             texture: Some("Interface\\Icons\\INV_Drink_18".into()),
             price: 25,
@@ -1194,7 +1194,7 @@ fn ctrl_and_shift_on_a_vendor_row_preview_and_post_without_buying() {
     s.set_money(12_345);
     s.set_merchant(Some(MerchantState {
         items: vec![MerchantItem {
-                extended_cost: None,
+            extended_cost: None,
             name: Some("Refreshing Spring Water".into()),
             texture: Some("Interface\\Icons\\INV_Drink_18".into()),
             price: 25,

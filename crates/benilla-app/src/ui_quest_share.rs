@@ -115,9 +115,7 @@ mod net {
             // against the current scope so a preceding `Share` write can be correlated only
             // when it is unique in that scope.
             if let Some(trace) = trace.as_ref() {
-                let scope = view
-                    .as_ref()
-                    .map(|v| (v.session_epoch, v.world_generation));
+                let scope = view.as_ref().map(|v| (v.session_epoch, v.world_generation));
                 trace.observe(
                     scope,
                     None,

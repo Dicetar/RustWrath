@@ -119,7 +119,9 @@ pub(crate) fn localized_class_names(
             .filter(|file| !file.is_empty() && !file.contains('\0'))
             .ok_or_else(|| format!("ChrClasses.dbc class {id} has no usable Filename"))?;
         if !files.insert(file.clone()) {
-            return Err(format!("ChrClasses.dbc has duplicate class Filename {file:?}"));
+            return Err(format!(
+                "ChrClasses.dbc has duplicate class Filename {file:?}"
+            ));
         }
         let male = row.male.ok_or_else(|| {
             format!("ChrClasses.dbc class {id} has no male label at locale {locale_index}")
@@ -165,26 +167,29 @@ fn classes_for_ui(world: &mut World) -> Option<ChrClasses> {
 }
 
 fn localized_race_names(races: &ChrRaces, locale: usize) -> Result<Vec<(u8, String)>, String> {
-    let rows = races.localized_labels(locale).ok_or_else(|| {
-        format!("ChrRaces.dbc has no 12340 labels at locale {locale}")
-    })?;
-    rows.into_iter().filter(|row| matches!(row.id, 1..=8 | 10 | 11))
+    let rows = races
+        .localized_labels(locale)
+        .ok_or_else(|| format!("ChrRaces.dbc has no 12340 labels at locale {locale}"))?;
+    rows.into_iter()
+        .filter(|row| matches!(row.id, 1..=8 | 10 | 11))
         .map(|row| {
-            let id = u8::try_from(row.id).map_err(|_| format!("race {} exceeds the UI ID range", row.id))?;
-            let name = row.male.ok_or_else(|| format!(
-                "ChrRaces.dbc race {id} has no male/base label at locale {locale}"
-            ))?;
+            let id = u8::try_from(row.id)
+                .map_err(|_| format!("race {} exceeds the UI ID range", row.id))?;
+            let name = row.male.ok_or_else(|| {
+                format!("ChrRaces.dbc race {id} has no male/base label at locale {locale}")
+            })?;
             Ok((id, name))
-        }).collect()
+        })
+        .collect()
 }
 
 fn seat_localized_race_names(world: &mut World, script: &mut UiScript) {
     let table = if let Some(table) = world.get_resource::<ChrRaceTable>() {
         table.0.clone()
     } else {
-        let loaded = world.get_resource::<WorldAssets>().map(|assets| {
-            benilla_formats::load_chr_races(&mut assets.chain.lock_recover())
-        });
+        let loaded = world
+            .get_resource::<WorldAssets>()
+            .map(|assets| benilla_formats::load_chr_races(&mut assets.chain.lock_recover()));
         match loaded {
             Some(Ok(table)) => {
                 world.insert_resource(ChrRaceTable(table.clone()));
@@ -247,10 +252,12 @@ pub(crate) fn seat_localized_class_names_from_chain(
     script
         .set_localized_class_names(locale, rows)
         .map_err(|error| format!("the localized class catalog was refused: {error}"))?;
-    let races = benilla_formats::load_chr_races(chain)
-        .map_err(|error| format!("ChrRaces.dbc failed to load ahead of the UI bootstrap: {error:#}"))?;
+    let races = benilla_formats::load_chr_races(chain).map_err(|error| {
+        format!("ChrRaces.dbc failed to load ahead of the UI bootstrap: {error:#}")
+    })?;
     let rows = localized_race_names(&races, locale)?;
-    script.set_localized_race_names(locale, rows)
+    script
+        .set_localized_race_names(locale, rows)
         .map_err(|error| format!("the localized race catalog was refused: {error}"))
 }
 

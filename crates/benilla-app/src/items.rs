@@ -1480,11 +1480,7 @@ mod tests {
             "the donor seven and 43..47 never name this enchant"
         );
         assert!(
-            already_bound_item(
-                crate::wrath_item::ItemRead::new(&donor, Some(&row)),
-                0,
-                cat
-            ),
+            already_bound_item(crate::wrath_item::ItemRead::new(&donor, Some(&row)), 0, cat),
             "slot 8 binds through the typed row"
         );
         let plain = crate::wrath_item::WrathItemRow::new(

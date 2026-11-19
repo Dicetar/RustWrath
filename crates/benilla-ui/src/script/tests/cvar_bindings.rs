@@ -7,9 +7,16 @@ use crate::script::UiScript;
 fn wrath_glue_rejects_unknown_cvars_instead_of_inventing_defaults() {
     let s = UiScript::glue_with_target(crate::script::UiTarget::Wrath335).unwrap();
     s.register_cvars([("Sound_NumChannels", "32")]);
-    assert_eq!(s.eval::<String>("return GetCVar('Sound_NumChannels')").unwrap(), "32");
+    assert_eq!(
+        s.eval::<String>("return GetCVar('Sound_NumChannels')")
+            .unwrap(),
+        "32"
+    );
     for call in ["GetCVar", "GetCVarDefault", "GetCVarMin", "GetCVarMax"] {
-        assert!(s.run(&format!("{call}('missing-setting')")).unwrap_err().to_string()
+        assert!(s
+            .run(&format!("{call}('missing-setting')"))
+            .unwrap_err()
+            .to_string()
             .contains("Couldn't find CVar named 'missing-setting'"));
     }
 }
@@ -42,7 +49,8 @@ fn the_cvar_limit_getters_are_wrath_only() {
             "{label}: 0x004DDF80's farclip maximum"
         );
         assert_eq!(
-            s.eval::<f64>("return GetCVarMin('extShadowQuality')").unwrap(),
+            s.eval::<f64>("return GetCVarMin('extShadowQuality')")
+                .unwrap(),
             0.0,
             "{label}: the shadow floor the reference does answer"
         );

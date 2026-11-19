@@ -92,14 +92,13 @@ impl MerchantSteps<'_, '_> {
                           item: Option<u32>,
                           count: Option<u32>,
                           slot: Option<u32>| {
-            trace.as_ref().map(|trace| {
-                trace.begin_with_details(scope, None, vendor, item, count, slot, op)
-            })
+            trace
+                .as_ref()
+                .map(|trace| trace.begin_with_details(scope, None, vendor, item, count, slot, op))
         };
         let open_vendor = open.as_deref().and_then(|open| open.vendor);
-        let guard_trace = |op: Option<Operation>| {
-            op.and_then(|op| make_trace(op, open_vendor, None, None, None))
-        };
+        let guard_trace =
+            |op: Option<Operation>| op.and_then(|op| make_trace(op, open_vendor, None, None, None));
         let Some(open) = open.as_deref() else {
             let trace = guard_trace(default_op);
             record(&trace, Stage::GuardRefused);
@@ -193,13 +192,8 @@ impl MerchantSteps<'_, '_> {
                     Some(&idx) => {
                         let slot = BUYBACK_SLOT_FIRST + u32::from(idx);
                         debug!("ui_merchant: buyback list index {index} → absolute slot {slot}");
-                        let trace = make_trace(
-                            Operation::Buy,
-                            Some(vendor),
-                            None,
-                            Some(1),
-                            Some(slot),
-                        );
+                        let trace =
+                            make_trace(Operation::Buy, Some(vendor), None, Some(1), Some(slot));
                         let command =
                             Self::tracked(&trace, ClientCommand::BuybackItem { vendor, slot });
                         let result = net.0.send(command);
@@ -293,7 +287,9 @@ impl MerchantSteps<'_, '_> {
                     record(&trace, Stage::GuardRefused);
                     return;
                 };
-                let Some((bag_index, bag_slot)) = crate::ui_items::wire_pos_in_target(script.target(), bag, slot) else {
+                let Some((bag_index, bag_slot)) =
+                    crate::ui_items::wire_pos_in_target(script.target(), bag, slot)
+                else {
                     let trace = guard_trace(Some(Operation::Buy));
                     record(&trace, Stage::GuardRefused);
                     debug!(

@@ -836,10 +836,7 @@ pub(crate) fn feed_char(
             };
             let render_level = store.0.unit_level().unwrap_or(0);
             for slot in inv.iter_mut().chain(bank_bags.iter_mut()).flatten() {
-                if let Some(read) = objects
-                    .item_read(slot.guid)
-                    .filter(|_| slot.guid != 0)
-                {
+                if let Some(read) = objects.item_read(slot.guid).filter(|_| slot.guid != 0) {
                     let template = items.template(slot.item_id, slot.guid, Ask::Read);
                     let link = crate::ui_items::object_link_in_target_item(
                         script.target(),
@@ -856,7 +853,9 @@ pub(crate) fn feed_char(
                 } else if slot.guid == 0 && slot.link.is_some() {
                     // Ammo is a template-only view; no instance/socket fields are available.
                     slot.link = Some(script.template_item_link(
-                        slot.item_id, slot.name.as_deref().unwrap_or(""), slot.quality as u32,
+                        slot.item_id,
+                        slot.name.as_deref().unwrap_or(""),
+                        slot.quality as u32,
                     ));
                 }
             }

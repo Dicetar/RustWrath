@@ -88,82 +88,100 @@ pub struct AddonWhisper {
 }
 
 fn install_wrath(lua: &Lua) -> mlua::Result<()> {
-    lua.globals().set("SendAddonMessage", lua.create_function(
-        |lua, (prefix, message, distribution, target): (Value, Value, Value, Value)| {
-            let prefix = lua_tostring(lua, &prefix)?;
-            let message = lua_tostring(lua, &message)?;
-            if prefix.is_empty() && message.is_empty() {
-                return Err(mlua::Error::runtime("Usage: SendAddonMessage(prefix, message [, distribution [, target]])"));
-            }
-            if prefix.contains('\t') {
-                return Err(mlua::Error::runtime("Addon prefix cannot contain a tab"));
-            }
-            let distribution = lua.coerce_string(distribution)?
-                .map_or_else(|| "PARTY".to_owned(), |value| value.to_string_lossy());
-            // WMBridge composes its HELLO line before `sendPayload` attempts CHANNEL and falls
-            // back to WHISPER (`WMBridge.lua:135-175`). When a fallback whisper carries a stale
-            // `transport=CHANNEL` tag, rewrite it to the actual `transport=SELF_WHISPER` lane.
-            let message = if distribution.eq_ignore_ascii_case("WHISPER")
-                && prefix == "WMBridge"
-                && message.contains("transport=CHANNEL")
-            {
-                message.replace("transport=CHANNEL", "transport=SELF_WHISPER")
-            } else {
-                message
-            };
-            let text = format!("{prefix}\t{message}");
-            if distribution.eq_ignore_ascii_case("WHISPER") {
-                let target = lua_tostring(lua, &target)?;
-                if target.is_empty() {
-                    return Err(mlua::Error::runtime("Addon whisper missing target player"));
+    lua.globals().set(
+        "SendAddonMessage",
+        lua.create_function(
+            |lua, (prefix, message, distribution, target): (Value, Value, Value, Value)| {
+                let prefix = lua_tostring(lua, &prefix)?;
+                let message = lua_tostring(lua, &message)?;
+                if prefix.is_empty() && message.is_empty() {
+                    return Err(mlua::Error::runtime(
+                        "Usage: SendAddonMessage(prefix, message [, distribution [, target]])",
+                    ));
                 }
-                // `WM_SpellmakingV3.lua:36` calls `SendAddonMessage("WM_FORGE3", ..., "WHISPER", target)`
-                // without `pcall`. When an upload chunk or graph line exceeds the 255-byte server
-                // cap, split it into <=150-byte `DATA|` (or prefix-bounded) whisper frames rather
-                // than aborting the Spellwright Lua flow.
-                if text.len() > 255 && prefix == "WM_FORGE3" {
-                    let body = message.strip_prefix("DATA|").unwrap_or(&message);
-                    let frame_prefix = if message.starts_with("DATA|") {
-                        "WM_FORGE3\tDATA|"
-                    } else {
-                        "WM_FORGE3\t"
-                    };
-                    let max_chunk = (255usize.saturating_sub(frame_prefix.len())).min(150).max(1);
-                    let mut rest = body;
-                    while !rest.is_empty() {
-                        let mut cut = rest.len().min(max_chunk);
-                        while cut > 0 && !rest.is_char_boundary(cut) {
-                            cut -= 1;
-                        }
-                        let chunk = &rest[..cut];
-                        super::calls::submit(
-                            lua,
-                            super::ScriptCall::AddonWhisper(AddonWhisper {
-                                text: format!("{frame_prefix}{chunk}"),
-                                target: target.clone(),
-                            }),
-                        )?;
-                        rest = &rest[cut..];
+                if prefix.contains('\t') {
+                    return Err(mlua::Error::runtime("Addon prefix cannot contain a tab"));
+                }
+                let distribution = lua
+                    .coerce_string(distribution)?
+                    .map_or_else(|| "PARTY".to_owned(), |value| value.to_string_lossy());
+                // WMBridge composes its HELLO line before `sendPayload` attempts CHANNEL and falls
+                // back to WHISPER (`WMBridge.lua:135-175`). When a fallback whisper carries a stale
+                // `transport=CHANNEL` tag, rewrite it to the actual `transport=SELF_WHISPER` lane.
+                let message = if distribution.eq_ignore_ascii_case("WHISPER")
+                    && prefix == "WMBridge"
+                    && message.contains("transport=CHANNEL")
+                {
+                    message.replace("transport=CHANNEL", "transport=SELF_WHISPER")
+                } else {
+                    message
+                };
+                let text = format!("{prefix}\t{message}");
+                if distribution.eq_ignore_ascii_case("WHISPER") {
+                    let target = lua_tostring(lua, &target)?;
+                    if target.is_empty() {
+                        return Err(mlua::Error::runtime("Addon whisper missing target player"));
                     }
-                    return Ok(());
+                    // `WM_SpellmakingV3.lua:36` calls `SendAddonMessage("WM_FORGE3", ..., "WHISPER", target)`
+                    // without `pcall`. When an upload chunk or graph line exceeds the 255-byte server
+                    // cap, split it into <=150-byte `DATA|` (or prefix-bounded) whisper frames rather
+                    // than aborting the Spellwright Lua flow.
+                    if text.len() > 255 && prefix == "WM_FORGE3" {
+                        let body = message.strip_prefix("DATA|").unwrap_or(&message);
+                        let frame_prefix = if message.starts_with("DATA|") {
+                            "WM_FORGE3\tDATA|"
+                        } else {
+                            "WM_FORGE3\t"
+                        };
+                        let max_chunk = (255usize.saturating_sub(frame_prefix.len()))
+                            .min(150)
+                            .max(1);
+                        let mut rest = body;
+                        while !rest.is_empty() {
+                            let mut cut = rest.len().min(max_chunk);
+                            while cut > 0 && !rest.is_char_boundary(cut) {
+                                cut -= 1;
+                            }
+                            let chunk = &rest[..cut];
+                            super::calls::submit(
+                                lua,
+                                super::ScriptCall::AddonWhisper(AddonWhisper {
+                                    text: format!("{frame_prefix}{chunk}"),
+                                    target: target.clone(),
+                                }),
+                            )?;
+                            rest = &rest[cut..];
+                        }
+                        return Ok(());
+                    }
+                    if text.len() > 255 {
+                        return Err(mlua::Error::runtime(
+                            "Addon prefix and message exceed the server's 255-byte limit",
+                        ));
+                    }
+                    return super::calls::submit(
+                        lua,
+                        super::ScriptCall::AddonWhisper(AddonWhisper { text, target }),
+                    );
                 }
+                // The installed AzerothCore ChatHandler rejects messages past 255 bytes. Refuse
+                // an oversized structured message rather than silently truncating its payload.
                 if text.len() > 255 {
-                    return Err(mlua::Error::runtime("Addon prefix and message exceed the server's 255-byte limit"));
+                    return Err(mlua::Error::runtime(
+                        "Addon prefix and message exceed the server's 255-byte limit",
+                    ));
                 }
-                return super::calls::submit(lua, super::ScriptCall::AddonWhisper(AddonWhisper { text, target }));
-            }
-            // The installed AzerothCore ChatHandler rejects messages past 255 bytes. Refuse
-            // an oversized structured message rather than silently truncating its payload.
-            if text.len() > 255 {
-                return Err(mlua::Error::runtime("Addon prefix and message exceed the server's 255-byte limit"));
-            }
-            // CHANNEL is intentionally not admitted: the installed server's LANG_ADDON
-            // whitelist excludes it. WMBridge can then take its explicit WHISPER fallback.
-            let distribution = AddonDistribution::from_token(&distribution)
-                .ok_or_else(|| mlua::Error::runtime("Unknown addon chat type"))?;
-            super::calls::submit(lua, super::ScriptCall::AddonMessage(AddonSend { text, distribution }))
-        },
-    )?)
+                // CHANNEL is intentionally not admitted: the installed server's LANG_ADDON
+                // whitelist excludes it. WMBridge can then take its explicit WHISPER fallback.
+                let distribution = AddonDistribution::from_token(&distribution)
+                    .ok_or_else(|| mlua::Error::runtime("Unknown addon chat type"))?;
+                super::calls::submit(
+                    lua,
+                    super::ScriptCall::AddonMessage(AddonSend { text, distribution }),
+                )
+            },
+        )?,
+    )
 }
 
 /// `_snprintf(dst, 0x800, …)` writes at most 2047 bytes plus its NUL (`0x64a861`-`0x64a868`).

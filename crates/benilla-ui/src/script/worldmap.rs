@@ -268,6 +268,10 @@ pub struct WorldMapState {
     pub player_facing: f32,
     /// `GetCorpseMapPosition()` on the displayed map; `None` is no corpse or off the map.
     pub corpse_uv: Option<(f32, f32)>,
+    /// `GetDeathReleasePosition()` on the displayed map; `None` before a release and after the
+    /// resurrection's clear. The stock map hides it while a ghost anyway
+    /// (`WorldMapFrame.lua:909-913`).
+    pub death_release_uv: Option<(f32, f32)>,
     /// `PLAYER_EXPLORED_ZONES_1`, 64 words, bit n being `AreaTable.dbc` exploreFlag n.
     pub explored: Vec<u32>,
     /// What the landmark list is built from, pushed by the host when it changes.
@@ -566,6 +570,12 @@ impl super::UiScript {
         model.worldmap.raid_uv = raid_uv;
     }
 
+    /// Push the release location's map UV, the world map's death-release marker
+    /// (`GetDeathReleasePosition`, `0x5459c0`).
+    pub fn set_death_release_uv(&mut self, uv: Option<(f32, f32)>) {
+        self.model_mut().worldmap.death_release_uv = uv;
+    }
+
     /// The selection's three cells, which the app reads each frame to project the feed: continent,
     /// zone, and the direct-area id that overrides them when `Some`. The pair alone reads an
     /// instance map as the world sheet.
@@ -774,56 +784,59 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         .app_data_ref::<Model>()
         .is_some_and(|model| model.is_wrath())
     {
-    g.set(
-        "GetWintergraspWaitTime",
-        lua.create_function(|_, ()| Ok(Value::Nil))?,
-    )?;
-    g.set(
-        "GetDeathReleasePosition",
-        lua.create_function(|_, ()| Ok((0.0f64, 0.0f64)))?,
-    )?;
-    // `WorldMapFrame_OnLoad` calls this before its first `WorldMapFrame_Update`; 1.12 has no
-    // map pings. A no-op lets OnLoad reach the update that paints the map and seats the frame.
-    g.set(
-        "InitWorldMapPing",
-        lua.create_function(|_, _owner: Value| Ok(()))?,
-    )?;
-    // 3.3.5's `WorldMapFrame_Update` reads these before it paints the detail tiles. 1.12 has
-    // no dungeon floor selector and no terrain-map mode; a zero level and no zoom keep the
-    // stock update on its ordinary zone path.
-    g.set(
-        "GetCurrentMapDungeonLevel",
-        lua.create_function(|_, ()| Ok(0i64))?,
-    )?;
-    g.set(
-        "DungeonUsesTerrainMap",
-        lua.create_function(|_, ()| Ok(false))?,
-    )?;
-    g.set(
-        "IsZoomOutAvailable",
-        lua.create_function(|_, ()| Ok(false))?,
-    )?;
-    // Wrath's debug-zone-map and quest-map hooks are not part of the 1.12 map surface. The
-    // former answers false so the stock UI never exposes a debug map; the latter is a no-op
-    // where the quest map would repaint.
-    g.set(
-        "HasDebugZoneMap",
-        lua.create_function(|_, ()| Ok(false))?,
-    )?;
-    g.set(
-        "QuestMapUpdateAllQuests",
-        lua.create_function(|_, ()| Ok(0i64))?,
-    )?;
-    // Dungeon floor count and battlefield vehicle count: benilla has no dungeon-map floors
-    // and no battlefield vehicles, so the stock maps see zero of each.
-    g.set(
-        "GetNumDungeonMapLevels",
-        lua.create_function(|_, ()| Ok(0i64))?,
-    )?;
-    g.set(
-        "GetNumBattlefieldVehicles",
-        lua.create_function(|_, ()| Ok(0i64))?,
-    )?;
+        g.set(
+            "GetWintergraspWaitTime",
+            lua.create_function(|_, ()| Ok(Value::Nil))?,
+        )?;
+        // GetDeathReleasePosition() (0x5459c0): the release location through the same projection as
+        // GetCorpseMapPosition, (0, 0) which WorldMapFrame.lua:909 hides while there is none.
+        g.set(
+            "GetDeathReleasePosition",
+            lua.create_function(|lua, ()| {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let (x, y) = model.worldmap.death_release_uv.unwrap_or((0.0, 0.0));
+                Ok((f64::from(x), f64::from(y)))
+            })?,
+        )?;
+        // `WorldMapFrame_OnLoad` calls this before its first `WorldMapFrame_Update`; 1.12 has no
+        // map pings. A no-op lets OnLoad reach the update that paints the map and seats the frame.
+        g.set(
+            "InitWorldMapPing",
+            lua.create_function(|_, _owner: Value| Ok(()))?,
+        )?;
+        // 3.3.5's `WorldMapFrame_Update` reads these before it paints the detail tiles. 1.12 has
+        // no dungeon floor selector and no terrain-map mode; a zero level and no zoom keep the
+        // stock update on its ordinary zone path.
+        g.set(
+            "GetCurrentMapDungeonLevel",
+            lua.create_function(|_, ()| Ok(0i64))?,
+        )?;
+        g.set(
+            "DungeonUsesTerrainMap",
+            lua.create_function(|_, ()| Ok(false))?,
+        )?;
+        g.set(
+            "IsZoomOutAvailable",
+            lua.create_function(|_, ()| Ok(false))?,
+        )?;
+        // Wrath's debug-zone-map and quest-map hooks are not part of the 1.12 map surface. The
+        // former answers false so the stock UI never exposes a debug map; the latter is a no-op
+        // where the quest map would repaint.
+        g.set("HasDebugZoneMap", lua.create_function(|_, ()| Ok(false))?)?;
+        g.set(
+            "QuestMapUpdateAllQuests",
+            lua.create_function(|_, ()| Ok(0i64))?,
+        )?;
+        // Dungeon floor count and battlefield vehicle count: benilla has no dungeon-map floors
+        // and no battlefield vehicles, so the stock maps see zero of each.
+        g.set(
+            "GetNumDungeonMapLevels",
+            lua.create_function(|_, ()| Ok(0i64))?,
+        )?;
+        g.set(
+            "GetNumBattlefieldVehicles",
+            lua.create_function(|_, ()| Ok(0i64))?,
+        )?;
     }
 
     g.set(

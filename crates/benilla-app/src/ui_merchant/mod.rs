@@ -183,7 +183,13 @@ fn resolve_item(
     icons: Option<&ItemDisplays>,
     ask: Ask<'_>,
 ) -> MerchantItem {
-    resolve_item_in_target(item, items, icons, ask, benilla_ui::script::UiTarget::Vanilla112)
+    resolve_item_in_target(
+        item,
+        items,
+        icons,
+        ask,
+        benilla_ui::script::UiTarget::Vanilla112,
+    )
 }
 
 fn resolve_item_in_target(
@@ -566,8 +572,7 @@ fn feed_repair_costs(
         let Some(player) = inv.self_store.iter().next() else {
             return;
         };
-        let player_inv =
-            inv.player(script.target() == benilla_ui::script::UiTarget::Wrath335);
+        let player_inv = inv.player(script.target() == benilla_ui::script::UiTarget::Wrath335);
         let vendor = vendor_store(&open, &units);
         // The open vendor's price discount (`0x4faf8a`), 0 with none open.
         let discount = open_vendor_discount(&open, &units, &relations, player);
@@ -642,10 +647,19 @@ fn snapshot(
         .map(|store| {
             buyback_order(store)
                 .into_iter()
-                .map(|idx| resolve_buyback(
-                    idx, store, objects, items, icons, ask, target,
-                    store.unit_level().unwrap_or(0), rolls,
-                ))
+                .map(|idx| {
+                    resolve_buyback(
+                        idx,
+                        store,
+                        objects,
+                        items,
+                        icons,
+                        ask,
+                        target,
+                        store.unit_level().unwrap_or(0),
+                        rolls,
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -1136,8 +1150,7 @@ mod tests {
             .world_mut()
             .run_system_once(
                 move |objects: Objects, items: Res<Items>, tables: Res<RepairTables>| {
-                    let view =
-                        crate::wrath_inventory::PlayerInventory::new(&store, None, false);
+                    let view = crate::wrath_inventory::PlayerInventory::new(&store, None, false);
                     repair_costs(&view, &objects, &items, &tables, steps)
                 },
             )

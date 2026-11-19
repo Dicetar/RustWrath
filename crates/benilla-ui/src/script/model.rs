@@ -7,10 +7,9 @@ use super::{
     auction, backdrop, bank, camera_view, char_stats, chat_window, colorselect, container, craft,
     cursor, death, follow, gossip, guild, item_calls, item_text, loot, loot_roll, macros, mail,
     merchant, parse_unit_token_for, party, petition, pointer::UiHitFacts, pvp, quest, quest_log,
-    reputation, simplehtml,
-    skills, slider, social, spellbook, stable, taxi, trade, tradeskill, trainer, weapon_enchant,
-    ActionSlot, AuraState, FontObject, ItemTemplateView, MusicRequest, PlayerReqState, RegionData,
-    ScriptValue, SoundRequest, UnitBase, UnitState, UnitTokenParse,
+    reputation, simplehtml, skills, slider, social, spellbook, stable, taxi, trade, tradeskill,
+    trainer, weapon_enchant, ActionSlot, AuraState, FontObject, ItemTemplateView, MusicRequest,
+    PlayerReqState, RegionData, ScriptValue, SoundRequest, UnitBase, UnitState, UnitTokenParse,
 };
 
 // ── The Rust-side model ──
@@ -621,6 +620,12 @@ pub(crate) struct Model {
     /// `GetTime()`'s session seconds, which only the host moves ([`super::UiScript::tick`],
     /// [`super::UiScript::set_now`]); off `_G`, as the reference's clock is the OS tick count.
     pub(crate) now: f64,
+    /// The PvP toggle timer's `now` when `PLAYER_FLAGS_PVP_TIMER` was first seen set, and whether
+    /// the last `IsPVPTimerRunning` saw it set. The stock `PlayerFrame` seeds its five-minute
+    /// countdown from `GetPVPTimer` and decrements it itself (`PlayerFrame.lua:413`); the
+    /// reference's timestamp lives in `CGPlayer_C::m_pvpCooldownTimestamp` (`Player_C.cpp:2230`).
+    pub(crate) pvp_timer_start: Option<f64>,
+    pub(crate) pvp_timer_was_running: bool,
     /// `GetGameTime()`'s `(hour, minute)`, pushed by the host as the game clock ticks; `None`
     /// until the server sets it.
     pub(crate) game_time: Option<(i32, i32)>,
@@ -827,6 +832,8 @@ pub(crate) struct Model {
     /// Per action, its usable, range, current and cooldown state; an absent one reads cold.
     pub(crate) action_states: HashMap<u32, super::action::StoredActionState>,
     pub(crate) bonus_bar_offset: u8,
+    /// The ordinary bar page, independent of FrameXML globals (12340 `0x005A7FD0`).
+    pub(crate) action_bar_page: i64,
     /// GlobalStrings keys of refusals this crate raises, fired by the app as `UI_ERROR_MESSAGE`
     /// (the reference's `DisplayError` `0x496720`), each a literal from `0xb4b498` (stride `0x14`).
     pub(crate) ui_errors: Vec<(&'static str, super::InputEvents)>,
@@ -856,6 +863,11 @@ pub(crate) struct Model {
     pub(crate) macro_icons: Vec<String>,
     /// What builds `macro_icons` while it is empty; `None` builds nothing.
     pub(crate) macro_icon_source: Option<MacroIconSource>,
+    /// The macro id `RunMacro` is firing (`Some(0)` for `RunMacroText`), and the optional
+    /// button argument `GetRunningMacroButton` reports. `StopMacro` clears both, which stops
+    /// the remaining lines.
+    pub(crate) running_macro: Option<u32>,
+    pub(crate) running_macro_button: Option<String>,
     /// The player's cast state, which `IsCurrentAction`, `IsAutoRepeatAction` and
     /// `SpellStopCasting()` (`0x6e6e80`) read: the last's 1 or nil matters, as the ESC chain
     /// (`UIParent.lua:1489`) reaches `CloseAllWindows()` on nil.
@@ -1577,9 +1589,9 @@ impl Model {
         } = parse_unit_token_for(token, self.is_wrath())
         {
             let guid = self.unit_guids.resolve_unit(base, hops)?;
-            return self.chained_unit(token).or_else(|| {
-                self.pushed_unit(token).filter(|unit| unit.guid == guid)
-            });
+            return self
+                .chained_unit(token)
+                .or_else(|| self.pushed_unit(token).filter(|unit| unit.guid == guid));
         }
         self.pushed_unit(token).or_else(|| self.chained_unit(token))
     }
@@ -1607,8 +1619,12 @@ impl Model {
     fn chained_unit(&self, token: &str) -> Option<&UnitState> {
         match parse_unit_token_for(token, self.is_wrath()) {
             UnitTokenParse::Unit { base, hops }
-                if hops > 0 || matches!(base,
-                    UnitBase::Target | UnitBase::Focus | UnitBase::Vehicle | UnitBase::Boss(_)) => {
+                if hops > 0
+                    || matches!(
+                        base,
+                        UnitBase::Target | UnitBase::Focus | UnitBase::Vehicle | UnitBase::Boss(_)
+                    ) =>
+            {
                 let guid = self.unit_guids.resolve_unit(base, hops)?;
                 match self.units_by_guid.get(&guid) {
                     Some(held) if held.has_object => Some(held),
@@ -1758,6 +1774,8 @@ impl Model {
             saved_instances: Vec::new(),
             raid_selection: 0,
             now: 0.0,
+            pvp_timer_start: None,
+            pvp_timer_was_running: false,
             game_time: None,
             zone: Default::default(),
             realm_pvp: false,
@@ -1848,6 +1866,7 @@ impl Model {
             actions: HashMap::new(),
             action_states: HashMap::new(),
             bonus_bar_offset: 0,
+            action_bar_page: 1,
             ui_errors: Vec::new(),
             spellbook: spellbook::SpellBookState::default(),
             spell_list: Vec::new(),
@@ -1860,6 +1879,8 @@ impl Model {
             macro_bindings: HashMap::new(),
             macro_icons: Vec::new(),
             macro_icon_source: None,
+            running_macro: None,
+            running_macro_button: None,
             cast_view: Default::default(),
             spell_targeting: false,
             spell_targetable_units: HashSet::new(),

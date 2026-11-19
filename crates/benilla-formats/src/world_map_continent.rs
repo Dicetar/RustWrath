@@ -89,7 +89,11 @@ pub fn load_world_map_continent_catalog(chain: &mut Chain) -> Result<WorldMapCon
     let bytes = chain
         .read_file(WORLD_MAP_CONTINENT)
         .context("reading WorldMapContinent.dbc")?;
-    let rs = parse(&bytes, schema(field_count(&bytes) == Some(14)), "WorldMapContinent")?;
+    let rs = parse(
+        &bytes,
+        schema(field_count(&bytes) == Some(14)),
+        "WorldMapContinent",
+    )?;
     let mut by_map_id = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {
         let Some(map_id) = u32_at(r, 1) else { continue };
@@ -151,9 +155,19 @@ mod tests {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
         bytes.push(0);
-        assert!(parse(&bytes, schema(field_count(&bytes) == Some(14)), "WorldMapContinent").is_ok());
+        assert!(parse(
+            &bytes,
+            schema(field_count(&bytes) == Some(14)),
+            "WorldMapContinent"
+        )
+        .is_ok());
         bytes[8..12].copy_from_slice(&15u32.to_le_bytes());
-        assert!(parse(&bytes, schema(field_count(&bytes) == Some(14)), "WorldMapContinent").is_err());
+        assert!(parse(
+            &bytes,
+            schema(field_count(&bytes) == Some(14)),
+            "WorldMapContinent"
+        )
+        .is_err());
     }
 
     #[test]

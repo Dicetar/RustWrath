@@ -533,8 +533,16 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         // frame's OnLoad sizes it 40×40); the members take the minimap receiver like the art
         // setters, and the number goes through the same `lua_isnumber` prologue.
         for (name, usage, field) in [
-            ("SetPlayerTextureWidth", "Usage: SetPlayerTextureWidth(width)", 0u8),
-            ("SetPlayerTextureHeight", "Usage: SetPlayerTextureHeight(height)", 1u8),
+            (
+                "SetPlayerTextureWidth",
+                "Usage: SetPlayerTextureWidth(width)",
+                0u8,
+            ),
+            (
+                "SetPlayerTextureHeight",
+                "Usage: SetPlayerTextureHeight(height)",
+                1u8,
+            ),
         ] {
             m.set(
                 name,
@@ -542,7 +550,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     let h = this_minimap(lua, &this)?;
                     let value = super::binding_abi::float_arg(lua, value, usage)? as f32;
                     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                    if let Some(KindState::Minimap(state)) = model.arena.frame_mut(h).map(|f| &mut f.kind_state) {
+                    if let Some(KindState::Minimap(state)) =
+                        model.arena.frame_mut(h).map(|f| &mut f.kind_state)
+                    {
                         if field == 0 {
                             state.player_texture_width = value;
                         } else {

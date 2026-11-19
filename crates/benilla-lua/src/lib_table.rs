@@ -38,10 +38,16 @@ pub fn open(vm: &mut Vm) {
 const MAX_SHIFT: i64 = 1_000_000;
 
 pub(crate) fn open_51(vm: &mut Vm) {
-    let table = vm.get_global("table").as_table().expect("table library installed");
+    let table = vm
+        .get_global("table")
+        .as_table()
+        .expect("table library installed");
     let function = vm.new_native("maxn", maxn);
     let name = vm.str(b"maxn");
-    vm.heap.table_mut(table).set(name, function).expect("library key");
+    vm.heap
+        .table_mut(table)
+        .set(name, function)
+        .expect("library key");
 }
 
 fn maxn(vm: &mut Vm, nargs: usize) -> R<usize> {
@@ -49,9 +55,17 @@ fn maxn(vm: &mut Vm, nargs: usize) -> R<usize> {
     let mut key = Value::Nil;
     let mut maximum = 0.0f64;
     loop {
-        let step = vm.heap.table(table).next(key).map_err(|_| vm.rt_error("invalid key to 'next'"))?;
-        let Some((next, _)) = step else { break; };
-        if let Some(number) = next.as_num() { maximum = maximum.max(number); }
+        let step = vm
+            .heap
+            .table(table)
+            .next(key)
+            .map_err(|_| vm.rt_error("invalid key to 'next'"))?;
+        let Some((next, _)) = step else {
+            break;
+        };
+        if let Some(number) = next.as_num() {
+            maximum = maximum.max(number);
+        }
         key = next;
     }
     Ok(vm.ret1(Value::Num(maximum)))
@@ -67,7 +81,9 @@ fn getn_(vm: &mut Vm, nargs: usize) -> R<usize> {
 /// `luaB_setn` (`0x7fb670`).
 fn setn_(vm: &mut Vm, nargs: usize) -> R<usize> {
     let t = vm.check_table(nargs, 1)?;
-    if vm.dialect().is_51() { return Err(vm.error_at(1, "'setn' is obsolete")); }
+    if vm.dialect().is_51() {
+        return Err(vm.error_at(1, "'setn' is obsolete"));
+    }
     let n = vm.check_int(nargs, 2)?;
     setn(vm, t, n);
     Ok(0)
@@ -196,7 +212,9 @@ fn remove(vm: &mut Vm, nargs: usize) -> R<usize> {
 /// or a number. Its arguments are read 2, 3, 4, then the table (`0x7fb84c`..`0x7fb88e`); a `j`
 /// of 0, its default, is `getn` (`0x7fb893`).
 fn concat(vm: &mut Vm, nargs: usize) -> R<usize> {
-    if vm.dialect().is_51() { return concat_51(vm, nargs); }
+    if vm.dialect().is_51() {
+        return concat_51(vm, nargs);
+    }
     let sep = vm.opt_str(nargs, 2, b"")?;
     let first = vm.opt_int(nargs, 3, 1)?;
     let mut last = vm.opt_int(nargs, 4, 0)?;

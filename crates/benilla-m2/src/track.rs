@@ -175,20 +175,14 @@ fn track_read_sequences<V>(
             && b.u32_at(seq_ofs + s * 64 + 12)
                 .is_some_and(|flags| flags & 0x20 == 0);
         let (Some((tn, ts)), Some((vn, vs))) = (
-            b.u32_at(to + s * 8)
-                .zip(b.u32_at(to + s * 8 + 4)),
-            b.u32_at(vo + s * 8)
-                .zip(b.u32_at(vo + s * 8 + 4)),
+            b.u32_at(to + s * 8).zip(b.u32_at(to + s * 8 + 4)),
+            b.u32_at(vo + s * 8).zip(b.u32_at(vo + s * 8 + 4)),
         ) else {
             break;
         };
         let start = keys.len() as u32;
         if !external_seq {
-            keys.extend(read_keys(
-                tn.min(vn) as usize,
-                ts as usize,
-                vs as usize,
-            ));
+            keys.extend(read_keys(tn.min(vn) as usize, ts as usize, vs as usize));
         }
         // `hi` is the slot's last key, inclusive like the file's own brackets: the consumers read
         // the window as `[lo, hi]`. A slot with no keys keeps `lo == hi` at the next key, the

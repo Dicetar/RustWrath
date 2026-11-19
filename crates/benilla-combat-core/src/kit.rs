@@ -92,7 +92,11 @@ impl Milli {
         if whole.is_empty() && fraction.is_empty() {
             return None;
         }
-        if !whole.bytes().chain(fraction.bytes()).all(|byte| byte.is_ascii_digit()) {
+        if !whole
+            .bytes()
+            .chain(fraction.bytes())
+            .all(|byte| byte.is_ascii_digit())
+        {
             return None;
         }
         let mut value: i64 = 0;
@@ -112,7 +116,9 @@ impl Milli {
                 _ => value += i64::from(digit >= 5),
             }
         }
-        i32::try_from(if negative { -value } else { value }).ok().map(Self)
+        i32::try_from(if negative { -value } else { value })
+            .ok()
+            .map(Self)
     }
 }
 
@@ -297,8 +303,13 @@ impl KitAction {
     ///   take over.
     /// - Interruption is project policy, not donor data: an attack yields up to its contact
     ///   start, a dodge for its whole length — the rules the profile compiler already uses.
-    pub fn compile(&self, frame_rate_hz: u16, rate: TickRate) -> Result<(ActionSpec, InputWindows), KitError> {
-        let fail = |message: String| KitError::general(format!("action `{}`: {message}", self.name));
+    pub fn compile(
+        &self,
+        frame_rate_hz: u16,
+        rate: TickRate,
+    ) -> Result<(ActionSpec, InputWindows), KitError> {
+        let fail =
+            |message: String| KitError::general(format!("action `{}`: {message}", self.name));
         let to_ticks = |frames: Milli| frames_to_ticks(frames, frame_rate_hz, rate);
         let total = to_ticks(self.total);
         if total == 0 {
@@ -318,13 +329,27 @@ impl KitAction {
 
         let (iframes, contact, cost, interruptible_until) = match self.kind {
             ActionKind::Dodge => {
-                let (from, to) = self.iframes.ok_or_else(|| fail("a dodge needs i-frames".into()))?;
-                (Some(window(from, to)?), None, i64::from(self.stamina.0), Some(total))
+                let (from, to) = self
+                    .iframes
+                    .ok_or_else(|| fail("a dodge needs i-frames".into()))?;
+                (
+                    Some(window(from, to)?),
+                    None,
+                    i64::from(self.stamina.0),
+                    Some(total),
+                )
             }
             ActionKind::MeleeLight | ActionKind::MeleeHeavy => {
-                let first = self.hits.first().ok_or_else(|| fail("an attack needs a hit".into()))?;
+                let first = self
+                    .hits
+                    .first()
+                    .ok_or_else(|| fail("an attack needs a hit".into()))?;
                 let contact = window(first.from, first.to)?;
-                let cost = self.hits.iter().map(|hit| i64::from(hit.stamina.0)).sum::<i64>();
+                let cost = self
+                    .hits
+                    .iter()
+                    .map(|hit| i64::from(hit.stamina.0))
+                    .sum::<i64>();
                 (None, Some(contact), cost, Some(contact.from))
             }
             _ => return Err(fail("only light, heavy and dodge actions compile".into())),
@@ -373,8 +398,7 @@ impl KitAction {
 impl Kit {
     /// The frame a running action is on after `elapsed_ticks` at `rate`.
     pub fn frame_at_tick(&self, rate: TickRate, elapsed_ticks: u64) -> Milli {
-        let frames = elapsed_ticks
-            .saturating_mul(1000 * u64::from(self.frame_rate_hz))
+        let frames = elapsed_ticks.saturating_mul(1000 * u64::from(self.frame_rate_hz))
             / u64::from(rate.hz());
         Milli(i32::try_from(frames).unwrap_or(i32::MAX))
     }
@@ -404,7 +428,8 @@ impl Kit {
         let mut ids = BTreeSet::new();
         let mut names = BTreeSet::new();
         for action in &self.actions {
-            let fail = |message: &str| KitError::general(format!("action `{}`: {message}", action.name));
+            let fail =
+                |message: &str| KitError::general(format!("action `{}`: {message}", action.name));
             if action.id.0 == 0 {
                 return Err(fail("id 0 is reserved"));
             }
@@ -418,7 +443,12 @@ impl Kit {
             if !names.insert(name) {
                 return Err(fail("its name is used twice"));
             }
-            if action.source.is_empty() || action.source.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            if action.source.is_empty()
+                || action
+                    .source
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control())
+            {
                 return Err(fail("source must be one word"));
             }
             if kind_word(action.kind).is_none() {
@@ -451,7 +481,9 @@ impl Kit {
                 .chain(action.hits.iter().map(|hit| (hit.from, hit.to)));
             for (from, to) in windows {
                 if from.0 < 0 || from >= to {
-                    return Err(fail("a window must start at or after zero and end after it starts"));
+                    return Err(fail(
+                        "a window must start at or after zero and end after it starts",
+                    ));
                 }
             }
             match action.kind {
@@ -481,7 +513,11 @@ impl Kit {
     }
 
     /// Compile every action into an engine table at `rate`, with per-input timing attached.
-    pub fn to_table(&self, revision: ActionRevision, rate: TickRate) -> Result<ActionTable, KitError> {
+    pub fn to_table(
+        &self,
+        revision: ActionRevision,
+        rate: TickRate,
+    ) -> Result<ActionTable, KitError> {
         self.validate()?;
         let mut table = ActionTable::new(revision, rate);
         for action in &self.actions {
@@ -504,7 +540,11 @@ impl Kit {
             value.map_or_else(|| NEVER.to_string(), |value| value.to_string())
         }
         fn row(values: &[Milli]) -> String {
-            values.iter().map(Milli::to_string).collect::<Vec<_>>().join(" ")
+            values
+                .iter()
+                .map(Milli::to_string)
+                .collect::<Vec<_>>()
+                .join(" ")
         }
 
         let mut out = String::new();
@@ -519,11 +559,21 @@ impl Kit {
         }
         for action in &self.actions {
             let cancel = action.cancel;
-            let _ = writeln!(out, "action {} {}", action.id.0, kind_word(action.kind).unwrap_or("unsupported"));
+            let _ = writeln!(
+                out,
+                "action {} {}",
+                action.id.0,
+                kind_word(action.kind).unwrap_or("unsupported")
+            );
             let _ = writeln!(out, "  name {}", action.name);
             let _ = writeln!(out, "  source {}", action.source);
             let _ = writeln!(out, "  total {}", action.total);
-            let _ = writeln!(out, "  input {} {}", time(action.input_from), time(action.dodge_input_from));
+            let _ = writeln!(
+                out,
+                "  input {} {}",
+                time(action.input_from),
+                time(action.dodge_input_from)
+            );
             let _ = writeln!(
                 out,
                 "  cancel {} {} {} {} {} {} {}",
@@ -604,7 +654,10 @@ impl Kit {
             };
             if !header_seen {
                 if keyword != MAGIC {
-                    return Err(KitError::at(line, format!("not a kit file: expected `{MAGIC} {KIT_FORMAT_VERSION}`")));
+                    return Err(KitError::at(
+                        line,
+                        format!("not a kit file: expected `{MAGIC} {KIT_FORMAT_VERSION}`"),
+                    ));
                 }
                 if rest.parse::<u32>().ok() != Some(KIT_FORMAT_VERSION) {
                     return Err(KitError::at(
@@ -619,9 +672,9 @@ impl Kit {
                 match keyword {
                     "label" => set_once(&mut label, rest.to_string(), line, keyword)?,
                     "frame_rate" => {
-                        let hz = rest
-                            .parse::<u16>()
-                            .map_err(|_| KitError::at(line, "frame_rate must be a whole number of hertz"))?;
+                        let hz = rest.parse::<u16>().map_err(|_| {
+                            KitError::at(line, "frame_rate must be a whole number of hertz")
+                        })?;
                         set_once(&mut frame_rate_hz, hz, line, keyword)?;
                     }
                     "stamina_max" => {
@@ -634,16 +687,20 @@ impl Kit {
                             .next()
                             .and_then(|word| word.parse::<u32>().ok())
                             .ok_or_else(|| KitError::at(line, "action needs a numeric id"))?;
-                        let kind = words
-                            .next()
-                            .and_then(kind_from_word)
-                            .ok_or_else(|| KitError::at(line, "action kind must be light, heavy or dodge"))?;
+                        let kind = words.next().and_then(kind_from_word).ok_or_else(|| {
+                            KitError::at(line, "action kind must be light, heavy or dodge")
+                        })?;
                         if words.next().is_some() {
                             return Err(KitError::at(line, "action takes an id and a kind"));
                         }
                         draft = Some(Draft::new(ActionId(id), kind, line));
                     }
-                    other => return Err(KitError::at(line, format!("unknown keyword `{other}` outside an action"))),
+                    other => {
+                        return Err(KitError::at(
+                            line,
+                            format!("unknown keyword `{other}` outside an action"),
+                        ))
+                    }
                 }
                 continue;
             };
@@ -681,7 +738,10 @@ impl Kit {
                 }
                 "airborne" => {
                     if !rest.is_empty() || action.airborne {
-                        return Err(KitError::at(line, "airborne takes no value and appears once"));
+                        return Err(KitError::at(
+                            line,
+                            "airborne takes no value and appears once",
+                        ));
                     }
                     action.airborne = true;
                 }
@@ -689,10 +749,21 @@ impl Kit {
                     let [from, to] = numbers(rest, line)?;
                     set_once(&mut action.charge, (from, to), line, keyword)?;
                 }
-                "next_light" => set_once(&mut action.next_light, action_ref(rest, line)?, line, keyword)?,
-                "next_heavy" => set_once(&mut action.next_heavy, action_ref(rest, line)?, line, keyword)?,
+                "next_light" => set_once(
+                    &mut action.next_light,
+                    action_ref(rest, line)?,
+                    line,
+                    keyword,
+                )?,
+                "next_heavy" => set_once(
+                    &mut action.next_heavy,
+                    action_ref(rest, line)?,
+                    line,
+                    keyword,
+                )?,
                 "hit" => {
-                    let [from, to, motion_value, guard_damage, stamina, hit_stop, radius] = numbers(rest, line)?;
+                    let [from, to, motion_value, guard_damage, stamina, hit_stop, radius] =
+                        numbers(rest, line)?;
                     action.hits.push(KitHit {
                         from,
                         to,
@@ -730,19 +801,27 @@ impl Kit {
                         actions.push(done.finish()?);
                     }
                 }
-                other => return Err(KitError::at(line, format!("unknown keyword `{other}` in an action"))),
+                other => {
+                    return Err(KitError::at(
+                        line,
+                        format!("unknown keyword `{other}` in an action"),
+                    ))
+                }
             }
         }
 
         if !header_seen {
-            return Err(KitError::general(format!("not a kit file: expected `{MAGIC} {KIT_FORMAT_VERSION}`")));
+            return Err(KitError::general(format!(
+                "not a kit file: expected `{MAGIC} {KIT_FORMAT_VERSION}`"
+            )));
         }
         if let Some(open) = draft {
             return Err(KitError::at(open.line, "this action has no `end`"));
         }
         let kit = Self {
             label: label.ok_or_else(|| KitError::general("missing `label`"))?,
-            frame_rate_hz: frame_rate_hz.ok_or_else(|| KitError::general("missing `frame_rate`"))?,
+            frame_rate_hz: frame_rate_hz
+                .ok_or_else(|| KitError::general("missing `frame_rate`"))?,
             stamina_max,
             actions,
         };
@@ -843,7 +922,8 @@ fn fields<const N: usize, T: Copy + Default>(
         let word = words
             .next()
             .ok_or_else(|| KitError::at(line, format!("expected {N} values")))?;
-        *value = read(word).ok_or_else(|| KitError::at(line, format!("`{word}` is not a valid value here")))?;
+        *value = read(word)
+            .ok_or_else(|| KitError::at(line, format!("`{word}` is not a valid value here")))?;
     }
     if words.next().is_some() {
         return Err(KitError::at(line, format!("expected {N} values")));
@@ -923,7 +1003,11 @@ mod tests {
             charge: Some((m("3"), m("5"))),
             no_turn: vec![(m("4"), m("33"))],
             turn: vec![(m("0"), m("4"), m("540"))],
-            motion: vec![[m("0"), m("0"), m("0")], [m("0.1"), m("0"), m("0.5")], [m("0.1"), m("0"), m("1.5")]],
+            motion: vec![
+                [m("0"), m("0"), m("0")],
+                [m("0.1"), m("0"), m("0.5")],
+                [m("0.1"), m("0"), m("1.5")],
+            ],
             next_light: None,
             next_heavy: None,
         }
@@ -979,7 +1063,11 @@ mod tests {
         assert_eq!(m("35.0"), Milli(35_000));
         assert_eq!(m("-0.000"), Milli::ZERO);
         assert_eq!(m("12"), Milli::whole(12));
-        assert_eq!(m("0.0005"), Milli(1), "the fourth decimal rounds half away from zero");
+        assert_eq!(
+            m("0.0005"),
+            Milli(1),
+            "the fourth decimal rounds half away from zero"
+        );
         assert_eq!(m("-1.2344"), Milli(-1234));
         assert_eq!(Milli(-647).to_string(), "-0.647");
         assert_eq!(Milli(35_000).to_string(), "35.000");
@@ -995,7 +1083,9 @@ mod tests {
         assert!(text.starts_with("rustwrath-kit 1\n"));
         assert_eq!(Kit::parse(&text).expect("parse"), kit);
         // Comments, blank lines and indentation are not significant.
-        let noisy = text.replace("  ", "\t ").replace("end\n", "end\n\n# next\n");
+        let noisy = text
+            .replace("  ", "\t ")
+            .replace("end\n", "end\n\n# next\n");
         assert_eq!(Kit::parse(&noisy).expect("parse"), kit);
     }
 
@@ -1003,12 +1093,32 @@ mod tests {
     fn a_bad_file_is_refused_with_its_line() {
         let text = kit().to_text();
         let cases = [
-            (text.replacen("rustwrath-kit 1", "rustwrath-kit 2", 1), 1, "not supported"),
-            (text.replacen("  total 30.000", "  total thirty", 1), 10, "not a valid value"),
-            (text.replacen("  total 30.000", "  wobble 1", 1), 10, "unknown keyword"),
+            (
+                text.replacen("rustwrath-kit 1", "rustwrath-kit 2", 1),
+                1,
+                "not supported",
+            ),
+            (
+                text.replacen("  total 30.000", "  total thirty", 1),
+                10,
+                "not a valid value",
+            ),
+            (
+                text.replacen("  total 30.000", "  wobble 1", 1),
+                10,
+                "unknown keyword",
+            ),
             (text.replacen("  total 30.000\n", "", 1), 7, "no `total`"),
-            (text.replacen("  stamina 7.000", "  stamina 7.000\n  stamina 7.000", 1), 14, "appears twice"),
-            (text.replacen("  input 3.000 1.500", "  input 3.000", 1), 11, "expected 2 values"),
+            (
+                text.replacen("  stamina 7.000", "  stamina 7.000\n  stamina 7.000", 1),
+                14,
+                "appears twice",
+            ),
+            (
+                text.replacen("  input 3.000 1.500", "  input 3.000", 1),
+                11,
+                "expected 2 values",
+            ),
         ];
         for (broken, line, needle) in cases {
             let error = Kit::parse(&broken).expect_err(needle);
@@ -1016,8 +1126,14 @@ mod tests {
             assert!(error.message.contains(needle), "{error}");
         }
         let unfinished = text.trim_end().strip_suffix("end").expect("ends with end");
-        assert!(Kit::parse(unfinished).expect_err("no end").message.contains("no `end`"));
-        assert!(Kit::parse("label x\n").expect_err("no header").message.contains("not a kit file"));
+        assert!(Kit::parse(unfinished)
+            .expect_err("no end")
+            .message
+            .contains("no `end`"));
+        assert!(Kit::parse("label x\n")
+            .expect_err("no header")
+            .message
+            .contains("not a kit file"));
     }
 
     #[test]
@@ -1028,9 +1144,13 @@ mod tests {
             kit.validate().expect_err("must be refused").message
         };
         assert!(broken(|kit| kit.actions[1].id = ActionId(1)).contains("id is used twice"));
-        assert!(broken(|kit| kit.actions[1].name = "Swing one".into()).contains("name is used twice"));
-        assert!(broken(|kit| kit.actions[0].next_light = Some(ActionId(9))).contains("itself or missing"));
-        assert!(broken(|kit| kit.actions[0].next_heavy = Some(ActionId(1))).contains("itself or missing"));
+        assert!(
+            broken(|kit| kit.actions[1].name = "Swing one".into()).contains("name is used twice")
+        );
+        assert!(broken(|kit| kit.actions[0].next_light = Some(ActionId(9)))
+            .contains("itself or missing"));
+        assert!(broken(|kit| kit.actions[0].next_heavy = Some(ActionId(1)))
+            .contains("itself or missing"));
         assert!(broken(|kit| kit.actions[0].hits.clear()).contains("at least one hit"));
         assert!(broken(|kit| kit.actions[2].iframes = None).contains("i-frames"));
         assert!(broken(|kit| kit.actions[0].hits[0].to = Milli::whole(6)).contains("window"));
@@ -1085,7 +1205,10 @@ mod tests {
         assert_eq!(roll.stamina_cost, 10);
         assert_eq!(roll.interruptible_until, Some(80));
         assert_eq!(roll.cancel_from_ticks, Some(70));
-        assert_eq!(table.inputs(ActionId(3)).expect("inputs").cancel_guard, None);
+        assert_eq!(
+            table.inputs(ActionId(3)).expect("inputs").cancel_guard,
+            None
+        );
     }
 
     /// At 60 ticks a second a frame is exactly two ticks; offsets past the end become never and
@@ -1102,8 +1225,15 @@ mod tests {
         action.hits[0].to = m("6.4");
         let (spec, inputs) = action.compile(30, rate).expect("compile");
         assert_eq!(spec.total_ticks, 60);
-        assert_eq!(spec.input_from_ticks, 60, "a never-listening action hears nothing before its end");
-        assert_eq!(inputs.cancel_light, Some(60), "an offset at the end is kept");
+        assert_eq!(
+            spec.input_from_ticks, 60,
+            "a never-listening action hears nothing before its end"
+        );
+        assert_eq!(
+            inputs.cancel_light,
+            Some(60),
+            "an offset at the end is kept"
+        );
         assert_eq!(inputs.cancel_heavy, None, "an offset past the end is never");
         assert_eq!(spec.contact, Some(TickWindow { from: 12, to: 13 }));
 

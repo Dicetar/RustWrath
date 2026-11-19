@@ -3,9 +3,9 @@
 
 use std::collections::BTreeMap;
 
-use bevy::prelude::*;
 use benilla_protocol_wrath::reducer::{AuraReceipt, AuraSlot};
 use benilla_ui::script::{ScriptValue, UiTarget};
+use bevy::prelude::*;
 
 #[derive(Default)]
 pub(crate) struct AuraMemo {
@@ -29,12 +29,17 @@ pub(crate) fn feed(
             *memo = AuraMemo::default();
             return;
         };
-        let Some(world) = world.filter(|world|
-            world.phase == Some(benilla_protocol_wrath::session::Phase::InWorld)) else {
+        let Some(world) = world
+            .filter(|world| world.phase == Some(benilla_protocol_wrath::session::Phase::InWorld))
+        else {
             *memo = AuraMemo::default();
             return;
         };
-        let scope = (script.session(), world.session_epoch, world.world_generation);
+        let scope = (
+            script.session(),
+            world.session_epoch,
+            world.world_generation,
+        );
         if memo.scope != Some(scope) {
             memo.visible.clear();
             memo.scope = Some(scope);
@@ -52,9 +57,12 @@ pub(crate) fn feed(
                 }
                 continue;
             };
-            let changed = previous.as_ref().is_none_or(|previous|
-                previous.generation != unit.generation || previous.observed != unit.auras_observed
-                    || previous.slots != unit.auras || previous.receipts != unit.aura_receipts);
+            let changed = previous.as_ref().is_none_or(|previous| {
+                previous.generation != unit.generation
+                    || previous.observed != unit.auras_observed
+                    || previous.slots != unit.auras
+                    || previous.receipts != unit.aura_receipts
+            });
             if changed {
                 for token in script.unit_tokens_of(guid) {
                     fires.post("UNIT_AURA", vec![ScriptValue::Str(token)]);
@@ -62,11 +70,16 @@ pub(crate) fn feed(
             }
             // Move unchanged snapshots rather than cloning on movement-only frames. A receipt
             // revision still notifies when a refresh leaves every wire slot value identical.
-            let snapshot = if changed { AuraSnapshot {
-                generation: unit.generation, observed: unit.auras_observed,
-                slots: unit.auras.clone(), receipts: unit.aura_receipts.clone(),
-            } }
-                else { previous.expect("unchanged visible unit") };
+            let snapshot = if changed {
+                AuraSnapshot {
+                    generation: unit.generation,
+                    observed: unit.auras_observed,
+                    slots: unit.auras.clone(),
+                    receipts: unit.aura_receipts.clone(),
+                }
+            } else {
+                previous.expect("unchanged visible unit")
+            };
             retained.insert(guid, snapshot);
         }
         for &guid in memo.visible.keys() {

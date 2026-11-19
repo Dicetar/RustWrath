@@ -1130,7 +1130,11 @@ mod tests {
             .filter(|e| e.target == ZTarget::Frame(reward))
             .map(|e| e.scope)
             .collect();
-        assert_eq!(scopes, vec![Some(sf)], "drawn once, clipped by the ScrollFrame");
+        assert_eq!(
+            scopes,
+            vec![Some(sf)],
+            "drawn once, clipped by the ScrollFrame"
+        );
     }
 
     /// A Show or Hide inside a scroll subtree moves no other entry's key: a hidden frame keeps its

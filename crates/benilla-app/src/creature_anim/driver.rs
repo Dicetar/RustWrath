@@ -62,7 +62,7 @@ enum OneShotReq {
     /// The id, and whether it came through the emote player's armed-id test.
     Emote(u16, bool),
     /// A profile-compiled action's clip (`combat_playback.rs`); already an anim id.
-    Action(u16),
+    Action(u16, Option<f32>),
 }
 
 /// The live one-shot the combat fast path tests: the key bone's clip, else bone 0's (`0x5fe422`).
@@ -324,6 +324,8 @@ pub(super) fn drive_animations(
         Option<Res<crate::chr_classes::ChrClassTable>>,
         // A profile-compiled action's clip (`combat_playback.rs`), presentation only.
         MessageReader<ActionAnim>,
+        // The Souls crouch, which poses our own body like the creep flag.
+        Option<Res<crate::souls::SoulsState>>,
     ),
     // The variation roll's LCG, the reference's single CRT `_rand` stream shared by every play.
     mut rng: ResMut<benilla_assets::AnimRng>,
@@ -340,7 +342,11 @@ pub(super) fn drive_animations(
         interact,
         class_table,
         mut action_anims,
+        souls,
     ) = aux;
+    let souls_crouched = souls
+        .as_deref()
+        .is_some_and(crate::souls::SoulsState::crouched);
     let classes = class_table.as_deref().map(|t| &t.0);
     let dt = time.delta_secs();
     // This frame's one-shot plays per unit, replayed in the reference's call order (`PlaySeq`
@@ -398,7 +404,7 @@ pub(super) fn drive_animations(
         pending
             .entry(a.entity)
             .or_default()
-            .push((OneShotReq::Action(a.anim_id), a.seq));
+            .push((OneShotReq::Action(a.anim_id, a.contact_in), a.seq));
     }
     // A mounted rider's mount-set emotes go to the mount model (`0x5fe7c1`); the rider keeps the
     // request for its own CLASS_A and nowhere routes. The emote player's armed test (`0x5fcd56`)
@@ -552,8 +558,10 @@ pub(super) fn drive_animations(
             mv.stand_state = 0;
         }
         // The creep vis flag off the unit's own descriptor (`[[unit+0x110]+0x213] & 2`), never
-        // predicted: the crouch lands with the server's aura.
-        mv.stealthed = store.is_some_and(|s| s.0.unit_is_stealthed());
+        // predicted: the crouch lands with the server's aura. The Souls crouch is our own and
+        // predicted, so it poses our body at once.
+        mv.stealthed =
+            store.is_some_and(|s| s.0.unit_is_stealthed()) || (is_self && souls_crouched);
         let moving = mv.flags & move_flags::ANY_MOVE != 0;
         // An arc's launch vertical speed splits a jump (the JumpStart/Jump bracket; jump
         // `0x60e480`, land `0x602c60`) from a step-off fall, which has no bracket and keeps the
@@ -851,7 +859,7 @@ pub(super) fn drive_animations(
         });
         // In `PlaySeq` order, defense last: the reference plays it from the deferred impact scan,
         // after every message handler.
-        let mut requests: Vec<(u16, Option<u16>)> = pending
+        let mut requests: Vec<(u16, Option<u16>, Option<f32>)> = pending
             .remove(&entity)
             .map(|mut v| {
                 v.sort_by_key(|&(_, seq)| seq);
@@ -867,23 +875,23 @@ pub(super) fn drive_animations(
                                 swing_anim_main(w.armed_main())
                             };
                             debug!("swing: unit {entity} anim {id} (hitInfo {hit_info:#x})");
-                            (id, None)
+                            (id, None, None)
                         }
                         // The armed-id test compares the record's own AnimID, before the play
                         // seam's unarmed remap.
-                        OneShotReq::Emote(id, via_player) => (id, via_player.then_some(id)),
+                        OneShotReq::Emote(id, via_player) => (id, via_player.then_some(id), None),
                         // A compiled action's clip plays as requested; no armed test.
-                        OneShotReq::Action(id) => (id, None),
+                        OneShotReq::Action(id, contact_in) => (id, None, contact_in),
                     })
                     .collect()
             })
             .unwrap_or_default();
-        requests.extend(defense.map(|id| (id, None)));
+        requests.extend(defense.map(|id| (id, None, None)));
         // At the play seam (`0x5fe2f0`), Special1H/2H with both hands empty becomes
         // SpecialUnarmed(118), for every request.
         {
             let w = wielded.copied().unwrap_or_default();
-            for (id, _) in &mut requests {
+            for (id, _, _) in &mut requests {
                 *id = select::unarmed_special(*id, w.armed_main(), w.armed_off());
             }
         }
@@ -895,9 +903,9 @@ pub(super) fn drive_animations(
             && !airborne_frozen
             && live_oneshot(&drv, &player, &tr, anims, catalog).is_none()
         {
-            requests.extend(drv.deferred.take().map(|id| (id, None)));
+            requests.extend(drv.deferred.take().map(|id| (id, None, None)));
         }
-        for (id, armed_test) in requests {
+        for (id, armed_test, contact_in) in requests {
             // The emote player's own test first (`0x5fcd56`): an id already armed on the key bone
             // or bone 0 plays nothing, ahead of the lock and the fast path in `0x5fe2f0`.
             if let Some(raw) = armed_test {
@@ -920,7 +928,8 @@ pub(super) fn drive_animations(
             // is not armed; the current clip's rate doubles (op6 2.0) and the request parks in
             // `+0xd60`.
             if let Some((cur, node)) = live_oneshot(&drv, &player, &tr, anims, catalog) {
-                if select::is_combat_anim(cur) && select::is_combat_anim(id) {
+                if contact_in.is_none() && select::is_combat_anim(cur) && select::is_combat_anim(id)
+                {
                     if let Some(active) = player.animation_mut(node) {
                         active.set_speed(2.0);
                     }
@@ -954,7 +963,7 @@ pub(super) fn drive_animations(
             });
             let base_live = matches!(drv.mode, Mode::Swing { id: m, .. } if m == id)
                 && !oneshot_finished(&player, anims, id, catalog);
-            if overlay_live || base_live {
+            if contact_in.is_none() && (overlay_live || base_live) {
                 if benilla_assets::trace::enabled() {
                     benilla_assets::trace::line(
                         "fct",
@@ -1025,6 +1034,17 @@ pub(super) fn drive_animations(
             {
                 continue;
             }
+            let speed = contact_in
+                .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+                .and_then(|seconds| {
+                    picked.map(|(clip, _)| {
+                        let contact = crate::combat_profiles::clip_summary(clip)
+                            .and_then(|summary| summary.contact_ms)
+                            .map_or(clip.duration, |ms| ms as f32 / 1000.0);
+                        contact.max(0.001) / seconds
+                    })
+                })
+                .unwrap_or(1.0);
             let upper = masked
                 .then(|| picked.and_then(|(c, r)| c.upper_node.map(|n| (n, r))))
                 .flatten();
@@ -1040,7 +1060,7 @@ pub(super) fn drive_animations(
                 let active = player.play(node);
                 active.replay();
                 active.set_repeat(repeat); // a reused node keeps no stale count
-                active.set_speed(1.0); // nor a stale whiff slow-down
+                active.set_speed(speed); // nor a stale whiff slow-down
                 active.set_weight(0.0); // the fade upkeep raises it this same frame
                 drv.overlay = Some(Overlay {
                     node,
@@ -1065,7 +1085,7 @@ pub(super) fn drive_animations(
                     }
                 }
                 if let Some((c, repeat)) = picked {
-                    play_clip(&mut drv.base_lock, &mut tr, &mut player, c, repeat, 1.0);
+                    play_clip(&mut drv.base_lock, &mut tr, &mut player, c, repeat, speed);
                 }
                 drv.mode = Mode::Swing { id, under: special };
                 drv.gait = None;

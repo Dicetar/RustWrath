@@ -108,7 +108,10 @@ impl ActionSpec {
                 "input_from_ticks must not exceed total_ticks",
             ));
         }
-        if self.cancel_from_ticks.is_some_and(|from| from > self.total_ticks) {
+        if self
+            .cancel_from_ticks
+            .is_some_and(|from| from > self.total_ticks)
+        {
             return Err(CombatError::InvalidConfig(
                 "cancel_from_ticks must not exceed total_ticks",
             ));
@@ -170,9 +173,7 @@ impl ActionSpec {
                     ));
                 }
                 if self.iframes.is_some() {
-                    return Err(CombatError::InvalidConfig(
-                        "only a dodge carries iframes",
-                    ));
+                    return Err(CombatError::InvalidConfig("only a dodge carries iframes"));
                 }
             }
         }
@@ -334,7 +335,11 @@ impl ActionTable {
 
     /// Insert one validated action together with its per-input timing. Same duplicate rule as
     /// [`Self::insert`]; nothing is stored when either part is invalid.
-    pub fn insert_with_inputs(&mut self, spec: ActionSpec, inputs: InputWindows) -> CombatResult<()> {
+    pub fn insert_with_inputs(
+        &mut self,
+        spec: ActionSpec,
+        inputs: InputWindows,
+    ) -> CombatResult<()> {
         inputs.validate(spec.total_ticks)?;
         self.insert(spec)?;
         self.inputs.insert(spec.id, inputs);
@@ -546,7 +551,9 @@ mod tests {
         table.validate().expect("the chained table validates");
         assert_eq!(table.len(), 3);
         assert!(table.get(ActionId(0)).is_none());
-        assert!(table.get(ActionId(1)).is_some_and(|spec| spec.kind == ActionKind::MeleeLight));
+        assert!(table
+            .get(ActionId(1))
+            .is_some_and(|spec| spec.kind == ActionKind::MeleeLight));
     }
 
     /// Per-input timing is stored with its action, must fit inside it, and stores nothing when
@@ -569,10 +576,16 @@ mod tests {
             cancel_dodge: Some(50),
             ..InputWindows::default()
         };
-        table.insert_with_inputs(melee(1, 50), fitting).expect("insert");
+        table
+            .insert_with_inputs(melee(1, 50), fitting)
+            .expect("insert");
         table.insert(melee(2, 50)).expect("insert");
         assert_eq!(table.inputs(ActionId(1)), Some(&fitting));
-        assert_eq!(table.inputs(ActionId(2)), None, "an action inserted plainly has none");
+        assert_eq!(
+            table.inputs(ActionId(2)),
+            None,
+            "an action inserted plainly has none"
+        );
         table.validate().expect("the table validates");
         assert!(matches!(
             table.insert_with_inputs(melee(1, 60), fitting),

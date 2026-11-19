@@ -50,7 +50,11 @@ pub fn load_item_classes(chain: &mut Chain) -> Result<ItemClassCatalog> {
     let bytes = chain
         .read_file(ITEM_CLASS)
         .with_context(|| format!("reading {ITEM_CLASS}"))?;
-    let locales = if field_count(&bytes) == Some(20) { 16 } else { 8 };
+    let locales = if field_count(&bytes) == Some(20) {
+        16
+    } else {
+        8
+    };
     let rs = parse(&bytes, item_class_schema(locales), "ItemClass")?;
     let locale = chain.locale();
     let mut names = HashMap::with_capacity(rs.records().len());

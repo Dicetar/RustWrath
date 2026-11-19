@@ -1,4 +1,4 @@
-﻿//! Wrath spell queries use the lent app host, never a separate catalog or simulated spell state.
+//! Wrath spell queries use the lent app host, never a separate catalog or simulated spell state.
 
 use mlua::{Lua, MultiValue, Value};
 
@@ -34,6 +34,9 @@ pub struct UnitCastView {
 fn spell_reference(lua: &Lua, args: &MultiValue) -> mlua::Result<Option<(u32, bool)>> {
     let input = args.front().cloned().unwrap_or(Value::Nil);
     if let Some(book) = args.get(1).filter(|value| !matches!(value, Value::Nil)) {
+        // Shared by GetSpellInfo, GetSpellLink and GetSpellTexture: the marshaller's verb stays
+        // "GetSpellInfo" for all three, as in the base, so an error string names the shared
+        // marshaller rather than the calling binding.
         match spellbook::spell_slot_args(input.clone(), book.clone(), "GetSpellInfo") {
             Ok((slot, book)) => {
                 let model = lua.app_data_ref::<Model>().expect("model");
@@ -46,17 +49,21 @@ fn spell_reference(lua: &Lua, args: &MultiValue) -> mlua::Result<Option<(u32, bo
                 // (`ActionBarFrame_Scripts.cpp:72-143`) answers for a spell with no displayed
                 // book slot: a Wrath addon passes that ID and the book type straight back here.
                 return match spellbook::action_bar_spell_reference(lua, input, book.clone())? {
-                    Some(reference) => Ok(Some(reference)),
+                    Some(spell_id) => Ok(Some((spell_id, false))),
                     None => Err(err),
                 };
             }
         }
     }
     if let Some(number) = lua.coerce_number(input.clone())? {
-        return Ok((number.is_finite() && number >= 1.0 && number <= f64::from(u32::MAX))
-            .then_some((number as u32, false)));
+        return Ok(
+            (number.is_finite() && number >= 1.0 && number <= f64::from(u32::MAX))
+                .then_some((number as u32, false)),
+        );
     }
-    let Value::String(name) = input else { return Ok(None) };
+    let Value::String(name) = input else {
+        return Ok(None);
+    };
     let name = name.to_str()?;
     let model = lua.app_data_ref::<Model>().expect("model");
     let player_slots = if model.spell_list.is_empty() {
@@ -64,38 +71,60 @@ fn spell_reference(lua: &Lua, args: &MultiValue) -> mlua::Result<Option<(u32, bo
     } else {
         &model.spell_list
     };
-    Ok(spellbook::resolve_spell_in_list(player_slots, &model.pet_book, &name)
-        .map(|spell| (spell.spell_id, spell.pet)))
+    Ok(
+        spellbook::resolve_spell_in_list(player_slots, &model.pet_book, &name)
+            .map(|spell| (spell.spell_id, spell.pet)),
+    )
 }
 
 fn query(lua: &Lua, args: &MultiValue) -> mlua::Result<Option<(u32, SpellInfoView)>> {
-    let Some((id, _)) = spell_reference(lua, args)? else { return Ok(None) };
-    Ok(host::with_host(lua, |host| host.spell_info(id)).flatten().map(|view| (id, view)))
+    let Some((id, _)) = spell_reference(lua, args)? else {
+        return Ok(None);
+    };
+    Ok(host::with_host(lua, |host| host.spell_info(id))
+        .flatten()
+        .map(|view| (id, view)))
 }
 
 fn string(lua: &Lua, value: Option<&str>) -> mlua::Result<Value> {
-    value.map_or(Ok(Value::Nil), |value| lua.create_string(value).map(Value::String))
+    value.map_or(Ok(Value::Nil), |value| {
+        lua.create_string(value).map(Value::String)
+    })
 }
 
 fn unit_cast(lua: &Lua, token: Value, channel: bool) -> mlua::Result<MultiValue> {
-    let usage = if channel { "Usage: UnitChannelInfo(unit)" } else { "Usage: UnitCastingInfo(unit)" };
+    let usage = if channel {
+        "Usage: UnitChannelInfo(unit)"
+    } else {
+        "Usage: UnitCastingInfo(unit)"
+    };
     let token = super::binding_abi::string_arg(lua, token, usage)?;
     super::unit::check_unit_token_for(&Some(token.clone()), true)?;
     let guid = {
         let model = lua.app_data_ref::<Model>().expect("model");
         model.unit(&token).map(|unit| unit.guid)
     };
-    let view = guid.and_then(|guid| host::with_host(lua, |host| host.unit_cast(guid, channel)).flatten());
-    let Some(view) = view else { return Ok(MultiValue::from_vec(vec![Value::Nil])); };
+    let view =
+        guid.and_then(|guid| host::with_host(lua, |host| host.unit_cast(guid, channel)).flatten());
+    let Some(view) = view else {
+        return Ok(MultiValue::from_vec(vec![Value::Nil]));
+    };
     let name = string(lua, Some(&view.name))?;
     let mut values = vec![
-        name.clone(), string(lua, Some(view.rank.as_deref().unwrap_or("")))?, name,
-        string(lua, view.icon.as_deref())?, Value::Number(view.start_ms), Value::Number(view.end_ms),
+        name.clone(),
+        string(lua, Some(view.rank.as_deref().unwrap_or("")))?,
+        name,
+        string(lua, view.icon.as_deref())?,
+        Value::Number(view.start_ms),
+        Value::Number(view.end_ms),
         Value::Boolean(view.trade_skill),
     ];
     // The target CastingBarFrame uses slot eight for cast identity, but channel tuples omit it.
     if !channel {
-        values.push(view.cast_id.map_or(Value::Nil, |id| Value::Number(id as f64)));
+        values.push(
+            view.cast_id
+                .map_or(Value::Nil, |id| Value::Number(id as f64)),
+        );
     }
     values.push(view.not_interruptible.map_or(Value::Nil, Value::Boolean));
     Ok(MultiValue::from_vec(values))
@@ -103,59 +132,102 @@ fn unit_cast(lua: &Lua, token: Value, channel: bool) -> mlua::Result<MultiValue>
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let globals = lua.globals();
-    globals.set("GetSpellCooldown", lua.create_function(|lua, args: MultiValue| {
-        let value = if let Some(book) = args.get(1).filter(|book| !matches!(book, Value::Nil)) {
-            // Preserve the existing pushed-book and pet-book forms, including their errors.
-            spellbook::book_cooldown(lua, (args.front().cloned().unwrap_or(Value::Nil), book.clone()))?
-        } else {
-            let Some((id, pet)) = spell_reference(lua, &args)? else {
+    globals.set(
+        "GetSpellCooldown",
+        lua.create_function(|lua, args: MultiValue| {
+            let value = if let Some(book) = args.get(1).filter(|book| !matches!(book, Value::Nil)) {
+                // Preserve the existing pushed-book and pet-book forms, including their errors.
+                spellbook::book_cooldown(
+                    lua,
+                    (args.front().cloned().unwrap_or(Value::Nil), book.clone()),
+                )?
+            } else {
+                let Some((id, pet)) = spell_reference(lua, &args)? else {
+                    return Ok(MultiValue::from_vec(vec![Value::Nil]));
+                };
+                let Some(cooldown) =
+                    host::with_host(lua, |host| host.spell_cooldown(id, pet)).flatten()
+                else {
+                    return Ok(MultiValue::from_vec(vec![Value::Nil]));
+                };
+                spellbook::cooldown_tuple(Some(cooldown), super::clock::now(lua))
+            };
+            Ok(MultiValue::from_vec(vec![
+                Value::Number(value.0),
+                Value::Number(value.1),
+                Value::Integer(i64::from(value.2)),
+            ]))
+        })?,
+    )?;
+    globals.set(
+        "UnitCastingInfo",
+        lua.create_function(|lua, token: Value| unit_cast(lua, token, false))?,
+    )?;
+    globals.set(
+        "UnitChannelInfo",
+        lua.create_function(|lua, token: Value| unit_cast(lua, token, true))?,
+    )?;
+    globals.set(
+        "IsSpellKnown",
+        lua.create_function(|lua, (id, pet): (Value, Option<bool>)| {
+            let id = lua
+                .coerce_number(id)?
+                .filter(|id| id.is_finite() && *id >= 1.0 && *id <= f64::from(u32::MAX))
+                .ok_or_else(|| mlua::Error::runtime("Usage: IsSpellKnown(spellID [, isPet])"))?
+                as u32;
+            Ok(host::with_host(lua, |host| host.spell_known(id, pet.unwrap_or(false))).flatten())
+        })?,
+    )?;
+    globals.set(
+        "GetSpellInfo",
+        lua.create_function(|lua, args: MultiValue| {
+            let Some((_, view)) = query(lua, &args)? else {
                 return Ok(MultiValue::from_vec(vec![Value::Nil]));
             };
-            let Some(cooldown) = host::with_host(lua, |host| host.spell_cooldown(id, pet)).flatten() else {
-                return Ok(MultiValue::from_vec(vec![Value::Nil]));
+            Ok(MultiValue::from_vec(vec![
+                string(lua, Some(&view.name))?,
+                string(lua, Some(view.rank.as_deref().unwrap_or("")))?,
+                string(lua, view.icon.as_deref())?,
+                view.cost
+                    .map_or(Value::Nil, |cost| Value::Integer(i64::from(cost))),
+                Value::Boolean(view.channeled),
+                Value::Integer(i64::from(view.power_type)),
+                Value::Integer(i64::from(view.cast_time_ms)),
+                view.min_range
+                    .map_or(Value::Nil, |range| Value::Number(f64::from(range))),
+                view.max_range
+                    .map_or(Value::Nil, |range| Value::Number(f64::from(range))),
+            ]))
+        })?,
+    )?;
+    globals.set(
+        "GetSpellTexture",
+        lua.create_function(|lua, args: MultiValue| {
+            string(
+                lua,
+                query(lua, &args)?
+                    .as_ref()
+                    .and_then(|(_, view)| view.icon.as_deref()),
+            )
+        })?,
+    )?;
+    globals.set(
+        "GetSpellLink",
+        lua.create_function(|lua, args: MultiValue| {
+            let Some((id, view)) = query(lua, &args)? else {
+                return Ok(Value::Nil);
             };
-            spellbook::cooldown_tuple(Some(cooldown), super::clock::now(lua))
-        };
-        Ok(MultiValue::from_vec(vec![
-            Value::Number(value.0), Value::Number(value.1), Value::Integer(i64::from(value.2)),
-        ]))
-    })?)?;
-    globals.set("UnitCastingInfo", lua.create_function(|lua, token: Value| unit_cast(lua, token, false))?)?;
-    globals.set("UnitChannelInfo", lua.create_function(|lua, token: Value| unit_cast(lua, token, true))?)?;
-    globals.set("IsSpellKnown", lua.create_function(|lua, (id, pet): (Value, Option<bool>)| {
-        let id = lua.coerce_number(id)?.filter(|id| id.is_finite() && *id >= 1.0 && *id <= f64::from(u32::MAX))
-            .ok_or_else(|| mlua::Error::runtime("Usage: IsSpellKnown(spellID [, isPet])"))? as u32;
-        Ok(host::with_host(lua, |host| host.spell_known(id, pet.unwrap_or(false))).flatten())
-    })?)?;
-    globals.set("GetSpellInfo", lua.create_function(|lua, args: MultiValue| {
-        let Some((_, view)) = query(lua, &args)? else { return Ok(MultiValue::from_vec(vec![Value::Nil])) };
-        Ok(MultiValue::from_vec(vec![
-            string(lua, Some(&view.name))?,
-            string(lua, Some(view.rank.as_deref().unwrap_or("")))?,
-            string(lua, view.icon.as_deref())?,
-            view.cost.map_or(Value::Nil, |cost| Value::Integer(i64::from(cost))),
-            Value::Boolean(view.channeled),
-            Value::Integer(i64::from(view.power_type)),
-            Value::Integer(i64::from(view.cast_time_ms)),
-            view.min_range.map_or(Value::Nil, |range| Value::Number(f64::from(range))),
-            view.max_range.map_or(Value::Nil, |range| Value::Number(f64::from(range))),
-        ]))
-    })?)?;
-    globals.set("GetSpellTexture", lua.create_function(|lua, args: MultiValue| {
-        string(lua, query(lua, &args)?.as_ref().and_then(|(_, view)| view.icon.as_deref()))
-    })?)?;
-    globals.set("GetSpellLink", lua.create_function(|lua, args: MultiValue| {
-        let Some((id, view)) = query(lua, &args)? else { return Ok(Value::Nil) };
-        let link = format!("|cff71d5ff|Hspell:{id}|h[{}]|h|r", view.name);
-        string(lua, Some(&link))
-    })?)?;
+            let link = format!("|cff71d5ff|Hspell:{id}|h[{}]|h|r", view.name);
+            string(lua, Some(&link))
+        })?,
+    )?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{host, SpellInfoView};
-    use crate::script::action::ACTION_KIND_SPELL;
+    use crate::script::action::{ACTION_KIND_ITEM, ACTION_KIND_MACRO, ACTION_KIND_SPELL};
     use crate::script::{
         ActionSlot, CallHost, CallTail, ScriptCall, SpellSlotView, UiScript, UiTarget,
     };
@@ -166,6 +238,7 @@ mod tests {
     /// The host's spell catalog, answering only the IDs it knows and recording every query.
     struct SpellHost {
         known: Vec<u32>,
+        cooldowns: Vec<(u32, (i64, u32, bool))>,
         asked: Vec<u32>,
     }
 
@@ -187,6 +260,13 @@ mod tests {
                 min_range: None,
                 max_range: None,
             })
+        }
+
+        fn spell_cooldown(&mut self, id: u32, pet: bool) -> Option<(i64, u32, bool)> {
+            assert!(!pet, "the action-bar fallback is player-book only");
+            self.cooldowns
+                .iter()
+                .find_map(|(spell, cooldown)| (*spell == id).then_some(*cooldown))
         }
     }
 
@@ -211,6 +291,7 @@ mod tests {
         s.set_action(1, Some(slot(ACTION_KIND_SPELL, BAR_SPELL)));
         let mut host = SpellHost {
             known: vec![BAR_SPELL],
+            cooldowns: Vec::new(),
             asked: Vec::new(),
         };
         host::lend(s.lua(), &mut host, || {
@@ -252,6 +333,7 @@ mod tests {
         s.set_action(1, Some(slot(ACTION_KIND_SPELL, BAR_SPELL)));
         let mut host = SpellHost {
             known: Vec::new(),
+            cooldowns: Vec::new(),
             asked: Vec::new(),
         };
         host::lend(s.lua(), &mut host, || {
@@ -275,8 +357,8 @@ mod tests {
         });
         assert_eq!(
             host.asked,
-            vec![BAR_SPELL; 5],
-            "the host is asked for the ID, not a slot"
+            vec![BAR_SPELL; 4],
+            "the host's catalog is asked for the ID, not a slot; cooldown has its own owner"
         );
     }
 
@@ -287,6 +369,7 @@ mod tests {
         s.set_action(1, Some(slot(ACTION_KIND_SPELL, BOOK_SPELL)));
         let mut host = SpellHost {
             known: vec![BAR_SPELL],
+            cooldowns: Vec::new(),
             asked: Vec::new(),
         };
         host::lend(s.lua(), &mut host, || {
@@ -317,6 +400,7 @@ mod tests {
         s.set_action(1, Some(slot(ACTION_KIND_SPELL, BOOK_SPELL)));
         let mut host = SpellHost {
             known: vec![BOOK_SPELL],
+            cooldowns: Vec::new(),
             asked: Vec::new(),
         };
         host::lend(s.lua(), &mut host, || {
@@ -338,6 +422,119 @@ mod tests {
             );
         });
         assert_eq!(host.asked, vec![BOOK_SPELL, BOOK_SPELL]);
+    }
+
+    /// The guard is the slot kind, not any action-bar entry: an item or macro slot carrying the
+    /// same number does not make it a spell ID.
+    #[test]
+    fn non_spell_action_slots_do_not_enable_the_id_fallback() {
+        let mut s = wrath();
+        s.set_action(1, Some(slot(ACTION_KIND_ITEM, BAR_SPELL)));
+        s.set_action(2, Some(slot(ACTION_KIND_MACRO, BAR_SPELL)));
+        let mut host = SpellHost {
+            known: vec![BAR_SPELL],
+            cooldowns: Vec::new(),
+            asked: Vec::new(),
+        };
+        host::lend(s.lua(), &mut host, || {
+            for call in [
+                "GetSpellInfo(3009, BOOKTYPE_SPELL)",
+                "GetSpellLink(3009, BOOKTYPE_SPELL)",
+                "GetSpellTexture(3009, BOOKTYPE_SPELL)",
+                "GetSpellName(3009, BOOKTYPE_SPELL)",
+                "GetSpellCooldown(3009, BOOKTYPE_SPELL)",
+            ] {
+                let err = s.run(call).unwrap_err().to_string();
+                assert!(err.contains("Invalid spell slot"), "{call}: {err}");
+            }
+        });
+        assert!(host.asked.is_empty(), "{:?}", host.asked);
+    }
+
+    /// `GetSlotFromLua` allows index 1023 (slot 1024); 1025 is the first out-of-range value and
+    /// falls back only when it is on the bar.
+    #[test]
+    fn the_slot_range_boundary_is_1024() {
+        let mut s = wrath();
+        // Put both values on the bar so only the range check can distinguish them.
+        s.set_action(1, Some(slot(ACTION_KIND_SPELL, 1024)));
+        s.set_action(2, Some(slot(ACTION_KIND_SPELL, 1025)));
+        let mut host = SpellHost {
+            known: vec![1024, 1025],
+            cooldowns: Vec::new(),
+            asked: Vec::new(),
+        };
+        host::lend(s.lua(), &mut host, || {
+            // 1024 is an in-range empty slot: nil, not the host's spell 1024.
+            assert!(s
+                .eval::<bool>("return GetSpellInfo(1024, BOOKTYPE_SPELL) == nil")
+                .unwrap());
+            // 1025 is out of range and on the bar: the host's spell.
+            assert_eq!(
+                s.eval::<String>("return (GetSpellInfo(1025, BOOKTYPE_SPELL))")
+                    .unwrap(),
+                "Spell 1025"
+            );
+        });
+        // The same 1025 off the bar is a genuine invalid slot.
+        s.set_action(2, None);
+        let err = s
+            .run("GetSpellInfo(1025, BOOKTYPE_SPELL)")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Invalid spell slot"), "{err}");
+    }
+
+    /// The raw-ID fallback is player-book only: `GetActionInfo` never answers a pet-book ID that
+    /// way, so a player bar spell with `"pet"` must still be a genuine invalid slot.
+    #[test]
+    fn the_pet_book_does_not_enable_the_player_id_fallback() {
+        let mut s = wrath();
+        s.set_action(1, Some(slot(ACTION_KIND_SPELL, BAR_SPELL)));
+        let mut host = SpellHost {
+            known: vec![BAR_SPELL],
+            cooldowns: vec![(BAR_SPELL, (100_000, 5_000, true))],
+            asked: Vec::new(),
+        };
+        host::lend(s.lua(), &mut host, || {
+            for call in [
+                "GetSpellInfo(3009, BOOKTYPE_PET)",
+                "GetSpellLink(3009, BOOKTYPE_PET)",
+                "GetSpellTexture(3009, BOOKTYPE_PET)",
+                "GetSpellName(3009, BOOKTYPE_PET)",
+                "GetSpellCooldown(3009, BOOKTYPE_PET)",
+            ] {
+                let err = s.run(call).unwrap_err().to_string();
+                assert!(err.contains("Invalid spell slot"), "{call}: {err}");
+            }
+        });
+        assert!(host.asked.is_empty(), "{:?}", host.asked);
+    }
+
+    /// The shim forwards to the cooldown owner rather than pre-checking `spell_info`; the owner
+    /// decides, as `Script_GetSpellCooldown` does. (The current app host's own `cooldown` query
+    /// still needs its catalog, so this is about the shim, not a guaranteed live cooldown.)
+    #[test]
+    fn the_cooldown_owner_is_not_gated_on_spell_info() {
+        let mut s = wrath();
+        s.set_now(100.0);
+        s.set_action(1, Some(slot(ACTION_KIND_SPELL, BAR_SPELL)));
+        let mut host = SpellHost {
+            known: Vec::new(), // no `spell_info` answer
+            cooldowns: vec![(BAR_SPELL, (100_000, 5_000, true))],
+            asked: Vec::new(),
+        };
+        host::lend(s.lua(), &mut host, || {
+            assert_eq!(
+                s.eval::<(f64, f64, i64)>("return GetSpellCooldown(3009, BOOKTYPE_SPELL)")
+                    .unwrap(),
+                (100.0, 5.0, 1)
+            );
+        });
+        assert!(
+            host.asked.is_empty(),
+            "the cooldown owner is not the spell catalog"
+        );
     }
 
     /// The fallback is a Wrath action-bar compatibility path, not a general slot relaxation.

@@ -48,9 +48,13 @@ pub enum GestureOutcome {
     Pressed,
     Held,
     /// Short press released: a dodge request was made.
-    ShortRelease { held_ticks: u64 },
+    ShortRelease {
+        held_ticks: u64,
+    },
     /// Long hold released: sprint input, deliberately not a dodge.
-    LongRelease { held_ticks: u64 },
+    LongRelease {
+        held_ticks: u64,
+    },
     /// Release with no matching press (lost press or idempotent observation).
     IgnoredRelease,
     /// This input is deferred until its future tick.

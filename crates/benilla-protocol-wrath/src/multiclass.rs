@@ -20,15 +20,21 @@ pub struct Request {
 
 impl Request {
     pub fn from_arguments([op, serial, guid, choice, low, high]: [u32; 6]) -> Option<Self> {
-        if !(1..=5).contains(&op) || serial == 0 || choice > 11
+        if !(1..=5).contains(&op)
+            || serial == 0
+            || choice > 11
             || (op != 3 && op != 5 && (low != 0 || high != 0))
             || (op == 1 && (guid != 0 || choice != 0))
         {
             return None;
         }
         Some(Self {
-            operation: op as u16, serial, guid, choice: choice as u8,
-            token_low: low, token_high: high,
+            operation: op as u16,
+            serial,
+            guid,
+            choice: choice as u8,
+            token_low: low,
+            token_high: high,
         })
     }
 
@@ -40,9 +46,13 @@ impl Request {
     /// All three variable-length counters must fit before the final 64-bit token.
     pub fn preview_reply(self, bytes: &[u8]) -> Option<PreviewToken> {
         let header = ReplyHeader::decode(bytes)?;
-        if self.operation != 2 || header.operation != 2 || header.result != 0
-            || bytes[14..16] != 1u16.to_le_bytes() || bytes.len() < 41
-            || bytes[16..20] != self.guid.to_le_bytes() || bytes[22] != self.choice
+        if self.operation != 2
+            || header.operation != 2
+            || header.result != 0
+            || bytes[14..16] != 1u16.to_le_bytes()
+            || bytes.len() < 41
+            || bytes[16..20] != self.guid.to_le_bytes()
+            || bytes[22] != self.choice
             || bytes[27] != 1
         {
             return None;
@@ -51,13 +61,24 @@ impl Request {
         for _ in 0..3 {
             let length = usize::from(*bytes.get(offset)?);
             offset = offset.checked_add(1 + length)?;
-            if offset > bytes.len() { return None; }
+            if offset > bytes.len() {
+                return None;
+            }
         }
-        if offset.checked_add(8)? != bytes.len() { return None; }
+        if offset.checked_add(8)? != bytes.len() {
+            return None;
+        }
         let low = u32::from_le_bytes(bytes[offset..offset + 4].try_into().ok()?);
         let high = u32::from_le_bytes(bytes[offset + 4..].try_into().ok()?);
-        if low == 0 && high == 0 { return None; }
-        Some(PreviewToken { guid: self.guid, choice: self.choice, low, high })
+        if low == 0 && high == 0 {
+            return None;
+        }
+        Some(PreviewToken {
+            guid: self.guid,
+            choice: self.choice,
+            low,
+            high,
+        })
     }
 
     /// The socket owns the opcode and encrypted header; this is exactly the 28-byte body.
@@ -85,8 +106,11 @@ pub struct PreviewToken {
 
 impl PreviewToken {
     pub fn permits(&self, request: Request) -> bool {
-        request.operation == 3 && request.guid == self.guid && request.choice == self.choice
-            && request.token_low == self.low && request.token_high == self.high
+        request.operation == 3
+            && request.guid == self.guid
+            && request.choice == self.choice
+            && request.token_low == self.low
+            && request.token_high == self.high
     }
 }
 
@@ -101,7 +125,8 @@ impl ReplyHeader {
     /// Bound and validate the envelope before routing. The installed Lua consumers validate
     /// each versioned body, including counters and trailing bytes; this is not a body decoder.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
-        if !(16..=MAX_REPLY).contains(&bytes.len()) || &bytes[..4] != b"WMC1"
+        if !(16..=MAX_REPLY).contains(&bytes.len())
+            || &bytes[..4] != b"WMC1"
             || bytes[4..6] != 3u16.to_le_bytes()
         {
             return None;
@@ -110,7 +135,8 @@ impl ReplyHeader {
         let wire_id = u32::from_le_bytes(bytes[8..12].try_into().ok()?);
         let result = u16::from_le_bytes([bytes[12], bytes[13]]);
         let count = u16::from_le_bytes([bytes[14], bytes[15]]);
-        if !(1..=8).contains(&operation) || result > 12
+        if !(1..=8).contains(&operation)
+            || result > 12
             || ((operation <= 5) != (wire_id != 0))
             || (result != 0 && (count != 0 || bytes.len() != 16))
             || (operation >= 6 && (result != 0 || count != 1 || bytes.len() == 16))
@@ -118,7 +144,11 @@ impl ReplyHeader {
         {
             return None;
         }
-        Some(Self { operation, wire_id, result })
+        Some(Self {
+            operation,
+            wire_id,
+            result,
+        })
     }
 
     /// Ownership is a server snapshot, not inferred from Lua selection or the base class.
@@ -130,15 +160,26 @@ impl ReplyHeader {
         let count = usize::from(u16::from_le_bytes([bytes[14], bytes[15]]));
         let counter_len = usize::from(bytes[23]);
         let owned = u16::from_le_bytes([bytes[16], bytes[17]]);
-        if count > 150 || counter_len == 0 || counter_len > 96 || 24 + counter_len + count * 18 != bytes.len()
-            || owned == 0 || owned & !1535 != 0 || bytes[22] > 1
+        if count > 150
+            || counter_len == 0
+            || counter_len > 96
+            || 24 + counter_len + count * 18 != bytes.len()
+            || owned == 0
+            || owned & !1535 != 0
+            || bytes[22] > 1
         {
             return None;
         }
-        if !bytes[24..24 + counter_len].iter().all(u8::is_ascii_digit) { return None; }
+        if !bytes[24..24 + counter_len].iter().all(u8::is_ascii_digit) {
+            return None;
+        }
         for row in bytes[24 + counter_len..].chunks_exact(18) {
-            if row[4] > 2 || row[5] > 10 || row[6] > 3 || row[7] > row[8]
-                || row[8] == 0 || row[8] > 5
+            if row[4] > 2
+                || row[5] > 10
+                || row[6] > 3
+                || row[7] > row[8]
+                || row[8] == 0
+                || row[8] > 5
             {
                 return None;
             }

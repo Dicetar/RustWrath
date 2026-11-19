@@ -10,14 +10,18 @@ use std::fmt::Write;
 pub(crate) fn str2d_51(s: &[u8]) -> Option<f64> {
     let s = &s[..s.iter().position(|&b| b == 0).unwrap_or(s.len())];
     let mut start = 0;
-    while s.get(start).is_some_and(|b| is_space(*b)) { start += 1; }
+    while s.get(start).is_some_and(|b| is_space(*b)) {
+        start += 1;
+    }
     let unsigned = start + usize::from(matches!(s.get(start), Some(b'+' | b'-')));
     if s.get(unsigned) == Some(&b'0') && matches!(s.get(unsigned + 1), Some(b'x' | b'X')) {
         let (value, end) = strtoul(s, 16);
         return (end > 0 && s[end..].iter().all(|b| is_space(*b))).then_some(f64::from(value));
     }
     let end = decimal_end(s)?;
-    if !s[end..].iter().all(|b| is_space(*b)) || s[start..end].iter().any(|b| matches!(b, b'd' | b'D')) {
+    if !s[end..].iter().all(|b| is_space(*b))
+        || s[start..end].iter().any(|b| matches!(b, b'd' | b'D'))
+    {
         return None;
     }
     std::str::from_utf8(&s[start..end]).ok()?.parse().ok()

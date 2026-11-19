@@ -85,7 +85,10 @@ impl Plugin for NetPlugin {
         // Install the resident diagnostics recorder before the IO thread can emit its first
         // auth milestone, so login stages are observed in every mode (Wrath or stock). Wrath
         // reuses this instance instead of installing a second one.
-        if !app.world().contains_resource::<crate::quest_trace::Source>() {
+        if !app
+            .world()
+            .contains_resource::<crate::quest_trace::Source>()
+        {
             crate::quest_trace::install(app);
         }
         app.insert_resource(NetEvents(handles.events))
@@ -1006,7 +1009,9 @@ impl CommandReceipt {
         }
         bevy::log::info!(
             "quest delivery: quest={} session={} world={} status={delivery:?}",
-            self.quest, self.session_epoch, self.world_generation
+            self.quest,
+            self.session_epoch,
+            self.world_generation
         );
         // Exactly two results at most: admission and a terminal writer result.
         // A closed UI receiver must never stall the networking thread.
@@ -1584,6 +1589,13 @@ pub(crate) enum ClientCommand {
         talent_id: u32,
         rank: u32,
     },
+    /// `CMSG_LEARN_PREVIEW_TALENTS` (or `_PET` with the pet guid): `u32 count` then
+    /// `(u32 talent_id, u32 rank)` pairs; the pet form prefixes the guid.
+    LearnPreviewTalents {
+        pet: bool,
+        pet_guid: u64,
+        entries: Vec<(u32, u32)>,
+    },
     /// `CMSG_UNLEARN_SKILL`. No ack: the line leaves only by the `PLAYER_SKILL_INFO` update.
     UnlearnSkill {
         skill_id: u32,
@@ -1665,7 +1677,9 @@ pub(crate) enum ClientCommand {
     },
     /// `CMSG_OPT_OUT_OF_LOOT`: the player's pass-on-loot preference (`SetOptOutOfLoot`), one u32
     /// flag. No 1.12 opcode, so the vanilla writer drops it and the wrath tap sends it.
-    OptOutOfLoot { pass: bool },
+    OptOutOfLoot {
+        pass: bool,
+    },
     /// `CMSG_LOOT_MASTER_GIVE`: `slot` is the wire slot. Success is `SMSG_LOOT_REMOVED`, a refusal
     /// a `MASTER_*` loot error.
     LootMasterGive {
@@ -2194,9 +2208,13 @@ pub(crate) enum ClientCommand {
     ResetInstances,
     /// `MSG_SET_DUNGEON_DIFFICULTY` (3.3.5 only): the dungeon difficulty selection, one u32 mode.
     /// The server echoes the same opcode; the CVar write waits for that echo.
-    SetDungeonDifficulty { mode: u32 },
+    SetDungeonDifficulty {
+        mode: u32,
+    },
     /// `MSG_SET_RAID_DIFFICULTY` (3.3.5 only): the raid difficulty selection, one u32 mode.
-    SetRaidDifficulty { mode: u32 },
+    SetRaidDifficulty {
+        mode: u32,
+    },
     // ── Duel ── (a challenge is a `CastSpell` of the duel spell)
     /// `CMSG_DUEL_ACCEPTED`, also the challenger's own auto-accept.
     DuelAccepted {
@@ -3067,4 +3085,3 @@ mod tests {
         ));
     }
 }
-

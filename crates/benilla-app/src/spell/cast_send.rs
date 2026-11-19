@@ -294,14 +294,19 @@ impl CastLadder<'_, '_> {
     /// A refusal of the client's own through `ReportCastFailure 0x6e1a00`: its line, then its
     /// tail.
     pub(crate) fn report_local(&mut self, fail: CastFail) {
-        let scope = self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation));
+        let scope = self
+            .wrath_view
+            .as_ref()
+            .map(|v| (v.session_epoch, v.world_generation));
         if let Some(trace) = self.trace.as_deref() {
             let ix = trace.begin(scope, None, crate::quest_trace::Operation::Observed);
             ix.record(crate::quest_trace::Stage::Cast {
                 spell_id: Some(fail.spell_id),
                 attempt: None,
                 wire_cast_count: None,
-                edge: crate::quest_trace::CastEdge::LocalRefusal { reason: fail.reason },
+                edge: crate::quest_trace::CastEdge::LocalRefusal {
+                    reason: fail.reason,
+                },
             });
         }
         let reaches = reaches_tail(&fail, self.spells.as_deref(), &self.items, &self.commands);
@@ -360,7 +365,10 @@ impl CastLadder<'_, '_> {
         commit: CastCommit,
         bound: TargetedBind,
     ) {
-        let scope = self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation));
+        let scope = self
+            .wrath_view
+            .as_ref()
+            .map(|v| (v.session_epoch, v.world_generation));
         let cmd_trace = self.trace.as_deref().map(|t| {
             let ix = t.begin(scope, None, crate::quest_trace::Operation::Observed);
             ix.record(crate::quest_trace::Stage::Cast {
@@ -374,20 +382,32 @@ impl CastLadder<'_, '_> {
         let cmd = match commit {
             // The same targets block under either opcode; the spell side has one builder per bind.
             CastCommit::Spell => match bound {
-                TargetedBind::Dest(dest) => ClientCommand::CastSpellAtDest { spell_id, dest, trace: cmd_trace.clone() },
-                TargetedBind::Source(src) => ClientCommand::CastSpellAtSource { spell_id, src, trace: cmd_trace.clone() },
+                TargetedBind::Dest(dest) => ClientCommand::CastSpellAtDest {
+                    spell_id,
+                    dest,
+                    trace: cmd_trace.clone(),
+                },
+                TargetedBind::Source(src) => ClientCommand::CastSpellAtSource {
+                    spell_id,
+                    src,
+                    trace: cmd_trace.clone(),
+                },
                 TargetedBind::Item(item_guid) => ClientCommand::CastSpellItem {
                     spell_id,
                     item_guid,
                     trace: cmd_trace.clone(),
                 },
-                TargetedBind::TradeItem(slot) => {
-                    ClientCommand::CastSpellTradeItem { spell_id, slot, trace: cmd_trace.clone() }
-                }
+                TargetedBind::TradeItem(slot) => ClientCommand::CastSpellTradeItem {
+                    spell_id,
+                    slot,
+                    trace: cmd_trace.clone(),
+                },
                 // The right-click OPEN_LOCK packet: `BindTarget`'s GameObject arm fills both.
-                TargetedBind::Object(go_guid) => {
-                    ClientCommand::CastSpellGameObject { spell_id, go_guid, trace: cmd_trace.clone() }
-                }
+                TargetedBind::Object(go_guid) => ClientCommand::CastSpellGameObject {
+                    spell_id,
+                    go_guid,
+                    trace: cmd_trace.clone(),
+                },
                 TargetedBind::Unit(unit_guid) => ClientCommand::CastSpell {
                     spell_id,
                     target: Some(unit_guid),
@@ -590,7 +610,9 @@ impl CastLadder<'_, '_> {
             },
             &self.known,
             self.trace.as_deref().cloned(),
-            self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+            self.wrath_view
+                .as_ref()
+                .map(|v| (v.session_epoch, v.world_generation)),
         );
     }
 }
@@ -739,9 +761,9 @@ fn send_spell_cast(
     scope: Option<(u64, u64)>,
 ) {
     let now = Instant::now();
-    let cast_trace_interaction = trace.as_ref().map(|t| {
-        t.begin(scope, None, crate::quest_trace::Operation::Observed)
-    });
+    let cast_trace_interaction = trace
+        .as_ref()
+        .map(|t| t.begin(scope, None, crate::quest_trace::Operation::Observed));
     if let Some(ix) = &cast_trace_interaction {
         ix.record(crate::quest_trace::Stage::Cast {
             spell_id: Some(spell_id),
@@ -759,7 +781,9 @@ fn send_spell_cast(
                     spell_id: Some(spell_id),
                     attempt: None,
                     wire_cast_count: None,
-                    edge: crate::quest_trace::CastEdge::LocalRefusal { reason: __fail.reason },
+                    edge: crate::quest_trace::CastEdge::LocalRefusal {
+                        reason: __fail.reason,
+                    },
                 });
             }
             refuse(core, spells, items, commands, __fail);
@@ -817,7 +841,10 @@ fn send_spell_cast(
     // `0x6e4f3b`): a missing tool or reagent refuses with 0x78/0x5c. Local because vmangos answers
     // a pickless cast with `ITEM_GONE`. It passes a caster that is not the active player
     // (`0x6e400e`), as the equipped-item check below does (`0x6e40e0`).
-    let player_inventory = ctx.rel.self_store.map(|store| known.player_inventory(store));
+    let player_inventory = ctx
+        .rel
+        .self_store
+        .map(|store| known.player_inventory(store));
     if let Some(fail) =
         reagent_totem_refusal_in_player(spell_id, def, player_inventory.as_ref(), objects)
             .filter(|_| player_caster)
@@ -1035,9 +1062,10 @@ fn send_spell_cast(
                     .is_some_and(|d| d.casting_cancels_autorepeat())
                 {
                     debug!("ui_action: the not-ready refusal cancels the wand repeat {cached}");
-                    let _ = commands
-                        .0
-                        .send(ClientCommand::CancelCast { spell_id: cached, trace: cast_trace_interaction.clone() });
+                    let _ = commands.0.send(ClientCommand::CancelCast {
+                        spell_id: cached,
+                        trace: cast_trace_interaction.clone(),
+                    });
                     let self_e = self_player.single().ok().map(|(e, _)| e);
                     crate::creature_anim::cancel_auto_repeat_local(
                         self_e,
@@ -1245,9 +1273,10 @@ fn send_spell_cast(
             .is_some_and(|d| d.casting_cancels_autorepeat())
         {
             debug!("ui_action: cast {spell_id} cancels the running wand repeat {cached}");
-            let _ = commands
-                .0
-                .send(ClientCommand::CancelCast { spell_id: cached, trace: cast_trace_interaction.clone() });
+            let _ = commands.0.send(ClientCommand::CancelCast {
+                spell_id: cached,
+                trace: cast_trace_interaction.clone(),
+            });
             let self_e = self_player.single().ok().map(|(e, _)| e);
             crate::creature_anim::cancel_auto_repeat_local(self_e, auto_repeat, edits, core);
         }
@@ -1257,14 +1286,22 @@ fn send_spell_cast(
     let _ = commands.0.send(match commit {
         CastCommit::Spell => match (explicit_object, item_target) {
             // A lock opener bound by its click; `BindTarget`'s GameObject arm fills the block.
-            (Some(go_guid), _) => ClientCommand::CastSpellGameObject { spell_id, go_guid, trace: cast_trace_interaction.clone() },
+            (Some(go_guid), _) => ClientCommand::CastSpellGameObject {
+                spell_id,
+                go_guid,
+                trace: cast_trace_interaction.clone(),
+            },
             // The item leg, bound by the main-hand auto-pick.
             (None, Some(item_guid)) => ClientCommand::CastSpellItem {
                 spell_id,
                 item_guid,
                 trace: cast_trace_interaction.clone(),
             },
-            (None, None) => ClientCommand::CastSpell { spell_id, target, trace: cast_trace_interaction.clone() },
+            (None, None) => ClientCommand::CastSpell {
+                spell_id,
+                target,
+                trace: cast_trace_interaction.clone(),
+            },
         },
         CastCommit::Item {
             bag_index,
@@ -1745,7 +1782,13 @@ mod tests {
         send(&mut world, FIREBALL, CastCommit::Spell);
         let sent: Vec<_> = rx.try_iter().collect();
         assert!(
-            matches!(sent[..], [ClientCommand::CancelCast { spell_id: FIREBALL, .. }]),
+            matches!(
+                sent[..],
+                [ClientCommand::CancelCast {
+                    spell_id: FIREBALL,
+                    ..
+                }]
+            ),
             "{sent:?}"
         );
         let reports = world.resource::<CastReports>();
@@ -3308,4 +3351,3 @@ mod tests {
         ));
     }
 }
-

@@ -11,6 +11,12 @@ The owner explicitly approved the initial host rebuild/restart. In-game acceptan
 This promotes native presentation reload from the optional last stage in owner-decisions row 6
 to an immediate implementation target. It does not declare arbitrary native code reloadable.
 
+2026-11-17: the owner set "hotpatch anything" as a target feature. The developer client now
+has a second, separate path for that, [Live code](#live-code): Bevy's subsecond hotpatching under
+`dx serve`, which patches any workspace crate's function bodies into the running dev process.
+That path is a developer tool with no ABI, digest or rollback contract. The module ABI below
+remains the contract for patches delivered outside a developer's `dx` session.
+
 The 2026-11-03 H02 additions below specify the **Proposed** revision manifest (`PatchRevisionV1`),
 pre-load capability and trust gates, activation decision table, failure/rollback sequences, and
 trust boundaries that `H03` ("Add patch health and last-good rollback"), `H04` (UI overlay reload),
@@ -1126,10 +1132,122 @@ proposed above so `H03` is not blocked):
 | Texture/material/tuning | Dependency-aware content revision | Next stage; not delivered by the DLL loader |
 | M2/SKIN/animation import | Reimport affected model family and rebind visuals | Next stage; current live caches do not implement this |
 | Terrain/WMO/ADT/collision | Staged affected-cell rebuild at a safe boundary | Planned; must coordinate render and collision revisions |
+| Any function body in a workspace crate the client links (systems, decoders, encoders, formats, rules) | Live code: patched `dx` patch on save | First build and launch ran. With stock dx, a patch below `benilla-app` failed to build, and the first patch that landed crashed the client (`__chkstk` stub). The next cross-crate patch landed and crashed on a thread-local (Windows TLS and exe-static reach). The latest dx patch is not compiled or run; acceptance pending |
+| Struct/enum layout, static or thread-local initializer, new/reordered system or plugin, new dependency | Restart (live code reports the patch but cannot apply it safely) | By design |
 | New host interface, Bevy/wgpu upgrade, core component/schema changes | Declared maintenance rebuild/restart | Outside ABI 1 |
 
 An unchanged old executable cannot acquire this interface through `/reload`; the approved
 bootstrap restart is required. It is not necessary for later ABI-compatible pose publications.
+
+## Live code
+
+**Current behavior (branch `feat/live-code-hotpatch`, not compiled, not run).** The `live_code`
+feature (`benilla` → `benilla-app` → `bevy/hotpatching`) builds the dev client with Bevy's
+`HotPatchPlugin`, which joins `DefaultPlugins` and connects to the `dx` CLI that started the
+process. `tools/launch-client.ps1 -LiveCode` runs `dx serve --hot-patch --package benilla
+--features hotpatch,live_code` in its own window, with the launcher's usual environment. On each
+saved edit dx rebuilds the edited workspace crates and the crates above them, and the running
+client takes the new code's jump table at the end of the frame. Patches reach new code only
+through the table:
+
+- Every Bevy system and observer, on its next run.
+- The network threads, through `live_code::call`: each packet's read and decode, and each
+  command's encode (`net::io::stream`, `net::io::writer_loop`). The loops' own bodies stay the
+  code they entered.
+- Whatever those call: a patched function calls its callees' patched versions.
+
+Patches apply only in a build with debug assertions, so on the `dev` profile, never `play` or
+`ship` (subsecond's `call` returns straight to the closure without them). The feature must not be
+combined with `bevy_dynamic_linking`.
+
+**Re-derive.** Data built before a patch is the old code's output. On the frame after a patch,
+`live_code::LiveCodePatched` runs the `live_code::Rederive` set in `First`:
+
+- The eight saved template stores (`wdb`) decode every held record again from the answer bytes
+  they keep, so a decoder fix reaches records answered before the patch, with no query.
+- The spell catalog reloads from `Spell.dbc` (`ui_action::load_spells`), including the
+  learn-spell hop the trainer reads.
+
+A deriver whose output a code fix can change joins the set with `live_code::rederive`. What is
+not re-derived: entity components built at spawn, window contents built at open (a trainer list:
+close and reopen it), and server state, which the server owns. Logging out to character
+select and back re-runs each world-entry deriver without a restart.
+
+**Restart.** Changes that cannot be patched safely still need a restart: a changed struct or
+enum layout (the old values in memory keep the old layout), a changed static or thread-local
+initializer, a new or reordered system, set, observer or plugin (the schedule is built once), a
+new dependency, and a Bevy upgrade. dx reports a failed patch build in its window; the running
+client keeps the last code that loaded.
+
+**Which crates patch: the dx patch.** Stock dx 0.7.10 covers only `benilla` and `benilla-app`.
+The owner's first live session (2026-11-17) showed why. dx watches the tip crate's direct
+dependencies only, so an edit in `benilla-formats` or `benilla-net` was never seen. And a patch
+build replays every workspace crate that depends on an edited one, including the workspace
+binaries the client does not link (`benilla-worldview`, `benilla-wm-driver`). The fat build
+captured no rustc arguments for those, so the replay failed (`Missing rustc args for replay`).
+An edit in `benilla-app` that used a new item from `benilla-formats` failed to build, because
+only `benilla-app` was replayed.
+
+`tools/live-code/dx-0.7.10-workspace-crates.patch` changes seven things:
+
+- The watch list follows dependencies transitively (`local_dependencies` in `serve/runner.rs`),
+  so every workspace crate the client links is watched.
+- The replay skips crates the fat build never compiled (`compile_workspace_hotpatch` in
+  `build/link.rs`).
+- On Windows x64, the stubs a patch uses to reach the original binary's symbols jump with
+  `jmp [rip+0]` instead of loading the address into RAX (`create_undefined_symbol_stub` in
+  `build/patch.rs`; upstream DioxusLabs/dioxus#5966, fix #5967). `__chkstk` takes the stack
+  frame's size in RAX, so with stock dx any patched function whose frame is over a page
+  overflows the stack on entry. Our crates build at opt-level 1, which gives many such frames.
+  In the owner's session, the first patch that landed crashed the client this way ("thread
+  'main' has overflowed its stack", exit `0xc000041d`).
+- The watcher waits until writes stop (300 ms of quiet, at most 2 s) before it patches (`wait`
+  in `serve/runner.rs`). Stock dx patches on the first file event. A cherry-pick or checkout
+  writes its files one at a time, so the patch built `benilla-app` alone, the
+  `benilla-formats` half of the same change sat in the queue, and the build failed on a
+  constant that did not exist yet.
+- Changes queued during a failed build are replayed (`serve/mod.rs`). Stock dx replays them
+  only after a successful build, so the files that would have fixed the failure were dropped.
+- The replay runs dependencies first, including a dependency that a crate's own feature enables
+  (`workspace_dependents_of` in `build/request.rs` walks feature nodes;
+  `compile_workspace_hotpatch` then orders by each crate's captured `--extern` arguments).
+  Stock dx asks krates for direct dependents, which misses `benilla-app`'s
+  `hotpatch = ["dep:benilla-hotpatch-bevy"]` edge, so it replayed `benilla_app` first and the
+  build failed with `can't find crate for benilla_hotpatch_bevy`.
+- On Windows, a patch DLL keeps its own thread-locals and is linked at a fixed base near the
+  exe (`create_undefined_symbol_stub` and `windows_patch_image_base` in `build/patch.rs`, the
+  link in `build/link.rs`). Stock dx resolves `_tls_index` and every exe static the patch reads
+  to an absolute address in the exe. x64 code reads those through 32-bit RIP-relative
+  displacements. link.exe computes these against the DLL's default base, 0x180000000, and the
+  loader never relocates them, so they cannot reach an exe mapped at 0x7FF7…. The patch that
+  crashed the owner's client had 29 such `_tls_index` loads and 42 loads of other exe statics.
+  The CRT's TLS symbols now come from `msvcrt.lib`, so the DLL gets its own TLS directory and
+  slot. Each patch is linked with `/BASE` just past the exe image, after the patches already
+  loaded, and with `/DYNAMICBASE:NO`. A patch whose image would end more than 2 GiB past the exe
+  fails to build and asks for a restart. Two limits follow:
+  - A `thread_local!` in replayed code starts from its initial value in each patch and is not
+    shared with the exe's copy. dx does the same on Linux and macOS.
+  - If something else already occupies the chosen base, the loader relocates the DLL and those
+    reads fault again.
+
+The launcher passes `--log-to-file`, so the run folder's `dx.log` records which files and crates
+each patch saw.
+
+`tools/install-live-dx.ps1` builds that dx from the hash-pinned crates.io archive. It also
+leaves a marker beside `dx.exe`, and the launcher warns when the marker is missing. A new
+subsecond version needs the patch re-cut against that dx release.
+
+**Owner setup.** Install the patched `dx` with `tools/install-live-dx.ps1`. Its version must
+match the `subsecond` crate in `Cargo.lock`; the launcher checks this and prints the install
+command. The first `-LiveCode` build
+adds `subsecond` and `dioxus-devtools` to `Cargo.lock`; commit that lock change. Whether dx's
+build cooperates with the sccache wrapper the repo config requires is unverified; a wrapper
+failure is a build failure to report, not a reason to drop sccache.
+
+**Acceptance.** Same PID and session before and after a patch: edit a decoder (the Wrath
+game-object query response) and see a re-decoded template take effect without logout; edit a
+system's body and see the change on the next frame; make a layout change and see dx refuse or
+the client keep running the old code, not crash. Not yet run.
 
 ## Developer workflow (first slice)
 

@@ -230,8 +230,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 };
                 let mut values = lua.pack_multi(first)?;
                 values.extend(
-                    [reason_need, Some(if can_greed { 0 } else { 2 }), reason_disenchant, skill]
-                        .map(|value| value.map_or(Value::Nil, |x| Value::Integer(i64::from(x)))),
+                    [
+                        reason_need,
+                        Some(if can_greed { 0 } else { 2 }),
+                        reason_disenchant,
+                        skill,
+                    ]
+                    .map(|value| value.map_or(Value::Nil, |x| Value::Integer(i64::from(x)))),
                 );
                 return Ok(values);
             }

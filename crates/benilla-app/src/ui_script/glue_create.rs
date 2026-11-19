@@ -68,11 +68,17 @@ pub(crate) fn world_catalog(world: &World) -> GlueCreateCatalog {
         ),
         None => GlueCreateCatalog::default(),
     };
-    seat_race_expansions(&mut catalog, world.get_resource::<crate::chr_classes::ChrRaceTable>());
+    seat_race_expansions(
+        &mut catalog,
+        world.get_resource::<crate::chr_classes::ChrRaceTable>(),
+    );
     catalog
 }
 
-fn seat_race_expansions(catalog: &mut GlueCreateCatalog, races: Option<&crate::chr_classes::ChrRaceTable>) {
+fn seat_race_expansions(
+    catalog: &mut GlueCreateCatalog,
+    races: Option<&crate::chr_classes::ChrRaceTable>,
+) {
     for row in &catalog.races {
         if let Some(required) = races.and_then(|r| r.0.required_expansion(u32::from(row.id))) {
             catalog.race_expansions.insert(row.id, required);
@@ -111,12 +117,19 @@ pub(crate) fn create_catalog(
     let mut catalog = GlueCreateCatalog::default();
     if let Some(classes) = classes {
         for (id, name) in classes.names_by_id() {
-            let Ok(key) = u8::try_from(id) else { continue; };
-            catalog.classes.insert(key, GlueCreateClass {
-                name: name.to_owned(),
-                file: classes.file(id).unwrap_or_default().to_owned(),
-            });
-            catalog.class_expansions.insert(key, classes.required_expansion(id).unwrap_or(0));
+            let Ok(key) = u8::try_from(id) else {
+                continue;
+            };
+            catalog.classes.insert(
+                key,
+                GlueCreateClass {
+                    name: name.to_owned(),
+                    file: classes.file(id).unwrap_or_default().to_owned(),
+                },
+            );
+            catalog
+                .class_expansions
+                .insert(key, classes.required_expansion(id).unwrap_or(0));
         }
     }
     let Some(factions) = factions else {

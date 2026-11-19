@@ -72,9 +72,10 @@ fn a_style_attribute_links_the_state_font_object() {
         .unwrap();
     assert_eq!(file.as_deref(), Some("Fonts\\FRIZQT__.TTF"));
     assert_eq!(height, Some(12.0));
-    let drawn = s.extract().into_iter().any(|q| {
-        matches!(q.content, QuadContent::Text { text: Some(t), .. } if t == "Label")
-    });
+    let drawn = s
+        .extract()
+        .into_iter()
+        .any(|q| matches!(q.content, QuadContent::Text { text: Some(t), .. } if t == "Label"));
     assert!(drawn, "the styled label draws");
 }
 
@@ -510,9 +511,7 @@ fn a_wrath_button_formats_its_label_and_a_vanilla_one_has_no_verb() {
     let vanilla = UiScript::new().unwrap();
     assert!(
         vanilla
-            .eval::<bool>(
-                r#"local b = CreateFrame("Button") return b.SetFormattedText == nil"#
-            )
+            .eval::<bool>(r#"local b = CreateFrame("Button") return b.SetFormattedText == nil"#)
             .unwrap(),
         "1.12's Button has no SetFormattedText"
     );

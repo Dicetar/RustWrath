@@ -212,9 +212,11 @@ pub fn read_pet_guids(body: &[u8]) -> Result<Vec<u64>> {
     let mut r = Reader::new(body);
     let count = r.u32()?;
     if count > MAX_PET_GUIDS {
-        return Err(DecodeError::invalid_count("pet guid count exceeds client bound")
-            .with_value(count)
-            .into());
+        return Err(
+            DecodeError::invalid_count("pet guid count exceeds client bound")
+                .with_value(count)
+                .into(),
+        );
     }
     let mut guids = Vec::with_capacity(count as usize);
     for _ in 0..count {
@@ -276,14 +278,18 @@ pub fn read_talents_info(body: &[u8]) -> Result<TalentsInfo> {
             let spec_count = r.u8()?;
             let active_spec = r.u8()?;
             if spec_count > MAX_TALENT_SPECS {
-                return Err(DecodeError::invalid_count("player spec count exceeds client bound")
-                    .with_value(u32::from(spec_count))
-                    .into());
+                return Err(
+                    DecodeError::invalid_count("player spec count exceeds client bound")
+                        .with_value(u32::from(spec_count))
+                        .into(),
+                );
             }
             if spec_count > 0 && active_spec >= spec_count {
-                return Err(DecodeError::invalid_value("active talent spec is out of range")
-                    .with_value(u32::from(active_spec))
-                    .into());
+                return Err(
+                    DecodeError::invalid_value("active talent spec is out of range")
+                        .with_value(u32::from(active_spec))
+                        .into(),
+                );
             }
 
             let mut specs = Vec::with_capacity(usize::from(spec_count));
@@ -338,9 +344,11 @@ pub fn read_talents_info(body: &[u8]) -> Result<TalentsInfo> {
             }
         }
         other => {
-            return Err(DecodeError::invalid_value("unknown talent info discriminator")
-                .with_value(u32::from(other))
-                .into());
+            return Err(
+                DecodeError::invalid_value("unknown talent info discriminator")
+                    .with_value(u32::from(other))
+                    .into(),
+            );
         }
     };
 
@@ -382,9 +390,11 @@ pub fn read_list_stabled_pets(body: &[u8]) -> Result<StableList> {
     let stable_slots = r.u8()?;
 
     if pet_count > MAX_STABLED_PETS {
-        return Err(DecodeError::invalid_count("stable pet count exceeds client bound")
-            .with_value(u32::from(pet_count))
-            .into());
+        return Err(
+            DecodeError::invalid_count("stable pet count exceeds client bound")
+                .with_value(u32::from(pet_count))
+                .into(),
+        );
     }
 
     let mut pets = Vec::with_capacity(usize::from(pet_count));
@@ -708,7 +718,7 @@ mod tests {
         body.extend_from_slice(&0x0000_0000_0000_0042u64.to_le_bytes());
         body.push(2); // rows
         body.push(4); // bought stable slots
-        // Current pet.
+                      // Current pet.
         push_u32(&mut body, 1);
         push_u32(&mut body, 1_234);
         push_u32(&mut body, 20);
@@ -789,10 +799,7 @@ mod tests {
         );
 
         assert_eq!(read_pet_learned_spell(&[1, 2, 3, 4]).unwrap(), 0x0403_0201);
-        assert_eq!(
-            read_pet_removed_spell(&[5, 6, 7, 8]).unwrap(),
-            0x0807_0605
-        );
+        assert_eq!(read_pet_removed_spell(&[5, 6, 7, 8]).unwrap(), 0x0807_0605);
         assert_eq!(read_stable_result(&[10]).unwrap(), 10);
 
         let mut superceded = Vec::new();

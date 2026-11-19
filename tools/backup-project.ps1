@@ -1,6 +1,6 @@
 param(
-    [string]$Repository = 'D:\Projects\project-b-client',
-    [string]$Destination = 'D:\Projects\RustWrath-backups',
+    [string]$Repository = 'D:\Projects\wow\client',
+    [string]$Destination = 'D:\Projects\wow\backups',
     [ValidateRange(1, 3)][int]$Retain = 3
 )
 

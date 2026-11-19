@@ -79,7 +79,14 @@ pub fn can_load_for_interface(
     client_interface: u32,
 ) -> Verdict {
     let mut visiting = vec![false; rows.len()];
-    walk(rows, index, demand_only, version_check, client_interface, &mut visiting)
+    walk(
+        rows,
+        index,
+        demand_only,
+        version_check,
+        client_interface,
+        &mut visiting,
+    )
 }
 
 /// One level of the arbiter, its checks in the reference's order.
@@ -136,7 +143,14 @@ fn walk(
             },
             // A loaded dependency satisfies the walk before any recursion (`0x51e8ba`).
             Some(d) if rows[d].loaded => Verdict::Loadable,
-            Some(d) => walk(rows, d, demand_only, version_check, client_interface, visiting),
+            Some(d) => walk(
+                rows,
+                d,
+                demand_only,
+                version_check,
+                client_interface,
+                visiting,
+            ),
         };
         if let Verdict::Refused { reason, dep } = verdict {
             visiting[i] = false;

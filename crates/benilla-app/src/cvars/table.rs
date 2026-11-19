@@ -11,6 +11,8 @@ pub(crate) struct Registered {
     pub(crate) name: &'static str,
     /// What a fresh `benilla-config` runs at, and what `GetCVar` answers until the player moves it.
     pub(crate) default: &'static str,
+    /// Runtime locale overrides, independent of whether the donor reference has this name.
+    locale_defaults: &'static [(usize, &'static str)],
     /// Where `default` stands against the reference's. Read only by the tests: it records the
     /// reference, never a value this client acts on.
     #[allow(dead_code)]
@@ -27,12 +29,17 @@ impl Registered {
     /// What the row boots at on a client of this locale index (`[0xc0e080]`): `default`, except
     /// on the locales a [`Reference::SameByLocale`] row lists.
     pub(crate) fn default_for(&self, locale: usize) -> &'static str {
-        match &self.reference {
-            Reference::SameByLocale { except } => except
-                .iter()
-                .find(|(index, _)| *index == locale)
-                .map_or(self.default, |(_, value)| value),
-            _ => self.default,
+        self.locale_defaults
+            .iter()
+            .find(|(index, _)| *index == locale)
+            .map_or(self.default, |(_, value)| value)
+    }
+
+    /// Locale-dependent defaults for names absent from the donor reference catalog.
+    pub(crate) const fn by_locale(self, except: &'static [(usize, &'static str)]) -> Self {
+        Self {
+            locale_defaults: except,
+            ..self
         }
     }
 
@@ -91,6 +98,7 @@ pub(super) const fn same(name: &'static str, default: &'static str) -> Registere
         name,
         default,
         reference: Reference::Same(default),
+        locale_defaults: &[],
         latched: false,
         check: None,
     }
@@ -107,6 +115,7 @@ pub(super) const fn same_by_locale(
         name,
         default,
         reference: Reference::SameByLocale { except },
+        locale_defaults: except,
         latched: false,
         check: None,
     }
@@ -123,6 +132,7 @@ const fn overridden(
         name,
         default,
         reference: Reference::Overridden { registered, why },
+        locale_defaults: &[],
         latched: false,
         check: None,
     }
@@ -139,17 +149,23 @@ const fn deviates(
         name,
         default,
         reference: Reference::Deviates { value, why },
+        locale_defaults: &[],
         latched: false,
         check: None,
     }
 }
 
 /// A row the reference has no counterpart for.
-pub(super) const fn ours(name: &'static str, default: &'static str, why: &'static str) -> Registered {
+pub(super) const fn ours(
+    name: &'static str,
+    default: &'static str,
+    why: &'static str,
+) -> Registered {
     Registered {
         name,
         default,
         reference: Reference::Ours(why),
+        locale_defaults: &[],
         latched: false,
         check: None,
     }

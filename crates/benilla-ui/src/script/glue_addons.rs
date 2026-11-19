@@ -176,7 +176,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let model = model(lua);
             let i = row_arg(lua, &model, arg(&args, 0), USAGE_INFO)?;
             let rows = gate_rows(&model, &model.glue.addons.store);
-            let verdict = can_load_for_interface(&rows, i, false, super::addon::version_check(&model), model.target.interface());
+            let verdict = can_load_for_interface(
+                &rows,
+                i,
+                false,
+                super::addon::version_check(&model),
+                model.target.interface(),
+            );
             let a = &model.addons[i];
             Ok(MultiValue::from_vec(vec![
                 lua_str(lua, &a.name)?,
@@ -1138,15 +1144,24 @@ mod tests {
         assert!(glue.addon_is_secure("Blizzard_TalentUI"));
         assert!(!glue.addon_is_secure("Recount"));
         assert_eq!(
-            glue.eval::<(String, String, String)>("local n, t, _, _, _, _, sec = GetAddOnInfo(1) return n, t, sec").unwrap(),
-            ("Recount".into(), "Recount Damage Meter".into(), "INSECURE".into())
+            glue.eval::<(String, String, String)>(
+                "local n, t, _, _, _, _, sec = GetAddOnInfo(1) return n, t, sec"
+            )
+            .unwrap(),
+            (
+                "Recount".into(),
+                "Recount Damage Meter".into(),
+                "INSECURE".into()
+            )
         );
         assert_eq!(
-            glue.eval::<(String, String)>("return GetAddOnOptionalDependencies('Recount')").unwrap(),
+            glue.eval::<(String, String)>("return GetAddOnOptionalDependencies('Recount')")
+                .unwrap(),
             ("Ace3".into(), "LibSharedMedia-3.0".into())
         );
         assert_eq!(
-            glue.eval::<String>("return GetAddOnMetadata('Recount', 'Version')").unwrap(),
+            glue.eval::<String>("return GetAddOnMetadata('Recount', 'Version')")
+                .unwrap(),
             "v3.3.5a"
         );
 
@@ -1184,11 +1199,15 @@ mod tests {
         assert_eq!(ingame.eval::<i64>("return GetNumAddOns()").unwrap(), 2);
         assert!(ingame.addon_is_secure("Blizzard_TalentUI"));
         assert_eq!(
-            ingame.eval::<String>("return GetAddOnOptionalDependencies('MyWrathAddon')").unwrap(),
+            ingame
+                .eval::<String>("return GetAddOnOptionalDependencies('MyWrathAddon')")
+                .unwrap(),
             "LibStub"
         );
         assert_eq!(
-            ingame.eval::<f64>("return GetAddOnEnableState('Player', 'MyWrathAddon')").unwrap(),
+            ingame
+                .eval::<f64>("return GetAddOnEnableState('Player', 'MyWrathAddon')")
+                .unwrap(),
             2.0
         );
         assert_eq!(
@@ -1196,7 +1215,9 @@ mod tests {
             0.0
         );
         assert_eq!(
-            ingame.eval::<(i64, Option<String>)>("return LoadAddOn('MyWrathAddon')").unwrap(),
+            ingame
+                .eval::<(i64, Option<String>)>("return LoadAddOn('MyWrathAddon')")
+                .unwrap(),
             (1, None)
         );
         assert_eq!(
@@ -1206,14 +1227,22 @@ mod tests {
 
         // 3. In-game 3.3.5a EnableAddOn / DisableAddOn supports both EnableAddOn(name, character)
         // and EnableAddOn(character, name), plus boolean flags.
-        ingame.eval::<()>("DisableAddOn('MyWrathAddon', 'Player')").unwrap();
+        ingame
+            .eval::<()>("DisableAddOn('MyWrathAddon', 'Player')")
+            .unwrap();
         assert_eq!(
-            ingame.eval::<f64>("return GetAddOnEnableState('Player', 'MyWrathAddon')").unwrap(),
+            ingame
+                .eval::<f64>("return GetAddOnEnableState('Player', 'MyWrathAddon')")
+                .unwrap(),
             0.0
         );
-        ingame.eval::<()>("EnableAddOn('MyWrathAddon', true)").unwrap();
+        ingame
+            .eval::<()>("EnableAddOn('MyWrathAddon', true)")
+            .unwrap();
         assert_eq!(
-            ingame.eval::<f64>("return GetAddOnEnableState('Player', 'MyWrathAddon')").unwrap(),
+            ingame
+                .eval::<f64>("return GetAddOnEnableState('Player', 'MyWrathAddon')")
+                .unwrap(),
             2.0
         );
 

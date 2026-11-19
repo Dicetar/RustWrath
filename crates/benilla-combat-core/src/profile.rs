@@ -179,7 +179,9 @@ pub fn spell_action(
     let spec = if let Some(channel_ms) = spell.channel_ms {
         let cast = ticks(rate, spell.cast_ms)?;
         let channel = ticks(rate, channel_ms)?;
-        let total = cast.checked_add(channel).ok_or(CombatError::TickArithmeticOverflow)?;
+        let total = cast
+            .checked_add(channel)
+            .ok_or(CombatError::TickArithmeticOverflow)?;
         let to = (cast + release).min(total);
         let (from, to) = open_window(cast, to, total)?;
         ActionSpec {
@@ -274,7 +276,10 @@ pub fn dodge_from_clip(
         dodge_from_tick: total,
         cancel_dodge_from_tick: total,
         cancel_move_from_tick: total,
-        iframes: crate::time::TickWindow { from: start, to: end },
+        iframes: crate::time::TickWindow {
+            from: start,
+            to: end,
+        },
         stamina_cost: policy.dodge_stamina,
     })
 }
@@ -403,7 +408,10 @@ mod tests {
         .expect("compile");
         assert_eq!(interruptible.kind, ActionKind::SpellCast);
         assert_eq!(interruptible.total_ticks, 320);
-        assert_eq!(interruptible.contact, Some(TickWindow { from: 300, to: 320 }));
+        assert_eq!(
+            interruptible.contact,
+            Some(TickWindow { from: 300, to: 320 })
+        );
         assert_eq!(interruptible.interruptible_until, Some(300));
         assert_eq!(interruptible.stamina_cost, 0);
 

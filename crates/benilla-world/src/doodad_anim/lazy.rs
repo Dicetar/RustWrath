@@ -219,6 +219,7 @@ mod tests {
             }],
             spine_bone: None,
             head_bone: None,
+            thumb_bones: [None, None],
         };
         let pose = crate::rig_anim::RigPose::new(host, &skeleton);
         app.world_mut().entity_mut(host).insert(pose);

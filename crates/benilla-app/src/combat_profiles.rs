@@ -17,15 +17,13 @@
 use std::collections::HashMap;
 
 use benilla_assets::{AnimClip, ModelAnimations};
+#[cfg(test)]
+use benilla_combat_core::spell_action;
 use benilla_combat_core::{
     dodge_from_clip, enemy_action, melee_action, ActionId, ActionKind, ActionSpec, ActionTable,
     ClipSummary, CombatResult, DodgeSpec, ProfilePolicy, SpellSummary, TickRate,
 };
-#[cfg(test)]
-use benilla_combat_core::spell_action;
-use benilla_formats::{
-    AnimDataCatalog, SpellCastTimeCatalog, SpellDisplay, SpellDurationCatalog,
-};
+use benilla_formats::{AnimDataCatalog, SpellCastTimeCatalog, SpellDisplay, SpellDurationCatalog};
 
 /// The dodge action every encounter shares; the host range `1..=999`.
 pub(crate) const HOST_DODGE: ActionId = ActionId(1);
@@ -96,19 +94,40 @@ pub(crate) fn player_melee_action(
     policy: &ProfilePolicy,
     rate: TickRate,
 ) -> CombatResult<Option<(ActionSpec, u16)>> {
-    let requested = crate::creature_anim::swing_anim_main(main);
-    let resolved = anims.resolve(requested, anim_data);
-    if !crate::creature_anim::is_swing_id(resolved.id) {
-        return Ok(None);
-    }
-    let Some(clip) = anims.clips.iter().find(|clip| clip.anim_id == resolved.id) else {
+    let Some(clip) = rig_swing_clip(main, anims, anim_data) else {
         return Ok(None);
     };
     let Some(summary) = clip_summary(clip) else {
         return Ok(None);
     };
     let spec = melee_action(id, melee_kind(main), summary, policy, rate)?;
-    Ok(Some((spec, resolved.id)))
+    Ok(Some((spec, clip.anim_id)))
+}
+
+/// The rig's main-hand swing clip, through the driver's weapon LUT and the fallback chain; `None`
+/// when the chain lands on a non-swing clip or the rig lacks the clip it names.
+pub(crate) fn rig_swing_clip<'a>(
+    main: Option<(u8, u8)>,
+    anims: &'a ModelAnimations,
+    anim_data: &AnimDataCatalog,
+) -> Option<&'a AnimClip> {
+    let resolved = anims.resolve(crate::creature_anim::swing_anim_main(main), anim_data);
+    if !crate::creature_anim::is_swing_id(resolved.id) {
+        return None;
+    }
+    anims.clips.iter().find(|clip| clip.anim_id == resolved.id)
+}
+
+/// The rig's own Dodge clip (`AnimationData` id 30); `None` when the rig ships none.
+pub(crate) fn rig_dodge_clip<'a>(
+    anims: &'a ModelAnimations,
+    anim_data: &AnimDataCatalog,
+) -> Option<&'a AnimClip> {
+    let resolved = anims.resolve(DODGE_ANIM, anim_data);
+    if resolved.id != DODGE_ANIM {
+        return None;
+    }
+    anims.clips.iter().find(|clip| clip.anim_id == resolved.id)
 }
 
 /// Extract one spell's timing facts from `Spell.dbc` through the tables the app loads.
@@ -155,18 +174,14 @@ pub(crate) fn player_dodge_spec(
     rate: TickRate,
     revision: benilla_combat_core::ActionRevision,
 ) -> CombatResult<Option<(DodgeSpec, u16)>> {
-    let resolved = anims.resolve(DODGE_ANIM, anim_data);
-    if resolved.id != DODGE_ANIM {
-        return Ok(None);
-    }
-    let Some(clip) = anims.clips.iter().find(|clip| clip.anim_id == resolved.id) else {
+    let Some(clip) = rig_dodge_clip(anims, anim_data) else {
         return Ok(None);
     };
     let Some(summary) = clip_summary(clip) else {
         return Ok(None);
     };
     let spec = dodge_from_clip(summary, policy, rate, revision)?;
-    Ok(Some((spec, resolved.id)))
+    Ok(Some((spec, clip.anim_id)))
 }
 
 /// Compile a creature rig's melee move list: every attack clip the rig actually resolves
@@ -201,7 +216,10 @@ pub(crate) fn enemy_melee_actions(
         let Some(summary) = clip_summary(clip) else {
             continue;
         };
-        moves.push((enemy_action(ActionId(id), summary, policy, rate)?, resolved.id));
+        moves.push((
+            enemy_action(ActionId(id), summary, policy, rate)?,
+            resolved.id,
+        ));
         id = id.wrapping_add(1);
     }
     Ok(moves)
@@ -216,9 +234,14 @@ pub(crate) struct CombatProfiles {
     pub(crate) table: Option<ActionTable>,
     /// Action id → the `AnimationData.dbc` id the local rig plays for that action.
     pub(crate) anims: HashMap<ActionId, u16>,
-    /// The `(entity, main-hand weapon)` pair the current table was compiled for; a change here
-    /// (rig load, weapon swap) recompiles.
-    pub(crate) built_for: Option<(bevy::prelude::Entity, Option<(u8, u8)>)>,
+    /// The `(entity, main-hand weapon, kit generation)` the current table was compiled for; a
+    /// change here (rig load, weapon swap, a new kit file) recompiles.
+    pub(crate) built_for: Option<(bevy::prelude::Entity, Option<(u8, u8)>, u32)>,
+    /// The table was compiled from the local Souls kit ([`crate::combat_kit`]) rather than the
+    /// stock clips, so presses resolve through the kit.
+    pub(crate) from_kit: bool,
+    /// The engine stamina the table was built with; `None` is the stock prediction config.
+    pub(crate) stamina: Option<benilla_combat_core::StaminaConfig>,
 }
 
 #[cfg(test)]
@@ -285,7 +308,12 @@ mod tests {
         let swing = clip(
             17,
             1.0,
-            &[(b"$SND", 0.1), (b"$AH1", 0.4), (b"$AH2", 0.6), (b"$HIT", 0.5)],
+            &[
+                (b"$SND", 0.1),
+                (b"$AH1", 0.4),
+                (b"$AH2", 0.6),
+                (b"$HIT", 0.5),
+            ],
         );
         assert_eq!(
             clip_summary(&swing),
@@ -306,7 +334,11 @@ mod tests {
     /// The 2H families compile heavy; the 1H family, dagger, fist and empty hands compile light.
     #[test]
     fn melee_kind_splits_the_two_handed_family() {
-        assert_eq!(melee_kind(Some((2, 0x7))), ActionKind::MeleeLight, "1H sword");
+        assert_eq!(
+            melee_kind(Some((2, 0x7))),
+            ActionKind::MeleeLight,
+            "1H sword"
+        );
         assert_eq!(melee_kind(Some((2, 0xf))), ActionKind::MeleeLight, "dagger");
         assert_eq!(melee_kind(Some((2, 0x1))), ActionKind::MeleeHeavy, "2H axe");
         assert_eq!(melee_kind(Some((2, 0xa))), ActionKind::MeleeHeavy, "staff");
@@ -335,7 +367,10 @@ mod tests {
         assert_eq!(anim_id, 17);
         assert_eq!(spec.kind, ActionKind::MeleeLight);
         assert_eq!(spec.total_ticks, 100);
-        assert_eq!(spec.contact.map(|window| (window.from, window.to)), Some((40, 60)));
+        assert_eq!(
+            spec.contact.map(|window| (window.from, window.to)),
+            Some((40, 60))
+        );
         assert_eq!(spec.stamina_cost, 20);
     }
 
@@ -441,18 +476,10 @@ mod tests {
         )]);
         // A 2H-capable-looking rig that only ships Attack1H: Attack2H (18) falls back to 17, so
         // the move list holds the 1H clip once.
-        let single = rig(vec![
-            clip(0, 1.0, &[]),
-            clip(17, 1.0, &[(b"$AH0", 0.4)]),
-        ]);
-        let moves = enemy_melee_actions(
-            1_000,
-            &single,
-            &catalog,
-            &ProfilePolicy::default(),
-            rate(),
-        )
-        .expect("compile");
+        let single = rig(vec![clip(0, 1.0, &[]), clip(17, 1.0, &[(b"$AH0", 0.4)])]);
+        let moves =
+            enemy_melee_actions(1_000, &single, &catalog, &ProfilePolicy::default(), rate())
+                .expect("compile");
         assert_eq!(moves.len(), 1);
         assert_eq!(moves[0].1, 17);
         assert_eq!(moves[0].0.kind, ActionKind::EnemyStrike);

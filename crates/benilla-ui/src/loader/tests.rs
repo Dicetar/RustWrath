@@ -725,7 +725,8 @@ mod loader_tests {
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
         assert!(!report.warnings.iter().any(|w| w.contains("TOOLTIP2")));
         assert_eq!(
-            s.eval::<String>("return Tooltip2:GetFrameStrata()").unwrap(),
+            s.eval::<String>("return Tooltip2:GetFrameStrata()")
+                .unwrap(),
             "TOOLTIP"
         );
     }

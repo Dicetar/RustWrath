@@ -358,9 +358,7 @@ fn set_enabled(lua: &Lua, this: &Table, on: bool) -> mlua::Result<()> {
     };
     // 3.3.5a's `OnEnable`/`OnDisable` scripts follow the enable edge
     // (`MainMenuBarMicroButtons.xml:22`, `:25`, the micro buttons' alpha).
-    if changed
-        && lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335
-    {
+    if changed && lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
         let script = if on { "OnEnable" } else { "OnDisable" };
         if let Err(error) = event::fire_widget_handler(lua, id, script, Vec::new()) {
             lua.app_data_mut::<Model>()
@@ -1026,18 +1024,27 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
         // Installed Questie dropdown support: the same state/visual owner as Enable/Disable,
         // including CheckButton's state. This does not implement new enable-script semantics.
-        m.set("SetEnabled", lua.create_function(|lua, (this, enabled): (Table, bool)| {
-            set_enabled(lua, &this, enabled)
-        })?)?;
-        m.set("SetMotionScriptsWhileDisabled", lua.create_function(
-            |lua, (this, enabled): (Table, Option<Value>)| {
+        m.set(
+            "SetEnabled",
+            lua.create_function(|lua, (this, enabled): (Table, bool)| {
+                set_enabled(lua, &this, enabled)
+            })?,
+        )?;
+        m.set(
+            "SetMotionScriptsWhileDisabled",
+            lua.create_function(|lua, (this, enabled): (Table, Option<Value>)| {
                 let enabled = super::binding_abi::bool_or_default(enabled.as_ref(), false);
-                with_button(lua, &this, |button| button.motion_scripts_while_disabled = enabled)
-            },
-        )?)?;
-        m.set("GetMotionScriptsWhileDisabled", lua.create_function(|lua, this: Table| {
-            with_button(lua, &this, |button| button.motion_scripts_while_disabled)
-        })?)?;
+                with_button(lua, &this, |button| {
+                    button.motion_scripts_while_disabled = enabled
+                })
+            })?,
+        )?;
+        m.set(
+            "GetMotionScriptsWhileDisabled",
+            lua.create_function(|lua, this: Table| {
+                with_button(lua, &this, |button| button.motion_scripts_while_disabled)
+            })?,
+        )?;
         // 3.3.5a names the normal-state font object `SetNormalFontObject`/`GetNormalFontObject`
         // where 1.12 says `Set{Text,GetText}FontObject`; both write the same normal slot, which
         // the options-frame template's dropdown setup calls (`OptionsFrameTemplates.lua:76`).
@@ -1368,15 +1375,18 @@ pub(super) fn click_button(
         if wrath {
             let arguments = vec![btn, Value::Boolean(down)];
             for script in ["PreClick", "OnClick", "PostClick"] {
-                if let Err(error) = event::fire_widget_handler(lua, id, script, arguments.clone())
-                {
+                if let Err(error) = event::fire_widget_handler(lua, id, script, arguments.clone()) {
                     outcome.handler_error = true;
-                    lua.app_data_mut::<Model>().expect("model").record_lua_error(&error);
+                    lua.app_data_mut::<Model>()
+                        .expect("model")
+                        .record_lua_error(&error);
                 }
             }
         } else if let Err(error) = event::fire_widget_handler(lua, id, "OnClick", vec![btn]) {
             outcome.handler_error = true;
-            lua.app_data_mut::<Model>().expect("model").record_lua_error(&error);
+            lua.app_data_mut::<Model>()
+                .expect("model")
+                .record_lua_error(&error);
         }
     });
     outcome.handler_ran = handler_present;

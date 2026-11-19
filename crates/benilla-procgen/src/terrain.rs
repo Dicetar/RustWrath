@@ -53,26 +53,47 @@ pub struct TerrainSpec {
 
 impl Default for TerrainSpec {
     fn default() -> Self {
-        Self { width: 128, height: 128, frequency: 4.0, octaves: 5, sea_level: 0.35 }
+        Self {
+            width: 128,
+            height: 128,
+            frequency: 4.0,
+            octaves: 5,
+            sea_level: 0.35,
+        }
     }
 }
 
 impl TerrainSpec {
     /// Reject invalid samples, non-finite noise parameters and excessive generation work.
     pub fn validate(&self) -> Result<(), ValidationError> {
-        if self.width == 0 || self.height == 0 || self.width > 2048 || self.height > 2048
+        if self.width == 0
+            || self.height == 0
+            || self.width > 2048
+            || self.height > 2048
             || u64::from(self.width) * u64::from(self.height) > 1_048_576
         {
-            return Err(ValidationError::new("terrain.dimensions", "nonzero sides up to 2048, at most 1048576 samples"));
+            return Err(ValidationError::new(
+                "terrain.dimensions",
+                "nonzero sides up to 2048, at most 1048576 samples",
+            ));
         }
         if !self.frequency.is_finite() || !(0.0..=1024.0).contains(&self.frequency) {
-            return Err(ValidationError::new("terrain.frequency", "expected finite 0..=1024"));
+            return Err(ValidationError::new(
+                "terrain.frequency",
+                "expected finite 0..=1024",
+            ));
         }
         if !(1..=16).contains(&self.octaves) {
-            return Err(ValidationError::new("terrain.octaves", "expected 1..=16 octaves"));
+            return Err(ValidationError::new(
+                "terrain.octaves",
+                "expected 1..=16 octaves",
+            ));
         }
         if !self.sea_level.is_finite() || !(0.0..=1.0).contains(&self.sea_level) {
-            return Err(ValidationError::new("terrain.sea_level", "expected finite 0..=1"));
+            return Err(ValidationError::new(
+                "terrain.sea_level",
+                "expected finite 0..=1",
+            ));
         }
         Ok(())
     }
@@ -114,7 +135,12 @@ pub fn generate(rng: &mut ProcRng, spec: &TerrainSpec) -> Result<TerrainField, V
         for x in 0..spec.width {
             let fx = x as f32 / spec.width.max(1) as f32;
             let fy = y as f32 / spec.height.max(1) as f32;
-            let h = fbm(fx * spec.frequency, fy * spec.frequency, height_seed, spec.octaves);
+            let h = fbm(
+                fx * spec.frequency,
+                fy * spec.frequency,
+                height_seed,
+                spec.octaves,
+            );
             heights.push(h);
             max_h = max_h.max(h);
             min_h = min_h.min(h);
@@ -133,7 +159,12 @@ pub fn generate(rng: &mut ProcRng, spec: &TerrainSpec) -> Result<TerrainField, V
             let fx = x as f32 / spec.width.max(1) as f32;
             let fy = y as f32 / spec.height.max(1) as f32;
             // Moisture: different frequency so the two fields de-correlate.
-            let m = fbm(fx * spec.frequency * 0.7 + 3.1, fy * spec.frequency * 0.7 + 7.7, moisture_seed, spec.octaves);
+            let m = fbm(
+                fx * spec.frequency * 0.7 + 3.1,
+                fy * spec.frequency * 0.7 + 7.7,
+                moisture_seed,
+                spec.octaves,
+            );
             moisture.push(m);
             max_m = max_m.max(m);
             min_m = min_m.min(m);
@@ -150,7 +181,13 @@ pub fn generate(rng: &mut ProcRng, spec: &TerrainSpec) -> Result<TerrainField, V
         .map(|(&h, &m)| classify(h, m, spec.sea_level))
         .collect();
 
-    Ok(TerrainField { width: spec.width, height: spec.height, heights, moisture, biomes })
+    Ok(TerrainField {
+        width: spec.width,
+        height: spec.height,
+        heights,
+        moisture,
+        biomes,
+    })
 }
 
 fn classify(h: f32, m: f32, sea_level: f32) -> Biome {
@@ -181,7 +218,11 @@ fn fbm(x: f32, y: f32, seed: u64, octaves: u32) -> f32 {
     let mut fx = x;
     let mut fy = y;
     for octave in 0..octaves {
-        sum += value_noise(fx, fy, seed ^ (octave as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)) * amplitude;
+        sum += value_noise(
+            fx,
+            fy,
+            seed ^ (octave as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+        ) * amplitude;
         total += amplitude;
         amplitude *= 0.5;
         fx *= 2.0;
@@ -246,7 +287,15 @@ mod tests {
 
     #[test]
     fn a_large_field_has_biome_variety() {
-        let field = generate(&mut ProcRng::new(13), &TerrainSpec { width: 256, height: 256, ..Default::default() }).expect("valid terrain");
+        let field = generate(
+            &mut ProcRng::new(13),
+            &TerrainSpec {
+                width: 256,
+                height: 256,
+                ..Default::default()
+            },
+        )
+        .expect("valid terrain");
         let mut kinds = std::collections::HashSet::new();
         for biome in &field.biomes {
             kinds.insert(*biome);

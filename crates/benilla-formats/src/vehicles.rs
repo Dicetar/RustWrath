@@ -21,7 +21,10 @@ impl VehicleSeats {
                 .with_context(|| format!("reading {name}.dbc"))?;
             let mut schema = Schema::new(name);
             for column in 0..columns {
-                schema.add_field(SchemaField::new(format!("Column{column}"), FieldType::UInt32));
+                schema.add_field(SchemaField::new(
+                    format!("Column{column}"),
+                    FieldType::UInt32,
+                ));
             }
             parse(&bytes, schema, name)
         };
@@ -31,7 +34,10 @@ impl VehicleSeats {
             .filter_map(|row| {
                 let kit = u32_at(row, 0)?;
                 // VehicleRec::m_seatID begins at 0x18.
-                Some((kit, std::array::from_fn(|i| u32_at(row, 6 + i).unwrap_or(0))))
+                Some((
+                    kit,
+                    std::array::from_fn(|i| u32_at(row, 6 + i).unwrap_or(0)),
+                ))
             })
             .collect();
         let flags = read(chain, "VehicleSeat", 58)?

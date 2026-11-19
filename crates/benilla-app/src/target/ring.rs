@@ -797,9 +797,7 @@ mod tests {
             // The harness runs no visibility propagation, so the create's body keeps the default
             // hidden verdict. Give it the verdict a live frame's propagation writes, or the scan's
             // scene gate (the reference's scene-node test, `0x6704c0`) refuses the control unit.
-            world
-                .entity_mut(mob)
-                .insert(InheritedVisibility::VISIBLE);
+            world.entity_mut(mob).insert(InheritedVisibility::VISIBLE);
             *world.resource_mut::<Selection>() = Selection {
                 target: Some(mob),
                 guid: Some(MOB),

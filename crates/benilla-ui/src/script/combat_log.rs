@@ -155,7 +155,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let token = lua.coerce_string(token)?;
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             let guid = token.and_then(|token| {
-                model.unit_guids.guid_of(&token.to_string_lossy()).ok().flatten()
+                model
+                    .unit_guids
+                    .guid_of(&token.to_string_lossy())
+                    .ok()
+                    .flatten()
             });
             model.combat_log.active_text_unit = guid.filter(|&guid| guid != 0);
             Ok(())
@@ -196,25 +200,23 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `0x0074FF70`: one row. The reference returns 0 values and stores the row after validation.
     globals.set(
         "CombatLogAddFilter",
-        lua.create_function(
-            |lua, (events, source, dest): (Value, Value, Value)| {
-                // The reference's optional fourth spell selector (arg 4) is not stored: the stock
-                // 3.3.5a caller passes three arguments and no entry matcher consumes it.
-                let events = lua.coerce_string(events)?.map(|s| s.to_string_lossy());
-                let source = selector(&source, "srcMask")?;
-                let dest = selector(&dest, "dstMask")?;
-                lua.app_data_mut::<Model>()
-                    .expect("model app_data")
-                    .combat_log
-                    .filters
-                    .push(CombatLogFilter {
-                        events,
-                        source,
-                        dest,
-                    });
-                Ok(())
-            },
-        )?,
+        lua.create_function(|lua, (events, source, dest): (Value, Value, Value)| {
+            // The reference's optional fourth spell selector (arg 4) is not stored: the stock
+            // 3.3.5a caller passes three arguments and no entry matcher consumes it.
+            let events = lua.coerce_string(events)?.map(|s| s.to_string_lossy());
+            let source = selector(&source, "srcMask")?;
+            let dest = selector(&dest, "dstMask")?;
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .combat_log
+                .filters
+                .push(CombatLogFilter {
+                    events,
+                    source,
+                    dest,
+                });
+            Ok(())
+        })?,
     )?;
 
     // `0x0074FA70`: one integer. With no producer it is always 0; `all` does not change that.
@@ -450,9 +452,7 @@ mod tests {
             .eval::<bool>("return CombatLog_Object_IsA(0x00000001, 0x00000001) == nil")
             .unwrap());
         assert_eq!(
-            script
-                .arity("CombatLog_Object_IsA(1, 1)")
-                .unwrap(),
+            script.arity("CombatLog_Object_IsA(1, 1)").unwrap(),
             1,
             "always one value"
         );
@@ -485,7 +485,9 @@ mod tests {
     fn empty_history_queries_have_the_reference_shapes() {
         let script = wrath();
         assert_eq!(
-            script.eval::<i64>("return CombatLogGetNumEntries()").unwrap(),
+            script
+                .eval::<i64>("return CombatLogGetNumEntries()")
+                .unwrap(),
             0
         );
         assert_eq!(

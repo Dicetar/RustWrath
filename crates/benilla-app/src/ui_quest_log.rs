@@ -17,9 +17,7 @@ use crate::ui_items::{count_of_in_player, InventoryScope};
 
 use bevy::prelude::*;
 
-use benilla_protocol::messages::{
-    quest_flags, quest_slot_state, QuestTemplate,
-};
+use benilla_protocol::messages::{quest_flags, quest_slot_state, QuestTemplate};
 use benilla_protocol::ObjectFields;
 use benilla_ui::script::{
     QuestObjectiveView, QuestRecordView, QuestSlotView, ScriptValue, UiScript, QUEST_LOG_SLOTS,
@@ -342,7 +340,14 @@ mod net {
         let SessionEvent::QuestObjectiveItem { item_id, count } = ev else {
             return;
         };
-        item_add_walk(item_id, count, None, &book, &mut quest_log, script.as_deref());
+        item_add_walk(
+            item_id,
+            count,
+            None,
+            &book,
+            &mut quest_log,
+            script.as_deref(),
+        );
     }
 
     /// 12340's `SMSG_ITEM_PUSH_RESULT` arm (`Player_C.cpp`, case `0x166`): after the push's own
@@ -368,7 +373,14 @@ mod net {
             return;
         }
         let held_before = Some(total_count.saturating_sub(count));
-        item_add_walk(item_id, count, held_before, &book, &mut quest_log, script.as_deref());
+        item_add_walk(
+            item_id,
+            count,
+            held_before,
+            &book,
+            &mut quest_log,
+            script.as_deref(),
+        );
     }
 
     /// The walk both arms share; `held_before` is the packet's count held before the add, or
@@ -578,7 +590,11 @@ impl Plugin for UiQuestLogPlugin {
             .init_resource::<crate::field_watch::NoticeLane>()
             .add_systems(
                 Startup,
-                (load_quest_header_names, load_quest_tag_names, load_quest_experience)
+                (
+                    load_quest_header_names,
+                    load_quest_tag_names,
+                    load_quest_experience,
+                )
                     .after(benilla_assets::AssetSet::Open),
             )
             .add_systems(
@@ -718,7 +734,13 @@ fn record_view(t: &QuestTemplate, tables: &RecordTables) -> QuestRecordView {
         reward_talents: t.bonus_talents,
         reward_arena_points: t.bonus_arena_points,
         reward_title: t.title_reward,
-        reward_title_name: tables.titles.and_then(|titles| tables.macros.subject.and_then(|subject| titles.0.render(t.title_reward, subject.gender == 1, &subject.name))),
+        reward_title_name: tables.titles.and_then(|titles| {
+            tables.macros.subject.and_then(|subject| {
+                titles
+                    .0
+                    .render(t.title_reward, subject.gender == 1, &subject.name)
+            })
+        }),
         reward_factions: t
             .rep_rewards
             .iter()
@@ -949,15 +971,29 @@ pub(crate) fn feed_quest_log(
             );
             script.set_quest_slots(slot_views);
             if let Some(trace) = &reads.quest_trace {
-                let scope = reads.wrath_view.as_ref()
+                let scope = reads
+                    .wrath_view
+                    .as_ref()
                     .map(|v| (v.session_epoch, v.world_generation));
                 for slot in slot_views.iter().filter(|slot| slot.quest_id != 0) {
-                    trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::JournalProjection);
+                    trace.observe(
+                        scope,
+                        Some(slot.quest_id),
+                        crate::quest_trace::Stage::JournalProjection,
+                    );
                     if quest_log.templates.get(slot.quest_id).is_none() {
-                        trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::JournalTemplatePending);
+                        trace.observe(
+                            scope,
+                            Some(slot.quest_id),
+                            crate::quest_trace::Stage::JournalTemplatePending,
+                        );
                     }
                     if script.quest_log_index(slot.quest_id) != 0 {
-                        trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::JournalRowInModel);
+                        trace.observe(
+                            scope,
+                            Some(slot.quest_id),
+                            crate::quest_trace::Stage::JournalRowInModel,
+                        );
                     }
                 }
             }
@@ -987,7 +1023,8 @@ pub(crate) fn feed_quest_log(
             if (subject.is_some() && memo.subject != key)
                 || (reads.states.is_changed()
                     && quest_log.templates.iter().any(|(_, t)| {
-                        has_world_state_token(&t.details) || has_world_state_token(&t.objectives_text)
+                        has_world_state_token(&t.details)
+                            || has_world_state_token(&t.objectives_text)
                     }))
             {
                 // The text expands against the player: a name that lands, or a world state a quest's
@@ -1105,8 +1142,9 @@ pub(crate) fn feed_quest_log(
         // The slot watcher's accept line, whose catalog row carries `QUESTADDED`. The seat is
         // silent: the initial create fills the whole log.
         if seat || slots_moved {
-            let now: SlotStates =
-                std::array::from_fn(|slot| (current_slots[slot].quest_id, current_slots[slot].state));
+            let now: SlotStates = std::array::from_fn(|slot| {
+                (current_slots[slot].quest_id, current_slots[slot].state)
+            });
             let accepted = memo
                 .prior
                 .as_ref()
@@ -1202,10 +1240,7 @@ pub(crate) fn feed_quest_log(
                 if row == 0 {
                     waiting.push(quest_id); // the template/rebuild has not landed yet
                 } else {
-                    script.fire_event(
-                        "QUEST_ACCEPTED",
-                        vec![ScriptValue::Int(i64::from(row))],
-                    );
+                    script.fire_event("QUEST_ACCEPTED", vec![ScriptValue::Int(i64::from(row))]);
                     armed = true;
                 }
             }
@@ -1296,11 +1331,17 @@ struct QuestExperience(HashMap<u32, [u32; 10]>);
 
 fn load_quest_experience(mut commands: Commands, assets: Option<Res<benilla_assets::WorldAssets>>) {
     use benilla_assets::LockRecover;
-    if !crate::wrath::selected_from_env() { return; }
-    let Some(assets) = assets else { return; };
+    if !crate::wrath::selected_from_env() {
+        return;
+    }
+    let Some(assets) = assets else {
+        return;
+    };
     let loaded = benilla_formats::load_quest_experience(&mut assets.chain.lock_recover());
     match loaded {
-        Ok(rows) => { commands.insert_resource(QuestExperience(rows)); }
+        Ok(rows) => {
+            commands.insert_resource(QuestExperience(rows));
+        }
         Err(error) => warn!("quest experience unavailable: {error:#}"),
     }
 }
@@ -1364,8 +1405,8 @@ mod tests {
         let manifest = std::path::PathBuf::from(manifest);
         let profile = std::env::var("WM_ASSET_PROFILE").expect("WM_ASSET_PROFILE");
         let data = benilla_formats::wow_data_or_skip!();
-        let mut chain = benilla_assets::open_profile_chain(&data, &manifest, &profile)
-            .expect("profile chain");
+        let mut chain =
+            benilla_assets::open_profile_chain(&data, &manifest, &profile).expect("profile chain");
         let headers =
             benilla_formats::load_quest_header_names(&mut chain).expect("quest header names");
         assert_eq!(
@@ -2528,10 +2569,7 @@ mod tests {
         // frame carries the row index the stock watch needs.
         rig.frame();
         rig.frame();
-        let order = rig
-            .script()
-            .eval::<Vec<String>>("return ORDER")
-            .unwrap();
+        let order = rig.script().eval::<Vec<String>>("return ORDER").unwrap();
         let accepted = order
             .iter()
             .position(|line| line.starts_with("QUEST_ACCEPTED:") && line != "QUEST_ACCEPTED:0")
@@ -2542,7 +2580,9 @@ mod tests {
             "the deferred log update must follow the accept so WatchFrame redraws: {order:?}"
         );
         assert_eq!(
-            rig.script().eval::<i64>("return GetNumQuestWatches()").unwrap(),
+            rig.script()
+                .eval::<i64>("return GetNumQuestWatches()")
+                .unwrap(),
             1,
             "the stock accept handler armed the watch before the redraw"
         );

@@ -415,9 +415,7 @@ impl TextEngine {
         let mapped = f
             .font_system
             .db()
-            .with_face_data(f.id, |data, index| {
-                charmap_glyph(data, index, charmap, ch)
-            })
+            .with_face_data(f.id, |data, index| charmap_glyph(data, index, charmap, ch))
             .flatten();
         if mapped.is_none() {
             if self.complained.insert(ch) {
@@ -1368,7 +1366,10 @@ mod ppem_tests {
         for u in family.encode_utf16() {
             utf16.extend(u.to_be_bytes());
         }
-        let sub: Vec<u8> = "Regular".encode_utf16().flat_map(u16::to_be_bytes).collect();
+        let sub: Vec<u8> = "Regular"
+            .encode_utf16()
+            .flat_map(u16::to_be_bytes)
+            .collect();
         let records = [(1u16, &utf16[..]), (2u16, &sub[..]), (4u16, &utf16[..])];
         let header_len = 6 + 12 * records.len();
         let mut name_table = Vec::new();
@@ -1413,16 +1414,16 @@ mod ppem_tests {
             chain.read(TEST_FACES[1]).expect("ARIALN is in the chain")
         };
         let renamed = set_family_name(&arial_bytes, &friz_family).expect("rewritten name table");
-        let root =
-            std::env::temp_dir().join(format!("benilla-dup-family-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("benilla-dup-family-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let fonts = root.join("DupFamily").join("Fonts");
         std::fs::create_dir_all(&fonts).unwrap();
         std::fs::write(fonts.join("friends_clone.ttf"), &renamed).unwrap();
         e.source.as_mut().unwrap().loose.addons = Some(root.clone());
 
-        let clone_face =
-            e.face_for(Some("Interface\\AddOns\\DupFamily\\Fonts\\friends_clone.ttf"));
+        let clone_face = e.face_for(Some(
+            "Interface\\AddOns\\DupFamily\\Fonts\\friends_clone.ttf",
+        ));
         assert_ne!(clone_face, e.default_face);
         assert_eq!(e.faces[clone_face].family, friz_family);
 
@@ -1447,9 +1448,7 @@ mod ppem_tests {
             e.cell(e.default_face, 14, bake, default_w.glyph_id)
                 .unwrap()
                 .uv,
-            e.cell(clone_face, 14, bake, clone_w.glyph_id)
-                .unwrap()
-                .uv,
+            e.cell(clone_face, 14, bake, clone_w.glyph_id).unwrap().uv,
             "each face must hold its own packed atlas cell"
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -1942,7 +1941,10 @@ mod ppem_tests {
         let all = std::time::Instant::now();
         let start = std::time::Instant::now();
         let face = e.face_for(Some(path));
-        eprintln!("FRIENDS_OPEN {} ms (face {face})", start.elapsed().as_millis());
+        eprintln!(
+            "FRIENDS_OPEN {} ms (face {face})",
+            start.elapsed().as_millis()
+        );
         assert!(
             e.faces[face].path.eq_ignore_ascii_case(path),
             "{path} did not load"
@@ -1951,7 +1953,10 @@ mod ppem_tests {
         for ppem in [10u16, 12, 14] {
             let start = std::time::Instant::now();
             e.ensure_metrics(face, ppem, line);
-            eprintln!("FRIENDS_SHAPE ppem {ppem}: {} ms", start.elapsed().as_millis());
+            eprintln!(
+                "FRIENDS_SHAPE ppem {ppem}: {} ms",
+                start.elapsed().as_millis()
+            );
         }
         let start = std::time::Instant::now();
         e.ensure_str(face, 14, Bake::ring(0), line);

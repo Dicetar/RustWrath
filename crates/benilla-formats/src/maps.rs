@@ -8,7 +8,9 @@ use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{f32_at, loc_str, loc_str_index, parse, parse_with_trailing_fields, str_at, u32_at};
+use crate::dbc::{
+    f32_at, loc_str, loc_str_index, parse, parse_with_trailing_fields, str_at, u32_at,
+};
 
 const MAP: &str = "DBFilesClient\\Map.dbc";
 const MAP_DIFFICULTY: &str = "DBFilesClient\\MapDifficulty.dbc";
@@ -246,16 +248,19 @@ fn wrath_map_schema() -> Schema {
 fn difficulty_messages(bytes: &[u8], locale: usize) -> Result<HashMap<(u32, u32), String>> {
     let mut schema = Schema::new("MapDifficulty");
     for column in 0..23 {
-        schema.add_field(SchemaField::new(format!("Column{column}"), FieldType::UInt32));
+        schema.add_field(SchemaField::new(
+            format!("Column{column}"),
+            FieldType::UInt32,
+        ));
     }
     let records = parse(bytes, schema, "MapDifficulty.dbc")?;
     let mut messages = HashMap::new();
     for row in records.records() {
         if let (Some(map), Some(difficulty)) = (u32_at(row, 1), u32_at(row, 2)) {
             // The client uses the first matching record, even when its message is empty.
-            messages.entry((map, difficulty)).or_insert_with(|| {
-                loc_str_index(&records, row, 3, locale).unwrap_or_default()
-            });
+            messages
+                .entry((map, difficulty))
+                .or_insert_with(|| loc_str_index(&records, row, 3, locale).unwrap_or_default());
         }
     }
     Ok(messages)
@@ -269,7 +274,11 @@ pub fn load_map_catalog(chain: &mut Chain) -> Result<MapCatalog> {
     let is_wrath = crate::dbc::field_count(&bytes) == Some(WRATH_FIELD_COUNT);
     let rs = parse_with_trailing_fields(
         &bytes,
-        if is_wrath { wrath_map_schema() } else { map_schema() },
+        if is_wrath {
+            wrath_map_schema()
+        } else {
+            map_schema()
+        },
         "Map",
     )?;
     let locale = chain.locale();

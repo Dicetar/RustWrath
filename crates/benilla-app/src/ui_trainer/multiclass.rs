@@ -12,12 +12,16 @@ impl TrainerClasses {
     }
 
     pub(super) fn skill(&self, spell: u32, owned: u16, spells: &SpellCatalog) -> Option<u32> {
-        if owned == 0 { return None; }
+        if owned == 0 {
+            return None;
+        }
         let mut work = vec![spell];
         let mut seen = HashSet::new();
         let mut best = None;
         while let Some(spell) = work.pop() {
-            if !seen.insert(spell) { continue; }
+            if !seen.insert(spell) {
+                continue;
+            }
             if let Some(rows) = self.0.get(&spell) {
                 for &(mask, line) in rows {
                     if mask & owned != 0 {
@@ -30,7 +34,9 @@ impl TrainerClasses {
             // A visited set handles malformed cyclic DBCs without recursion or invented ranks.
             if let Some(display) = spells.get(spell) {
                 for (effect, taught) in display.effects.iter().zip(display.effect_trigger_spell) {
-                    if *effect == SPELL_EFFECT_LEARN_SPELL && taught != 0 { work.push(taught); }
+                    if *effect == SPELL_EFFECT_LEARN_SPELL && taught != 0 {
+                        work.push(taught);
+                    }
                 }
             }
         }

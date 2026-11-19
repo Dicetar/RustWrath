@@ -26,6 +26,10 @@
 //! | pet names `0xc0e138` | `petnamecache.wdb`, unused | world session, [`NameCache`] |
 //! | petitions `0xc0e0fc` | `petitioncache.wdb`, unused | world session, [`PetitionRecords`] |
 //!
+//! A Wrath session's thread hands on the same answers' bytes, and its stores decode them with the
+//! 3.3.5 decoder (`crate::wrath::decode_saved_answer`) under the header build 12340, so neither
+//! target reads the other's files.
+//!
 //! A file is the reference's layout (`0x5566d0`): a header, then `{key, size, record}` entries
 //! ending in two zero dwords. The header is the store's tag, the build `0x16f3`, the locale tag
 //! (`[0xc2a2a4]`, `0x5567d9`), our format and the realm, and a load that finds any of them
@@ -67,6 +71,30 @@ const SAVE_DEBOUNCE: f32 = 10.0;
 
 /// The client build, the header's second dword (`0x5567cc`).
 const BUILD: u32 = 0x16f3;
+
+/// The header's build for a Wrath session's stores, whose records are 3.3.5 answer bodies.
+const WRATH_BUILD: u32 = 12340;
+
+/// The build the running session's answers are laid out for: a file of the other target's
+/// answers is another build's, and keeps nothing.
+fn build() -> u32 {
+    if crate::wrath::selected_from_env() {
+        WRATH_BUILD
+    } else {
+        BUILD
+    }
+}
+
+/// A saved answer's body decoded into its records by the decoder the running session uses live:
+/// the 1.12 one, or for a Wrath session [`crate::wrath::decode_saved_answer`].
+fn decode_answer(opcode: u16, body: &[u8]) -> Vec<SessionEvent> {
+    if crate::wrath::selected_from_env() {
+        return crate::wrath::decode_saved_answer(opcode, body);
+    }
+    benilla_protocol::messages::parse_server(opcode, body)
+        .map(benilla_protocol::decode)
+        .unwrap_or_default()
+}
 
 /// Our container's version, the header's fourth dword: bump it when the layout changes. The
 /// records need none, being the wire's.
@@ -302,6 +330,7 @@ fn saved<T: SavedCache>(app: &mut App) {
     app.init_resource::<T>()
         .init_resource::<WdbFile<T>>()
         .add_systems(PreUpdate, (load::<T>, save::<T>).chain());
+    crate::live_code::rederive(app, redecode::<T>);
     // The exit write catches the last burst, which the debounce would not.
     crate::shutdown::on_app_exit(app, save_on_exit::<T>.into_configs());
 }
@@ -445,10 +474,8 @@ fn load<T: SavedCache>(roster: Res<Roster>, mut file: ResMut<WdbFile<T>>, mut ca
         if cache.store().get(key).is_some() {
             continue;
         }
-        if let Ok(packet) = benilla_protocol::messages::parse_server(T::ANSWER, &body) {
-            for ev in benilla_protocol::decode(packet) {
-                cache.install(ev);
-            }
+        for ev in decode_answer(T::ANSWER, &body) {
+            cache.install(ev);
         }
         if cache.store().get(key).is_some() {
             file.bodies.insert(key, body);
@@ -456,6 +483,30 @@ fn load<T: SavedCache>(roster: Res<Roster>, mut file: ResMut<WdbFile<T>>, mut ca
     }
     file.saved = cache.store().generation();
     debug!("wdb: loaded {n} {} records for {realm}", T::FILE);
+}
+
+/// A live-code patch's re-derive ([`crate::live_code::Rederive`]): every record the store holds is
+/// decoded again from the answer bytes it came in, by the decoder now running, and filed over the
+/// old one. A decoder fix then reaches the records answered before the patch with no query, as a
+/// load's decode reaches the records on disk. A body whose record the store no longer holds stays
+/// dropped.
+fn redecode<T: SavedCache>(file: Res<WdbFile<T>>, mut cache: ResMut<T>) {
+    let mut n = 0usize;
+    for (&key, body) in &file.bodies {
+        if cache.store().get(key).is_none() {
+            continue;
+        }
+        let events = decode_answer(T::ANSWER, body);
+        if !events.is_empty() {
+            n += 1;
+        }
+        for ev in events {
+            cache.install(ev);
+        }
+    }
+    if n > 0 {
+        info!("wdb: live code re-decoded {n} {} records", T::FILE);
+    }
 }
 
 /// Writes the store when its records have changed and the debounce has elapsed.
@@ -507,7 +558,7 @@ fn locale_tag() -> u32 {
 /// A store's file: the header, each `{key, size, body}` entry, then two zero dwords.
 fn encode<'a>(tag: u32, realm: &str, entries: impl Iterator<Item = (u32, &'a [u8])>) -> Vec<u8> {
     let mut out = Vec::new();
-    for word in [tag, BUILD, locale_tag(), FORMAT, realm.len() as u32] {
+    for word in [tag, build(), locale_tag(), FORMAT, realm.len() as u32] {
         out.extend_from_slice(&word.to_le_bytes());
     }
     out.extend_from_slice(realm.as_bytes());
@@ -536,7 +587,7 @@ fn decode(bytes: &[u8], tag: u32, realm: &str) -> Option<Vec<(u32, Vec<u8>)>> {
         take_u32(&mut r)?,
         take_u32(&mut r)?,
     ];
-    if header != [tag, BUILD, locale_tag(), FORMAT] {
+    if header != [tag, build(), locale_tag(), FORMAT] {
         return None;
     }
     let len = take_u32(&mut r)? as usize;

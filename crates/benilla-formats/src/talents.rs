@@ -139,10 +139,7 @@ impl TalentCatalog {
 
     /// Look up any talent across all tabs by its `Talent.dbc` id.
     pub fn talent_by_id(&self, talent_id: u32) -> Option<&Talent> {
-        self.by_tab
-            .values()
-            .flatten()
-            .find(|t| t.id == talent_id)
+        self.by_tab.values().flatten().find(|t| t.id == talent_id)
     }
 
     /// Hunter pet talent tabs (`TalentTab.dbc` rows with zero class/race masks, e.g. Tenacity 409,
@@ -197,7 +194,11 @@ pub fn load_talent_catalog(chain: &mut Chain) -> Result<TalentCatalog> {
         TALENT_TAB_FIELDS
     };
     let shift = if tab_fields == 24 { 8 } else { 0 };
-    let bg_col = if tab_fields == 24 { 23 } else { COL_TT_BACKGROUND };
+    let bg_col = if tab_fields == 24 {
+        23
+    } else {
+        COL_TT_BACKGROUND
+    };
     let tab_set = parse(&tab_bytes, talent_tab_schema(tab_fields), "TalentTab.dbc")?;
     let icons = load_spell_icon_map(chain)?;
     let locale = chain.locale();

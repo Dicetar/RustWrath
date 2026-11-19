@@ -85,10 +85,7 @@ fn cursor_changed(lua: &Lua, h: FrameHandle) -> bool {
     if !event::has_widget_handler(lua, id, "OnCursorChanged") {
         return true;
     }
-    let wrath = lua
-        .app_data_ref::<Model>()
-        .expect("model app_data")
-        .target
+    let wrath = lua.app_data_ref::<Model>().expect("model app_data").target
         == crate::script::UiTarget::Wrath335;
     let fire_fallback = |line_h: f32| {
         if !wrath || with_eb(lua, h, |eb| eb.fallback_cursor_fired) != Some(false) {

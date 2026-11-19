@@ -541,6 +541,7 @@ fn feed_world_map(
     mut memo: Local<crate::ui_script::VmMemo<FeedMemos>>,
 ) {
     let corpse = vm.own().corpse;
+    let release = vm.own().release_location;
     vm.run(|script| {
         let (Some(script), Some(data), Some(map), Some(areas)) = (script, data, map, areas) else {
             return;
@@ -604,6 +605,15 @@ fn feed_world_map(
                 u32::try_from(cp.display_map).unwrap_or(u32::MAX),
                 cp.position[0],
                 cp.position[1],
+            )
+        });
+        // The release location (SMSG_DEATH_RELEASE_LOC) on the displayed map; a map of its own,
+        // so an instance release projects at its graveyard while a cross-map one is off this map.
+        let release_uv = release.and_then(|r| {
+            project(
+                u32::try_from(r.map_id).unwrap_or(u32::MAX),
+                r.position[0],
+                r.position[1],
             )
         });
 
@@ -703,6 +713,7 @@ fn feed_world_map(
             party_uv,
             raid_uv,
         );
+        script.set_death_release_uv(release_uv);
         // The instance-map leg for `SetMapToCurrentZone`, which the battlefield minimap calls on
         // `PLAYER_ENTERING_WORLD` (`Blizzard_BattlefieldMinimap.lua:58-62`).
         script.set_world_map_player_direct_area(player_sel.direct);

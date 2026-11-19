@@ -436,10 +436,7 @@ pub(super) fn tick_script(
     // `HostedVm` lends a `Res<UiClock>` through its Wrath query applier; `tick_script` also
     // writes the clock. A `ParamSet` keeps the two borrows disjoint: the host runs first, then
     // the clock is published before the paint pass.
-    mut clock_set: ParamSet<(
-        crate::script_calls::HostedVm,
-        ResMut<super::UiClock>,
-    )>,
+    mut clock_set: ParamSet<(crate::script_calls::HostedVm, ResMut<super::UiClock>)>,
     window: Query<&Window, With<PrimaryWindow>>,
     // The paced frame step, unclamped, as 1.12.1 hands `OnUpdate` its frame time (`0x76b2c0`):
     // not `Time<Real>`, which pipelined rendering mis-splits, nor `Time<Virtual>`, which clamps a

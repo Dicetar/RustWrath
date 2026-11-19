@@ -395,6 +395,9 @@ pub(crate) struct UiActionPlugin;
 impl Plugin for UiActionPlugin {
     fn build(&self, app: &mut App) {
         net::register(app);
+        // A patched `Spell.dbc` reader rebuilds the catalog, the learn-spell hop the trainer reads
+        // included, without a restart.
+        crate::live_code::rederive(app, load_spells);
         // A UI-only harness has no net stack; declaring a message twice is idempotent.
         app.add_message::<crate::net::FieldChanged>()
             .init_resource::<state::ActionEvents>()

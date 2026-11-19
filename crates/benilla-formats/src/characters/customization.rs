@@ -9,9 +9,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{bail, Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{
-    field_count, loc_str_index, parse_with_trailing_fields, str_at, u32_at,
-};
+use crate::dbc::{field_count, loc_str_index, parse_with_trailing_fields, str_at, u32_at};
 use crate::Chain;
 
 const CHR_RACES: &str = "DBFilesClient\\ChrRaces.dbc";
@@ -385,10 +383,10 @@ impl CharCreateCatalog {
                     bail!("customization ranges: race {race} sex {sex} is missing");
                 }
             }
-            if self.race_file(race).map_or(true, str::is_empty) {
+            if self.race_file(race).is_none_or(str::is_empty) {
                 bail!("ChrRaces: playable race {race} has no fileString");
             }
-            if self.race_name(race).map_or(true, str::is_empty) {
+            if self.race_name(race).is_none_or(str::is_empty) {
                 bail!("ChrRaces: playable race {race} has no name");
             }
             if self.class_list(race).is_empty() {
@@ -480,8 +478,8 @@ fn load_races(
         if let Some(file) = str_at(&rs, r, file_field).filter(|s| !s.is_empty()) {
             files.insert(race, file);
         }
-        if let Some(name) = loc_str_index(&rs, r, name_field, locale_column)
-            .filter(|s| !s.is_empty())
+        if let Some(name) =
+            loc_str_index(&rs, r, name_field, locale_column).filter(|s| !s.is_empty())
         {
             names.insert(race, name);
         }
@@ -613,7 +611,8 @@ fn load_available_sections(chain: &mut Chain, wrath: bool) -> Result<HashSet<Sec
         .with_context(|| format!("reading {CHAR_SECTIONS}"))?;
     // 10 fields: ID, Race, Sex, SectionType, then 12340's Tex0-2/Flags/Variation/Color or 1.12's
     // Variation/Color/Tex0-2/Flags; we read the ints.
-    let rs = parse_with_trailing_fields(&bytes, all_u32_schema("CharSections", 10), "CharSections")?;
+    let rs =
+        parse_with_trailing_fields(&bytes, all_u32_schema("CharSections", 10), "CharSections")?;
     let (var_i, color_i, flags_i) = if wrath { (8, 9, 7) } else { (4, 5, 9) };
     let mut avail = HashSet::new();
     for r in rs.records() {

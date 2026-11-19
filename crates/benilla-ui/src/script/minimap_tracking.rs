@@ -64,22 +64,82 @@ pub const TRACKING_TYPES: [TrackingType; 15] = [
     row(NpcFlag, 0x1000, "MINIMAP_TRACKING_REPAIR", "Repair", 0),
     row(NpcFlag, 0x200, "MINIMAP_TRACKING_VENDOR_FOOD", "Food", 0),
     // Rogues.
-    row(NpcFlag, 0x400, "MINIMAP_TRACKING_VENDOR_POISON", "Poisons", 0x10),
+    row(
+        NpcFlag,
+        0x400,
+        "MINIMAP_TRACKING_VENDOR_POISON",
+        "Poisons",
+        0x10,
+    ),
     // Warriors, hunters and rogues.
-    row(NpcFlag, 0x100, "MINIMAP_TRACKING_VENDOR_AMMO", "Ammunition", 0x1a),
-    row(NpcFlag, 0x800, "MINIMAP_TRACKING_VENDOR_REAGENT", "Reagents", 0),
-    row(NpcFlag, 0x10000, "MINIMAP_TRACKING_INNKEEPER", "Innkeeper", 0),
-    row(NpcFlag, 0x2000, "MINIMAP_TRACKING_FLIGHTMASTER", "FlightMaster", 0),
+    row(
+        NpcFlag,
+        0x100,
+        "MINIMAP_TRACKING_VENDOR_AMMO",
+        "Ammunition",
+        0x1a,
+    ),
+    row(
+        NpcFlag,
+        0x800,
+        "MINIMAP_TRACKING_VENDOR_REAGENT",
+        "Reagents",
+        0,
+    ),
+    row(
+        NpcFlag,
+        0x10000,
+        "MINIMAP_TRACKING_INNKEEPER",
+        "Innkeeper",
+        0,
+    ),
+    row(
+        NpcFlag,
+        0x2000,
+        "MINIMAP_TRACKING_FLIGHTMASTER",
+        "FlightMaster",
+        0,
+    ),
     // Hunters.
-    row(NpcFlag, 0x400000, "MINIMAP_TRACKING_STABLEMASTER", "StableMaster", 0x8),
-    row(NpcFlag, 0x100000, "MINIMAP_TRACKING_BATTLEMASTER", "BattleMaster", 0),
+    row(
+        NpcFlag,
+        0x400000,
+        "MINIMAP_TRACKING_STABLEMASTER",
+        "StableMaster",
+        0x8,
+    ),
+    row(
+        NpcFlag,
+        0x100000,
+        "MINIMAP_TRACKING_BATTLEMASTER",
+        "BattleMaster",
+        0,
+    ),
     row(NpcFlag, 0x20, "MINIMAP_TRACKING_TRAINER_CLASS", "Class", 0),
-    row(NpcFlag, 0x40, "MINIMAP_TRACKING_TRAINER_PROFESSION", "Profession", 0),
-    row(NpcFlag, 0x200000, "MINIMAP_TRACKING_AUCTIONEER", "Auctioneer", 0),
+    row(
+        NpcFlag,
+        0x40,
+        "MINIMAP_TRACKING_TRAINER_PROFESSION",
+        "Profession",
+        0,
+    ),
+    row(
+        NpcFlag,
+        0x200000,
+        "MINIMAP_TRACKING_AUCTIONEER",
+        "Auctioneer",
+        0,
+    ),
     row(NpcFlag, 0x20000, "MINIMAP_TRACKING_BANKER", "Banker", 0),
     // GAMEOBJECT_TYPE_MAILBOX.
     row(GameObjectType, 19, "MINIMAP_TRACKING_MAILBOX", "Mailbox", 0),
-    row(TrivialQuests, 0, "MINIMAP_TRACKING_TRIVIAL_QUESTS", "TrivialQuests", 0),
+    row(
+        TrivialQuests,
+        0,
+        "MINIMAP_TRACKING_TRIVIAL_QUESTS",
+        "TrivialQuests",
+        0,
+    ),
 ];
 
 /// The CVar `LoadTrackingInfo` writes the active row's name to (empty for none).
@@ -119,9 +179,7 @@ fn class_id(class_file: &str) -> Option<u8> {
 /// `GetTrackingTypeByIndex`). With no player class only the all-class rows pass, as the
 /// reference's zero mask does.
 pub fn available(class_file: Option<&str>) -> impl Iterator<Item = &'static TrackingType> {
-    let class_mask = class_file
-        .and_then(class_id)
-        .map_or(0, |c| 1u32 << c);
+    let class_mask = class_file.and_then(class_id).map_or(0, |c| 1u32 << c);
     TRACKING_TYPES
         .iter()
         .filter(move |t| t.class_mask == 0 || t.class_mask & class_mask != 0)
@@ -168,7 +226,13 @@ fn menu_index(v: &Value) -> Option<i64> {
     match v {
         Value::Integer(i) => Some(*i - 1),
         Value::Number(n) => Some(*n as i64 - 1),
-        Value::String(s) => s.to_str().ok()?.trim().parse::<f64>().ok().map(|n| n as i64 - 1),
+        Value::String(s) => s
+            .to_str()
+            .ok()?
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .map(|n| n as i64 - 1),
         _ => None,
     }
 }
@@ -232,9 +296,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                         let texture = tracking
                             .and_then(|t| t.icon.clone())
                             .or_else(|| slot.and_then(|s| s.texture.clone()));
-                        let name = slot.map(|s| s.name.clone()).or_else(|| {
-                            tracking.and_then(|t| t.name.clone())
-                        });
+                        let name = slot
+                            .map(|s| s.name.clone())
+                            .or_else(|| tracking.and_then(|t| t.name.clone()));
                         (name, texture, tracking.is_some(), "spell")
                     }
                 }
@@ -248,7 +312,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(MultiValue::from_vec(vec![
                 text(name)?,
                 text(texture)?,
-                if active { Value::Number(1.0) } else { Value::Nil },
+                if active {
+                    Value::Number(1.0)
+                } else {
+                    Value::Nil
+                },
                 Value::String(lua.create_string(category)?),
             ]))
         })?,
