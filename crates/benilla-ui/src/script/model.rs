@@ -832,6 +832,8 @@ pub(crate) struct Model {
     /// Per action, its usable, range, current and cooldown state; an absent one reads cold.
     pub(crate) action_states: HashMap<u32, super::action::StoredActionState>,
     pub(crate) bonus_bar_offset: u8,
+    /// The ordinary bar page, independent of FrameXML globals (12340 `0x005A7FD0`).
+    pub(crate) action_bar_page: i64,
     /// GlobalStrings keys of refusals this crate raises, fired by the app as `UI_ERROR_MESSAGE`
     /// (the reference's `DisplayError` `0x496720`), each a literal from `0xb4b498` (stride `0x14`).
     pub(crate) ui_errors: Vec<(&'static str, super::InputEvents)>,
@@ -861,6 +863,11 @@ pub(crate) struct Model {
     pub(crate) macro_icons: Vec<String>,
     /// What builds `macro_icons` while it is empty; `None` builds nothing.
     pub(crate) macro_icon_source: Option<MacroIconSource>,
+    /// The macro id `RunMacro` is firing (`Some(0)` for `RunMacroText`), and the optional
+    /// button argument `GetRunningMacroButton` reports. `StopMacro` clears both, which stops
+    /// the remaining lines.
+    pub(crate) running_macro: Option<u32>,
+    pub(crate) running_macro_button: Option<String>,
     /// The player's cast state, which `IsCurrentAction`, `IsAutoRepeatAction` and
     /// `SpellStopCasting()` (`0x6e6e80`) read: the last's 1 or nil matters, as the ESC chain
     /// (`UIParent.lua:1489`) reaches `CloseAllWindows()` on nil.
@@ -1859,6 +1866,7 @@ impl Model {
             actions: HashMap::new(),
             action_states: HashMap::new(),
             bonus_bar_offset: 0,
+            action_bar_page: 1,
             ui_errors: Vec::new(),
             spellbook: spellbook::SpellBookState::default(),
             spell_list: Vec::new(),
@@ -1871,6 +1879,8 @@ impl Model {
             macro_bindings: HashMap::new(),
             macro_icons: Vec::new(),
             macro_icon_source: None,
+            running_macro: None,
+            running_macro_button: None,
             cast_view: Default::default(),
             spell_targeting: false,
             spell_targetable_units: HashSet::new(),

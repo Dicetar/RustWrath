@@ -105,7 +105,7 @@ pub(crate) struct PlateClicks {
 /// The plate frame in gx units (`[0x87d9cc]`, `[0x87d9d0]`); child offsets from `0x7cb250` and
 /// `0x7cb6d0`.
 const PLATE_W: f32 = 0.1;
-const PLATE_H: f32 = 0.025;
+pub(crate) const PLATE_H: f32 = 0.025;
 /// The health bar: BOTTOMLEFT at the plate's BOTTOMLEFT plus the offset.
 const BAR_OFF_X: f32 = 0.0031;
 const BAR_OFF_Y: f32 = 0.003125;
@@ -123,7 +123,7 @@ const SKULL_SIZE: f32 = 0.01;
 /// left edge.
 const RAID_ICON_SIZE: f32 = 0.02;
 /// `[0x80abfc]`.
-const PLATE_LIFT: f32 = 2.0 / 3.0;
+pub(crate) const PLATE_LIFT: f32 = 2.0 / 3.0;
 /// 20 yd squared, `[0xc4d988]` (set from `0x5fa130`).
 const MAX_DIST_SQ: f32 = 20.0 * 20.0;
 /// `CreatureType.dbc` id 11, Totem: a friendly one gets no plate (`0x60f757` `cmp eax,0xb`).

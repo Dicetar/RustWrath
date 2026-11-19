@@ -91,6 +91,10 @@ local HITS_PER_SECOND = 12          -- a client sending more is throttled
 local MAX_TARGETS_REPORTED = 8
 local SWING_RELAY_YARDS = 60
 local MANAGE_RANGE_YARDS = 40
+-- Trace every managed creature's turn into the server log (PrintInfo: Server.log). On while the
+-- enemy strike cadence is being tuned; set false to quiet it.
+local TRACE = true
+local TRACE_HELD_MS = 2000          -- a creature held from striking is traced at most this often
 
 -- Decision 6: cleave falloff c and the target cap per main-hand weapon subclass.
 local CLEAVE = {
@@ -133,6 +137,12 @@ end
 
 local function now_ms()
     return GetCurrTime()
+end
+
+local function trace(...)
+    if TRACE then
+        PrintInfo("[souls] " .. string.format(...))
+    end
 end
 
 local function angle_diff(a, b)
@@ -281,10 +291,7 @@ local function release(creature, ck)
         creature:EmoteState(EMOTE_STATE_NONE)
     end
     if m.strike or m.broken_until then
-        local victim = creature:GetVictim()
-        if victim then
-            creature:MoveChase(victim)
-        end
+        creature:SetRooted(false)
     end
 end
 
@@ -472,8 +479,10 @@ local function start_strike(creature, ck, m, victim, now)
     local id = next_strike_id
     next_strike_id = next_strike_id + 1
     local reach = melee_reach(creature, victim)
-    -- Decision 9: the creature stops and its facing locks for the windup.
-    creature:MoveIdle()
+    -- Decision 9: the creature stops and its facing locks for the windup. A root, not MoveIdle:
+    -- MoveIdle leaves a running chase on top of the motion master, and the stock chase resumes
+    -- by itself once the root is lifted.
+    creature:SetRooted(true)
     creature:SetFacing(creature:GetAngle(victim))
     m.strike = {
         id = id,
@@ -486,6 +495,8 @@ local function start_strike(creature, ck, m, victim, now)
         verdict = nil,
     }
     m.next_at = now + math.max(attack_ms, windup + 400)
+    trace("strike %d from %s on %s: windup %d ms, next in %d ms", id, ck, m.strike.victim_key, windup,
+        m.next_at - now)
     for _, watcher in ipairs(strike_watchers(creature, m.strike)) do
         local mine = key(watcher:GetGUID()) == m.strike.victim_key and 1 or 0
         send(watcher, string.format("STRIKE\t%d\t%s\t%d\t%.2f\t%d", id, ck, windup, reach, mine))
@@ -528,10 +539,8 @@ local function resolve_strike(creature, ck, m, now)
     for _, watcher in ipairs(strike_watchers(creature, strike)) do
         send(watcher, "RESOLVE\t" .. strike.id .. "\t" .. outcome)
     end
-    local chase = creature:GetVictim()
-    if chase then
-        creature:MoveChase(chase)
-    end
+    trace("strike %d from %s resolved %s; next in %d ms", strike.id, ck, outcome, m.next_at - now)
+    creature:SetRooted(false)
 end
 
 -- A broken stance: the strike in progress is cancelled, casts are interrupted, and the creature
@@ -550,8 +559,9 @@ break_stance = function(creature, ck, m, now)
     m.stance_refill_at = nil
     creature:InterruptSpell(1)  -- CURRENT_GENERIC_SPELL
     creature:InterruptSpell(2)  -- CURRENT_CHANNELED_SPELL
-    creature:MoveIdle()
+    creature:SetRooted(true)
     creature:EmoteState(EMOTE_STATE_STUN)
+    trace("stance of %s broken", ck)
     for _, watcher in ipairs(strike_watchers(creature, nil)) do
         send(watcher, string.format("BROKEN\t%s\t%d", ck, STANCE_BREAK_MS))
     end
@@ -560,10 +570,7 @@ end
 local function end_break(creature, m)
     m.broken_until = nil
     creature:EmoteState(EMOTE_STATE_NONE)
-    local victim = creature:GetVictim()
-    if victim then
-        creature:MoveChase(victim)
-    end
+    creature:SetRooted(false)
 end
 
 local function adopt(creature, now)
@@ -584,6 +591,7 @@ local function adopt(creature, now)
         stance = stance,
         stance_max = stance,
     }
+    trace("adopted %s (entry %d, level %d, stance %d)", ck, creature:GetEntry(), creature:GetLevel(), stance)
 end
 
 local function tick()
@@ -607,10 +615,13 @@ local function tick()
     for ck, m in pairs(managed) do
         local creature = managed_creature(m)
         if not creature then
+            trace("lost %s: not found on map %d instance %d", ck, m.map, m.instance)
             managed[ck] = nil
         else
             local victim = creature:IsAlive() and creature:IsInCombat() and creature:GetVictim()
             if not victim or not wanted(creature, victim) then
+                trace("released %s: alive %s, in combat %s, victim %s", ck, tostring(creature:IsAlive()),
+                    tostring(creature:IsInCombat()), victim and key(victim:GetGUID()) or "none")
                 release(creature, ck)
             elseif m.broken_until then
                 if now >= m.broken_until then
@@ -626,9 +637,16 @@ local function tick()
                 if (judged and now >= strike.resolve_at) or now >= strike.resolve_at + VERDICT_GRACE_MS then
                     resolve_strike(creature, ck, m, now)
                 end
-            elseif now >= m.next_at and not creature:IsCasting()
-                and creature:IsWithinDist(victim, melee_reach(creature, victim)) then
-                start_strike(creature, ck, m, victim, now)
+            elseif now >= m.next_at then
+                local casting = creature:IsCasting()
+                local reach = melee_reach(creature, victim)
+                if not casting and creature:IsWithinDist(victim, reach) then
+                    start_strike(creature, ck, m, victim, now)
+                elseif not m.held_traced_at or now >= m.held_traced_at + TRACE_HELD_MS then
+                    m.held_traced_at = now
+                    trace("held %s: casting %s, %.1f yd from %s (reach %.1f)", ck, tostring(casting),
+                        creature:GetDistance(victim), key(victim:GetGUID()), reach)
+                end
             end
         end
     end

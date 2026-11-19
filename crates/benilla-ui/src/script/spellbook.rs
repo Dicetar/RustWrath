@@ -321,22 +321,30 @@ pub(super) fn action_bar_spell_id(model: &Model, value: f64) -> Option<u32> {
 }
 
 /// The `(id, bookType)` form as a Wrath action-bar spell ID rather than a 1-based book slot.
-/// Answers the spell ID and whether the book type names the pet book. Only a numeric first
-/// argument and a string book type qualify; every other shape keeps the slot marshaller's error.
+/// Answers the spell ID. Only a numeric first argument and a player-book string qualify; a
+/// numeric string is numeric, as `lua_isnumber` and [`spell_slot_args`] treat it. Every other
+/// shape keeps the slot marshaller's error.
+///
+/// The pet book is rejected: `GetActionInfo`'s raw-ID fallback is always the player book. Its
+/// `"pet"` arm resolves a slot in `pet_book.slots`, so `position()` always finds that spell and
+/// `map_or(id, ...)` is never taken for it. Accepting `"pet"` would let a player bar ID read a pet
+/// cooldown.
 pub(super) fn action_bar_spell_reference(
     lua: &Lua,
     id: Value,
     book_type: Value,
-) -> mlua::Result<Option<(u32, bool)>> {
+) -> mlua::Result<Option<u32>> {
     let Value::String(book) = book_type else {
         return Ok(None);
     };
+    if is_pet_book(&book.to_string_lossy()) {
+        return Ok(None);
+    }
     let Some(value) = lua.coerce_number(id)? else {
         return Ok(None);
     };
     let model = lua.app_data_ref::<Model>().expect("model app_data");
-    Ok(action_bar_spell_id(&model, value)
-        .map(|spell_id| (spell_id, is_pet_book(&book.to_string_lossy()))))
+    Ok(action_bar_spell_id(&model, value))
 }
 
 /// The 1-based book id as a 0-based slot index.
@@ -372,18 +380,14 @@ pub(super) fn book_cooldown(
         Ok(slot) => slot,
         Err(err) => {
             // The same Wrath action-bar spell-ID pair `GetSpellInfo` accepts (see
-            // `action_bar_spell_reference`); an unknown spell is the host's cold/no answer.
-            let Some((spell_id, pet)) = action_bar_spell_reference(lua, id, book_type)? else {
+            // `action_bar_spell_reference`). Forward to the cooldown owner directly, as the
+            // reference's `Script_GetSpellCooldown` (`SpellBookFrame_Scripts.cpp:504-534`) calls
+            // `Spell_C_GetSpellCooldown` without a `Spell.dbc` lookup; `None` is the cold answer.
+            let Some(spell_id) = action_bar_spell_reference(lua, id, book_type)? else {
                 return Err(err);
             };
-            // A spell the host's catalog does not know answers the no-cooldown triple, as an
-            // unknown slot does; do not invent a cooldown for it.
-            let known = super::host::with_host(lua, |host| host.spell_info(spell_id)).flatten();
-            if known.is_none() {
-                return Ok(cooldown_tuple(None, now));
-            }
             return Ok(cooldown_tuple(
-                super::host::with_host(lua, |host| host.spell_cooldown(spell_id, pet)).flatten(),
+                super::host::with_host(lua, |host| host.spell_cooldown(spell_id, false)).flatten(),
                 now,
             ));
         }
@@ -605,8 +609,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                         // `GetSlotFromLua` (`SpellBookFrame.cpp:1447-1487`) raises for a numeric value
                         // outside the book; the ID `GetActionInfo` answers for a bar spell with no
                         // displayed slot is the one pair Wrath resolves through the host instead.
-                        let Some((spell_id, _)) = action_bar_spell_reference(lua, id, book_type)?
-                        else {
+                        let Some(spell_id) = action_bar_spell_reference(lua, id, book_type)? else {
                             return Err(err);
                         };
                         let view =

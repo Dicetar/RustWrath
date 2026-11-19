@@ -522,11 +522,46 @@ impl RigMap {
         let on_head_chain = |b: usize| head_chain.contains(&b);
         let children = |b: usize| (0..n).filter(move |&c| parent_of(rig.parents, c) == Some(b));
 
-        // The feet: the lowest bone on each side, off the head chain.
+        // The wrists: the hand attachment's bone, or the bone above when it is a bare attach
+        // point; an HD model hangs its hand attachment on bones with a pivot at the model origin,
+        // placed only by their animated translation, so the wrist is the first one above with a
+        // place in the bind pose.
+        let at_origin = |b: usize| piv[b].length() <= eps;
+        let wrist_of = |hand: usize| -> Result<usize, String> {
+            let mut w = if children(hand).next().is_some() {
+                hand
+            } else {
+                parent_of(rig.parents, hand).ok_or("a hand with no parent")?
+            };
+            while at_origin(w) {
+                w = parent_of(rig.parents, w).ok_or("a hand with no placed bone above it")?;
+            }
+            Ok(w)
+        };
+        let wrists = [wrist_of(rig.hands[0])?, wrist_of(rig.hands[1])?];
+        // Every bone of the arms, hand to shoulder: nothing under them is a foot (an HD model
+        // hangs weapon bones below the hand).
+        let arm_bones: Vec<usize> = rig
+            .hands
+            .iter()
+            .flat_map(|&h| ancestors(rig.parents, h))
+            .filter(|&b| !on_head_chain(b))
+            .collect();
+
+        // The feet: the lowest bone on each side at the end of a leg, at least three bones
+        // hanging from the spine and not from an arm. An HD model carries free roots and
+        // one-bone cloth and ground bones at the floor, which are no legs.
         let side_width = height * 0.02;
+        let on_leg = |b: usize| {
+            let up = ancestors(rig.parents, b);
+            up.iter()
+                .position(|&a| on_head_chain(a))
+                .is_some_and(|k| k >= 3)
+                && !up.iter().any(|a| arm_bones.contains(a))
+        };
         let lowest = |right: bool| {
             (0..n)
-                .filter(|&b| !on_head_chain(b))
+                .filter(|&b| !on_head_chain(b) && on_leg(b))
                 .filter(|&b| {
                     if right {
                         piv[b].x > side_width
@@ -598,16 +633,11 @@ impl RigMap {
             ));
         }
 
-        // The arms: the hand attachment's bone, or the bone above when it is a bare attach point.
-        if piv[rig.hands[0]].x <= piv[rig.hands[1]].x {
+        // The arms, shoulder to wrist.
+        if piv[wrists[0]].x <= piv[wrists[1]].x {
             return Err("the right hand is not on the right".into());
         }
-        for ((&hand, elbow), arm) in rig.hands.iter().zip(rig.elbows).zip(ARMS) {
-            let wrist = if children(hand).next().is_some() {
-                hand
-            } else {
-                parent_of(rig.parents, hand).ok_or("a hand with no parent")?
-            };
+        for ((&wrist, elbow), arm) in wrists.iter().zip(rig.elbows).zip(ARMS) {
             let mut chain: Vec<usize> = ancestors(rig.parents, wrist)
                 .into_iter()
                 .take_while(|&b| !on_head_chain(b))
@@ -620,6 +650,7 @@ impl RigMap {
             let wrist_i = points.len() - 1;
             // The fingers' base, or the forearm carried on a little.
             let fingers: Vec<Vec3> = children(wrist)
+                .filter(|&c| !at_origin(c))
                 .map(|c| piv[c])
                 .filter(|p| p.distance(piv[wrist]) > eps)
                 .collect();
