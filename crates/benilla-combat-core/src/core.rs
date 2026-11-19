@@ -444,7 +444,7 @@ impl CombatCore {
         if let Some(current) = self.last_sequence {
             if snapshot
                 .last_sequence
-                .map_or(true, |accepted| accepted < current)
+                .is_none_or(|accepted| accepted < current)
             {
                 return Err(CombatError::SnapshotStaleSequence {
                     current: self.last_sequence,
@@ -544,10 +544,7 @@ impl CombatCore {
     }
 
     fn apply_due_inputs(&mut self, now: Ticks, events: &mut Vec<CombatEvent>) {
-        loop {
-            let Some(index) = self.pending.iter().position(|frame| frame.tick <= now) else {
-                break;
-            };
+        while let Some(index) = self.pending.iter().position(|frame| frame.tick <= now) {
             let frame = self.pending.remove(index);
             let _ = self.apply_input(frame, events);
         }
