@@ -96,7 +96,8 @@ fn wrath_run_macro_fires_lines_and_stop_drops_the_rest() {
         .run(
             "seen = {}; running = nil; button = nil
              local f = CreateFrame('Frame'); f:RegisterEvent('EXECUTE_CHAT_LINE')
-             f:SetScript('OnEvent', function(_, line)
+             f:SetScript('OnEvent', function(_, event, line)
+                 assert(event == 'EXECUTE_CHAT_LINE')
                  table.insert(seen, line)
                  running = GetRunningMacro()
                  button = GetRunningMacroButton()
@@ -121,6 +122,7 @@ fn wrath_run_macro_fires_lines_and_stop_drops_the_rest() {
         .run("seen = {}; RunMacroText('/say a\\n/say b')")
         .unwrap();
     assert_eq!(script.eval::<i64>("return #seen").unwrap(), 2);
+    assert!(script.errors().is_empty(), "{:?}", script.errors());
 }
 
 /// 12340's sorted table is 36 account entries then 36 character entries (`m_sortedMacros[72]`),
