@@ -1,10 +1,10 @@
 # Land or close the stale field audit
 
-Status: in progress
+Status: landed
 Owner: OpenCode / DeepSeek V4.1 Flash (landing the argon branch)
 Branch: argon/field-mapping-audit
 Issue: none
-Next: read CI on the push; land on main if the check and app tests pass.
+Next: none; landed on main as 6d488fae (merge 8b95a553).
 
 ## What changed
 
@@ -33,7 +33,7 @@ including `wrath_player_honor_fields_sit_in_the_1_12_honor_block` and
 `shipped_gameobject_rules_carry_rotation_and_bytes_1`. The gates job's only red step was
 `player-clippy`, on pre-existing findings in untouched lines (wrath.rs:9019/9020/9850/11985 and
 other files); the package says clippy findings in lines the ticket did not write are ignored.
-The branch then merged origin/main 881f9385 (souls-only); CI 44481364607 re-runs that tree.
+The branch then merged origin/main 881f9385 (souls-only); CI 44481364607 on 8b95a553 had the Windows check and tests green, with the same pre-existing player-clippy red only. Landed as 6d488fae.
 Not proven: no client run; the rotation/art-kit values are source checks against the table and
 the 12340 descriptor only. The 1.12 position words stay unwritten; movement applies the entity
 transform, as on main.
