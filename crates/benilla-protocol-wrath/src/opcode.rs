@@ -142,6 +142,9 @@ pub const SMSG_SPIRIT_HEALER_CONFIRM: u16 = 0x222;
 pub const SMSG_DEATH_RELEASE_LOC: u16 = 0x378;
 /// Packed guid of the body turning ghost (`Player.cpp:4327-4331`).
 pub const SMSG_PRE_RESURRECT: u16 = 0x494;
+/// `UnitCombat_C.cpp:860` (`CGGameUI::ClearTarget`): one raw u64 guid whose selection is
+/// forcibly cleared (`SpellEffects.cpp::EffectForceDeselect`).
+pub const SMSG_CLEAR_TARGET: u16 = 0x3BF;
 /// Empty body: the instance entrance refused a ghost whose corpse lies elsewhere
 /// (`MapMgr.cpp:207`; the client shows `ERR_CORPSE_IS_NOT_IN_INSTANCE`, `GameUI.cpp:6821`).
 pub const SMSG_AREA_TRIGGER_NO_CORPSE: u16 = 0x506;

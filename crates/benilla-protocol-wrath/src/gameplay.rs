@@ -2291,6 +2291,11 @@ pub enum ServerEvent {
     PreResurrect {
         guid: u64,
     },
+    /// `SMSG_CLEAR_TARGET` (`UnitCombat_C.cpp:860`): one raw u64 guid whose selection is
+    /// forcibly cleared (`SpellEffects.cpp::EffectForceDeselect`).
+    ClearTarget {
+        guid: u64,
+    },
     /// `SMSG_AREA_SPIRIT_HEALER_TIME`: the area healer's raw guid and the ms until its next wave
     /// (`BattlegroundMgr.cpp:667-674`).
     AreaSpiritHealerTime {
@@ -2913,6 +2918,7 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_SPIRIT_HEALER_CONFIRM => read_spirit_healer_confirm(body),
         SMSG_DEATH_RELEASE_LOC => read_death_release_loc(body),
         SMSG_PRE_RESURRECT => read_pre_resurrect(body),
+        SMSG_CLEAR_TARGET => read_clear_target(body),
         SMSG_AREA_SPIRIT_HEALER_TIME => read_area_spirit_healer_time(body),
         SMSG_AREA_TRIGGER_NO_CORPSE => Ok(ServerEvent::CorpseNotInInstance),
         SMSG_CAST_FAILED => read_cast_failed(body),
@@ -4588,6 +4594,14 @@ fn read_pre_resurrect(b: &[u8]) -> Result<ServerEvent> {
     })
 }
 
+/// `UnitCombat_C.cpp:860`: one raw u64 guid whose selection is forcibly cleared.
+fn read_clear_target(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::ClearTarget {
+        guid: r.u64()?,
+    })
+}
+
 /// `SMSG_AREA_SPIRIT_HEALER_TIME` (`BattlegroundMgr.cpp:667-674`): raw healer guid, then the
 /// milliseconds until the next resurrection wave (`RESURRECTION_INTERVAL - last`).
 fn read_area_spirit_healer_time(b: &[u8]) -> Result<ServerEvent> {
@@ -5645,6 +5659,17 @@ mod tests {
             .expect("the opcode is translated")
             .expect("mask, low byte, second byte");
         assert_eq!(event, ServerEvent::PreResurrect { guid });
+    }
+
+    /// `UnitCombat_C.cpp:860`: one raw u64 guid whose selection is forcibly cleared.
+    #[test]
+    fn wrath_clear_target_reads_the_raw_guid() {
+        let guid = 0xF130_0000_0000_00ABu64;
+        let body = guid.to_le_bytes();
+        let event = parse(crate::opcode::SMSG_CLEAR_TARGET, &body)
+            .expect("the opcode is translated")
+            .expect("the 8-byte body is valid");
+        assert_eq!(event, ServerEvent::ClearTarget { guid });
     }
 
     /// `BattlegroundMgr.cpp:667-674`: raw guid then the milliseconds until the next wave.

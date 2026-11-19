@@ -3985,6 +3985,9 @@ fn translate_gameplay(
         WrathGameplayEvent::PreResurrect { guid } => {
             vec![SessionEvent::PreResurrect { guid }]
         }
+        WrathGameplayEvent::ClearTarget { guid } => {
+            vec![SessionEvent::ClearTarget { guid }]
+        }
         WrathGameplayEvent::AreaSpiritHealerTime { healer, ms } => {
             vec![SessionEvent::AreaSpiritHealerTime { healer, ms }]
         }
@@ -14398,6 +14401,19 @@ mod tests {
             3,
             "the sequence never rewinds across a scope clear"
         );
+    }
+
+    /// `SMSG_CLEAR_TARGET` translates to the stock forced-deselect event with its guid.
+    #[test]
+    fn clear_target_translates_to_the_stock_event() {
+        let guid = 0xF130_0000_0000_00ABu64;
+        let translated = translate_gameplay(
+            WrathGameplayEvent::ClearTarget { guid },
+            0,
+            std::time::Instant::now(),
+        );
+        assert_eq!(translated.len(), 1);
+        assert_eq!(translated[0], SessionEvent::ClearTarget { guid });
     }
 
     /// The pending queue is bounded and reports overflow instead of silently losing a burst.
