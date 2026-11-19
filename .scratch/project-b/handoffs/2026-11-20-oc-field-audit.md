@@ -28,7 +28,12 @@ Named tests: `wrath_player_honor_fields_sit_in_the_1_12_honor_block`;
 
 ## CI and limits
 
-CI: not run yet.
+CI 44477619887 (on 4dc98a95): the Windows check passed and the gates `test` step passed,
+including `wrath_player_honor_fields_sit_in_the_1_12_honor_block` and
+`shipped_gameobject_rules_carry_rotation_and_bytes_1`. The gates job's only red step was
+`player-clippy`, on pre-existing findings in untouched lines (wrath.rs:9019/9020/9850/11985 and
+other files); the package says clippy findings in lines the ticket did not write are ignored.
+The branch then merged origin/main 881f9385 (souls-only); CI 44481364607 re-runs that tree.
 Not proven: no client run; the rotation/art-kit values are source checks against the table and
 the 12340 descriptor only. The 1.12 position words stay unwritten; movement applies the entity
 transform, as on main.
