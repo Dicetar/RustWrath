@@ -2,9 +2,9 @@
 //! ([`benilla_ui::script`]) reads from the app. Each template that lands goes to the engine as a
 //! record, with its header and tag names, its text's macros and its reward spell resolved; the
 //! player's `PLAYER_QUEST_LOG` slots go at the quest log's field watch
-//! ([`crate::field_watch::FieldNotice::QuestLog`]); the records, creatures and held counts the
-//! engine's verbs read are answered here. Nothing is rebuilt or compared per frame: an idle frame
-//! reads two message queues and the engine's ask lists.
+//! ([`crate::field_watch::FieldNotice::QuestLog`]); the records, creatures, GameObjects and held
+//! counts the engine's verbs read are answered here. Nothing is rebuilt or compared per frame: an
+//! idle frame reads two message queues and the engine's ask lists.
 //!
 //! The quest-update packets' toasts are shown from here: `SMSG_QUESTUPDATE_ADD_ITEM`,
 //! `_ADD_KILL` and `_COMPLETE`, each with its `QUEST_WATCH_UPDATE`, and the slot watcher's accept
@@ -54,6 +54,9 @@ pub(crate) struct QuestLog {
     deferred_item_adds: Vec<(u32, u32, u32, Option<u32>)>,
     /// The creature entries the engine's leaderboard asked for and the cache has not answered.
     creature_waits: HashSet<u32>,
+    /// The GameObject entries (top bit cleared) its leaderboard asked for and the cache has not
+    /// answered.
+    go_waits: HashSet<u32>,
     /// The `SMSG_SET_FACTION_STANDING` packets that moved a rank since the feed last ran.
     faction_rank_moves: u32,
     /// `SMSG_QUESTGIVER_QUEST_FAILED`'s reason as last read (`0xc4d794`), a global the record
@@ -835,6 +838,8 @@ pub(crate) struct QuestLogReads<'w, 's> {
     self_q: Query<'w, 's, (&'static ObjectStore, &'static Guid), With<SelfPlayer>>,
     wrath_slots: Query<'w, 's, Option<&'static crate::wrath::WrathQuestSlots>, With<SelfPlayer>>,
     names: Res<'w, NameCache>,
+    /// The GameObject cache the object lines' names come from (`0xc0e318`).
+    go_templates: Option<Res<'w, crate::go_templates::GameObjectTemplates>>,
     // The bag walk behind an item objective's count.
     objects: crate::net::Objects<'w, 's>,
     /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
@@ -1136,6 +1141,31 @@ pub(crate) fn feed_quest_log(
             });
             for entry in refused {
                 script.refuse_quest_creature(entry);
+            }
+        }
+
+        // A GameObject objective's name comes from the same one-callback lookup (`0x4e031e`,
+        // keyed by the entry with its top bit cleared). The drained asks stand for the
+        // leaderboard's event lookups; the frames between only read, so a refused entry is not
+        // asked again until the next miss. A name that lands signals its line once.
+        let go_asks = script.take_quest_go_asks();
+        for &entry in &go_asks {
+            quest_log.go_waits.insert(entry);
+        }
+        if let Some(templates) = reads.go_templates.as_deref() {
+            let landed: Vec<(u32, String)> = quest_log
+                .go_waits
+                .iter()
+                .filter_map(|&entry| {
+                    let ask = Ask::at(go_asks.contains(&entry), &reads.commands);
+                    templates
+                        .resolve_name(entry, ask)
+                        .map(|name| (entry, name.to_string()))
+                })
+                .collect();
+            for (entry, name) in landed {
+                quest_log.go_waits.remove(&entry);
+                script.set_quest_go_name(entry, name);
             }
         }
 
@@ -1669,6 +1699,7 @@ mod tests {
                     SEEN = {}
                     QUEST_ITEMS_NEEDED = "%s: %d/%d"
                     QUEST_MONSTERS_KILLED = "%s slain: %d/%d"
+                    QUEST_OBJECTS_FOUND = "%s: %d/%d"
                     ERR_QUEST_ADD_ITEM_SII = "%s: %d/%d"
                     ERR_QUEST_ADD_KILL_SII = "%s slain: %d/%d"
                     ERR_QUEST_OBJECTIVE_COMPLETE_S = "%s (Complete)"
@@ -1996,6 +2027,41 @@ mod tests {
         assert_eq!(rig.frames(300), Vec::<String>::new());
         assert!(crate::query_cache::queries(&rig.rx).is_empty());
         assert_eq!(rig.eval("return tostring(WALKS)"), "21");
+    }
+
+    /// A GameObject objective's miss is answered from the live `GameObjectTemplates` cache
+    /// (`0x4e031e`): the ask is not sent again when the template is held, and the landing repaints
+    /// the line once.
+    #[test]
+    fn a_gameobject_ask_is_answered_from_the_template_cache_without_asking_again() {
+        let mut objectives = none();
+        objectives[0] = obj(0x8000_0010, 5, 0, 0, "");
+        let mut rig = Rig::new(vec![quest_template(7, objectives)], &[7]);
+        rig.app
+            .world_mut()
+            .init_resource::<crate::go_templates::GameObjectTemplates>();
+        rig.app
+            .world_mut()
+            .resource_mut::<crate::go_templates::GameObjectTemplates>()
+            .insert(0x10, 0, "Mysterious Crate".into(), &[0; 24]);
+        rig.frame();
+        assert_eq!(rig.enter_world(), [QLU]);
+        rig.frame();
+        assert_eq!(
+            rig.eval("return (GetQuestLogLeaderBoard(1, 2))"),
+            "...: 0/5",
+            "the engine misses before the feed answers"
+        );
+        assert_eq!(rig.frame(), [QLU], "the landing repaints the line once");
+        assert_eq!(
+            rig.eval("return (GetQuestLogLeaderBoard(1, 2))"),
+            "Mysterious Crate: 0/5"
+        );
+        assert!(
+            crate::query_cache::queries(&rig.rx).is_empty(),
+            "the cached template is not asked again"
+        );
+        assert_eq!(rig.frames(3), Vec::<String>::new(), "and nothing repeats");
     }
 
     /// The rebuild's misses ask with the callback `0x4de8b0` and hold the list (`[0xbb7498]`):
