@@ -3,9 +3,9 @@
 //! and airborne play the ER locomotion clips.
 //!
 //! **The clips** are the reference's bake, `player_anims.bin` (`ERAN`: model-space joint positions
-//! per frame at 30 fps, plus the head's axes; root motion already removed). It is read from
-//! `benilla-config/combat/player_anims.bin`, next to `souls.toml` and `player.kit`, on a worker
-//! thread the first time `F10` turns the mode on with a retarget switch set, and again when the
+//! per frame at 30 fps, plus the head's axes and optional weapon axes, with root motion removed).
+//! It is read from `benilla-config/combat/player_anims.bin`, next to `souls.toml` and `player.kit`,
+//! on a worker thread the first time `F10` turns the mode on with a retarget switch set, and again when the
 //! file is newer. The folder is local and ignored: the bake is never committed.
 //!
 //! **The retarget** maps the ER skeleton onto the M2 one by role, from the bind pivots (an M2
@@ -16,11 +16,12 @@
 //!   whole frame, up along the chain and its side blended from the hips' line to the shoulders',
 //!   so the torso twists with the swing;
 //! - the Head takes the bake's head axes;
-//! - each arm (clavicle, if the M2 chain has one, to the hand) and leg (thigh to toe) bone is
-//!   turned from its parent's frame along the shortest arc that points it where the ER limb
-//!   points, so the roll comes down from the torso;
-//! - the pelvis also takes the ER pelvis's offset from its stand height, scaled to the model, so
-//!   a crouch or a roll lowers the body.
+//! - each distinct hand attachment aligns the held item's shaft and bit with the baked weapon
+//!   axes when available. The wrist follows the ER palm;
+//! - arm segments aim along the ER arm; the wrist takes the knuckle/thumb frame;
+//! - the pelvis uses anatomical up. Each leg reaches for the scaled ER ankle with the ER knee
+//!   as its pole. An ankle-to-toe frame transfers pitch relative to a planted foot. The bind
+//!   height of the sole accounts for different boots and the digitigrade Tauren hoof.
 //!
 //! Every other bone keeps the stock animation. The pass writes the bone locals in
 //! [`benilla_world::rig_anim::PosePost`], after the M2 evaluator and before the strafe twist and
@@ -195,6 +196,8 @@ struct ErClips {
     at: [usize; JOINTS],
     /// The head's X axis; Y and Z follow.
     head_axes: usize,
+    /// Optional X-axis offsets for the right and left weapons. Y follows X in each row.
+    weapon_axes: [Option<usize>; 2],
     clips: std::collections::HashMap<String, ErClip>,
 }
 
@@ -204,6 +207,8 @@ struct Pose {
     p: [Vec3; JOINTS],
     head_up: Vec3,
     head_fwd: Vec3,
+    /// Baked (X, Y) directions in model space, indexed like `HAND_ATTACH`.
+    weapon_axes: [Option<(Vec3, Vec3)>; 2],
 }
 
 impl Pose {
@@ -275,12 +280,14 @@ impl ErClips {
                 .ok_or_else(|| format!("no joint {name}"))?
                 * 3;
         }
-        let head_axes = oriented_names
-            .iter()
-            .position(|j| j == "Head")
-            .ok_or("no Head axes")?
-            * 9
-            + joints * 3;
+        let axes = |name: &str| {
+            oriented_names
+                .iter()
+                .position(|j| j == name)
+                .map(|i| joints * 3 + i * 9)
+        };
+        let head_axes = axes("Head").ok_or("no Head axes")?;
+        let weapon_axes = ["R_Weapon", "L_Weapon"].map(axes);
         let mut clips = std::collections::HashMap::with_capacity(count);
         for _ in 0..count {
             let name = r.name()?;
@@ -307,6 +314,7 @@ impl ErClips {
             stride,
             at,
             head_axes,
+            weapon_axes,
             clips,
         })
     }
@@ -332,6 +340,7 @@ impl ErClips {
             p: std::array::from_fn(|k| v(self.at[k])),
             head_up: v(self.head_axes),
             head_fwd: v(self.head_axes + 6),
+            weapon_axes: self.weapon_axes.map(|at| at.map(|x| (v(x), v(x + 3)))),
         }
     }
 
@@ -389,6 +398,8 @@ enum Drive {
         bind_up: Vec3,
         bind_side: Vec3,
     },
+    /// The actual item attachment below the wrist, indexed like `HAND_ATTACH`.
+    Grip { side: usize },
 }
 
 /// The roles of one rig's bones.
@@ -401,6 +412,184 @@ struct RigMap {
     scale: f32,
     /// The ER pelvis at rest.
     rest_pelvis: Vec3,
+    legs: Vec<Leg>,
+    stand_offset: f32,
+}
+
+/// A hock stays bent within the effective knee-to-hoof link. Colocated deform bones receive
+/// the same model rotation, even on rigs where they live on parallel branches.
+#[derive(Debug)]
+struct Leg {
+    joints: [J; 4],
+    hip: usize,
+    upper: Vec3,
+    lower: Vec3,
+    contact: Vec3,
+    neutral_toe: Vec3,
+    scale: f32,
+    bones: Vec<(usize, LegPart)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum LegPart {
+    Upper,
+    Lower,
+    Foot,
+}
+
+fn model_parent(parents: &[i16], work: &[Transform], bone: usize) -> GlobalTransform {
+    let mut model = GlobalTransform::IDENTITY;
+    let mut child = bone;
+    while let Some(parent) = parent_of(parents, child).filter(|&p| p < child) {
+        model = GlobalTransform::from(work[parent]) * model;
+        child = parent;
+    }
+    model
+}
+
+impl Leg {
+    fn build(
+        chain: &[usize],
+        rig: &RigInput,
+        piv: &[Vec3],
+        joints: [J; 4],
+        rest: &Pose,
+        eps: f32,
+    ) -> Option<Self> {
+        let height = piv[*chain.first()?].y;
+        // A short HD hip spacer precedes the first long descending link. The next distinct
+        // pivot is the knee. Coincident ankle/foot bones are one landmark.
+        let hi = (0..chain.len().checked_sub(1)?)
+            .find(|&i| piv[chain[i]].y - piv[chain[i + 1]].y > height * 0.20)?;
+        let hip = chain[hi];
+        let knee = chain[hi + 1];
+        let after = |start: usize| {
+            (start + 1..chain.len()).find(|&i| piv[chain[i]].distance(piv[chain[start]]) > eps)
+        };
+        let shin_end = after(hi + 1)?;
+        let shin = piv[chain[shin_end]] - piv[knee];
+        // A backward-sloping hock ends above the hoof. Preserve its geometry as part of the
+        // lower leg. The classic hoof has no toe pivot at all.
+        let ankle_i = if shin.z > -shin.y && shin.z > height * 0.10 {
+            after(shin_end).unwrap_or(shin_end)
+        } else {
+            shin_end
+        };
+        let ankle = piv[chain[ankle_i]];
+        let toe = after(ankle_i).map_or(ankle + Vec3::NEG_Z * ankle.y, |t| piv[chain[t]]);
+        let upper = piv[knee] - piv[hip];
+        let lower = ankle - piv[knee];
+        let [h, k, a, t] = joints.map(|j| rest.at(j));
+        let er_length = h.distance(k) + k.distance(a);
+        let er_toe = t - a;
+        if er_length < eps || upper.length() < eps || lower.length() < eps {
+            return None;
+        }
+        let mut bones = Vec::new();
+        for (i, &b) in chain.iter().enumerate().skip(hi) {
+            let part = if i == hi {
+                LegPart::Upper
+            } else if i < ankle_i {
+                LegPart::Lower
+            } else {
+                LegPart::Foot
+            };
+            bones.push((b, part));
+            // Also follow a parallel deformation chain whose pivots coincide with this chain.
+            for sibling in 0..piv.len() {
+                if chain.contains(&sibling) || piv[sibling].distance(piv[b]) > eps {
+                    continue;
+                }
+                let Some(p) = parent_of(rig.parents, sibling) else {
+                    continue;
+                };
+                if Some(p) == parent_of(rig.parents, b) || bones.iter().any(|&(id, _)| id == p) {
+                    if !bones.iter().any(|&(id, _)| id == sibling) {
+                        bones.push((sibling, part));
+                    }
+                }
+            }
+        }
+        bones.sort_unstable_by_key(|&(b, _)| b);
+        Some(Self {
+            joints,
+            hip,
+            upper,
+            lower,
+            contact: Vec3::new(toe.x - ankle.x, -ankle.y, toe.z - ankle.z),
+            neutral_toe: Vec3::new(0., er_toe.y, -er_toe.x.hypot(er_toe.z)),
+            scale: (upper.length() + lower.length()) / er_length,
+            bones,
+        })
+    }
+
+    fn pose(&self, pose: &Pose, parents: &[i16], binds: &[Vec3], work: &mut [Transform]) {
+        let [h, k, a, t] = self.joints.map(|j| pose.at(j));
+        let hips = (pose.at(J::RThigh) - pose.at(J::LThigh)).normalize_or(Vec3::X);
+        let thigh = k - h;
+        let shin = a - k;
+        let plane = shin.cross(thigh);
+        let side = if plane.length_squared() > 1e-6 {
+            let n = plane.normalize();
+            if n.dot(hips) < 0. {
+                -n
+            } else {
+                n
+            }
+        } else {
+            hips
+        };
+        let tip = (t - a).normalize_or(Vec3::NEG_Z);
+        // Extract yaw from the toe when it has a forward projection. As a swinging foot
+        // passes through vertical, the knee plane keeps the sagittal frame continuous.
+        let lateral = tip.cross(Vec3::Y);
+        let weight = (lateral.dot(side) * 3.).clamp(0., 1.);
+        let foot_side = side.lerp(lateral.normalize_or(side), weight);
+        let Some(foot) = basis(tip, foot_side)
+            .zip(basis(self.neutral_toe, Vec3::X))
+            .map(|(now, rest)| now * rest.inverse())
+        else {
+            return;
+        };
+        let hip = model_parent(parents, work, self.hip).transform_point(binds[self.hip]);
+        let mut reach = (a - h) * self.scale;
+        reach.y = t.y * self.scale - (foot * self.contact).y - hip.y;
+        let axis = reach.normalize_or(Vec3::NEG_Y);
+        let u = self.upper.length();
+        let l = self.lower.length();
+        let margin = u.min(l) * 0.0001;
+        let d = reach.length().clamp((u - l).abs() + margin, u + l - margin);
+        let along = (u * u - l * l + d * d) / (2. * d);
+        let bend = (u * u - along * along).max(0.).sqrt();
+        let pole = (thigh - axis * thigh.dot(axis))
+            .normalize_or(side.cross(axis).normalize_or(Vec3::NEG_Z));
+        let upper = axis * along + pole * bend;
+        let lower = axis * d - upper;
+        let solved_side =
+            lower
+                .cross(upper)
+                .try_normalize()
+                .map_or(side, |s| if s.dot(side) < 0. { -s } else { s });
+        let orient = |dir, bind| {
+            basis(dir, solved_side)
+                .zip(basis(bind, Vec3::X))
+                .map(|(now, rest)| now * rest.inverse())
+        };
+        let (Some(thigh), Some(shin)) = (orient(upper, self.upper), orient(lower, self.lower))
+        else {
+            return;
+        };
+        for &(b, part) in &self.bones {
+            let desired = match part {
+                LegPart::Upper => thigh,
+                LegPart::Lower => shin,
+                LegPart::Foot => foot,
+            };
+            let parent = model_parent(parents, work, b).rotation();
+            work[b] = Transform::from_translation(binds[b])
+                .with_rotation((parent.inverse() * desired).normalize());
+        }
+    }
 }
 
 fn parent_of(parents: &[i16], i: usize) -> Option<usize> {
@@ -507,6 +696,20 @@ fn basis(up: Vec3, side: Vec3) -> Option<Quat> {
     let y = up.try_normalize()?;
     let x = (side - y * side.dot(y)).try_normalize()?;
     let z = x.cross(y);
+    Some(Quat::from_mat3(&Mat3::from_cols(x, y, z)).normalize())
+}
+
+/// The installed hatchet's shaft is model −Z and its bit is −Y. The ER weapon's shaft is
+/// its +Y axis and its bit points along +X. Keep the shaft exact when sampling between frames.
+fn grip_rotation((bit, shaft): (Vec3, Vec3)) -> Option<Quat> {
+    let x = bit.cross(shaft);
+    // Opposing samples can cancel an axis or leave both axes pointing the same way.
+    if shaft.length_squared() < 1e-8 || x.length_squared() < 1e-8 {
+        return None;
+    }
+    let z = -shaft.try_normalize()?;
+    let x = x.try_normalize()?;
+    let y = z.cross(x);
     Some(Quat::from_mat3(&Mat3::from_cols(x, y, z)).normalize())
 }
 
@@ -643,8 +846,23 @@ impl RigMap {
                 bone,
                 Drive::Torso {
                     from: mapped[k],
-                    to: mapped[j],
-                    bind_up: points[j] - points[k],
+                    // The first spine helper can sit BELOW the pelvis. Aiming that short
+                    // offset up flips the hips and both leg sockets. The pelvis frame uses
+                    // anatomical up and the ER pelvis-to-spine direction on every model.
+                    to: if bone == pelvis {
+                        ErPoint {
+                            a: J::Spine,
+                            b: J::Spine,
+                            t: 0.,
+                        }
+                    } else {
+                        mapped[j]
+                    },
+                    bind_up: if bone == pelvis {
+                        Vec3::Y
+                    } else {
+                        points[j] - points[k]
+                    },
                     side_mix: (frac / shoulder_frac).clamp(0.0, 1.0),
                 },
             ));
@@ -722,8 +940,7 @@ impl RigMap {
                 let Some(j) = next_distinct(&points, k, eps) else {
                     continue;
                 };
-                // The wrist takes the ER hand's whole frame when the thumb says which way the
-                // palm faces: the roll of the hand, and of the weapon in it.
+                // The wrist takes the ER hand's whole frame when the thumb locates the palm.
                 if let (true, Some(t)) = (k == wrist_i, thumb) {
                     driven.push((
                         bone,
@@ -746,6 +963,12 @@ impl RigMap {
                     },
                 ));
             }
+            // A shared wrist/socket must keep the palm frame. On HD rigs the socket can be
+            // below an animated origin helper. Only rotate the actual attachment bone.
+            let socket = rig.hands[side];
+            if socket != wrist {
+                driven.push((socket, Drive::Grip { side }));
+            }
         }
 
         // The legs, hip to toe; the toe follows its foot. A bone both legs hang from (an HD
@@ -756,6 +979,8 @@ impl RigMap {
             .into_iter()
             .filter(|b| ancestors(rig.parents, toes[1]).contains(b))
             .collect();
+        let mut legs = Vec::with_capacity(2);
+        let mut stand_offset = 0.;
         for (&toe, leg) in toes.iter().zip(LEGS) {
             let mut chain: Vec<usize> = ancestors(rig.parents, toe)
                 .into_iter()
@@ -765,9 +990,18 @@ impl RigMap {
             if chain.len() < 2 {
                 return Err("a leg with fewer than two bones".into());
             }
+            if let Some(mapped) = Leg::build(&chain, rig, &piv, leg, rest, eps) {
+                // Calibrate the pelvis against a standing leg on this rig. A tall hoof or
+                // short shin changes the bind ankle height without changing the ER clip.
+                let bind_delta = mapped.upper + mapped.lower;
+                stand_offset +=
+                    bind_delta.y + (rest.at(leg[0]).y - rest.at(leg[2]).y) * mapped.scale;
+                legs.push(mapped);
+                continue;
+            }
             let points: Vec<Vec3> = chain.iter().map(|&b| piv[b]).collect();
             let last = points.len() - 1;
-            // The knee and ankle by height: a bind leg hangs straight.
+            // Unusual short chains without two separate leg links retain the polyline fallback.
             let hip_y = rest.at(leg[0]).y.max(f32::EPSILON);
             let mut anchors = vec![(0, 0)];
             let mut floor = 0;
@@ -805,8 +1039,18 @@ impl RigMap {
         Ok(Self {
             driven,
             pelvis,
-            scale,
+            scale: if legs.len() == 2 {
+                (legs[0].scale + legs[1].scale) * 0.5
+            } else {
+                scale
+            },
             rest_pelvis,
+            stand_offset: if legs.len() == 2 {
+                stand_offset * 0.5
+            } else {
+                0.
+            },
+            legs,
         })
     }
 
@@ -845,6 +1089,7 @@ impl RigMap {
                     .zip(basis(bind_up, Vec3::X))
                     .map(|(now, bind)| now * bind.inverse()),
                 Drive::Head => basis(pose.head_up, pose.head_fwd.cross(pose.head_up)),
+                Drive::Grip { side } => pose.weapon_axes[side].and_then(grip_rotation),
                 Drive::Hand {
                     hand,
                     finger,
@@ -866,11 +1111,15 @@ impl RigMap {
                 work[bone].rotation = local;
             }
         }
-        let offset = (pose.at(J::Pelvis) - self.rest_pelvis) * self.scale;
+        let offset =
+            (pose.at(J::Pelvis) - self.rest_pelvis) * self.scale + Vec3::Y * self.stand_offset;
         let parent = model(work, parent_of(parents, self.pelvis));
         let translation = binds[self.pelvis] + parent.inverse() * offset;
         if translation.is_finite() {
             work[self.pelvis].translation = translation;
+        }
+        for leg in &self.legs {
+            leg.pose(pose, parents, binds, work);
         }
     }
 
@@ -879,6 +1128,11 @@ impl RigMap {
         self.driven
             .iter()
             .map(|&(b, _)| b)
+            .chain(
+                self.legs
+                    .iter()
+                    .flat_map(|leg| leg.bones.iter().map(|&(b, _)| b)),
+            )
             .chain(std::iter::once(self.pelvis))
     }
 }
@@ -1074,6 +1328,28 @@ fn map_rig(
     )
 }
 
+/// The stock evaluator can key one channel while the others still hold a post-pass write.
+fn capture_stock(
+    stock: &mut Transform,
+    current: Transform,
+    written: Option<Transform>,
+    twist_rotation: Option<Quat>,
+) {
+    let Some(last) = written else {
+        *stock = current;
+        return;
+    };
+    if current.translation != last.translation {
+        stock.translation = current.translation;
+    }
+    if current.rotation != last.rotation && Some(current.rotation) != twist_rotation {
+        stock.rotation = current.rotation;
+    }
+    if current.scale != last.scale {
+        stock.scale = current.scale;
+    }
+}
+
 /// Pose the local player's rig from the ER clips.
 #[allow(clippy::type_complexity)] // one Bevy system's full input set
 pub(super) fn drive_retarget(
@@ -1190,21 +1466,16 @@ pub(super) fn drive_retarget(
         return;
     }
 
-    // The stock pose under the pass. A bone still holding last frame's write (ours, or the strafe
-    // twist's on top of it) was not re-keyed, so its stock value stands.
     if r.stock.len() != bones {
         r.stock = rig.locals.clone();
     }
     for b in map.bones() {
-        let cur = rig.locals[b];
-        let wrote = r.written.as_ref().is_some_and(|w| {
-            w[b] == cur
-                || (w[b].translation == cur.translation
-                    && twist.and_then(|t| t.last_written(b)) == Some(cur.rotation))
-        });
-        if !wrote {
-            r.stock[b] = cur;
-        }
+        capture_stock(
+            &mut r.stock[b],
+            rig.locals[b],
+            r.written.as_ref().map(|w| w[b]),
+            twist.and_then(|t| t.last_written(b)),
+        );
     }
 
     // A clip change starts a blend from what was last written.
@@ -1417,16 +1688,15 @@ fn drive_remote_retarget(
             return actions_on && action.is_some_and(|a| now < a.started + a.duration)
                 || loco_on && peer.is_some_and(|p| now < p.until);
         };
+        let mut work = rig.locals.clone();
         for b in map.bones() {
-            let current = rig.locals[b];
-            let ours = state.written.as_ref().is_some_and(|w| {
-                w[b] == current
-                    || (w[b].translation == current.translation
-                        && twist.and_then(|t| t.last_written(b)) == Some(current.rotation))
-            });
-            if !ours {
-                state.stock[b] = current;
-            }
+            capture_stock(
+                &mut state.stock[b],
+                work[b],
+                state.written.as_ref().map(|w| w[b]),
+                twist.and_then(|t| t.last_written(b)),
+            );
+            work[b] = state.stock[b];
         }
         let delta = at.translation() - state.last_pos;
         state.last_pos = at.translation();
@@ -1480,7 +1750,6 @@ fn drive_remote_retarget(
             state.fade_at = Some(now);
             state.gait = None;
         }
-        let mut work = state.stock.clone();
         let (since, fade_len) = match target {
             Some((gait, _, clip, frame)) => {
                 if let Some(clips) = clips {
@@ -1535,6 +1804,190 @@ pub(super) fn plugin(app: &mut App) {
 mod tests {
     use super::*;
 
+    /// Installed-data fixture. Both manifests resolve the same character path through the
+    /// engine's archive chain. Pose the actual first Stand keys under the ER sample so socket
+    /// and helper rotations participate just as they do after the stock evaluator.
+    #[test]
+    #[ignore = "requires WOW_DATA and ERAN_FILE from the owner's install"]
+    fn installed_player_limbs() {
+        use benilla_assets::coords::wow_to_bevy;
+        use std::path::{Path, PathBuf};
+        let data = PathBuf::from(std::env::var_os("WOW_DATA").unwrap());
+        let bake = std::fs::read(std::env::var_os("ERAN_FILE").unwrap()).unwrap();
+        let clips = ErClips::parse(&bake).unwrap();
+        let rest = clips.rest().unwrap();
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/profiles");
+        for (profile, landmarks) in [
+            (
+                "base",
+                [
+                    [[6, 13, 23, 36], [5, 12, 21, 35]],
+                    [[8, 15, 22, 33], [7, 14, 20, 32]],
+                    [[8, 17, 24, 39], [7, 16, 22, 38]],
+                    [[5, 13, 45, 45], [6, 14, 46, 46]],
+                ],
+            ),
+            (
+                "wm-hd",
+                [
+                    [[6, 26, 40, 46], [8, 27, 41, 47]],
+                    [[5, 17, 30, 36], [6, 18, 31, 37]],
+                    [[15, 21, 34, 44], [16, 22, 35, 45]],
+                    [[5, 13, 31, 40], [6, 14, 34, 41]],
+                ],
+            ),
+        ] {
+            let chain = benilla_assets::open_profile_chain(
+                &data,
+                &manifest_dir.join(format!("{profile}.mpqlist")),
+                profile,
+            )
+            .unwrap();
+            for ((race, sex), sides) in [
+                ("Human", "Female"),
+                ("Human", "Male"),
+                ("Orc", "Male"),
+                ("Tauren", "Male"),
+            ]
+            .into_iter()
+            .zip(landmarks)
+            {
+                let path = format!(r"Character\{race}\{sex}\{race}{sex}");
+                let bytes = chain.read(&format!("{path}.m2")).unwrap();
+                let skel = benilla_formats::parse_m2_skeleton(&bytes).unwrap();
+                let att = benilla_formats::parse_m2_attachments(&bytes).unwrap();
+                let key = |id| skel.bones.iter().position(|b| b.key_bone == id);
+                let point = |id| att.iter().find(|a| a.id == id).unwrap();
+                let parents: Vec<_> = skel.bones.iter().map(|b| b.parent).collect();
+                let piv: Vec<_> = skel.bones.iter().map(|b| wow_to_bevy(b.pivot)).collect();
+                let binds: Vec<_> = (0..piv.len())
+                    .map(|i| piv[i] - parent_of(&parents, i).map_or(Vec3::ZERO, |p| piv[p]))
+                    .collect();
+                let rig = RigInput {
+                    parents: &parents,
+                    binds: &binds,
+                    head: key(6).unwrap(),
+                    hands: HAND_ATTACH.map(|id| usize::from(point(id).bone)),
+                    elbows: ELBOW_ATTACH.map(|id| Some(wow_to_bevy(point(id).position))),
+                    thumbs: [key(12), key(17)],
+                };
+                let map = RigMap::build(&rig, &rest).unwrap();
+                let mut stock: Vec<_> = binds
+                    .iter()
+                    .copied()
+                    .map(Transform::from_translation)
+                    .collect();
+                let anims =
+                    benilla_formats::parse_m2_animations_with_external(&bytes, |id, variation| {
+                        (id == 0)
+                            .then(|| {
+                                chain
+                                    .read(&format!("{path}{id:04}-{variation:02}.anim"))
+                                    .ok()
+                            })
+                            .flatten()
+                    });
+                let stand = anims.iter().find(|a| a.anim_id == 0).unwrap();
+                for b in &stand.bones {
+                    let t = &mut stock[usize::from(b.bone)];
+                    if let Some((_, v)) = b.translation.first() {
+                        t.translation += wow_to_bevy(*v);
+                    }
+                    if let Some((_, [x, y, z, w])) = b.rotation.first().copied() {
+                        t.rotation = Quat::from_xyzw(-y, z, -x, w).normalize();
+                    }
+                    if let Some((_, [x, y, z])) = b.scale.first().copied() {
+                        t.scale = Vec3::new(y, z, x);
+                    }
+                }
+                for (clip, frame) in [
+                    (IDLE, 0.),
+                    (GUARD, 0.),
+                    (WALK, 10.),
+                    (RUN, 0.),
+                    (RUN, 11.),
+                    (CROUCH_IDLE, 0.),
+                    (27110, 14.),
+                ] {
+                    let pose = clips.sample(clips.named(clip).unwrap(), frame, false);
+                    let mut work = stock.clone();
+                    map.pose(&pose, &parents, &binds, &mut work);
+                    let mut world = Vec::new();
+                    for (i, t) in work.iter().enumerate() {
+                        let local = t.compute_affine();
+                        world.push(parent_of(&parents, i).map_or(local, |p| world[p] * local));
+                    }
+                    for (side, [hip, knee, ankle, toe]) in sides.into_iter().enumerate() {
+                        let at = |b: usize| Vec3::from(world[b].translation);
+                        let er = LEGS[side].map(|j| pose.at(j));
+                        let foot_forward = world[ankle].transform_vector3(Vec3::NEG_Z).normalize();
+                        let sole = world[toe].transform_point3(Vec3::NEG_Y * piv[toe].y);
+                        let thigh_error = (at(knee) - at(hip))
+                            .angle_between(er[1] - er[0])
+                            .to_degrees();
+                        let shin_error = (at(ankle) - at(knee))
+                            .angle_between(er[2] - er[1])
+                            .to_degrees();
+                        assert!(
+                            thigh_error.is_finite() && shin_error.is_finite() && sole.is_finite()
+                        );
+                        if clip == IDLE {
+                            assert!(
+                                foot_forward.dot(Vec3::NEG_Z) > 0.,
+                                "{profile} {race}{sex} side {side} faces backward"
+                            );
+                            assert!((at(ankle).x - at(hip).x) * (er[2].x - er[0].x) >= -0.002);
+                        }
+                        println!("{profile} {race}{sex} {clip}:{frame} {side} thigh={thigh_error:.1} shin={shin_error:.1} sole={:.3} er_toe={:.3} foot_fwd={foot_forward:.2} ankle={:.2}",sole.y,er[3].y,at(ankle));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stock_capture_tracks_independently_keyed_channels() {
+        let written = Transform {
+            translation: Vec3::X,
+            rotation: Quat::from_rotation_y(0.5),
+            scale: Vec3::splat(2.0),
+        };
+        let twist = Quat::from_rotation_y(0.8);
+        let base = Transform::from_rotation(Quat::from_rotation_z(0.2));
+        let mut stock = Transform::IDENTITY;
+        capture_stock(&mut stock, base, None, Some(base.rotation));
+        assert_eq!(stock, base);
+
+        let mut expected = base;
+        expected.rotation = Quat::from_rotation_z(0.4);
+        let current = Transform {
+            rotation: expected.rotation,
+            ..written
+        };
+        capture_stock(&mut stock, current, Some(written), Some(twist));
+        assert_eq!(stock, expected);
+
+        expected.scale = Vec3::splat(3.0);
+        let current = Transform {
+            rotation: twist,
+            scale: expected.scale,
+            ..written
+        };
+        capture_stock(&mut stock, current, Some(written), Some(twist));
+        assert_eq!(stock, expected);
+
+        expected.translation = Vec3::Y;
+        let current = Transform {
+            translation: expected.translation,
+            rotation: twist,
+            ..written
+        };
+        capture_stock(&mut stock, current, Some(written), Some(twist));
+        assert_eq!(stock, expected);
+        capture_stock(&mut stock, written, Some(written), Some(twist));
+        assert_eq!(stock, expected);
+    }
+
     #[test]
     fn remote_gait_uses_speed_and_peer_sprint() {
         assert_eq!(remote_gait(0.0, true).0, IDLE);
@@ -1587,9 +2040,50 @@ mod tests {
         let clip = clips.named(IDLE).expect("the idle");
         assert_eq!((clip.frames, clip.blend), (2, 10.0));
         let pose = clips.sample(clip, 0.5, false);
+        assert_eq!(pose.weapon_axes, [None; 2]);
         // Pelvis x 1.5 in the bake (+X left) is −1.5 in the model (+X right); z flips too.
         assert!((pose.at(J::Pelvis) - Vec3::new(-1.5, 0.5, -0.5)).length() < 1e-6);
         assert!(ErClips::parse(b"ERAX").is_err());
+    }
+
+    #[test]
+    fn grip_aligns_the_hatchet_under_an_animated_helper() {
+        let map = RigMap {
+            driven: vec![(2, Drive::Grip { side: 1 })],
+            pelvis: 0,
+            scale: 1.0,
+            rest_pelvis: Vec3::ZERO,
+            legs: Vec::new(),
+            stand_offset: 0.0,
+        };
+        let stock = [
+            Transform::from_rotation(Quat::from_rotation_x(0.4)),
+            Transform::from_xyz(0.2, 0.1, -0.3).with_rotation(Quat::from_rotation_y(-0.7)),
+            Transform::from_rotation(Quat::from_rotation_z(0.3)),
+        ];
+        let solve = |axes| {
+            let pose = Pose {
+                p: [Vec3::ZERO; JOINTS],
+                head_up: Vec3::Y,
+                head_fwd: Vec3::NEG_Z,
+                weapon_axes: [None, axes],
+            };
+            let mut work = stock;
+            map.pose(&pose, &[-1, 0, 1], &[Vec3::ZERO; 3], &mut work);
+            assert_eq!(&work[..2], &stock[..2]);
+            work[2].rotation
+        };
+        let shaft = Vec3::new(-2.0, 1.0, 2.0).normalize();
+        let bit = Vec3::new(1.0, 2.0, 0.0).normalize();
+        // Interpolated axes can lose orthogonality. The shaft takes priority over the bit.
+        let local = solve(Some((bit + shaft * 0.25, shaft * 0.9)));
+        let grip = stock[0].rotation * stock[1].rotation * local;
+        assert!((grip * Vec3::NEG_Z).distance(shaft) < 1e-5);
+        assert!((grip * Vec3::NEG_Y).distance(bit) < 1e-5);
+        assert!((grip * Vec3::X).distance(bit.cross(shaft)) < 1e-5);
+        for axes in [None, Some((bit, Vec3::ZERO)), Some((shaft, shaft))] {
+            assert_eq!(solve(axes), stock[2].rotation);
+        }
     }
 
     /// A chain twice the ER limb's length, with an extra point mid-thigh, lands on the ER joints
@@ -1606,6 +2100,7 @@ mod tests {
             p,
             head_up: Vec3::Y,
             head_fwd: Vec3::NEG_Z,
+            weapon_axes: [None; 2],
         };
         let points = [
             Vec3::new(0.2, 2.0, 0.0),
@@ -1624,6 +2119,8 @@ mod tests {
 
         // One aimed bone, its pose the bind direction: the local stays identity.
         let map = RigMap {
+            legs: Vec::new(),
+            stand_offset: 0.,
             driven: vec![(
                 1,
                 Drive::Aim {
@@ -1729,6 +2226,7 @@ mod tests {
             p,
             head_up: Vec3::Y,
             head_fwd: Vec3::NEG_Z,
+            weapon_axes: [None; 2],
         };
         let map = RigMap::build(
             &RigInput {
