@@ -18,6 +18,7 @@ Client -> server
   MODE <1|0>                  -> MODE <1|0>   (also the client's keepalive)
   SPRINT <1|0>                   raise / restore the run speed
   CROUCH <1|0>                   lower / restore the run speed; the crouch pose for others
+  ROLL <rate>                    run (forward and back) at <rate> times the run for a roll; 0 ends it
   HIT <mv%> <guid,guid,...> [hands]   one hit window's struck units, nearest first; Elden Ring
                                 damage with cleave (hands 2: a one-handed weapon held in both)
   SWING <action>                 relayed to Souls players nearby as SWING <guid> <action>
@@ -55,7 +56,9 @@ local BYTES_1_VIS_FLAG = 2          -- UNIT_BYTES_1_OFFSET_VIS_FLAG
 local STAND_FLAG_CREEP = 0x02       -- UNIT_STAND_FLAGS_CREEP (the stealth crouch pose)
 
 local MOVE_RUN = 1
+local MOVE_RUN_BACK = 2
 local BASE_RUN_SPEED = 7.0
+local BASE_RUN_BACK_SPEED = 4.5
 local SLOT_MAINHAND = 15
 local SLOT_OFFHAND = 16
 local ITEM_CLASS_WEAPON = 2
@@ -78,6 +81,7 @@ local EMOTE_STATE_STUN = 64
 local TICK_MS = 100
 local SPRINT_RATE = 1.4             -- ESTIMATE: ER's sprint over its run
 local CROUCH_RATE = 0.5             -- ESTIMATE: ER's crouch walk over its run
+local ROLL_RATE_MIN, ROLL_RATE_MAX = 0.5, 3.0   -- the client's roll rate, kept sane
 local WINDUP_SHARE = 0.4            -- decision 16: 40 % of the attack time...
 local WINDUP_MIN_MS = 600           -- ...clamped 0.6-1.5 s
 local WINDUP_MAX_MS = 1500
@@ -313,17 +317,26 @@ local function shares(units, c)
     return share
 end
 
+local function restore_back(player, state)
+    if state.back_rate then
+        player:SetSpeed(MOVE_RUN_BACK, state.back_rate, true)
+        state.back_rate = nil
+    end
+end
+
 local function restore_speed(player, state)
     if state.sprint_rate then
         player:SetSpeed(MOVE_RUN, state.sprint_rate, true)
         state.sprint_rate = nil
     end
+    restore_back(player, state)
 end
 
--- The run speed for the client's stance: sprinting raises it, crouching lowers it.
+-- The run speed for the client's stance: a roll runs at its own rate, sprinting raises it,
+-- crouching lowers it.
 local function apply_speed(player, state)
-    local factor = (state.sprint and SPRINT_RATE) or (state.crouch and CROUCH_RATE) or 1
-    if factor == 1 then
+    local factor = state.roll or (state.sprint and SPRINT_RATE) or (state.crouch and CROUCH_RATE) or 1
+    if factor == 1 and not state.roll then
         restore_speed(player, state)
         return
     end
@@ -331,6 +344,16 @@ local function apply_speed(player, state)
         state.sprint_rate = player:GetSpeed(MOVE_RUN) / BASE_RUN_SPEED
     end
     player:SetSpeed(MOVE_RUN, state.sprint_rate * factor, true)
+    -- A roll back carries as fast as one forward.
+    if state.roll then
+        if not state.back_rate then
+            state.back_rate = player:GetSpeed(MOVE_RUN_BACK) / BASE_RUN_BACK_SPEED
+        end
+        local back = state.sprint_rate * factor * BASE_RUN_SPEED / BASE_RUN_BACK_SPEED
+        player:SetSpeed(MOVE_RUN_BACK, back, true)
+    else
+        restore_back(player, state)
+    end
 end
 
 -- The crouch pose for everyone else: the stealth CREEP stand flag, only if we set it (a real
@@ -350,7 +373,7 @@ local function set_creep(player, state, on)
 end
 
 local function restore_stance(player, state)
-    state.sprint, state.crouch = nil, nil
+    state.sprint, state.crouch, state.roll = nil, nil, nil
     restore_speed(player, state)
     set_creep(player, state, false)
 end
@@ -571,6 +594,10 @@ local function on_addon(event, sender, msg_type, prefix, msg, target)
         state.sprint = fields[2] == "1" or nil
         apply_speed(sender, state)
         announce_peer(sender, state)
+    elseif state and verb == "ROLL" then
+        local rate = tonumber(fields[2]) or 0
+        state.roll = rate > 0 and math.min(math.max(rate, ROLL_RATE_MIN), ROLL_RATE_MAX) or nil
+        apply_speed(sender, state)
     elseif state and verb == "CROUCH" then
         state.crouch = fields[2] == "1" or nil
         apply_speed(sender, state)

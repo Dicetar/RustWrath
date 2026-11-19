@@ -16,6 +16,7 @@
 //!   server relays to other Souls players, who play it on our body.
 //! - **Sprint and crouch.** `SPRINT 1|0` and `CROUCH 1|0` follow them; the server raises or
 //!   lowers the run speed, and shows the crouch to other players as the stealth pose.
+//!   `ROLL <rate>` runs the body at a roll's speed for the equipment load (`ROLL 0` ends it).
 //! - **Enemy strikes.** `STRIKE` telegraphs a creature's blow: a bar over it fills for the windup.
 //!   A strike on us is judged at the end of the windup, from the creature's rendered facing (which
 //!   the server locked) and our own state: out of reach or the cone a miss, inside a parry window
@@ -244,6 +245,8 @@ pub(crate) struct SoulsLink {
     sprint_sent: bool,
     /// The crouch state the server was last told.
     crouch_sent: bool,
+    /// The roll's run speed the server was last told, in hundredths; `None` while not rolling.
+    roll_sent: Option<u16>,
     /// The action run last reported as `SWING`.
     swing_sent: Option<Instance>,
     /// Messages waiting to go out this frame.
@@ -294,6 +297,7 @@ impl SoulsLink {
             && self.announced_at.is_none()
             && !self.sprint_sent
             && !self.crouch_sent
+            && self.roll_sent.is_none()
             && self.swing_sent.is_none()
             && self.outbox.is_empty()
             && self.strikes.is_empty()
@@ -679,6 +683,20 @@ pub(super) fn drive_link(
     if sprint != link.sprint_sent {
         link.outbox.push(format!("SPRINT\t{}", u8::from(sprint)));
         link.sprint_sent = sprint;
+    }
+    // The roll: root motion presses the movement keys, so the server runs the body at the roll's
+    // speed for the equipment load until the roll ends (or the movement cancel releases it).
+    let roll = running
+        .filter(|(_, action, _)| {
+            config.features.root_motion
+                && action.kind == ActionKind::Dodge
+                && action.name.contains("Roll")
+        })
+        .map(|_| (crate::combat_kit::roll_load(link.load).speed * 100.0).round() as u16);
+    if roll != link.roll_sent {
+        let rate = roll.map_or(0.0, |hundredths| f32::from(hundredths) / 100.0);
+        link.outbox.push(format!("ROLL	{rate:.2}"));
+        link.roll_sent = roll;
     }
     // The crouch: slower, and the crouch pose for other players.
     let crouch = souls.crouched && config.features.crouch;

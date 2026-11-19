@@ -284,7 +284,7 @@ pub(crate) fn resolve_press(
     }
 }
 
-/// The roll an equipment load gets: the kit rows it rolls with and how far it carries.
+/// The roll an equipment load gets: the kit rows it rolls with, how far it carries and how fast.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct RollLoad {
     /// The kit rows' prefix (`LightRoll…`, `MediumRoll…`, `HeavyRoll…`); a kit without them
@@ -292,17 +292,27 @@ pub(crate) struct RollLoad {
     prefix: &'static str,
     /// The share of the roll's root motion the body travels.
     pub(crate) distance: f32,
+    /// The run speed asked of the server for the roll, over the stance's own: root motion presses
+    /// the movement keys, so the body covers the roll's distance only as fast as it can run.
+    pub(crate) speed: f32,
 }
 
 /// The highest load of the light roll, Elden Ring's fast roll.
 const LIGHT_LOAD_MAX: u8 = 6;
 /// The highest load of the medium roll; above it the heavy roll.
 const MEDIUM_LOAD_MAX: u8 = 26;
-/// ESTIMATE: the medium roll carries this share of its distance at the top of its range...
-const MEDIUM_DISTANCE_FLOOR: f32 = 0.9;
-/// ...and the heavy roll this at [`HEAVY_LOAD_FLOOR`] and above, ER's fat roll's crawl.
-const HEAVY_DISTANCE_FLOOR: f32 = 0.7;
+/// The load at and above which the heavy roll is at its slowest.
 const HEAVY_LOAD_FLOOR: u8 = 37;
+/// Owner-tuned: the roll's distance over the ER animation's, falling with the load: the light
+/// roll from twice ER's down to 1.8, the medium 1.7 down to ER's own, the heavy from 0.95 to
+/// 0.7 (ER's fat roll's crawl).
+const LIGHT_DISTANCE: (f32, f32) = (2.0, 1.8);
+const MEDIUM_DISTANCE: (f32, f32) = (1.7, 1.0);
+const HEAVY_DISTANCE: (f32, f32) = (0.95, 0.7);
+/// ER's rolls travel about as fast as the WoW run (6.5-7 m/s against 7 yd/s); the speed asked
+/// keeps this headroom over the distance share, so the body keeps up with the root motion and
+/// the owed distance, not the run speed, ends the roll.
+const ROLL_SPEED_HEADROOM: f32 = 1.25;
 
 /// The roll for an equipment load score (the server's `LOAD`: 0-4 an armour slot, the weapons and
 /// gun on top); `None`, no score yet, rolls the kit's own roll the whole way.
@@ -311,27 +321,30 @@ pub(crate) fn roll_load(score: Option<u8>) -> RollLoad {
         return RollLoad {
             prefix: "",
             distance: 1.0,
+            speed: ROLL_SPEED_HEADROOM,
         };
     };
-    let lerp = |from: u8, to: u8, floor: f32| {
+    let along = |from: u8, to: u8, (start, end): (f32, f32)| {
         let share = f32::from(score.clamp(from, to) - from) / f32::from(to - from);
-        1.0 + (floor - 1.0) * share
+        start + (end - start) * share
     };
-    if score <= LIGHT_LOAD_MAX {
-        RollLoad {
-            prefix: "Light",
-            distance: 1.0,
-        }
+    let (prefix, distance) = if score <= LIGHT_LOAD_MAX {
+        ("Light", along(0, LIGHT_LOAD_MAX, LIGHT_DISTANCE))
     } else if score <= MEDIUM_LOAD_MAX {
-        RollLoad {
-            prefix: "Medium",
-            distance: lerp(LIGHT_LOAD_MAX + 1, MEDIUM_LOAD_MAX, MEDIUM_DISTANCE_FLOOR),
-        }
+        (
+            "Medium",
+            along(LIGHT_LOAD_MAX + 1, MEDIUM_LOAD_MAX, MEDIUM_DISTANCE),
+        )
     } else {
-        RollLoad {
-            prefix: "Heavy",
-            distance: lerp(MEDIUM_LOAD_MAX + 1, HEAVY_LOAD_FLOOR, HEAVY_DISTANCE_FLOOR),
-        }
+        (
+            "Heavy",
+            along(MEDIUM_LOAD_MAX + 1, HEAVY_LOAD_FLOOR, HEAVY_DISTANCE),
+        )
+    };
+    RollLoad {
+        prefix,
+        distance,
+        speed: distance * ROLL_SPEED_HEADROOM,
     }
 }
 
@@ -660,5 +673,24 @@ end
         assert!(clip_bindings(&kit, None, Some(17))
             .get(&ActionId(101))
             .is_none());
+    }
+
+    /// The light roll carries twice ER's distance, and every step of load carries no further
+    /// than the one below it; the speed asked keeps its headroom over the distance.
+    #[test]
+    fn roll_distance_falls_with_the_load_from_twice_er() {
+        let light = roll_load(Some(0));
+        assert_eq!((light.prefix, light.distance), ("Light", 2.0));
+        assert_eq!(roll_load(Some(7)).prefix, "Medium");
+        assert_eq!(roll_load(Some(27)).prefix, "Heavy");
+        assert_eq!(roll_load(Some(60)).distance, roll_load(Some(37)).distance);
+        let mut last = f32::INFINITY;
+        for score in 0..=40 {
+            let load = roll_load(Some(score));
+            assert!(load.distance <= last, "load {score} rolls further");
+            assert!((load.speed - load.distance * ROLL_SPEED_HEADROOM).abs() < 1e-6);
+            last = load.distance;
+        }
+        assert_eq!(roll_load(None).distance, 1.0);
     }
 }
