@@ -475,9 +475,13 @@ fn parallel_colors(group: &WmoGroup) -> Option<Vec<Color>> {
 /// The authored MOCV with the doorway fade run over it.
 fn fixed_colors(group: &WmoGroup, group_bytes: &[u8], root: &WmoRoot) -> Option<Vec<Color>> {
     let mut colors = parallel_colors(group)?;
-    let refs =
-        wmo_group_header(group_bytes).map_or((0, 0), |h| (h.portal_ref_start, h.portal_ref_count));
-    fix_color_vertex_alpha(&mut colors, group, root, refs);
+    // `MOHD.flags & 0x8` skips the load-time MOCV fix-up (`MapObjRead.cpp:323`); Stormwind's
+    // root sets it, and its corridors' colours are final as authored.
+    if !root.skips_color_fix() {
+        let refs = wmo_group_header(group_bytes)
+            .map_or((0, 0), |h| (h.portal_ref_start, h.portal_ref_count));
+        fix_color_vertex_alpha(&mut colors, group, root, refs);
+    }
     Some(colors)
 }
 
@@ -489,6 +493,7 @@ pub fn wmo_group_submeshes(group_bytes: &[u8], root: &WmoRoot) -> Result<Vec<Ren
     // The reference fades once per group, gated on its `+0xbc` done-byte (`0x6b3f90`); a group
     // loads once, so the load is the gate.
     let colors = fixed_colors(&group, group_bytes, root).unwrap_or_default();
+    let unified = root.unified_ambient();
     let ParsedWmo::Root(root) = &root.parsed else {
         anyhow::bail!("WmoRoot is not a root");
     };
@@ -588,6 +593,7 @@ pub fn wmo_group_submeshes(group_bytes: &[u8], root: &WmoRoot) -> Result<Vec<Ren
                 .then(|| material.map(|m| m.sidn_rgb))
                 .flatten();
             submesh.window = flags & 0x20 != 0;
+            submesh.wmo_unified = unified;
             if !has_normals {
                 submesh.normals.clear(); // no MONR: the renderer computes flat normals
             }
@@ -596,8 +602,13 @@ pub fn wmo_group_submeshes(group_bytes: &[u8], root: &WmoRoot) -> Result<Vec<Ren
             }
             // MOCV alpha is lighting data on interior batches: TRANS reads it as the lit-to-bake
             // lerp factor, INT as the self-illumination mask (the reference's
-            // `tex·MOCV·(1 + 4·a)`). Elsewhere it is blend state, forced opaque.
-            if !(interior && matches!(class, WmoBatchClass::Trans | WmoBatchClass::Int)) {
+            // `tex·MOCV·(1 + 4·a)`). On the unified path every TRANS batch, exterior groups'
+            // too, draws lit at SrcAlpha then ambient at InvSrcAlpha (`MapObj.cpp:1040`-`1106`),
+            // so its alpha is the same lerp factor. Elsewhere it is blend state, forced opaque.
+            let alpha_lights = (interior
+                && matches!(class, WmoBatchClass::Trans | WmoBatchClass::Int))
+                || (unified.is_some() && class == WmoBatchClass::Trans);
+            if !alpha_lights {
                 for c in &mut submesh.vertex_colors {
                     c[3] = 1.0;
                 }
