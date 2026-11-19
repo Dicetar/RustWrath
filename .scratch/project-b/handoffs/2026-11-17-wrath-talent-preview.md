@@ -1,6 +1,6 @@
 # Wrath talent preview and LearnPreviewTalents
 
-Status: ready to merge
+Status: landed
 Owner: OpenCode / DeepSeek V4.1 Flash
 Branch: fix/wrath-talent-preview
 Issue: none
