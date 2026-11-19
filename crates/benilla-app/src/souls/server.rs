@@ -9,8 +9,10 @@
 //!   server's `HELLO`/`MODE 1` answer raises [`SoulsLink::up`]. Turning either off sends `MODE 0`,
 //!   which hands the server's creatures back to stock melee and restores the run speed.
 //! - **Hits.** With the link up, [`super::targets`] reports each hit window's struck units as
-//!   `HIT <motion value %> <guid,...>` (nearest first) instead of starting stock melee; the server
-//!   applies the cleave and the damage. The action's start goes out as `SWING <action>`, which the
+//!   `HIT <motion value %> <guid,...> <hands>` (nearest first; hands 2 when a one-handed weapon
+//!   is held in both) instead of starting stock melee; the server applies the cleave and the
+//!   Elden Ring damage: the weapon's roll times the motion value, the two-hand bonus, the counter
+//!   bonus and the defense curve. The action's start goes out as `SWING <action>`, which the
 //!   server relays to other Souls players, who play it on our body.
 //! - **Sprint and crouch.** `SPRINT 1|0` and `CROUCH 1|0` follow them; the server raises or
 //!   lowers the run speed, and shows the crouch to other players as the stealth pose.
@@ -258,16 +260,18 @@ impl SoulsLink {
         self.up && self.announced_at.is_some()
     }
 
-    /// Queue a hit window's struck units (nearest first) at `motion_value` thousandths.
-    pub(crate) fn report_hit(&mut self, motion_value: i32, guids: &[u64]) {
+    /// Queue a hit window's struck units (nearest first) at `motion_value` thousandths, with the
+    /// grip it was swung in ([`PlayerKit::two_handing`]).
+    pub(crate) fn report_hit(&mut self, motion_value: i32, guids: &[u64], two_handing: bool) {
         if guids.is_empty() {
             return;
         }
         let list: Vec<String> = guids.iter().map(u64::to_string).collect();
         self.outbox.push(format!(
-            "HIT\t{}\t{}",
+            "HIT\t{}\t{}\t{}",
             (motion_value.max(0) + 5) / 10,
-            list.join(",")
+            list.join(","),
+            if two_handing { 2 } else { 1 }
         ));
     }
 
@@ -785,8 +789,12 @@ mod tests {
     #[test]
     fn hits_report_percent_and_guids() {
         let mut link = SoulsLink::default();
-        link.report_hit(1_250, &[42, 7]);
-        link.report_hit(1_000, &[]);
-        assert_eq!(link.outbox, vec!["HIT\t125\t42,7".to_owned()]);
+        link.report_hit(1_250, &[42, 7], false);
+        link.report_hit(1_000, &[], true);
+        link.report_hit(900, &[5], true);
+        assert_eq!(
+            link.outbox,
+            vec!["HIT\t125\t42,7\t1".to_owned(), "HIT\t90\t5\t2".to_owned()]
+        );
     }
 }

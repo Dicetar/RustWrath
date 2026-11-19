@@ -18,7 +18,8 @@ Client -> server
   MODE <1|0>                  -> MODE <1|0>   (also the client's keepalive)
   SPRINT <1|0>                   raise / restore the run speed
   CROUCH <1|0>                   lower / restore the run speed; the crouch pose for others
-  HIT <mv%> <guid,guid,...>      one hit window's struck units, nearest first; damage with cleave
+  HIT <mv%> <guid,guid,...> [hands]   one hit window's struck units, nearest first; Elden Ring
+                                damage with cleave (hands 2: a one-handed weapon held in both)
   SWING <action>                 relayed to Souls players nearby as SWING <guid> <action>
   VERDICT <id> <hit|guard|parry|dodge|miss>   the client's judgement of strike <id>
 
@@ -48,6 +49,7 @@ local UNIT_FIELD_COMBATREACH = 6 + 0x3C
 local UNIT_FIELD_MINDAMAGE = 6 + 0x40
 local UNIT_FIELD_MAXDAMAGE = 6 + 0x41
 local UNIT_FIELD_BYTES_1 = 6 + 0x44
+local UNIT_FIELD_RESISTANCES = 6 + 0x5D  -- the first is armour
 local UNIT_FLAG_PACIFIED = 0x00020000
 local BYTES_1_VIS_FLAG = 2          -- UNIT_BYTES_1_OFFSET_VIS_FLAG
 local STAND_FLAG_CREEP = 0x02       -- UNIT_STAND_FLAGS_CREEP (the stealth crouch pose)
@@ -58,6 +60,7 @@ local SLOT_MAINHAND = 15
 local SLOT_OFFHAND = 16
 local ITEM_CLASS_WEAPON = 2
 local ITEM_CLASS_ARMOR = 4
+local INVTYPE_2HWEAPON = 17
 local ARMOR_SUBCLASS_SHIELD = 6
 local EMOTE_ONESHOT_WOUND = 33
 local EMOTE_ONESHOT_WOUND_CRITICAL = 34
@@ -76,6 +79,11 @@ local GUARD_TAKEN_NO_SHIELD = 0.4   -- ESTIMATE: a weapon guard lets 40 % throug
 local PARRY_STAGGER_MS = 2500       -- ESTIMATE: a parried creature's next strike waits this long
 local RIPOSTE_MS = 3000             -- ESTIMATE: a hit this soon after a parry is a riposte...
 local RIPOSTE_MULTIPLIER = 3.0      -- ...for this many times the damage
+-- Elden Ring damage per hit (see `defended` and on_hit): the weapon's roll times the attack's
+-- motion value, the grip and counter bonuses, then the defense curve.
+local TWO_HAND_BONUS = 1.15         -- ESTIMATE: ER's two-handed Str x1.5 on a Str weapon's AR
+local COUNTER_BONUS = 1.15          -- ESTIMATE: ER's counter hit, landed during a windup
+local ARMOR_CAP = 0.75              -- WoW's armour reduction cap
 -- Stance (ER's enemy poise): each hit costs the creature stance; at zero it breaks, staggering it
 -- and opening a critical (riposte) window. It refills a while after the last hit.
 local STANCE_BASE = 30              -- ESTIMATE: a creature's stance is this...
@@ -161,6 +169,70 @@ local function weapon_roll(unit)
     return lo + math.random() * (hi - lo)
 end
 
+-- The unit's main-hand roll range midpoint: the size of a 100 % motion value hit.
+local function weapon_mean(unit)
+    local lo = unit:GetFloatValue(UNIT_FIELD_MINDAMAGE) or 0
+    local hi = unit:GetFloatValue(UNIT_FIELD_MAXDAMAGE) or lo
+    return math.max(1, (lo + math.max(lo, hi)) / 2)
+end
+
+-- Elden Ring's defense curve: the share of an attack of `ratio` times the defense that lands.
+-- 90 % from eight times the defense up, 10 % below an eighth, quadratic between.
+local function er_defense_share(ratio)
+    if ratio >= 8 then
+        return 0.9
+    elseif ratio >= 2.5 then
+        return 0.9 - 0.8 / 121 * (ratio - 8) ^ 2
+    elseif ratio >= 1 then
+        return 0.7 - 0.4 / 3 * (ratio - 2.5) ^ 2
+    elseif ratio >= 0.125 then
+        return 0.1 + 0.3 * ((ratio - 0.125) / 0.875) ^ 2
+    end
+    return 0.1
+end
+
+-- The curve's inverse on [0.1, 0.9]: the attack-to-defense ratio that lands `share`.
+local function er_defense_ratio(share)
+    if share >= 0.9 then
+        return 8
+    elseif share >= 0.7 then
+        return 8 - math.sqrt((0.9 - share) * 121 / 0.8)
+    elseif share >= 0.4 then
+        return 2.5 - math.sqrt((0.7 - share) * 3 / 0.4)
+    elseif share > 0.1 then
+        return 0.125 + 0.875 * math.sqrt((share - 0.1) / 0.3)
+    end
+    return 0.125
+end
+
+-- WoW's armour reduction of the victim's armour against the attacker's level.
+local function armor_reduction(attacker, victim)
+    local armor = victim:GetUInt32Value(UNIT_FIELD_RESISTANCES) or 0
+    if armor <= 0 or armor > 1000000 then
+        return 0
+    end
+    local level = attacker:GetLevel() or 1
+    local k = level < 60 and (400 + 85 * level) or (467.5 * level - 22167.5)
+    return math.min(ARMOR_CAP, armor / (armor + k))
+end
+
+-- How much of a `damage` blow lands through the victim's armour, Elden Ring's way. The victim's
+-- armour sets its defense so that the attacker's average 100 % hit loses exactly WoW's armour
+-- reduction; on Elden Ring's curve a heavier hit then loses less of itself and a lighter one more
+-- (a dagger poke barely scratches plate, a greataxe slam goes through). No armour: all of it.
+-- Returns the damage that lands and the share of it.
+local function defended(attacker, victim, damage)
+    local reduction = armor_reduction(attacker, victim)
+    if reduction <= 0 then
+        return damage, 1
+    end
+    -- The reference hit lands (1 - reduction); scaled by 0.9 onto the curve, whose top is 90 %.
+    local reference = er_defense_ratio(0.9 * (1 - reduction))
+    local defense = weapon_mean(attacker) / reference
+    local share = er_defense_share(damage / defense) / 0.9
+    return damage * share, share
+end
+
 local function melee_reach(attacker, victim)
     local a = attacker:GetFloatValue(UNIT_FIELD_COMBATREACH) or 1.5
     local b = victim:GetFloatValue(UNIT_FIELD_COMBATREACH) or 1.5
@@ -170,6 +242,13 @@ end
 local function has_shield(player)
     local item = player:GetEquippedItemBySlot(SLOT_OFFHAND)
     return item ~= nil and item:GetClass() == ITEM_CLASS_ARMOR and item:GetSubClass() == ARMOR_SUBCLASS_SHIELD
+end
+
+-- Elden Ring's two-handing: only a one-handed weapon gains (a two-handed one always is held so).
+local function two_handing_one_hander(player)
+    local item = player:GetEquippedItemBySlot(SLOT_MAINHAND)
+    return item ~= nil and item:GetClass() == ITEM_CLASS_WEAPON
+        and item:GetInventoryType() ~= INVTYPE_2HWEAPON
 end
 
 local function cleave_of(player)
@@ -313,6 +392,7 @@ local function on_hit(player, state, fields)
         return
     end
     local mv = math.max(0, math.min(tonumber(fields[2]) or 100, 500)) / 100
+    local grip = (fields[4] == "2" and two_handing_one_hander(player)) and TWO_HAND_BONUS or 1
     local hostile = {}
     for _, unit in ipairs(player:GetUnfriendlyUnitsInRange(HIT_REACH_YARDS) or {}) do
         hostile[key(unit:GetGUID())] = unit
@@ -338,15 +418,23 @@ local function on_hit(player, state, fields)
     local share = shares(units, c)
     -- Decisions 8 and 10: AR is the weapon's DPS over the 2.0 s reference and MV = w = speed /
     -- 2.0, so a light swing deals the stock hit; the kit's motion value scales it from there.
+    -- Elden Ring's per-hit damage on top: the grip, a counter hit on a creature mid-windup, a
+    -- riposte, then the victim's armour through the defense curve (heavy hits lose less of it).
     local roll = weapon_roll(player)
     for i, unit in ipairs(units) do
         local m = managed[key(unit:GetGUID())]
         local riposte = m and m.parried_until and now < m.parried_until
-        local damage = roll * mv * share[i] * (riposte and RIPOSTE_MULTIPLIER or 1)
+        local counter = (m and m.strike) and COUNTER_BONUS or 1
+        local attack = roll * mv * grip * counter * (riposte and RIPOSTE_MULTIPLIER or 1)
+        local landed, through = defended(player, unit, attack)
+        local damage = math.max(1, math.floor(landed * share[i] + 0.5))
         if riposte then
             m.parried_until = nil
         end
-        player:DealDamage(unit, math.max(1, math.floor(damage + 0.5)), true, 0)
+        trace("hit %s: roll %.1f x mv %.2f x grip %.2f x counter %.2f%s = %.1f; armour lets %.2f, cleave %.2f -> %d",
+            key(unit:GetGUID()), roll, mv, grip, counter, riposte and " x riposte" or "", attack, through,
+            share[i], damage)
+        player:DealDamage(unit, damage, true, 0)
         if m and not m.broken_until and unit:IsAlive() then
             local cost = STANCE_PER_MOTION * mv * share[i] * (riposte and RIPOSTE_MULTIPLIER or 1)
             if m.stance_refill_at and now >= m.stance_refill_at then
@@ -492,8 +580,10 @@ local STRIKE_SHAPES = {
 }
 
 local function start_strike(creature, ck, m, victim, now)
-    local attack_ms = creature:GetUInt32Value(UNIT_FIELD_BASEATTACKTIME) or 2000
-    if attack_ms <= 0 then
+    -- AzerothCore keeps the attack time as a float (Unit::SetAttackTime); read as an integer it
+    -- is the float's bits (2000.0 reads 1157234688), which put every next strike days away.
+    local attack_ms = creature:GetFloatValue(UNIT_FIELD_BASEATTACKTIME) or 2000
+    if not (attack_ms >= 500 and attack_ms <= 10000) then
         attack_ms = 2000
     end
     local kind = STRIKE_KIND_BY_ENTRY[creature:GetEntry()] or "sweep"
@@ -545,7 +635,8 @@ local function resolve_strike(creature, ck, m, now)
     if victim and victim:IsAlive() then
         local is_souls = souls[strike.victim_key] ~= nil
         outcome = (is_souls and strike.verdict) or area_check(creature, victim, strike)
-        local roll = weapon_roll(creature)
+        -- The player's armour, on the same curve.
+        local roll = defended(creature, victim, weapon_roll(creature))
         if outcome == "hit" then
             creature:DealDamage(victim, math.max(1, math.floor(roll + 0.5)), true, 0)
         elseif outcome == "guard" then
