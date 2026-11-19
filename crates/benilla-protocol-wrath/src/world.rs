@@ -89,10 +89,6 @@ pub fn unpack_moves(opcode: u16, payload: &[u8]) -> Result<Option<Vec<Packet>>> 
     Ok(Some(packets))
 }
 
-fn head_bytes(v: &[u8]) -> Vec<u8> {
-    v.to_vec()
-}
-
 /// Read exactly `n` bytes, having already consumed at least one byte of this packet. A
 /// timeout here is FATAL: bytes are lost and the stream boundary is unknowable, so the error
 /// deliberately carries no io::Error for `is_idle` to match (Astra F03 + follow-up).

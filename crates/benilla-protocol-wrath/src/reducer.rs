@@ -603,18 +603,6 @@ impl WorldState {
     }
 }
 
-trait ReadBytes: Sized {
-    fn bytes_read(self) -> Result<Vec<u8>>;
-}
-
-impl<R: std::io::Read> ReadBytes for R {
-    fn bytes_read(mut self) -> Result<Vec<u8>> {
-        let mut out = Vec::new();
-        std::io::Read::read_to_end(&mut self, &mut out)?;
-        Ok(out)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
