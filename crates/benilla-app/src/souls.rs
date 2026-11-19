@@ -121,6 +121,9 @@ pub(crate) struct SoulsState {
     sprint_owed: f32,
     /// When a movement key was last held (app seconds), for the sprint's neutral grace.
     last_moving_at: f32,
+    /// When the last sprint ended by letting go (app seconds): a press this soon after is still
+    /// the running attack.
+    sprint_ended_at: Option<f32>,
     /// The charged heavy being held, if any.
     charge: Option<ChargeHold>,
     /// The guard is up.

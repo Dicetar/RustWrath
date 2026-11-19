@@ -33,6 +33,9 @@ const SPRINT_AFTER_SECONDS: f32 = 0.35;
 const SPRINT_DRAIN_POINTS_PER_SECOND: f32 = 8.0;
 /// The movement keys may all be up this long without ending a sprint (a direction change).
 const SPRINT_NEUTRAL_GRACE_SECONDS: f32 = 0.2;
+/// A light or heavy press this long after the sprint ends (Space let go to click) is still the
+/// running attack, so it does not need both held at once.
+const RUN_ATTACK_GRACE_SECONDS: f32 = 0.3;
 /// A guarded hit's stamina cost in kit points until the server sends the attacker's guard damage
 /// (authored).
 const GUARD_HIT_POINTS: u32 = 25;
@@ -500,6 +503,7 @@ pub(super) fn souls_input(
             features.sprint
         );
         souls.sprinting = false;
+        souls.sprint_ended_at = Some(t);
         souls.sprint_owed = 0.0;
     }
     if souls.sprinting {
@@ -604,6 +608,10 @@ pub(super) fn souls_input(
     // The presses.
     let active = playback.engine.as_ref().and_then(|engine| engine.active());
     let counter = t < souls.counter_until;
+    let run_attack = souls.sprinting
+        || souls
+            .sprint_ended_at
+            .is_some_and(|at| t - at < RUN_ATTACK_GRACE_SECONDS);
     let mut heavy_pressed = None;
     let (units, relations, mut link) = critical;
     let mut crit = None;
@@ -653,13 +661,12 @@ pub(super) fn souls_input(
             match kit_now {
                 Some(kit) if souls.crouched => kit_row(kit, "CrouchAttack")
                     .or_else(|| light_action(kit, active, false, &features)),
-                Some(kit) => light_action(kit, active, souls.sprinting, &features),
+                Some(kit) => light_action(kit, active, run_attack, &features),
                 None => Some(stock_press(Press::Light)),
             }
         }
     } else if features.heavy && input.just_pressed(binds.heavy) {
-        let id =
-            kit_now.and_then(|kit| heavy_action(kit, active, souls.sprinting, counter, &features));
+        let id = kit_now.and_then(|kit| heavy_action(kit, active, run_attack, counter, &features));
         heavy_pressed = id;
         id
     } else if features.left_hand && input.just_pressed(binds.left) {
@@ -710,7 +717,15 @@ pub(super) fn souls_input(
             )
         });
         if accepted {
+            if let Some(name) = kit_now
+                .and_then(|kit| kit.action(action))
+                .map(|row| row.name.as_str())
+                .filter(|name| name.starts_with("Run") || name.starts_with("Jump"))
+            {
+                info!("souls: {name}");
+            }
             souls.sprinting = false;
+            souls.sprint_ended_at = None;
             souls.crouched = false;
             if counter && heavy_pressed.is_some() {
                 souls.counter_until = 0.0;
