@@ -643,6 +643,8 @@ impl PlaySeq {
 #[derive(Message, Clone, Copy)]
 pub(crate) struct ActionAnim {
     pub(crate) entity: Entity,
+    /// For telegraphs, scale the clip so its impact key lands after this many seconds.
+    pub(crate) contact_in: Option<f32>,
     /// The `AnimationData.dbc` id to play, resolved through the model's own lookups.
     pub(crate) anim_id: u16,
     /// `PlaySeq` stamp, so a same-frame collision with a network swing keeps reference order.

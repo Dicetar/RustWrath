@@ -61,7 +61,6 @@ local ITEM_CLASS_ARMOR = 4
 local ARMOR_SUBCLASS_SHIELD = 6
 local EMOTE_ONESHOT_WOUND = 33
 local EMOTE_ONESHOT_WOUND_CRITICAL = 34
-local EMOTE_ONESHOT_ATTACK1H = 36
 local EMOTE_STATE_NONE = 0
 local EMOTE_STATE_STUN = 64
 
@@ -71,7 +70,6 @@ local CROUCH_RATE = 0.5             -- ESTIMATE: ER's crouch walk over its run
 local WINDUP_SHARE = 0.4            -- decision 16: 40 % of the attack time...
 local WINDUP_MIN_MS = 600           -- ...clamped 0.6-1.5 s
 local WINDUP_MAX_MS = 1500
-local SWING_LEAD_MS = 350           -- ESTIMATE: the attack emote starts this long before the hit
 local VERDICT_GRACE_MS = 500        -- wait this long past the windup for the client's verdict
 local CONE_HALF_RADIANS = math.pi / 3   -- decision 16: a 120 degree frontal cone
 local GUARD_TAKEN_NO_SHIELD = 0.4   -- ESTIMATE: a weapon guard lets 40 % through; a shield none
@@ -481,8 +479,6 @@ local function start_strike(creature, ck, m, victim, now)
         victim_key = key(victim:GetGUID()),
         reach = reach,
         resolve_at = now + windup,
-        emote_at = now + windup - SWING_LEAD_MS,
-        emoted = false,
         verdict = nil,
     }
     m.next_at = now + math.max(attack_ms, windup + 400)
@@ -618,10 +614,6 @@ local function tick()
                 end
             elseif m.strike then
                 local strike = m.strike
-                if not strike.emoted and now >= strike.emote_at then
-                    strike.emoted = true
-                    creature:PerformEmote(EMOTE_ONESHOT_ATTACK1H)
-                end
                 local judged = strike.verdict ~= nil or souls[strike.victim_key] == nil
                 if (judged and now >= strike.resolve_at) or now >= strike.resolve_at + VERDICT_GRACE_MS then
                     resolve_strike(creature, ck, m, now)
