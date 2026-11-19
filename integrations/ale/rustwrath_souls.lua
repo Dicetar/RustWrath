@@ -62,6 +62,14 @@ local ITEM_CLASS_WEAPON = 2
 local ITEM_CLASS_ARMOR = 4
 local INVTYPE_2HWEAPON = 17
 local ARMOR_SUBCLASS_SHIELD = 6
+local SLOT_RANGED = 17
+-- The equipment load the client picks its roll tier from: head, shoulders, chest, waist, legs,
+-- feet, wrists, hands score their armour type (cloth 1, leather 2, mail 3, plate 4)...
+local LOAD_ARMOR_SLOTS = { 0, 2, 4, 5, 6, 7, 8, 9 }
+local LOAD_BY_ARMOR = { [1] = 1, [2] = 2, [3] = 3, [4] = 4 }
+-- ...each hand its weapon (mace 2, axe 1, a two-hander 1 more; a shield 1), the ranged slot a gun 1.
+local LOAD_BY_WEAPON = { [0] = 1, [1] = 1, [4] = 2, [5] = 2 }
+local WEAPON_SUBCLASS_GUN = 3
 local EMOTE_ONESHOT_WOUND = 33
 local EMOTE_ONESHOT_WOUND_CRITICAL = 34
 local EMOTE_STATE_NONE = 0
@@ -73,6 +81,7 @@ local CROUCH_RATE = 0.5             -- ESTIMATE: ER's crouch walk over its run
 local WINDUP_SHARE = 0.4            -- decision 16: 40 % of the attack time...
 local WINDUP_MIN_MS = 600           -- ...clamped 0.6-1.5 s
 local WINDUP_MAX_MS = 1500
+local START_SLACK_YARDS = 1.0       -- a strike starts this far past reach: where the stock chase parks
 local VERDICT_GRACE_MS = 500        -- wait this long past the windup for the client's verdict
 local CONE_HALF_RADIANS = math.pi / 3   -- decision 16: a 120 degree frontal cone
 local GUARD_TAKEN_NO_SHIELD = 0.4   -- ESTIMATE: a weapon guard lets 40 % through; a shield none
@@ -434,7 +443,7 @@ local function on_hit(player, state, fields)
         trace("hit %s: roll %.1f x mv %.2f x grip %.2f x counter %.2f%s = %.1f; armour lets %.2f, cleave %.2f -> %d",
             key(unit:GetGUID()), roll, mv, grip, counter, riposte and " x riposte" or "", attack, through,
             share[i], damage)
-        player:DealDamage(unit, damage, true, 0)
+        player:DealDamage(unit, damage, true)
         if m and not m.broken_until and unit:IsAlive() then
             local cost = STANCE_PER_MOTION * mv * share[i] * (riposte and RIPOSTE_MULTIPLIER or 1)
             if m.stance_refill_at and now >= m.stance_refill_at then
@@ -495,6 +504,42 @@ end
 
 local on_critical
 
+-- The equipment load score (0-44): the client's roll tier and distance.
+local function load_of(player)
+    local load = 0
+    for _, slot in ipairs(LOAD_ARMOR_SLOTS) do
+        local item = player:GetEquippedItemBySlot(slot)
+        if item and item:GetClass() == ITEM_CLASS_ARMOR then
+            load = load + (LOAD_BY_ARMOR[item:GetSubClass()] or 0)
+        end
+    end
+    for _, slot in ipairs({ SLOT_MAINHAND, SLOT_OFFHAND }) do
+        local item = player:GetEquippedItemBySlot(slot)
+        if item and item:GetClass() == ITEM_CLASS_WEAPON then
+            load = load + (LOAD_BY_WEAPON[item:GetSubClass()] or 0)
+            if item:GetInventoryType() == INVTYPE_2HWEAPON then
+                load = load + 1
+            end
+        elseif item and item:GetClass() == ITEM_CLASS_ARMOR and item:GetSubClass() == ARMOR_SUBCLASS_SHIELD then
+            load = load + 1
+        end
+    end
+    local ranged = player:GetEquippedItemBySlot(SLOT_RANGED)
+    if ranged and ranged:GetClass() == ITEM_CLASS_WEAPON and ranged:GetSubClass() == WEAPON_SUBCLASS_GUN then
+        load = load + 1
+    end
+    return load
+end
+
+-- Tell the client its load when it changed, or always with `force`.
+local function send_load(player, state, force)
+    local load = load_of(player)
+    if force or state.load ~= load then
+        state.load = load
+        send(player, "LOAD\t" .. load)
+    end
+end
+
 local function on_addon(event, sender, msg_type, prefix, msg, target)
     if prefix ~= PREFIX then
         return
@@ -517,6 +562,7 @@ local function on_addon(event, sender, msg_type, prefix, msg, target)
             end
             send(sender, "MODE\t1")
             announce_peer(sender, souls[k])
+            send_load(sender, souls[k], true)
         else
             leave(sender, k)
             send(sender, "MODE\t0")
@@ -597,7 +643,9 @@ local function start_strike(creature, ck, m, victim, now)
     local windup = math.floor(math.max(WINDUP_MIN_MS, math.min(WINDUP_MAX_MS, attack_ms * WINDUP_SHARE)) * shape.windup_scale)
     local id = next_strike_id
     next_strike_id = next_strike_id + 1
-    local reach = melee_reach(creature, victim)
+    -- The stock chase parks a little outside the nominal reach; a strike started from there must
+    -- still be able to land, so it reaches just past where the victim stands now.
+    local reach = math.max(melee_reach(creature, victim), creature:GetDistance(victim) + 0.5)
     -- Decision 9: the creature stops and its facing locks for the windup. A root, not MoveIdle:
     -- MoveIdle leaves a running chase on top of the motion master, and the stock chase resumes
     -- by itself once the root is lifted.
@@ -644,11 +692,11 @@ local function resolve_strike(creature, ck, m, now)
         -- The player's armour, on the same curve.
         local roll = defended(creature, victim, weapon_roll(creature))
         if outcome == "hit" then
-            creature:DealDamage(victim, math.max(1, math.floor(roll + 0.5)), true, 0)
+            creature:DealDamage(victim, math.max(1, math.floor(roll + 0.5)), true)
         elseif outcome == "guard" then
             -- Sent even at zero, so the client's guard pays its stamina for the blow.
             local taken = has_shield(victim) and 0 or GUARD_TAKEN_NO_SHIELD
-            creature:DealDamage(victim, math.floor(roll * taken + 0.5), false, 0)
+            creature:DealDamage(victim, math.floor(roll * taken + 0.5), false)
         elseif outcome == "parry" then
             m.parried_until = now + RIPOSTE_MS
             m.next_at = now + PARRY_STAGGER_MS
@@ -730,7 +778,7 @@ on_critical = function(player, state, guid, back)
                 if away and not fighting_player then
                     state.next_backstab = now + 1000
                     local damage = defended(player, creature, weapon_roll(player) * CRITICAL_MULTIPLIER)
-                    player:DealDamage(creature, math.max(1, math.floor(damage + 0.5)), true, 0)
+                    player:DealDamage(creature, math.max(1, math.floor(damage + 0.5)), true)
                     trace("backstab %s: %.1f damage", guid, damage)
                 end
                 return
@@ -755,7 +803,7 @@ on_critical = function(player, state, guid, back)
         send(watcher, "BROKEN\t" .. guid .. "\t0")
     end
     local damage = defended(player, creature, weapon_roll(player) * CRITICAL_MULTIPLIER)
-    player:DealDamage(creature, math.max(1, math.floor(damage + 0.5)), true, 0)
+    player:DealDamage(creature, math.max(1, math.floor(damage + 0.5)), true)
     trace("critical %s: %.1f damage", guid, damage)
 end
 
@@ -787,7 +835,10 @@ local function tick()
         local player = GetPlayerByGUID(state.guid)
         if not player or not player:IsInWorld() then
             souls[k] = nil
-        elseif player:IsInCombat() then
+        else
+            send_load(player, state, false)
+        end
+        if player and souls[k] and player:IsInCombat() then
             -- Hostile and neutral alike (0): a neutral creature fights back once struck.
             for _, creature in ipairs(player:GetCreaturesInRange(MANAGE_RANGE_YARDS, 0, 0, 1) or {}) do
                 local victim = creature:IsInCombat() and creature:GetVictim()
@@ -822,7 +873,7 @@ local function tick()
             elseif now >= m.next_at then
                 local casting = creature:IsCasting()
                 local reach = melee_reach(creature, victim)
-                if not casting and creature:IsWithinDist(victim, reach) then
+                if not casting and creature:IsWithinDist(victim, reach + START_SLACK_YARDS) then
                     start_strike(creature, ck, m, victim, now)
                 elseif not m.held_traced_at or now >= m.held_traced_at + TRACE_HELD_MS then
                     m.held_traced_at = now

@@ -119,6 +119,8 @@ pub(crate) struct SoulsState {
     sprinting: bool,
     /// Fractional stamina owed by the sprint drain.
     sprint_owed: f32,
+    /// When a movement key was last held (app seconds), for the sprint's neutral grace.
+    last_moving_at: f32,
     /// The charged heavy being held, if any.
     charge: Option<ChargeHold>,
     /// The guard is up.

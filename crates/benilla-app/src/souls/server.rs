@@ -162,6 +162,8 @@ enum Inbound {
         player: u64,
         action: String,
     },
+    /// Our equipment load score, for the roll tier.
+    Load(u8),
 }
 
 fn parse(body: &str) -> Option<Inbound> {
@@ -199,6 +201,7 @@ fn parse(body: &str) -> Option<Inbound> {
             player: next()?.parse().ok()?,
             action: next()?.to_owned(),
         },
+        "LOAD" => Inbound::Load(next()?.parse::<u32>().ok()?.min(255) as u8),
         _ => return None,
     })
 }
@@ -253,6 +256,11 @@ pub(crate) struct SoulsLink {
     pub(super) broken: Option<(u64, f32)>,
     /// Other Souls players' bodies and when their last relayed `SWING` arrived.
     remote_swings: Vec<(Entity, f32)>,
+    /// Creatures striking us and when their mute ends: the strike's own clip is the swing, so the
+    /// damage report's stock swing (and its hit-key-delayed feedback) must not replay over it.
+    striking: Vec<(Entity, f32)>,
+    /// Our equipment load score as the server last sent it.
+    pub(crate) load: Option<u8>,
 }
 
 impl SoulsLink {
@@ -293,6 +301,8 @@ impl SoulsLink {
             && self.riposte.is_none()
             && self.broken.is_none()
             && self.remote_swings.is_empty()
+            && self.striking.is_empty()
+            && self.load.is_none()
     }
 }
 
@@ -338,7 +348,7 @@ fn relayed_anim(kit: Option<&benilla_combat_core::Kit>, action: &str) -> u16 {
     }
     let dodge = match row {
         Some(row) => row.kind == ActionKind::Dodge,
-        None => action.starts_with("Roll") || action.starts_with("Backstep"),
+        None => action.contains("Roll") || action.starts_with("Backstep"),
     };
     if dodge {
         ANIM_DODGE
@@ -505,6 +515,11 @@ pub(super) fn drive_link(
                         contact_in: Some(windup.max(0.001)),
                         seq: play_seq.next(),
                     });
+                    let until = t + windup + STRIKE_FORGET_SECONDS;
+                    match link.striking.iter_mut().find(|(e, _)| *e == entity) {
+                        Some((_, at)) => *at = until,
+                        None => link.striking.push((entity, until)),
+                    }
                 }
                 link.strikes.push(Strike {
                     id,
@@ -580,6 +595,15 @@ pub(super) fn drive_link(
                     Some(entry) => entry.1 = t,
                     None => link.remote_swings.push((entity, t)),
                 }
+            }
+            Inbound::Load(score) => {
+                if link.load != Some(score) {
+                    info!(
+                        "souls link: equipment load {score}: {:?}",
+                        crate::combat_kit::roll_load(Some(score))
+                    );
+                }
+                link.load = Some(score);
             }
         }
     }
@@ -677,6 +701,8 @@ pub(super) fn drive_link(
         Vec::new()
     };
     wanted.extend(link.remote_swings.iter().map(|(entity, _)| *entity));
+    link.striking.retain(|(_, until)| t < *until);
+    wanted.extend(link.striking.iter().map(|(entity, _)| *entity));
     if mute.0 != wanted {
         mute.0 = wanted;
     }

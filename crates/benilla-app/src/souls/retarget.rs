@@ -53,8 +53,22 @@ const CLIP_FPS: f32 = 30.0;
 const FADE_OUT_SECS: f32 = 0.2;
 /// The shortest blend into a clip, seconds.
 const MIN_BLEND_SECS: f32 = 0.05;
+/// ESTIMATE: locomotion changes (idle to walk, walk to run, a stance swap) blend at least this
+/// long; an ER gait change reads soft, never as a pop.
+const MIN_LOCO_BLEND_SECS: f32 = 0.18;
+/// ESTIMATE: the guard's arms rise over a moving body, and the stock draw/stow ceremony takes the
+/// arms, in this long; they let go as fast.
+const UPPER_BLEND_SECS: f32 = 0.15;
+/// `Item.dbc`: armour class, its shield subclass.
+const ITEM_CLASS_ARMOR: u8 = 4;
+const ARMOR_SUBCLASS_SHIELD: u8 = 6;
 /// The file's name, next to `souls.toml`.
 const CLIP_FILE: &str = "player_anims.bin";
+/// ESTIMATE: an action left early by moving keeps its upper body this long at most over the
+/// running legs (the rest of its recovery, the swing settling)...
+const CARRY_SECS: f32 = 0.45;
+/// ...fading into the locomotion's arms over its last this long.
+const CARRY_FADE_SECS: f32 = 0.15;
 
 /// The ER joints the retarget reads, in [`JOINT_NAMES`] order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -346,6 +360,15 @@ impl ErClips {
 
     fn named(&self, id: u32) -> Option<&ErClip> {
         self.clips.get(&format!("a000_{id:06}"))
+    }
+
+    /// The clip in a weapon stance's bank (`a{bank:03}`), else the common one: a stance carries
+    /// its own idle and guard, and a two-handed one its own gait, but nothing else.
+    fn named_in(&self, bank: u8, id: u32) -> Option<&ErClip> {
+        (bank != 0)
+            .then(|| self.clips.get(&format!("a{bank:03}_{id:06}")))
+            .flatten()
+            .or_else(|| self.named(id))
     }
 
     /// The rest pose: the idle's first frame.
@@ -877,6 +900,19 @@ impl RigMap {
             .into_iter()
             .filter(|b| ancestors(rig.parents, wrists[1]).contains(b))
             .collect();
+        let arm_chain = |wrist: usize| -> Vec<usize> {
+            let mut chain: Vec<usize> = ancestors(rig.parents, wrist)
+                .into_iter()
+                .take_while(|&b| !on_head_chain(b) && !shared_arm.contains(&b))
+                .collect();
+            chain.reverse();
+            chain
+        };
+        // A clavicle or not, decided once for both arms, from the chain's shape: clavicle,
+        // upper arm, forearm and wrist. Matching lengths instead read the HD HumanFemale's
+        // short clavicles (0.10-0.15 against ER's 0.20) as upper arms on one side or both,
+        // drove them 35-50 degrees off the stock pose and pinched her shoulders.
+        let with_clavicle = wrists.iter().all(|&w| arm_chain(w).len() >= 4);
         for (side, ((&wrist, elbow), arm)) in wrists.iter().zip(rig.elbows).zip(ARMS).enumerate() {
             // The thumb, when it is a placed bone under this wrist.
             let thumb = rig.thumbs[side].filter(|&t| {
@@ -886,11 +922,7 @@ impl RigMap {
                     && piv[t].distance(piv[wrist]) > eps
                     && ancestors(rig.parents, t).contains(&wrist)
             });
-            let mut chain: Vec<usize> = ancestors(rig.parents, wrist)
-                .into_iter()
-                .take_while(|&b| !on_head_chain(b) && !shared_arm.contains(&b))
-                .collect();
-            chain.reverse();
+            let chain = arm_chain(wrist);
             if chain.len() < 2 {
                 return Err("an arm with fewer than two bones".into());
             }
@@ -915,12 +947,7 @@ impl RigMap {
             };
             points.push(finger);
             let finger_i = points.len() - 1;
-            // A clavicle or not: whichever ER length the chain's matches.
-            let len = |a: J, b: J| rest.at(a).distance(rest.at(b)) * scale;
-            let upper_fore = len(arm[1], arm[2]) + len(arm[2], arm[3]);
             let total = arc(&points)[wrist_i];
-            let with_clavicle =
-                (total - upper_fore - len(arm[0], arm[1])).abs() <= (total - upper_fore).abs();
             let er: &[J] = if with_clavicle { &arm } else { &arm[1..] };
             let (elbow_er, hand_er) = (er.len() - 3, er.len() - 2);
             let mut anchors = vec![(0, 0)];
@@ -937,6 +964,13 @@ impl RigMap {
             anchors.push((finger_i, er.len() - 1));
             let mapped = map_chain(&points, er, rest, &anchors);
             for (k, &bone) in chain.iter().enumerate() {
+                // The clavicle keeps the stock pose. Aimed at ER's shoulder, which sits further
+                // forward and in on the narrower ER frame, it swung 30-47 degrees and pinched the
+                // shoulders (and their pads) in towards the neck at idle. The arm below still
+                // takes ER's directions from the stock shoulder.
+                if with_clavicle && k == 0 {
+                    continue;
+                }
                 let Some(j) = next_distinct(&points, k, eps) else {
                     continue;
                 };
@@ -1123,6 +1157,18 @@ impl RigMap {
         }
     }
 
+    /// The lower body: the legs, the pelvis and the bones above it, which the locomotion keeps
+    /// while a released action's upper body carries on.
+    fn lower_bones(&self, parents: &[i16]) -> Vec<usize> {
+        let mut lower = ancestors(parents, self.pelvis);
+        lower.extend(
+            self.legs
+                .iter()
+                .flat_map(|leg| leg.bones.iter().map(|&(b, _)| b)),
+        );
+        lower
+    }
+
     /// The bones the pass writes.
     fn bones(&self) -> impl Iterator<Item = usize> + '_ {
         self.driven
@@ -1141,7 +1187,20 @@ impl RigMap {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ClipKey {
     Action(super::Instance),
-    Loco(u32),
+    /// The stance bank and the clip id.
+    Loco(u8, u32),
+}
+
+/// The upper body of the last action, carried over the locomotion once moving ended it early.
+#[derive(Clone, Debug)]
+struct Carry {
+    instance: super::Instance,
+    source: String,
+    /// Clip frames: where it is and where the action would have ended.
+    frame: f32,
+    end: f32,
+    /// App seconds the carry ends; `None` while the action still runs.
+    until: Option<f32>,
 }
 
 /// A load on the worker thread: the file's stamp and the parse.
@@ -1173,6 +1232,11 @@ pub(super) struct Retarget {
     last_pos: Option<Vec3>,
     /// The retarget switches were on last frame.
     was_on: bool,
+    carry: Option<Carry>,
+    /// How far the guard's arms are up over a moving body, and how far the stock draw/stow
+    /// ceremony holds the arms, 0 to 1.
+    guard_upper: f32,
+    ceremony: f32,
 }
 
 impl Retarget {
@@ -1248,6 +1312,31 @@ impl Retarget {
             }
             Err(e) => warn!("souls retarget: the clips did not load: {e}"),
         }
+    }
+}
+
+/// `t` eased in and out.
+fn smoothstep(t: f32) -> f32 {
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Every written bone above the lower body moves `weight` of the way from `work` to `upper`.
+fn blend_upper(
+    work: &mut [Transform],
+    upper: &[Transform],
+    map: &RigMap,
+    lower: &[usize],
+    weight: f32,
+) {
+    for b in map.bones().filter(|b| !lower.contains(b)) {
+        work[b] = Transform {
+            translation: work[b].translation.lerp(upper[b].translation, weight),
+            rotation: work[b]
+                .rotation
+                .slerp(upper[b].rotation, weight)
+                .normalize(),
+            scale: work[b].scale,
+        };
     }
 }
 
@@ -1370,6 +1459,8 @@ pub(super) fn drive_retarget(
             Option<&BoneAttach>,
             Option<&HandKeyBones>,
             Option<&AnimDriver>,
+            Option<&crate::creature_anim::Wielded>,
+            Option<&crate::creature_anim::CommittedSheath>,
         ),
         With<SelfPlayer>,
     >,
@@ -1387,9 +1478,12 @@ pub(super) fn drive_retarget(
         r.last_pos = None;
         return;
     }
-    let Ok((entity, mut rig, global, twist, attach, hands, driver)) = me.single_mut() else {
+    let Ok((entity, mut rig, global, twist, attach, hands, driver, wielded, sheath)) =
+        me.single_mut()
+    else {
         r.written = None;
         r.playing = None;
+        r.carry = None;
         return;
     };
     let now = time.elapsed_secs();
@@ -1404,6 +1498,24 @@ pub(super) fn drive_retarget(
     r.last_pos = Some(pos);
     let local_v = facing.inverse() * velocity;
     let (forward, right) = (-local_v.z, local_v.x);
+
+    // The weapon's stance banks: its gait and idle, and the guard (a shield held in the off hand
+    // guards in the common bank; a weapon guards with itself, held in both hands, as ER's empty
+    // left hand does).
+    let stance = current_kit(&kit, &profiles).and_then(|kit| kit.stance);
+    let both_hands = kit.held_in_both_hands();
+    let shield = wielded
+        .and_then(|w| w.off)
+        .is_some_and(|item| item == (ITEM_CLASS_ARMOR, ARMOR_SUBCLASS_SHIELD));
+    // Stowed, the hands are empty: the common bank.
+    let drawn = sheath.and_then(|s| s.state()) == Some(1);
+    let (loco_bank, guard_bank) = match stance.filter(|_| drawn) {
+        Some([one, two]) => (
+            if both_hands { two } else { one },
+            if shield && !both_hands { 0 } else { two },
+        ),
+        None => (0, 0),
+    };
 
     // The map, rebuilt for a new rig.
     let bones = rig.locals.len();
@@ -1429,6 +1541,43 @@ pub(super) fn drive_retarget(
         if let Some(clips) = r.clips.as_ref() {
             let running = current_kit(&kit, &profiles)
                 .and_then(|kit| running_action(kit, &playback).map(|run| (kit, run)));
+            // The running action, or the carry of one moving cut short.
+            match running.filter(|_| features.retarget) {
+                Some((kit, (instance, action, frame))) => {
+                    let per_frame = CLIP_FPS / f32::from(kit.frame_rate_hz.max(1)) / 1000.0;
+                    let (at, end) = (
+                        frame.0 as f32 * per_frame,
+                        action.total.0 as f32 * per_frame,
+                    );
+                    match r.carry.as_mut().filter(|c| c.instance == instance) {
+                        Some(carry) => carry.frame = at,
+                        None => {
+                            r.carry = Some(Carry {
+                                instance,
+                                source: action.source.clone(),
+                                frame: at,
+                                end,
+                                until: None,
+                            });
+                        }
+                    }
+                }
+                None => {
+                    let moving = forward.hypot(right) >= STILL;
+                    r.carry = r.carry.take().and_then(|mut carry| {
+                        let until = match carry.until {
+                            Some(until) => until,
+                            None if moving && carry.end - carry.frame > 1.0 => {
+                                now + ((carry.end - carry.frame) / CLIP_FPS).min(CARRY_SECS)
+                            }
+                            None => return None,
+                        };
+                        carry.until = Some(until);
+                        carry.frame += dt * CLIP_FPS;
+                        (now < until).then_some(carry)
+                    });
+                }
+            }
             // A running action plays its own clip, or the stock one when it has none here (or the
             // switch is off); locomotion never covers it.
             let action = running.filter(|_| features.retarget).and_then(
@@ -1443,17 +1592,26 @@ pub(super) fn drive_retarget(
                 if running.is_some() {
                     return None;
                 }
+                // The stock driver may still be finishing the clip of an action that already
+                // ended (its own swing or dodge): locomotion covers that, not another one-shot.
+                let own = |id: u16| profiles.anims.values().any(|&anim| anim == id);
                 let stock_loco = driver.is_none_or(|d| {
                     let (base, overlay) = d.playing();
-                    overlay.is_none() && base.is_some_and(stands_in_for)
+                    overlay.is_none_or(own) && base.is_some_and(|b| stands_in_for(b) || own(b))
                 });
                 if !features.retarget_locomotion || !stock_loco {
                     return None;
                 }
                 let (id, rate) = loco_clip(&souls, forward, right);
-                let clip = clips.named(id)?;
+                let bank = if id == GUARD { guard_bank } else { loco_bank };
+                let clip = clips.named_in(bank, id)?;
                 r.loco_clock += dt * rate;
-                Some((ClipKey::Loco(id), r.loco_clock * CLIP_FPS, true, clip.blend))
+                Some((
+                    ClipKey::Loco(bank, id),
+                    r.loco_clock * CLIP_FPS,
+                    true,
+                    clip.blend,
+                ))
             });
         }
     }
@@ -1484,12 +1642,36 @@ pub(super) fn drive_retarget(
         r.from = r.written.clone();
         r.fade_at = now;
         r.fade_len = match target {
+            Some((ClipKey::Loco(..), .., blend)) => (blend / CLIP_FPS).max(MIN_LOCO_BLEND_SECS),
             Some((.., blend)) => (blend / CLIP_FPS).max(MIN_BLEND_SECS),
             None => FADE_OUT_SECS,
         };
         r.playing = key;
     }
-    let k = ((now - r.fade_at) / r.fade_len.max(f32::EPSILON)).clamp(0.0, 1.0);
+    // Eased: a linear crossfade starts and stops with a visible kink.
+    let k = smoothstep(((now - r.fade_at) / r.fade_len.max(f32::EPSILON)).clamp(0.0, 1.0));
+
+    // The arms' own layers over the locomotion: the guard raised while moving, the stock
+    // draw/stow ceremony (its masked arm clips are in the stock pose).
+    let in_loco = matches!(key, Some(ClipKey::Loco(..)));
+    let step = if UPPER_BLEND_SECS > 0.0 {
+        dt / UPPER_BLEND_SECS
+    } else {
+        1.0
+    };
+    let approach = |value: f32, on: bool| {
+        if on {
+            (value + step).min(1.0)
+        } else {
+            (value - step).max(0.0)
+        }
+    };
+    let moving = forward.hypot(right) >= STILL;
+    r.guard_upper = approach(r.guard_upper, in_loco && souls.guarding && moving);
+    r.ceremony = approach(
+        r.ceremony,
+        in_loco && driver.is_some_and(AnimDriver::sheath_ceremony_active),
+    );
 
     let mut work: Vec<Transform> = rig.locals.clone();
     for b in map.bones() {
@@ -1501,12 +1683,60 @@ pub(super) fn drive_retarget(
                 let (_, action, _) = running_action(kit, &playback)?;
                 clips.clips.get(&action.source)
             }),
-            ClipKey::Loco(id) => clips.named(id),
+            ClipKey::Loco(bank, id) => clips.named_in(bank, id),
         };
         if let Some(clip) = clip {
             let pose = clips.sample(clip, frame, looped);
             map.pose(&pose, &rig.parents, rig.binds(), &mut work);
         }
+        // Moving cut the last action short: its upper body settles over the running legs.
+        let carried = r
+            .carry
+            .as_ref()
+            .filter(|_| matches!(key, ClipKey::Loco(..)))
+            .and_then(|carry| Some((carry, clips.clips.get(&carry.source)?)));
+        if let Some((carry, clip)) = carried {
+            let weight = carry.until.map_or(1.0, |until| {
+                ((until - now) / CARRY_FADE_SECS).clamp(0.0, 1.0)
+            });
+            let mut upper: Vec<Transform> = rig.locals.clone();
+            for b in map.bones() {
+                upper[b] = r.stock[b];
+            }
+            let pose = clips.sample(clip, carry.frame.min(carry.end), false);
+            map.pose(&pose, &rig.parents, rig.binds(), &mut upper);
+            let lower = map.lower_bones(&rig.parents);
+            for b in map.bones().filter(|b| !lower.contains(b)) {
+                work[b] = Transform {
+                    translation: work[b].translation.lerp(upper[b].translation, weight),
+                    rotation: work[b]
+                        .rotation
+                        .slerp(upper[b].rotation, weight)
+                        .normalize(),
+                    scale: work[b].scale,
+                };
+            }
+        }
+        // The guard held while moving: its arms over the gait's legs.
+        let guard_clip = (r.guard_upper > 0.0)
+            .then(|| clips.named_in(guard_bank, GUARD))
+            .flatten();
+        if let Some(clip) = guard_clip {
+            let mut upper: Vec<Transform> = rig.locals.clone();
+            for b in map.bones() {
+                upper[b] = r.stock[b];
+            }
+            let pose = clips.sample(clip, r.loco_clock * CLIP_FPS, true);
+            map.pose(&pose, &rig.parents, rig.binds(), &mut upper);
+            let lower = map.lower_bones(&rig.parents);
+            blend_upper(&mut work, &upper, map, &lower, smoothstep(r.guard_upper));
+        }
+    }
+    // The draw/stow ceremony: the stock arms, the retargeted legs.
+    if r.ceremony > 0.0 {
+        let stock = r.stock.clone();
+        let lower = map.lower_bones(&rig.parents);
+        blend_upper(&mut work, &stock, map, &lower, smoothstep(r.ceremony));
     }
 
     // Blend and write.
@@ -1943,6 +2173,42 @@ mod tests {
                             assert!((at(ankle).x - at(hip).x) * (er[2].x - er[0].x) >= -0.002);
                         }
                         println!("{profile} {race}{sex} {clip}:{frame} {side} thigh={thigh_error:.1} shin={shin_error:.1} sole={:.3} er_toe={:.3} foot_fwd={foot_forward:.2} ankle={:.2}",sole.y,er[3].y,at(ankle));
+                    }
+                    // The shoulder pads' attachments (5 right, 6 left) and the bones above
+                    // them, against the stock Stand: where they sit and how far they turned.
+                    let mut stand = Vec::new();
+                    for (i, t) in stock.iter().enumerate() {
+                        let local = t.compute_affine();
+                        stand.push(parent_of(&parents, i).map_or(local, |p| stand[p] * local));
+                    }
+                    for id in [5u16, 6] {
+                        let Some(a) = att.iter().find(|a| a.id == id) else {
+                            continue;
+                        };
+                        let mut b = usize::from(a.bone);
+                        let offset = wow_to_bevy(a.position) - piv[b];
+                        let moved = world[b]
+                            .transform_point3(offset)
+                            .distance(stand[b].transform_point3(offset));
+                        let mut chain = String::new();
+                        for _ in 0..4 {
+                            let q = Quat::from_mat3a(&world[b].matrix3).normalize();
+                            let q0 = Quat::from_mat3a(&stand[b].matrix3).normalize();
+                            let up = (q * Vec3::Y).angle_between(q0 * Vec3::Y).to_degrees();
+                            let driven = map.driven.iter().any(|(d, _)| *d == b);
+                            chain += &format!(
+                                " b{b}{}:turn={:.0} up={up:.0}",
+                                if driven { "*" } else { "" },
+                                q.angle_between(q0).to_degrees()
+                            );
+                            let Some(p) = parent_of(&parents, b) else {
+                                break;
+                            };
+                            b = p;
+                        }
+                        println!(
+                            "{profile} {race}{sex} {clip}:{frame} pad{id} moved={moved:.3}{chain}"
+                        );
                     }
                 }
             }

@@ -599,8 +599,27 @@ fn finalize(model: &mut Model) {
     };
     let mut rows = std::mem::take(&mut model.trainer_rows);
     crate::crt::qsort(&mut rows, compare);
+    // 12340 re-selects at the end of every filter and sort (`FilterAndSortServices`, 0x594BA0):
+    // the first visible available service, else the second row's spell (none for a header).
+    // Its stock window re-selects `GetTrainerSelectionIndex()` on show and on every
+    // `TRAINER_UPDATE`; with nothing selected there, it would toggle a header's collapse.
+    let reselect = (model.target == super::UiTarget::Wrath335).then(|| {
+        let spell = |row: &Row| match *row {
+            Row::Service(si) => Some(&t.services[si]),
+            Row::Header(_) => None,
+        };
+        rows.iter()
+            .filter(|r| visible(r))
+            .filter_map(spell)
+            .find(|s| s.category == TrainerServiceCategory::Available)
+            .or_else(|| rows.get(1).and_then(spell))
+            .map(|s| s.spell_id)
+    });
     model.trainer_visible = rows.iter().filter(|r| visible(r)).count();
     model.trainer_rows = rows;
+    if let Some(selection) = reselect {
+        model.trainer_selection = selection;
+    }
 }
 
 /// The client's whole row array and its visible count, as the last [`finalize`] left them: the
@@ -1227,7 +1246,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "GetTrainerSelectionIndex",
         lua.create_function(|lua, ()| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(selected_row(&model).map_or(0i64, |r| r as i64))
+            // 12340 answers nil with nothing selected (`Script_GetTrainerSelectionIndex`,
+            // 0x594170 returning -1); its stock window then hides the detail pane instead of
+            // reading row 0 as a header and collapsing every group.
+            Ok(match selected_row(&model) {
+                Some(r) => Value::Integer(r as i64),
+                None if model.target == super::UiTarget::Wrath335 => Value::Nil,
+                None => Value::Integer(0),
+            })
         })?,
     )?;
 

@@ -113,7 +113,7 @@ pub fn import_kit(
     let never = consts.get("NEVER").copied().unwrap_or(Milli::whole(9999));
 
     let mut parser = Parser::new(extracted, never)?;
-    let weapons = parser.weapon_names()?;
+    let (weapons, stances) = parser.weapon_names()?;
     let weapon_index = match options.weapon.parse::<usize>() {
         Ok(index) => index,
         Err(_) => weapons
@@ -137,6 +137,7 @@ pub fn import_kit(
     // `fn base`: the dodges.
     let mut drafts: Vec<Draft> = Vec::new();
     let mut loads_seen: Vec<String> = Vec::new();
+    let mut other_rolls: Vec<Draft> = Vec::new();
     for (pattern, line) in parser.arms("base", |pattern| base_role(pattern).is_some())? {
         let (pattern, def) = match pattern {
             Arm::Taken(pattern, def) => (pattern, def),
@@ -159,6 +160,15 @@ pub fn import_kit(
                 if load.eq_ignore_ascii_case(options.load) {
                     drafts.push(Draft {
                         name: format!("Roll{direction}"),
+                        kind: ActionKind::Dodge,
+                        cost: Some(roll_cost),
+                        def: parser.action_def(&def, line)?,
+                    });
+                } else {
+                    // The other loads' rolls ride along after everything else, so the ids of the
+                    // rest stay put; the client swaps them in for the equipment load.
+                    other_rolls.push(Draft {
+                        name: format!("{load}Roll{direction}"),
                         kind: ActionKind::Dodge,
                         cost: Some(roll_cost),
                         def: parser.action_def(&def, line)?,
@@ -226,6 +236,7 @@ pub fn import_kit(
     if !options.two_handed {
         drafts.push(parry(backstep_cost));
     }
+    drafts.append(&mut other_rolls);
 
     // Leave out what the engine cannot run, then number what is left.
     drafts.retain(|draft| {
@@ -321,6 +332,7 @@ pub fn import_kit(
         ),
         frame_rate_hz,
         stamina_max: consts.get("MAX_STAMINA").copied(),
+        stance: stances.get(weapon_index).copied().flatten(),
         actions,
     };
     kit.validate()?;
@@ -336,7 +348,10 @@ fn continuations(
         let step = name.strip_prefix(family)?.parse::<u32>().ok()?;
         id_of(&format!("{family}{}", step + 1)).or_else(|| id_of(&format!("{family}1")))
     };
-    let next_light = if name.starts_with("Roll") && name != "RollAttack" {
+    let roll = ["Roll", "LightRoll", "HeavyRoll"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix));
+    let next_light = if roll && name != "RollAttack" {
         id_of("RollAttack")
     } else {
         match name {
@@ -808,28 +823,44 @@ impl<'a> Parser<'a> {
     }
 
     /// The names in `pub const WEAPONS`, in order; empty when the file has no such list.
-    fn weapon_names(&mut self) -> Result<Vec<String>, KitError> {
+    /// The weapons' names, and each one's `stance` (one-handed, two-handed) when it states one.
+    #[allow(clippy::type_complexity)] // two parallel lists, read once
+    fn weapon_names(&mut self) -> Result<(Vec<String>, Vec<Option<[u8; 2]>>), KitError> {
         if !self.seek(&[Tok::Ident("const"), Tok::Ident("WEAPONS")]) {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
         self.skip_past(Tok::Punct('='), "`=` after `WEAPONS`")?;
         let line = self.line();
         let Value::List(entries) = self.value()? else {
             return Err(KitError::at(line, "`WEAPONS` is not a list"));
         };
-        entries
-            .iter()
-            .map(|entry| match entry {
-                Value::Struct { fields, .. } => fields
-                    .iter()
-                    .find_map(|(field, _, value)| match value {
-                        Value::Str(name) if *field == "name" => Some((*name).to_string()),
-                        _ => None,
-                    })
-                    .ok_or_else(|| KitError::at(line, "a weapon has no name")),
-                _ => Err(KitError::at(line, "a weapon entry is not a record")),
-            })
-            .collect()
+        let byte = |value: &Value<'_>| match value {
+            Value::Num(n) if n.0 >= 0 && n.0 % 1000 == 0 => u8::try_from(n.0 / 1000).ok(),
+            _ => None,
+        };
+        let mut names = Vec::new();
+        let mut stances = Vec::new();
+        for entry in &entries {
+            let Value::Struct { fields, .. } = entry else {
+                return Err(KitError::at(line, "a weapon entry is not a record"));
+            };
+            let name = fields
+                .iter()
+                .find_map(|(field, _, value)| match value {
+                    Value::Str(name) if *field == "name" => Some((*name).to_string()),
+                    _ => None,
+                })
+                .ok_or_else(|| KitError::at(line, "a weapon has no name"))?;
+            let stance = fields.iter().find_map(|(field, _, value)| match value {
+                Value::List(pair) if *field == "stance" && pair.len() == 2 => {
+                    Some([byte(&pair[0])?, byte(&pair[1])?])
+                }
+                _ => None,
+            });
+            names.push(name);
+            stances.push(stance);
+        }
+        Ok((names, stances))
     }
 
     fn number(&self, value: &Value<'_>, line: usize, what: &str) -> Result<Milli, KitError> {
@@ -1212,7 +1243,11 @@ mod tests {
                 "Heavy1",
                 "Heavy2Charge",
                 "JumpLightLand",
-                "Parry"
+                "Parry",
+                "LightRollFront",
+                "LightRollBack",
+                "LightRollLeft",
+                "LightRollRight"
             ]
         );
         assert_eq!(kit.actions[0].id, ActionId(100));
@@ -1222,7 +1257,7 @@ mod tests {
             ImportReport {
                 weapon_index: 1,
                 weapon_name: "Test Blade".to_string(),
-                dodges: 6,
+                dodges: 10,
                 attacks: 8,
                 skipped: vec![
                     (
@@ -1235,11 +1270,11 @@ mod tests {
                     ),
                     ("Feint".to_string(), "costs no stamina"),
                 ],
-                // SprintStop. Rolls of another load are dodges, just not the ones asked for.
+                // SprintStop. Rolls of another load ride along as dodges (`LightRoll*` here).
                 other_base_records: 1,
                 // Per attack: the i-frames and one turn lock; per dodge: one turn lock; and the
                 // second heavy's charge.
-                empty_windows_dropped: 9 * 2 + 5 + 1,
+                empty_windows_dropped: 9 * 2 + 9 + 1,
             }
         );
 
@@ -1291,7 +1326,7 @@ mod tests {
         let table = kit
             .to_table(ActionRevision(1), TickRate::new(100).expect("100 Hz"))
             .expect("table");
-        assert_eq!(table.len(), 14);
+        assert_eq!(table.len(), 18);
     }
 
     #[test]
@@ -1384,7 +1419,7 @@ mod tests {
         };
         let (kit, report) = import_kit(&sample(), Some(CONSTANTS), &two_handed).expect("import");
         assert_eq!(kit.label, "Test Blade, two-handed, light load");
-        assert_eq!((report.dodges, report.attacks), (5, 1));
+        assert_eq!((report.dodges, report.attacks), (9, 1));
         assert!(kit.action_named("Parry").is_none());
         assert_eq!(kit.actions[5].hits[0].stamina, Milli::whole(9));
         assert_eq!(

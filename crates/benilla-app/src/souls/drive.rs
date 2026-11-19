@@ -20,7 +20,7 @@
 //!
 //! Off (or with no kit table), the drive is the default: the controller runs its stock path.
 
-use benilla_combat_core::{KitAction, Milli};
+use benilla_combat_core::{ActionKind, KitAction, Milli};
 use bevy::prelude::*;
 
 use super::{
@@ -89,9 +89,10 @@ pub(super) fn drive_controller(
     config: Res<SoulsConfig>,
     kit: Res<PlayerKit>,
     profiles: Res<CombatProfiles>,
-    playback: Res<CombatPlaybackState>,
+    mut playback: ResMut<CombatPlaybackState>,
     bindings: Res<BindingsState>,
     er: Res<ErControls>,
+    link: Res<super::server::SoulsLink>,
     cams: Query<&FlyCam>,
     targets: Query<&GlobalTransform>,
     mut souls: ResMut<SoulsState>,
@@ -165,6 +166,16 @@ pub(super) fn drive_controller(
     .any(|input| bindings.pressed(input))
         || free_bearing.is_some();
     let released = movement_held && action.cancel.movement.is_some_and(|from| frame >= from);
+    if released {
+        // Elden Ring: moving in the movement cancel ends the recovery outright, so locomotion
+        // plays at once instead of the rest of the swing sliding along the ground.
+        let now = playback.ticks_at();
+        if let Some(engine) = playback.engine.as_mut() {
+            if let Err(error) = engine.release(now) {
+                warn!("souls drive: the movement cancel did not end the action: {error}");
+            }
+        }
+    }
 
     // Root motion: owed displacement minus what the body moved along the facing.
     let (forward, left) = basis(player.facing());
@@ -173,8 +184,14 @@ pub(super) fn drive_controller(
         track.debt -= Vec2::new(moved.dot(left), moved.dot(forward));
     }
     let motion = action.motion_at(frame);
+    // A roll carries as far as the equipment load lets it.
+    let reach = if action.kind == ActionKind::Dodge && action.name.contains("Roll") {
+        crate::combat_kit::roll_load(link.load).distance
+    } else {
+        1.0
+    };
     let step = |axis: usize| {
-        (motion[axis].0 - track.last_motion[axis].0) as f32 / 1000.0 * YARDS_PER_METRE
+        (motion[axis].0 - track.last_motion[axis].0) as f32 / 1000.0 * YARDS_PER_METRE * reach
     };
     track.debt += Vec2::new(step(0), step(2));
     track.last_motion = motion;

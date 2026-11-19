@@ -928,6 +928,9 @@ pub(crate) struct AnimDriver {
     /// The movement flags the base was last armed for: the reference has no per-one-shot latch,
     /// so a root landing with a cast one-shot (Ice Block) still lets the base overwrite bone 0.
     gait_flags: u32,
+    /// A timed action (a Souls strike, played to land at its contact) holds bone 0: a
+    /// non-locomotion flag edge (the strike's own root and facing) does not cut it.
+    held_action: Option<u16>,
     /// Whether the unit was the interact NPC last frame: `SetInteractNPC` (`0x4930d0`) re-picks
     /// its base on open (`0x493198`) and on clear (`0x493219`), so a flip cuts a one-shot.
     interacting: bool,
@@ -1043,6 +1046,7 @@ impl Default for AnimDriver {
             gait: None,
             gait_pinned: false,
             gait_flags: 0,
+            held_action: None,
             interacting: false,
             interact_player: false,
             interact_hold: false,

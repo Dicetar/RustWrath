@@ -244,6 +244,9 @@ pub struct Kit {
     pub frame_rate_hz: u16,
     /// The stamina bar the costs were measured against, when the source states one.
     pub stamina_max: Option<Milli>,
+    /// The weapon's idle, guard and locomotion stance (the donor's animation category), held in
+    /// one hand and in two, when the source states it.
+    pub stance: Option<[u8; 2]>,
     pub actions: Vec<KitAction>,
 }
 
@@ -557,6 +560,9 @@ impl Kit {
         if let Some(stamina_max) = self.stamina_max {
             let _ = writeln!(out, "stamina_max {stamina_max}");
         }
+        if let Some([one, two]) = self.stance {
+            let _ = writeln!(out, "stance {one} {two}");
+        }
         for action in &self.actions {
             let cancel = action.cancel;
             let _ = writeln!(
@@ -639,6 +645,7 @@ impl Kit {
         let mut label = None;
         let mut frame_rate_hz = None;
         let mut stamina_max = None;
+        let mut stance = None;
         let mut actions = Vec::new();
         let mut draft: Option<Draft> = None;
 
@@ -680,6 +687,10 @@ impl Kit {
                     "stamina_max" => {
                         let [points] = numbers(rest, line)?;
                         set_once(&mut stamina_max, points, line, keyword)?;
+                    }
+                    "stance" => {
+                        let pair: [u8; 2] = fields(rest, line, |word| word.parse::<u8>().ok())?;
+                        set_once(&mut stance, pair, line, keyword)?;
                     }
                     "action" => {
                         let mut words = rest.split_whitespace();
@@ -823,6 +834,7 @@ impl Kit {
             frame_rate_hz: frame_rate_hz
                 .ok_or_else(|| KitError::general("missing `frame_rate`"))?,
             stamina_max,
+            stance,
             actions,
         };
         kit.validate()?;
@@ -1053,6 +1065,7 @@ mod tests {
             label: "Authored test blade, one-handed".to_string(),
             frame_rate_hz: 30,
             stamina_max: Some(m("80")),
+            stance: Some([0, 10]),
             actions: vec![first, second, roll(3)],
         }
     }

@@ -16,7 +16,7 @@ use super::{
     SoulsState,
 };
 use crate::bindings::{BindingsState, Input};
-use crate::combat_kit::{resolve_press, PlayerKit, Press, STAMINA_SCALE};
+use crate::combat_kit::{resolve_dodge, resolve_press, roll_load, PlayerKit, Press, STAMINA_SCALE};
 use crate::combat_mode::CombatModeView;
 use crate::combat_playback::{
     play_clip, play_starts, stock_press, submit_and_play, ActionPhase, CombatPlaybackState, Defense,
@@ -31,6 +31,8 @@ use crate::ui_script::UiKeyboardCapture;
 const SPRINT_AFTER_SECONDS: f32 = 0.35;
 /// The sprint's drain, kit points a second (authored; the bar is the kit's).
 const SPRINT_DRAIN_POINTS_PER_SECOND: f32 = 8.0;
+/// The movement keys may all be up this long without ending a sprint (a direction change).
+const SPRINT_NEUTRAL_GRACE_SECONDS: f32 = 0.2;
 /// A guarded hit's stamina cost in kit points until the server sends the attacker's guard damage
 /// (authored).
 const GUARD_HIT_POINTS: u32 = 25;
@@ -123,6 +125,16 @@ impl<'a> KeyRead<'a> {
             && match bind.key {
                 SoulsKey::Key(code) => self.keys.just_pressed(code),
                 SoulsKey::Mouse(button) => self.mouse.just_pressed(button),
+            }
+    }
+
+    /// Whether a hold is still held: only typing eats it. A shown keyboard frame's per-frame
+    /// consumption (an OS key repeat landing on it) must not end a sprint mid-hold.
+    fn held(&self, bind: SoulsBind) -> bool {
+        !self.capture.typing
+            && match bind.key {
+                SoulsKey::Key(code) => self.keys.pressed(code),
+                SoulsKey::Mouse(button) => self.mouse.pressed(button),
             }
     }
 
@@ -399,7 +411,10 @@ pub(super) fn souls_input(
                 if features.guard_counter {
                     souls.counter_until = t + GUARD_COUNTER_SECONDS;
                 }
-                play_clip(ANIM_SHIELD_BLOCK, entity, &mut play_seq, &mut actions);
+                // The retarget holds the stance's own guard; the stock one is a shield's.
+                if !features.retarget_locomotion {
+                    play_clip(ANIM_SHIELD_BLOCK, entity, &mut play_seq, &mut actions);
+                }
             }
         }
     }
@@ -445,7 +460,7 @@ pub(super) fn souls_input(
         && t >= souls.guard_broken_until
         && idle
         && !souls.sprinting;
-    if guard && !souls.guarding {
+    if guard && !souls.guarding && !features.retarget_locomotion {
         play_clip(ANIM_SHIELD_BLOCK, entity, &mut play_seq, &mut actions);
     }
     souls.guarding = guard;
@@ -455,18 +470,35 @@ pub(super) fn souls_input(
         souls.dodge_down_at = Some(t);
         souls.dodge_sprinted = false;
     }
-    let dodge_held = input.down(binds.dodge);
-    let dodge_released = input.just_released(binds.dodge);
+    let dodge_held = input.held(binds.dodge);
+    let dodge_released =
+        input.just_released(binds.dodge) || (!dodge_held && souls.dodge_down_at.is_some());
     let held_for = souls.dodge_down_at.map_or(0.0, |at| t - at);
     let has_stamina = playback
         .engine
         .as_ref()
         .is_some_and(|engine| engine.stamina() > 0);
-    if features.sprint && dodge_held && moving && held_for >= SPRINT_AFTER_SECONDS && has_stamina {
+    if moving {
+        souls.last_moving_at = t;
+    }
+    // A direction change through neutral (or a frame of no keys) keeps the sprint.
+    let moving_now = moving || t - souls.last_moving_at < SPRINT_NEUTRAL_GRACE_SECONDS;
+    if !souls.sprinting
+        && features.sprint
+        && dodge_held
+        && moving
+        && held_for >= SPRINT_AFTER_SECONDS
+        && has_stamina
+    {
+        info!("souls: sprint");
         souls.sprinting = true;
         souls.dodge_sprinted = true;
     }
-    if souls.sprinting && (!dodge_held || !moving || !features.sprint) {
+    if souls.sprinting && (!dodge_held || !moving_now || !features.sprint) {
+        info!(
+            "souls: sprint ends (dodge held {dodge_held}, moving {moving_now}, on {})",
+            features.sprint
+        );
         souls.sprinting = false;
         souls.sprint_owed = 0.0;
     }
@@ -479,6 +511,7 @@ pub(super) fn souls_input(
                 let left = engine.stamina().saturating_sub(whole as u32);
                 engine.set_stamina(left, now);
                 if left == 0 {
+                    info!("souls: sprint ends, out of stamina");
                     souls.sprinting = false;
                 }
             }
@@ -591,7 +624,7 @@ pub(super) fn souls_input(
         None
     } else if dodge_press {
         match kit_now {
-            Some(kit) => resolve_press(kit, active, Press::Dodge, flags),
+            Some(kit) => resolve_dodge(kit, flags, Some(roll_load(link.load))),
             None => Some(stock_press(Press::Dodge)),
         }
     } else if input.just_pressed(binds.light) {
@@ -806,6 +839,7 @@ mod tests {
             label: "test".into(),
             frame_rate_hz: 30,
             stamina_max: None,
+            stance: None,
             actions: vec![
                 action(110, "RunLight", ActionKind::MeleeLight, None),
                 action(111, "RunHeavy", ActionKind::MeleeHeavy, None),

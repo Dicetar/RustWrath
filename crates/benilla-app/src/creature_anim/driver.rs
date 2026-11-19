@@ -326,6 +326,8 @@ pub(super) fn drive_animations(
         MessageReader<ActionAnim>,
         // The Souls crouch, which poses our own body like the creep flag.
         Option<Res<crate::souls::SoulsState>>,
+        // Souls mode: our own weapons stay where the player put them.
+        Option<Res<crate::combat_mode::CombatModeView>>,
     ),
     // The variation roll's LCG, the reference's single CRT `_rand` stream shared by every play.
     mut rng: ResMut<benilla_assets::AnimRng>,
@@ -343,7 +345,11 @@ pub(super) fn drive_animations(
         class_table,
         mut action_anims,
         souls,
+        combat_view,
     ) = aux;
+    let souls_mode = combat_view
+        .as_deref()
+        .is_some_and(|v| v.requested == Some(crate::combat_mode::CombatMode::Experimental));
     let souls_crouched = souls
         .as_deref()
         .is_some_and(crate::souls::SoulsState::crouched);
@@ -1089,6 +1095,7 @@ pub(super) fn drive_animations(
                 }
                 drv.mode = Mode::Swing { id, under: special };
                 drv.gait = None;
+                drv.held_action = contact_in.map(|_| id);
                 base_played = true;
                 played_oneshot = Some(id);
             }
@@ -1431,6 +1438,13 @@ pub(super) fn drive_animations(
             if let Some(forced) =
                 select::reconcile_sheath(cur, anim, flags, engaged, is_self, sheath_byte, mounted)
             {
+                // Souls mode: the player alone sheathes and draws (the toggle key); a played
+                // clip never stows our weapons. Mounting still does.
+                let forced = if is_self && souls_mode && forced == 0 && !mounted {
+                    cur
+                } else {
+                    forced
+                };
                 // The reference brackets every ranged kit play with ranged snaps (`0x60f34c`
                 // before, `SetSheatheState(2,1,1)` after), so ReadyThrown 108's stow (outside the
                 // `0x5fe180` exempt set) never renders; a live ranged hold resolves a stow to 2.

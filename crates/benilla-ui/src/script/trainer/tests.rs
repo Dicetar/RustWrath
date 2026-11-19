@@ -1513,3 +1513,25 @@ fn a_pass_keeps_the_lists_header_array() {
     s.set_trainer(Some(services(true)));
     assert_eq!(lines(&mut s), 2, "the next list builds its own");
 }
+
+/// 12340 re-selects at the end of every filter and sort (`FilterAndSortServices`) and answers nil
+/// with nothing selected. Answering 0 made the stock Wrath window read row 0 as an expanded header
+/// at `TRAINER_SHOW` and collapse every group, so a profession trainer showed headers only.
+#[test]
+fn wrath_selects_the_first_available_service_and_answers_nil_for_none() {
+    let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    assert!(s
+        .eval::<bool>("return GetTrainerSelectionIndex() == nil")
+        .unwrap());
+    s.set_trainer(Some(trainer()));
+    assert_eq!(
+        s.eval::<i64>("return GetTrainerSelectionIndex()").unwrap(),
+        2,
+        "Heroic Strike, the first available service"
+    );
+    // Folding Arms hides it; the second row is then Fury's header, which selects nothing.
+    s.run("CollapseTrainerSkillLine(1)").unwrap();
+    assert!(s
+        .eval::<bool>("return GetTrainerSelectionIndex() == nil")
+        .unwrap());
+}

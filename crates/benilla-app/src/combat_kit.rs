@@ -77,6 +77,11 @@ impl PlayerKit {
         self.two_handing && weapon_row(self.selected_main).is_some_and(|row| !row.two)
     }
 
+    /// The weapon is in both hands: a two-handed one always, a one-handed one by the grip key.
+    pub(crate) fn held_in_both_hands(&self) -> bool {
+        weapon_row(self.selected_main).is_some_and(|row| row.two || self.two_handing)
+    }
+
     /// The grip key: switch a one-handed weapon between one and both hands. Returns the new
     /// grip, or `None` when the weapon has only one (a two-handed weapon).
     pub(crate) fn toggle_grip(&mut self) -> Option<bool> {
@@ -275,11 +280,78 @@ pub(crate) fn resolve_press(
             .and_then(|action| action.next_light)
             .or_else(|| kit.action_named(LIGHT_OPENER).map(|action| action.id))
             .or_else(|| first_of(ActionKind::MeleeLight)),
-        Press::Dodge => kit
-            .action_named(dodge_name(flags))
-            .map(|action| action.id)
-            .or_else(|| first_of(ActionKind::Dodge)),
+        Press::Dodge => resolve_dodge(kit, flags, None),
     }
+}
+
+/// The roll an equipment load gets: the kit rows it rolls with and how far it carries.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct RollLoad {
+    /// The kit rows' prefix (`LightRoll…`, `MediumRoll…`, `HeavyRoll…`); a kit without them
+    /// rolls its own `Roll…`.
+    prefix: &'static str,
+    /// The share of the roll's root motion the body travels.
+    pub(crate) distance: f32,
+}
+
+/// The highest load of the light roll, Elden Ring's fast roll.
+const LIGHT_LOAD_MAX: u8 = 6;
+/// The highest load of the medium roll; above it the heavy roll.
+const MEDIUM_LOAD_MAX: u8 = 26;
+/// ESTIMATE: the medium roll carries this share of its distance at the top of its range...
+const MEDIUM_DISTANCE_FLOOR: f32 = 0.9;
+/// ...and the heavy roll this at [`HEAVY_LOAD_FLOOR`] and above, ER's fat roll's crawl.
+const HEAVY_DISTANCE_FLOOR: f32 = 0.7;
+const HEAVY_LOAD_FLOOR: u8 = 37;
+
+/// The roll for an equipment load score (the server's `LOAD`: 0-4 an armour slot, the weapons and
+/// gun on top); `None`, no score yet, rolls the kit's own roll the whole way.
+pub(crate) fn roll_load(score: Option<u8>) -> RollLoad {
+    let Some(score) = score else {
+        return RollLoad {
+            prefix: "",
+            distance: 1.0,
+        };
+    };
+    let lerp = |from: u8, to: u8, floor: f32| {
+        let share = f32::from(score.clamp(from, to) - from) / f32::from(to - from);
+        1.0 + (floor - 1.0) * share
+    };
+    if score <= LIGHT_LOAD_MAX {
+        RollLoad {
+            prefix: "Light",
+            distance: 1.0,
+        }
+    } else if score <= MEDIUM_LOAD_MAX {
+        RollLoad {
+            prefix: "Medium",
+            distance: lerp(LIGHT_LOAD_MAX + 1, MEDIUM_LOAD_MAX, MEDIUM_DISTANCE_FLOOR),
+        }
+    } else {
+        RollLoad {
+            prefix: "Heavy",
+            distance: lerp(MEDIUM_LOAD_MAX + 1, HEAVY_LOAD_FLOOR, HEAVY_DISTANCE_FLOOR),
+        }
+    }
+}
+
+/// The dodge for the held direction at `load`: the load's own roll when the kit has it, else the
+/// kit's roll, else its first dodge.
+pub(crate) fn resolve_dodge(kit: &Kit, flags: u32, load: Option<RollLoad>) -> Option<ActionId> {
+    let name = dodge_name(flags);
+    let prefix = load.map_or("", |load| load.prefix);
+    let tiered = (!prefix.is_empty() && name.starts_with("Roll"))
+        .then(|| kit.action_named(&format!("{prefix}{name}")))
+        .flatten();
+    tiered
+        .or_else(|| kit.action_named(name))
+        .map(|action| action.id)
+        .or_else(|| {
+            kit.actions
+                .iter()
+                .find(|action| action.kind == ActionKind::Dodge)
+                .map(|action| action.id)
+        })
 }
 
 /// The kit dodge for the held direction.

@@ -255,7 +255,16 @@ pub(super) fn run(
                     );
                     drv.mode = Mode::Looping(sp);
                 }
+            } else if drv.held_action == Some(id)
+                && mv.flags != drv.gait_flags
+                && !select::gait_is_locomotion(&mv, walk)
+                && !oneshot_finished(player, anims, id, catalog)
+            {
+                // A timed action rides out its own root and facing: the edge is taken as the
+                // base it will return to, not a re-arm over it.
+                drv.gait_flags = mv.flags;
             } else if oneshot_finished(player, anims, id, catalog) || mv.flags != drv.gait_flags {
+                drv.held_action = None;
                 // A finished one-shot recomputes the base, fire clips too: bow ids reach the
                 // dispatcher `0x5fc3f0` through its deferred site (`0x7194f5`, `0x7074b0`), and
                 // 46/49/107 land on slot 22, `RecomputeBaseAnim(-1)`, so a shooter re-pulls.

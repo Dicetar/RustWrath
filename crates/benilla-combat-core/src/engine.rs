@@ -35,6 +35,8 @@ pub enum ActionEnd {
     Replaced { by: ActionId },
     /// A hit (or forced control) cut it short.
     Interrupted,
+    /// The actor let it go in its movement cancel: it walked out of the recovery.
+    Released,
     /// The actor died.
     Died,
 }
@@ -509,6 +511,25 @@ impl ActionEngine {
             id: active.spec.id,
             tick: now,
             reason: ActionEnd::Interrupted,
+        });
+        Ok(events)
+    }
+
+    /// The actor moves out of the running action's recovery (the caller checks its movement
+    /// cancel): it ends now and the held request is dropped. With no running action nothing
+    /// changes.
+    pub fn release(&mut self, now: Ticks) -> CombatResult<Vec<EngineEvent>> {
+        let mut events = self.advance_to(now)?;
+        let Some(active) = self.active else {
+            return Ok(events);
+        };
+        self.buffered = None;
+        self.active = None;
+        self.close_active_early(&active, now, &mut events);
+        events.push(EngineEvent::Ended {
+            id: active.spec.id,
+            tick: now,
+            reason: ActionEnd::Released,
         });
         Ok(events)
     }
