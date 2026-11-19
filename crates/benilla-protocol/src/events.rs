@@ -1068,6 +1068,9 @@ pub enum SessionEvent {
     /// The body became a ghost (`SMSG_PRE_RESURRECT`, 12340 only): every missile still homing on
     /// `guid` is dropped.
     PreResurrect { guid: u64 },
+    /// Forced target deselection (`SMSG_CLEAR_TARGET`, 12340 only): clear the selection matching
+    /// `guid` (`CGGameUI::ClearTarget`).
+    ClearTarget { guid: u64 },
     /// A ghost's instance entrance refused entry because its corpse lies elsewhere
     /// (`SMSG_AREA_TRIGGER_NO_CORPSE`, 12340 only): `ERR_CORPSE_IS_NOT_IN_INSTANCE`.
     CorpseNotInInstance,

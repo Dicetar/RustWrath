@@ -105,9 +105,14 @@ pub const WRATH_DRAIN_LIMIT: usize = 64;
 /// Pending `SMSG_PARTYKILLLOG` rows kept for the UI feed. A burst larger than this drops the
 /// oldest rows and reports the loss through `WrathWorldView::party_kill_dropped`.
 pub const PARTY_KILL_CAPACITY: usize = 32;
-/// How long an undelivered kill may wait for an endpoint name before it is discarded as
-/// unresolved. Names usually land from the create/name-query path within a frame or two.
-pub const PARTY_KILL_NAME_RETRY_SECONDS: f64 = 5.0;
+/// Pending `SMSG_ATTACKERSTATEUPDATE` rows kept for the UI feed. Melee swings arrive far more
+/// often than kills; this is a reviewed bound, not a measurement. Overflow drops the oldest row
+/// and reports the loss through `WrathWorldView::swing_dropped`.
+pub const SWING_CAPACITY: usize = 64;
+/// How long an undelivered combat-log row may wait for an endpoint name before it is delivered
+/// with a visible unknown marker. Names usually land from the create/name-query path within a
+/// frame or two.
+pub const COMBAT_LOG_NAME_RETRY_SECONDS: f64 = 5.0;
 
 // Session-reply delivery (package B, review finding R04). The numbers below are reviewed design
 // choices for bounded ownership, not measurements: no build or runtime profile established them.
@@ -638,6 +643,13 @@ pub enum WrathFeedEvent {
     /// `SMSG_ADD_RUNE_POWER`: the mask of runes that just became usable.
     RunePower {
         mask: u32,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_ATTACKERSTATEUPDATE`: one melee swing's raw 12340 facts. Carries the scope so a
+    /// delayed swing from a retired world never reaches the Wrath VM.
+    AttackerState {
+        hit: WrathSwingHit,
         session_epoch: u64,
         world_generation: u64,
     },
@@ -2081,6 +2093,38 @@ pub struct WrathPartyKill {
     pub received_at: f64,
 }
 
+/// The raw 12340 facts of one `SMSG_ATTACKERSTATEUPDATE` swing. `hit_info`, `school` and
+/// `victim_state` stay in the wire's own bit layout, school-mask form and victim-state
+/// numbering: the 1.12 translated values are a different representation and the Wrath combat
+/// log must not reuse them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WrathSwingHit {
+    pub attacker: u64,
+    pub victim: u64,
+    pub hit_info: u32,
+    pub damage: u32,
+    pub overkill: u32,
+    pub victim_state: u32,
+    pub absorb: u32,
+    pub resist: i32,
+    pub blocked: u32,
+    pub melee_spell_id: u32,
+    pub school: u32,
+}
+
+/// One decoded swing with the world scope it belongs to, the UI clock at apply, and a monotonic
+/// sequence the UI feed uses to deliver each swing exactly once. The sequence never resets, so
+/// a teardown that clears the pending queue cannot make a later swing reuse an old revision.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathSwing {
+    pub hit: WrathSwingHit,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    /// `UiClock::ui_now` when the row was applied; 0 when no clock existed yet.
+    pub received_at: f64,
+}
+
 /// One decoded rune slot with the `GetTime()` anchor its cooldown byte arrived on. `cooldown` is
 /// the writer's 0..255 progress fraction; the presentation derives the start from it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2165,6 +2209,14 @@ pub struct WrathWorldView {
     pub party_kill_dropped: u64,
     /// Kills dropped because neither endpoint name resolved within the retry window.
     pub party_kill_unresolved: u64,
+    /// The decoded melee swings waiting for the UI feed; ordered rows up to `SWING_CAPACITY`.
+    pub swings: VecDeque<WrathSwing>,
+    /// Monotonic sequence for `Self::swings`, never reset on a scope clear.
+    pub swing_revision: u64,
+    /// Swings dropped because the pending queue was full.
+    pub swing_dropped: u64,
+    /// Swings delivered with an unknown endpoint after name resolution timed out.
+    pub swing_unresolved: u64,
     /// Presentation mirror of the authority's active casts, keyed by caster, retaining 12340
     /// identity/timing beyond the vanilla cast-bar edges. Written only from resolved snapshots;
     /// never re-resolves wire facts. UI clocks are stamped here, not in the authority.
@@ -2218,6 +2270,10 @@ impl Default for WrathWorldView {
             party_kill_revision: 0,
             party_kill_dropped: 0,
             party_kill_unresolved: 0,
+            swings: VecDeque::new(),
+            swing_revision: 0,
+            swing_dropped: 0,
+            swing_unresolved: 0,
             casts: BTreeMap::new(),
             channels: BTreeMap::new(),
             last_cast_end: None,
@@ -2389,7 +2445,30 @@ impl WrathWorldView {
         });
     }
 
-    /// Clear every scoped rune/calendar/party-kill/LFG fact on a session end or world transfer.
+    /// Adopt one decoded swing. A swing is an ordered event, never a replaceable snapshot: the
+    /// pending queue is bounded, and overflow drops the oldest row and records the loss.
+    pub(crate) fn apply_swing(
+        &mut self,
+        hit: WrathSwingHit,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        self.swing_revision = self.swing_revision.saturating_add(1);
+        if self.swings.len() >= SWING_CAPACITY {
+            self.swings.pop_front();
+            self.swing_dropped = self.swing_dropped.saturating_add(1);
+        }
+        self.swings.push_back(WrathSwing {
+            hit,
+            session_epoch,
+            world_generation,
+            revision: self.swing_revision,
+            received_at,
+        });
+    }
+
+    /// Clear every scoped rune/calendar/combat-log/LFG fact on a session end or world transfer.
     fn clear_rune_calendar(&mut self) {
         self.runes.clear();
         self.calendar = None;
@@ -2399,6 +2478,9 @@ impl WrathWorldView {
         self.party_kills.clear();
         self.party_kill_dropped = 0;
         self.party_kill_unresolved = 0;
+        self.swings.clear();
+        self.swing_dropped = 0;
+        self.swing_unresolved = 0;
         self.lfg_join_result = None;
         self.lfg_queue_status = None;
         self.lfg_update_player = None;
@@ -3774,6 +3856,7 @@ fn translate_gameplay(
             victim,
             hit_info,
             damage,
+            overkill: _,
             victim_state,
             absorb,
             resist,
@@ -3984,6 +4067,9 @@ fn translate_gameplay(
         }
         WrathGameplayEvent::PreResurrect { guid } => {
             vec![SessionEvent::PreResurrect { guid }]
+        }
+        WrathGameplayEvent::ClearTarget { guid } => {
+            vec![SessionEvent::ClearTarget { guid }]
         }
         WrathGameplayEvent::AreaSpiritHealerTime { healer, ms } => {
             vec![SessionEvent::AreaSpiritHealerTime { healer, ms }]
@@ -8854,6 +8940,25 @@ fn wrath_net_drain(
                     view.apply_rune_power(mask, ui_now_seconds.unwrap_or(0.0));
                 }
             }
+            WrathFeedEvent::AttackerState {
+                hit,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_swing(
+                        hit,
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
             WrathFeedEvent::PartyKillLog {
                 killer,
                 victim,
@@ -13024,6 +13129,46 @@ pub fn run_session_with_cancel(
                                 }
                             }
                         }
+                        Ok(event @ WrathGameplayEvent::AttackerState {
+                            attacker,
+                            victim,
+                            hit_info,
+                            damage,
+                            overkill,
+                            victim_state,
+                            absorb,
+                            resist,
+                            blocked,
+                            melee_spell_id,
+                            school,
+                        }) => {
+                            feed.push_event(WrathFeedEvent::AttackerState {
+                                hit: WrathSwingHit {
+                                    attacker,
+                                    victim,
+                                    hit_info,
+                                    damage,
+                                    overkill,
+                                    victim_state,
+                                    absorb,
+                                    resist,
+                                    blocked,
+                                    melee_spell_id,
+                                    school,
+                                },
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                            if session.player_guid().is_some() {
+                                for event in translate_live(
+                                    event,
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
+                                }
+                            }
+                        }
                         Ok(WrathGameplayEvent::PartyKillLog { killer, victim }) => {
                             feed.push_event(WrathFeedEvent::PartyKillLog {
                                 killer,
@@ -13662,6 +13807,7 @@ mod tests {
             victim: 0xf130_0000_0000_0022,
             hit_info,
             damage: 30,
+            overkill: 0,
             victim_state: 1,
             absorb: 0,
             resist: 0,
@@ -14479,6 +14625,22 @@ mod tests {
         );
     }
 
+    /// `SMSG_CLEAR_TARGET` translates to the stock forced-deselect event with its guid.
+    #[test]
+    fn clear_target_translates_to_the_stock_event() {
+        let guid = 0xF130_0000_0000_00ABu64;
+        let translated = translate_gameplay(
+            WrathGameplayEvent::ClearTarget { guid },
+            0,
+            std::time::Instant::now(),
+        );
+        assert_eq!(translated.len(), 1);
+        match translated.as_slice() {
+            [SessionEvent::ClearTarget { guid: seen }] => assert_eq!(*seen, guid),
+            other => panic!("one clear-target event expected, got {other:?}"),
+        }
+    }
+
     /// The pending queue is bounded and reports overflow instead of silently losing a burst.
     #[test]
     fn party_kill_queue_reports_capacity_loss() {
@@ -14494,6 +14656,49 @@ mod tests {
                 .expect("the first three were dropped")
                 .received_at,
             3.0
+        );
+    }
+
+    /// Swings are scoped ordered rows: a full queue drops the oldest and reports the loss, the
+    /// sequence stays monotonic across a scope clear, and the clear removes every pending swing.
+    #[test]
+    fn swing_queue_clears_at_scope_end_and_reports_capacity_loss() {
+        let hit = WrathSwingHit {
+            attacker: 1,
+            victim: 2,
+            hit_info: 0x2,
+            damage: 10,
+            overkill: 0,
+            victim_state: 1,
+            absorb: 0,
+            resist: 0,
+            blocked: 0,
+            melee_spell_id: 0,
+            school: 1,
+        };
+        let mut view = WrathWorldView::default();
+        for index in 0..(SWING_CAPACITY + 3) {
+            view.apply_swing(hit, 7, 9, index as f64);
+        }
+        assert_eq!(view.swings.len(), SWING_CAPACITY);
+        assert_eq!(view.swing_dropped, 3);
+        let front = view.swings.front().expect("the first three were dropped");
+        assert_eq!(front.received_at, 3.0);
+        assert_eq!((front.session_epoch, front.world_generation), (7, 9));
+        assert_eq!(front.revision, 4);
+
+        view.clear_rune_calendar();
+        assert!(view.swings.is_empty());
+        assert_eq!(view.swing_dropped, 0);
+        assert_eq!(view.swing_unresolved, 0);
+        view.apply_swing(hit, 10, 11, 101.0);
+        assert_eq!(
+            view.swings
+                .front()
+                .expect("a later swing is retained")
+                .revision,
+            (SWING_CAPACITY + 4) as u64,
+            "the sequence never rewinds across a scope clear"
         );
     }
 
