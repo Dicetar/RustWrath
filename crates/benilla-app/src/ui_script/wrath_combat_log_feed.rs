@@ -241,8 +241,7 @@ enum SwingOutcome {
     Retired,
 }
 
-/// One `SWING_MISSED` outcome, named by the reference's own miss string. `RESIST` and `ABSORB`
-/// are the next slice, so they are not representable here yet.
+/// One `SWING_MISSED` outcome, named by the reference's own miss string.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MissKind {
     Miss,
@@ -252,6 +251,8 @@ enum MissKind {
     Evade,
     Immune,
     Deflect,
+    Absorb,
+    Resist,
 }
 
 impl MissKind {
@@ -265,13 +266,25 @@ impl MissKind {
             MissKind::Evade => "EVADE",
             MissKind::Immune => "IMMUNE",
             MissKind::Deflect => "DEFLECT",
+            MissKind::Absorb => "ABSORB",
+            MissKind::Resist => "RESIST",
         }
     }
 
-    /// `PushEvent` appends the amount only for RESIST and BLOCK; of the kinds this slice emits,
-    /// only BLOCK carries one.
-    fn carries_amount(self) -> bool {
-        matches!(self, MissKind::Block)
+    /// `PushEvent` appends one amount only for the miss types `SetMissInfo` flags: absorbed for
+    /// ABSORB, resisted for RESIST, blocked for BLOCK. The other kinds append none.
+    fn amount(self, swing: &WrathSwing) -> Option<f64> {
+        match self {
+            MissKind::Absorb => Some(f64::from(swing.hit.absorb)),
+            MissKind::Resist => Some(f64::from(swing.hit.resist)),
+            MissKind::Block => Some(f64::from(swing.hit.blocked)),
+            MissKind::Miss
+            | MissKind::Dodge
+            | MissKind::Parry
+            | MissKind::Evade
+            | MissKind::Immune
+            | MissKind::Deflect => None,
+        }
     }
 }
 
@@ -291,9 +304,11 @@ fn swing_outcome(swing: &WrathSwing) -> SwingOutcome {
     if hit.hit_info & 0x10 != 0 {
         return SwingOutcome::Missed(MissKind::Miss);
     }
-    if hit.hit_info & (0x20 | 0x80) != 0 {
-        // Absorbed and resisted swings are the next slice; retired for now, not guessed at.
-        return SwingOutcome::Retired;
+    if hit.hit_info & 0x20 != 0 {
+        return SwingOutcome::Missed(MissKind::Absorb);
+    }
+    if hit.hit_info & 0x80 != 0 {
+        return SwingOutcome::Missed(MissKind::Resist);
     }
     match hit.victim_state {
         2 => SwingOutcome::Missed(MissKind::Dodge),
@@ -396,9 +411,9 @@ fn swing_damage_args(
 }
 
 /// The values `CombatLogEntry::PushEvent` appends for `SWING_MISSED`
-/// (`UnitCombatLog_C.cpp:982-1073`, info flags `0x4`/`0x4000`/`0x8000`): the miss-type string
-/// from `SetMissInfo`, then the amount only for RESIST and BLOCK. Of the kinds this slice emits
-/// only a block has an amount, and it carries the blocked total as the row's tenth value.
+/// (`UnitCombatLog_C.cpp:982-1073`, info flags `0x4`/`0x2000`/`0x4000`/`0x8000`): the miss-type
+/// string from `SetMissInfo`, then the amount only for ABSORB, RESIST and BLOCK. The hit_info
+/// tests run absorb before resist, so a row carrying both bits is ABSORB.
 fn swing_missed_args(
     timestamp: f64,
     swing: &WrathSwing,
@@ -416,8 +431,8 @@ fn swing_missed_args(
         target_name,
     );
     args.push(ScriptValue::Str(kind.name().to_owned()));
-    if kind.carries_amount() {
-        args.push(ScriptValue::Number(f64::from(hit.blocked)));
+    if let Some(amount) = kind.amount(swing) {
+        args.push(ScriptValue::Number(amount));
     }
     args
 }
@@ -713,9 +728,9 @@ mod tests {
         );
     }
 
-    /// The reference tests `hit_info` before the victim-state switch, so a miss bit wins over
-    /// the state, absorb/resist stay retired, and each remaining state posts `SWING_MISSED` with
-    /// its own miss string. Only a block appends the blocked amount.
+    /// The reference tests `hit_info` before the victim-state switch, so a miss, absorb or
+    /// resist bit wins over the state, and each remaining state posts `SWING_MISSED` with its
+    /// own miss string. Absorb and resist carry their totals; a plain state appends no amount.
     #[test]
     fn swing_missed_names_each_victim_state() {
         let row = |victim_state: u32, hit_info: u32| WrathSwing {
@@ -769,9 +784,15 @@ mod tests {
             )
         );
 
-        // Out of scope this slice: absorb and resist are retired, not misnamed.
-        assert_eq!(swing_outcome(&row(0, 0x22)), SwingOutcome::Retired);
-        assert_eq!(swing_outcome(&row(0, 0x82)), SwingOutcome::Retired);
+        // Absorb and resist are named by their hit_info bits, absorb first.
+        assert_eq!(
+            named(&row(0, 0x22)),
+            (10, ScriptValue::Str("ABSORB".to_owned()))
+        );
+        assert_eq!(
+            named(&row(0, 0x82)),
+            (10, ScriptValue::Str("RESIST".to_owned()))
+        );
         // No matching outcome: an intact hit and a wound without damage emit nothing.
         assert_eq!(swing_outcome(&row(0, 0x2)), SwingOutcome::Retired);
         assert_eq!(swing_outcome(&row(1, 0x2)), SwingOutcome::Retired);
@@ -843,6 +864,148 @@ mod tests {
             args(&blocked(20))[1],
             ScriptValue::Str("SWING_DAMAGE".to_owned())
         );
+    }
+
+    /// Absorbed and resisted swings reach the switch as `ABSORB` and `RESIST` and carry the
+    /// summed absorbed or resisted total as the tenth value; each row is exactly one event.
+    #[test]
+    fn swing_missed_absorb_and_resist_carry_their_totals() {
+        use crate::ui_script::UiClock;
+        use bevy::ecs::system::RunSystemOnce;
+        use bevy::prelude::App;
+
+        let mut script = script_with_units();
+        script
+            .run(
+                r#"
+                SEEN = 0
+                Fired = {}
+                local listener = CreateFrame("Frame", "WrathSwingAbsorbResistTest")
+                listener:SetScript("OnEvent", function(_, event, ...)
+                    SEEN = SEEN + 1
+                    Fired[SEEN] = { event, ... }
+                end)
+                listener:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+                "#,
+            )
+            .unwrap();
+
+        let mut world = WrathWorldView::default();
+        world.phase = Some(benilla_protocol_wrath::session::Phase::InWorld);
+        world.player_guid = 0x11;
+        world.session_epoch = 4;
+        world.world_generation = 5;
+        // Both rows carry both amounts; only the one the miss type flags is appended.
+        world.apply_swing(
+            crate::wrath::WrathSwingHit {
+                victim: 0x22,
+                hit_info: 0x22,
+                absorb: 7,
+                resist: 4,
+                ..swing_hit(0, 0)
+            },
+            4,
+            5,
+            97.0,
+        );
+        world.apply_swing(
+            crate::wrath::WrathSwingHit {
+                victim: 0x22,
+                hit_info: 0x82,
+                absorb: 7,
+                resist: 4,
+                ..swing_hit(0, 0)
+            },
+            4,
+            5,
+            97.0,
+        );
+
+        let mut app = App::new();
+        app.insert_resource(world)
+            .insert_resource(UiClock {
+                ui_now: 100.0,
+                ..Default::default()
+            })
+            .init_resource::<NameCache>()
+            .insert_non_send_resource(script);
+        app.world_mut().run_system_once(feed).unwrap();
+
+        {
+            let script = app.world().non_send_resource::<UiScript>();
+            assert_eq!(
+                script.eval::<i64>("return SEEN").unwrap(),
+                2,
+                "one event per absorbed or resisted swing"
+            );
+            assert_eq!(
+                script.eval::<String>("return Fired[1][3]").unwrap(),
+                "SWING_MISSED"
+            );
+            assert_eq!(
+                script.eval::<String>("return Fired[1][10]").unwrap(),
+                "ABSORB"
+            );
+            assert_eq!(
+                script.eval::<f64>("return Fired[1][11]").unwrap(),
+                7.0,
+                "the absorbed total, not the resisted total"
+            );
+            assert_eq!(
+                script.eval::<String>("return Fired[2][10]").unwrap(),
+                "RESIST"
+            );
+            assert_eq!(
+                script.eval::<f64>("return Fired[2][11]").unwrap(),
+                4.0,
+                "the resisted total, not the absorbed total"
+            );
+        }
+        assert!(
+            app.world().resource::<WrathWorldView>().swings.is_empty(),
+            "both delivered rows are retired"
+        );
+
+        // The reference pushes the flagged amount unconditionally, so zero is a number, not nil.
+        let zero = WrathSwing {
+            hit: crate::wrath::WrathSwingHit {
+                hit_info: 0x22,
+                ..swing_hit(0, 0)
+            },
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 3,
+            received_at: 10.0,
+        };
+        let args = swing_event_args(10.0, &zero, swing_outcome(&zero), "Firna", "Teammate");
+        assert_eq!(args[8], ScriptValue::Str("ABSORB".to_owned()));
+        assert_eq!(args[9], ScriptValue::Number(0.0));
+    }
+
+    /// The reference tests `hit_info & 0x20` before `0x80`, so a row carrying both bits is
+    /// ABSORB and appends only the absorbed total.
+    #[test]
+    fn a_row_with_absorb_and_resist_is_absorb() {
+        let swing = WrathSwing {
+            hit: crate::wrath::WrathSwingHit {
+                hit_info: 0x20 | 0x80 | 0x2,
+                absorb: 7,
+                resist: 4,
+                ..swing_hit(0, 0)
+            },
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 3,
+            received_at: 10.0,
+        };
+        assert_eq!(
+            swing_outcome(&swing),
+            SwingOutcome::Missed(MissKind::Absorb)
+        );
+        let args = swing_event_args(10.0, &swing, swing_outcome(&swing), "Firna", "Teammate");
+        assert_eq!(args[8], ScriptValue::Str("ABSORB".to_owned()));
+        assert_eq!(args[9], ScriptValue::Number(7.0));
+        assert_eq!(args.len(), 10, "only the absorbed total is appended");
     }
 
     /// The feed drains the swing queue with the same name retry as kills; a WOUND/BLOCK row
