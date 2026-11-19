@@ -14,6 +14,6 @@ Reference: `UnitCombatLog_C.cpp::UnitCombatLog` (0x007512B0) 1009-1035; `SetMiss
 (0x0074D980, infoFlags 0x2000/0x4000); `PushEvent` (0x0074E290) tenth value.
 Tests: `swing_missed_absorb_and_resist_carry_their_totals` and
 `a_row_with_absorb_and_resist_is_absorb`; `swing_missed_names_each_victim_state` now expects
-ABSORB/RESIST where it asserted retirement. CI: not run yet.
+ABSORB/RESIST where it asserted retirement. CI 44623012996: Windows check and the changed-crate tests green; the gates job is red only on the pre-existing `player-clippy` debt in files this ticket did not touch.
 Not proven in game: that a live absorbed/resisted swing reaches the stock frame with the summed
 total, or that the server sends both bits with the values the reader sums.
