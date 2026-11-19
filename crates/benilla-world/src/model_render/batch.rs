@@ -10,7 +10,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::render::render_resource::Buffer;
 
-use super::{model_material, zfill_material, MaterialCache, ShadeSel};
+use super::{model_material, wmo_model_material, zfill_material, MaterialCache, ShadeSel};
 use crate::lighting::SharedLightBuffer;
 
 /// The engine's one `WowModelMaterial` dedup cache, swept by distance and cleared on a map change;
@@ -434,7 +434,7 @@ impl M2BatchMaterials<'_> {
         light: &Buffer,
         instance: Option<Entity>,
     ) -> Handle<WowModelMaterial> {
-        model_material(
+        wmo_model_material(
             &mut self.cache.0,
             &mut self.materials,
             texture,
@@ -464,6 +464,7 @@ impl M2BatchMaterials<'_> {
             false,
             light,
             instance,
+            sub.geometry.wmo_unified,
         )
     }
 }

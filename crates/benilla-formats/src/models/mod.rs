@@ -82,6 +82,7 @@ fn remap_submesh(
             emissive,
             sidn: None,
             window: false,
+            wmo_unified: None,
             additive: false,
             no_depth_write: false,
             no_depth_test: false,

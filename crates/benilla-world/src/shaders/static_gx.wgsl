@@ -40,7 +40,8 @@ struct GxCell {
 }
 @group(1) @binding(0) var<uniform> cell: GxCell;
 // The per-item records, indexed by the vertex word's low 16 bits: x the texture-array layer, y
-// the WMO batch order (0 on cells), z the MOMT SIDN colour r|g<<8|b<<16 in gamma bytes, w flags:
+// the WMO batch order (0 on cells) in its low 16 bits, z the MOMT SIDN colour r|g<<8|b<<16 in
+// gamma bytes (the unified MOHD ambient above both, see WORD_UNIFIED), w flags:
 // bit 0 exile kill, bits 1..=13 the interior-prop probe slot, bit 14 interior fog (`[0xca7f00]`).
 @group(1) @binding(1) var<storage, read> recs: array<vec4<u32>>;
 @group(1) @binding(2) var tex_array: texture_2d_array<f32>;
@@ -65,6 +66,9 @@ const WORD_HAS_VC: u32 = 134217728u;   // 1 << 27: the batch authors vertex colo
 // INTERIOR without WMO is an interior M2 prop, the entity shader's `interior_prop =
 // flags.z && !flags.x`: probe lighting, interior fog, no point lights.
 const WORD_MATTE: u32 = 268435456u;    // 1 << 28: ShadeSel::Matte, fixed intensity 1.0
+// A unified-path WMO (`MOHD.flags & 0x2`): MOCV is the emissive, not the light's multiplier. The
+// root's MOHD ambient rides the record: R, G in y bits 16..=31, B in z bits 24..=31.
+const WORD_UNIFIED: u32 = 536870912u;  // 1 << 29
 
 // The alpha-test cutout reference 224/255, as wow_model.wgsl's VANILLA_ALPHA_KEY.
 const VANILLA_ALPHA_KEY: f32 = 0.8784314;
@@ -162,7 +166,7 @@ fn vertex(v: GxVertex) -> GxVsOut {
     out.position = view.clip_from_view * vec4<f32>(view_rot * p_cam, 1.0);
     // Authored MOBA batch order (record y, 0 on cells): a later coplanar batch wins reverse-Z
     // GreaterEqual in any draw order, because the draw sort does not keep authored order.
-    out.position.z *= 1.0 + f32(recs[v.word & 0xffffu].y) * 1.1920929e-7;
+    out.position.z *= 1.0 + f32(recs[v.word & 0xffffu].y & 0xffffu) * 1.1920929e-7;
     out.world_normal = v.normal;
     out.uv = v.uv;
     out.word = v.word;
@@ -295,6 +299,39 @@ fn fragment(in: GxVsOut) -> @location(0) vec4<f32> {
                 vec3<f32>(0.0),
                 vec3<f32>(1.0),
             );
+        }
+        if ((in.word & WORD_UNIFIED) != 0u) {
+            // The unified path (`CMap::UnifiedRender`, MapObjU): every batch on one program,
+            // C = clamp(clamp(L)·127/255 + MOCV + SIDN/2), drawn 2·tex·C. A batch without MOCV
+            // gets the reference's black base (`FillVertexVB`), so it reads plain tex × L.
+            let amb = vec3<f32>(
+                f32((rec.y >> 16u) & 0xffu),
+                f32(rec.y >> 24u),
+                f32(rec.z >> 24u),
+            ) / 255.0;
+            let vc_u = select(vec3<f32>(0.0), vc.rgb, has_vc);
+            let e_half = 0.5 * sidn_rgb * wow_light.grade.x;
+            let is_win = (in.word & WORD_WINDOW) != 0u;
+            // Exterior-lit groups light by the sun (mode 1), interior ones by the MOHD ambient
+            // (mode 3) or, WINDOW, the midpoint pair (mode 2). A TRANS batch draws its lit pass
+            // (mode 1 or 2) at SrcAlpha, then the ambient pass at InvSrcAlpha: one lerp here.
+            let l_lit = select(lit_nl, lit_window, is_win && (interior || class_trans));
+            let c_lit = clamp(
+                l_lit * (127.0 / 255.0) + vc_u + e_half,
+                vec3<f32>(0.0),
+                vec3<f32>(1.0),
+            );
+            let c_amb = clamp(
+                select(amb, lit_window, is_win && !class_trans) * (127.0 / 255.0) + vc_u + e_half,
+                vec3<f32>(0.0),
+                vec3<f32>(1.0),
+            );
+            var c_u = select(c_lit, c_amb, interior);
+            if (class_trans) {
+                c_u = mix(c_amb, c_lit, trans_a);
+            }
+            // The unfolded texel: near-black MOCV would zero `tex_rgb`'s division.
+            rgb = clamp(2.0 * base.rgb * c_u, vec3<f32>(0.0), vec3<f32>(1.0));
         }
     } else if ((in.word & WORD_INTERIOR) != 0u) {
         // ---- interior M2 props: wow_model.wgsl's interior-prop branch ----
