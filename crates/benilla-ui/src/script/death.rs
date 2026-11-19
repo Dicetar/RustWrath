@@ -45,6 +45,10 @@ pub struct DeathUiState {
     /// vehicle seat included. The RESURRECT dialog only skips re-raising DEATH on a decline while
     /// this is nil (`StaticPopup.lua:1205`, `:1231`, `:1255`).
     pub controlling: bool,
+    /// `IsPossessBarVisible` (`0x5a8820`): the player's `UNIT_FIELD_CHARM` is set (mind control
+    /// or a vehicle). The vehicle leg is gated out by the vehicle GUID in the native, so a pet's
+    /// `UNIT_FIELD_SUMMON` never shows the possess bar.
+    pub possess_bar: bool,
 }
 
 /// The death verbs the host applies inside their calls ([`super::ScriptCall::Death`]).
@@ -80,6 +84,12 @@ impl super::UiScript {
     /// Push this frame's death snapshot, before the event dispatch.
     pub fn set_death(&mut self, state: DeathUiState) {
         self.model_mut().death = state;
+    }
+
+    /// Whether the player's charm target currently shows the possess bar; the native gates the
+    /// vehicle leg separately.
+    pub fn possess_bar_active(&self) -> bool {
+        self.model_ref().death.possess_bar
     }
 
     /// The death calls a harness's VM kept ([`Self::keep_calls`]), in call order.
