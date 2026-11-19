@@ -290,6 +290,14 @@ fn relayed_anim(kit: Option<&benilla_combat_core::Kit>, action: &str) -> u16 {
     }
 }
 
+/// Pick only authored sequences before allowing the generic fallback.
+fn strike_anim(mut has: impl FnMut(u16) -> bool) -> u16 {
+    [17, 18, 19, 16]
+        .into_iter()
+        .find(|&id| has(id))
+        .unwrap_or(ANIM_ATTACK_1H)
+}
+
 /// The bodies the link looks up by guid.
 type Bodies<'w, 's> = Query<
     'w,
@@ -320,6 +328,7 @@ pub(super) fn drive_link(
         Option<Res<NetCommands>>,
     ),
     bodies: Bodies,
+    models: Query<&benilla_assets::ModelAnimations>,
     me: Query<Entity, With<SelfPlayer>>,
     mut link: ResMut<SoulsLink>,
     mut mute: ResMut<SwingMute>,
@@ -417,6 +426,19 @@ pub(super) fn drive_link(
                     link.strikes.remove(0);
                 }
                 let windup = windup_ms as f32 / 1000.0;
+                if let Some((entity, ..)) = bodies.iter().find(|(_, guid, ..)| guid.0 == creature) {
+                    let anim_id = strike_anim(|id| {
+                        models
+                            .get(entity)
+                            .is_ok_and(|model| model.find(id).is_some())
+                    });
+                    actions.write(ActionAnim {
+                        entity,
+                        anim_id,
+                        contact_in: Some(windup.max(0.001)),
+                        seq: play_seq.next(),
+                    });
+                }
                 link.strikes.push(Strike {
                     id,
                     creature,
@@ -571,6 +593,18 @@ pub(super) fn drive_link(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strike_animation_uses_the_first_authored_attack() {
+        let preference = [17, 18, 19, 16];
+        for start in 0..preference.len() {
+            assert_eq!(
+                strike_anim(|id| preference[start..].contains(&id)),
+                preference[start]
+            );
+        }
+        assert_eq!(strike_anim(|_| false), ANIM_ATTACK_1H);
+    }
 
     #[test]
     fn server_messages_parse() {

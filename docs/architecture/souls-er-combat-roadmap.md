@@ -111,7 +111,7 @@ cursor_keys = ["Escape", "B", "C", "P", "M", "L", "N", "O", "I", "K", "U", "H", 
 | Hit-stop and camera jolt; the player's clips pause for the stop | done | `souls/targets.rs`, `camera_shake.rs` | `hit_stop` |
 | Damage: weapon roll × motion value, cleave falloff, blob share | done by the server script; without it a landed hit starts stock melee | `souls/targets.rs`, `souls/server.rs`, `integrations/ale/rustwrath_souls.lua` | `server` (`engage_on_hit` without it) |
 | Stock auto-attack off while the mode is on | done by the server script (blocks `CMSG_ATTACKSWING`) | `rustwrath_souls.lua` | `server` |
-| Enemy telegraphs: creatures stop melee and wind up strikes (40 % of attack time, 0.6–1.5 s), a windup bar over them, the client judges reach/cone/i-frames/parry/guard | done (server script + client) | `souls/server.rs`, `souls/hud.rs`, `rustwrath_souls.lua` | `enemy_strikes`, `server` |
+| Enemy telegraphs: model-authored attack sequences scaled to land their impact at windup end; creatures stop melee and wind up strikes (40 % of attack time, 0.6–1.5 s), a windup bar over them, the client judges reach/cone/i-frames/parry/guard | done (server script + client) | `souls/server.rs`, `souls/hud.rs`, `rustwrath_souls.lua` | `enemy_strikes`, `server` |
 | Enemy stance break: hits cost the creature stance (30 + 2/level, ×2 elite; 10 per 100 % motion value), at zero it is stunned 3 s, its strike and casts cancelled, and a ×3 riposte opens | done (server script; the client shows the gold riposte marker) | `rustwrath_souls.lua`, `souls/server.rs` | `server` |
 | Other Souls players' swings shown (generic attack/parry/dodge anims) | done | `souls/server.rs` | `server` |
 | Stamina bar, mode chip (teal while the server answers), lock-on marker (gold while a riposte is open) | done | `souls/hud.rs` | `hud` |
@@ -144,7 +144,6 @@ Install and side effects: `.scratch/project-b/server-rebuild-batch.md` item 2.
   checked against the HumanMale skeleton; hand roll and the weapon's angle come from the forearm
   aim; the locomotion clip speeds are estimates. Other players still show stock clips.
 - Kit rows for jumps, the left hand and the parry (`kit_import` options), then tuning.
-- Creature-specific strike animations (the server plays the generic one-hand attack emote).
 - The client reads the stealth CREEP flag from `UNIT_FIELD_BYTES_1` byte 3 (`unit_is_stealthed`),
   where AzerothCore keeps it in byte 2 (byte 3 is the anim tier, `0x02` = hover): other players'
   crouch and real stealth poses may not show, and a hovering unit may show crouched.
