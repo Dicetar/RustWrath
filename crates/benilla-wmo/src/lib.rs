@@ -83,6 +83,9 @@ pub struct Color {
 pub struct Batch {
     pub start_index: u32,
     pub count: u16,
+    /// First and last vertex referenced by this batch (`MOBA +0x12`/`+0x14`).
+    pub vertex_start: u16,
+    pub vertex_end: u16,
     pub material_id: u8,
 }
 
@@ -290,12 +293,14 @@ fn parse_group(mogp: &[u8]) -> Result<WmoGroup> {
                 }
             }
             // MOBA: bbox_min[i16;3] bbox_max[i16;3] start_index(u32@12) count(u16@16)
-            // min/max(u16) flags(u8@22) material_id(u8@23)
+            // vertex_start(u16@18) vertex_end(u16@20) flags(u8@22) material_id(u8@23)
             b"ABOM" => {
                 for c in s.as_chunks::<24>().0 {
                     g.render_batches.push(Batch {
                         start_index: c.u32_at(12).ok_or(Error::Truncated("MOBA"))?,
                         count: c.u16_at(16).ok_or(Error::Truncated("MOBA"))?,
+                        vertex_start: c.u16_at(18).ok_or(Error::Truncated("MOBA"))?,
+                        vertex_end: c.u16_at(20).ok_or(Error::Truncated("MOBA"))?,
                         material_id: c.u8_at(23).ok_or(Error::Truncated("MOBA"))?,
                     });
                 }
