@@ -342,7 +342,10 @@ pub(crate) fn seed_default_language(world: &mut World, script: &mut UiScript) {
         .and_then(|roster| roster.pending_row().map(|row| u32::from(row.race)))
         .or_else(|| {
             let guid = world.get_resource::<crate::net::SelfGuid>()?.0?;
-            let &entity = world.get_resource::<crate::net::GuidIndex>()?.0.get(&guid)?;
+            let &entity = world
+                .get_resource::<crate::net::GuidIndex>()?
+                .0
+                .get(&guid)?;
             world
                 .get::<ObjectStore>(entity)?
                 .0

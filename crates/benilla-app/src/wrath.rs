@@ -15810,6 +15810,10 @@ mod scoped_delivery_tests {
         assert_eq!(chat_tag_112(0x04), t::GM);
         assert_eq!(chat_tag_112(0x03), t::DND, "DND wins over AFK");
         assert_eq!(chat_tag_112(0x07), t::GM, "GM wins over DND and AFK");
-        assert_eq!(chat_tag_112(0x08 | 0x10), t::NONE, "COM/DEV have no donor tag");
+        assert_eq!(
+            chat_tag_112(0x08 | 0x10),
+            t::NONE,
+            "COM/DEV have no donor tag"
+        );
     }
 }
