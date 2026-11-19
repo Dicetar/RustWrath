@@ -2210,12 +2210,14 @@ pub enum ServerEvent {
     },
     /// `SMSG_ATTACKERSTATEUPDATE` mapped onto the 1.12 swing shape. `hit_info` and `school`
     /// stay in 12340's own bit layout and mask form; the app seam translates both for the 1.12
-    /// consumers.
+    /// consumers. `overkill` has no 1.12 field: only the 3.3.5 combat log reads it.
     AttackerState {
         attacker: u64,
         victim: u64,
         hit_info: u32,
         damage: u32,
+        /// 12340's `Overkill`: damage beyond the victim's remaining health.
+        overkill: u32,
         victim_state: u32,
         absorb: u32,
         resist: i32,
@@ -3738,7 +3740,7 @@ fn read_attacker_state(b: &[u8]) -> Result<ServerEvent> {
     let attacker = r.packed_guid()?;
     let victim = r.packed_guid()?;
     let damage = r.u32()?;
-    let _overkill = r.u32()?;
+    let overkill = r.u32()?;
     let subs = r.u8()?;
     let mut absorb = 0u32;
     let mut resist = 0i32;
@@ -3777,6 +3779,7 @@ fn read_attacker_state(b: &[u8]) -> Result<ServerEvent> {
         victim,
         hit_info,
         damage,
+        overkill,
         victim_state,
         absorb,
         resist,
@@ -5871,6 +5874,7 @@ mod tests {
                 victim: 0x22,
                 hit_info: 0x202,
                 damage: 30,
+                overkill: 5,
                 victim_state: 1,
                 absorb: 0,
                 resist: 0,
@@ -5959,6 +5963,7 @@ mod tests {
                 victim: 0x22,
                 hit_info: 0x1E0,
                 damage: 0,
+                overkill: 0,
                 victim_state: 1,
                 absorb: 12,
                 resist: 5,
