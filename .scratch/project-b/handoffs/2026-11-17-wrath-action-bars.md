@@ -1,6 +1,6 @@
 # B5 — Wrath action bars, spellbook and macros
 
-Status: ready to merge
+Status: landed
 Owner: OpenCode / DeepSeek V4.1 Flash (took over from Pi / OpenAI)
 Branch: fix/wrath-action-bars
 Issue: none
