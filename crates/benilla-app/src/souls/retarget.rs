@@ -1273,10 +1273,11 @@ fn drive_remote_retarget(
                 |rest| map_rig(&rig, twist, attach, rest),
             );
             state.stock = rig.locals.clone();
+            state.from = rig.locals.clone();
             state.written = None;
         }
         let Ok(map) = &state.map else {
-            return true;
+            return on && action.is_some_and(|a| now < a.started + a.duration);
         };
         for b in map.bones() {
             let current = rig.locals[b];

@@ -276,10 +276,11 @@ fn verdict(in_reach: bool, in_cone: bool, defence: Defence) -> &'static str {
 
 /// The anim a relayed action plays on another player's body.
 fn relayed_anim(kit: Option<&benilla_combat_core::Kit>, action: &str) -> u16 {
-    if action == "Parry" {
+    let row = super::retarget::relayed_row(kit, action);
+    if action == "Parry" || row.is_some_and(|row| row.name == "Parry") {
         return ANIM_PARRY_1H;
     }
-    let dodge = match kit.and_then(|kit| kit.action_named(action)) {
+    let dodge = match row {
         Some(row) => row.kind == ActionKind::Dodge,
         None => action.starts_with("Roll") || action.starts_with("Backstep"),
     };
@@ -326,8 +327,8 @@ pub(super) fn drive_link(
         Res<SelfGuid>,
         Option<Res<NameCache>>,
         Option<Res<NetCommands>>,
+        Commands,
     ),
-    mut commands: Commands,
     bodies: Bodies,
     models: Query<&benilla_assets::ModelAnimations>,
     me: Query<Entity, With<SelfPlayer>>,
@@ -336,7 +337,7 @@ pub(super) fn drive_link(
     mut play_seq: ResMut<PlaySeq>,
     mut actions: MessageWriter<ActionAnim>,
 ) {
-    let (self_guid, names, net) = ids;
+    let (self_guid, names, net, mut commands) = ids;
     let on = souls_on(&view) && config.features.server && crate::wrath::selected_from_env();
     let t = time.elapsed_secs();
     // Whom the message goes to: ourselves, by name.
