@@ -9867,6 +9867,12 @@ fn apply_item_world(
 
 /// Translate the drained digest into the established `GuidIndex`/`NetEntity`/`ObjectStore` path.
 /// Exclusive, so creates/removals are live before `WorldStage::Input`.
+/// Convert the 12340 wire bytes to the donor descriptor consumed by ObjectFields.
+/// Unit_C.cpp:5128/5130: vis flags are byte 2; byte 3 is the animation tier, not flags.
+fn donor_unit_bytes_1(bytes_1: u32, bytes_2: u32) -> u32 {
+    (bytes_1 & 0x0000_ffff) | ((bytes_2 >> 24) << 16) | (((bytes_1 >> 16) & 0xff) << 24)
+}
+
 fn wrath_apply_world(world: &mut World) {
     let (mut changes, entities, entered, phase, player_guid, map_id) = {
         let mut view = world.resource_mut::<WrathWorldView>();
@@ -10137,8 +10143,7 @@ fn wrath_apply_world(world: &mut World) {
         if remote.bytes_1.is_some() || remote.bytes_2.is_some() {
             let b1 = remote.bytes_1.unwrap_or(0);
             let b2 = remote.bytes_2.unwrap_or(0);
-            let vanilla_bytes_1 =
-                (b1 & 0x0000_ffff) | ((b2 >> 24) << 16) | (((b1 >> 16) & 0xff) << 24);
+            let vanilla_bytes_1 = donor_unit_bytes_1(b1, b2);
             pairs.push((138, vanilla_bytes_1));
         }
         if let Some(bytes_2) = remote.bytes_2 {
@@ -14191,6 +14196,24 @@ mod tests {
         assert!(world
             .get::<crate::wrath_item::WrathItemRow>(replacement)
             .is_some());
+    }
+
+    #[test]
+    fn hovering_unit_is_not_stealthed_after_projection() {
+        let fields = ObjectFields::from_pairs(&[(138, donor_unit_bytes_1(0x0200_0000, 0))]);
+        assert!(!fields.unit_is_stealthed());
+        assert!(!fields.unit_is_ghost_visual());
+        assert!(!fields.unit_is_untrackable());
+    }
+
+    #[test]
+    fn creep_unit_is_stealthed_after_projection() {
+        let fields =
+            ObjectFields::from_pairs(&[(138, donor_unit_bytes_1(0x0002_0000, 0x1100_0000))]);
+        assert!(fields.unit_is_stealthed());
+        assert_eq!(fields.unit_shapeshift_form(), 17);
+        assert!(!fields.unit_is_ghost_visual());
+        assert!(!fields.unit_is_untrackable());
     }
 
     #[test]

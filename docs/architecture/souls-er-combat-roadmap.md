@@ -145,6 +145,3 @@ Install and side effects: `.scratch/project-b/server-rebuild-batch.md` item 2.
   aim; the locomotion clip speeds are estimates. Other players still show stock clips.
 - Kit rows for jumps, the left hand and the parry (`kit_import` options), then tuning.
 - Creature-specific strike animations (the server plays the generic one-hand attack emote).
-- The client reads the stealth CREEP flag from `UNIT_FIELD_BYTES_1` byte 3 (`unit_is_stealthed`),
-  where AzerothCore keeps it in byte 2 (byte 3 is the anim tier, `0x02` = hover): other players'
-  crouch and real stealth poses may not show, and a hovering unit may show crouched.
