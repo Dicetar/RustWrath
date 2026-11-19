@@ -27,6 +27,8 @@
 //! jump_attacks = true # light/heavy in the air are the kit's jump attacks, when it has them
 //! left_hand = true    # the left key runs the kit's left-hand chain, when it has one
 //! parry = true        # the parry key runs the kit's Parry, when it has one
+//! two_hand = true     # the grip key holds a one-handed weapon in both hands (its two-handed
+//!                     # kit, kits/<name>-twohand.kit, and the server's two-hand bonus)
 //! server = true       # talk to the server script (integrations/ale/rustwrath_souls.lua): hits
 //!                     # are reported for Souls damage, sprint raises the run speed
 //! enemy_strikes = true # judge the server's telegraphed enemy strikes (dodge, guard, parry)
@@ -45,6 +47,7 @@
 //! heavy = "Shift+MouseLeft" # MouseMiddle, Mouse4, Mouse5 (BUTTON4/BUTTON5); the combat binds
 //! guard = "MouseRight" # take a "Shift+" prefix
 //! parry = "Shift+MouseRight"
+//! grip = "G"          # one hand / both hands (two_hand)
 //! left = "Mouse5"
 //! dodge = "Space"     # tap rolls, hold sprints
 //! lock_on = "Q"
@@ -99,6 +102,7 @@ pub(crate) struct SoulsFeatures {
     pub(crate) jump_attacks: bool,
     pub(crate) left_hand: bool,
     pub(crate) parry: bool,
+    pub(crate) two_hand: bool,
     pub(crate) server: bool,
     pub(crate) enemy_strikes: bool,
     pub(crate) retarget: bool,
@@ -131,6 +135,7 @@ impl Default for SoulsFeatures {
             jump_attacks: true,
             left_hand: true,
             parry: true,
+            two_hand: true,
             server: true,
             enemy_strikes: true,
             retarget: true,
@@ -154,6 +159,7 @@ struct BindNames {
     crouch: String,
     left: String,
     parry: String,
+    grip: String,
     jump: String,
     interact: String,
     use_item: String,
@@ -173,6 +179,7 @@ impl Default for BindNames {
             crouch: "X".into(),
             left: "Mouse5".into(),
             parry: "Shift+MouseRight".into(),
+            grip: "G".into(),
             jump: "F".into(),
             interact: "E".into(),
             use_item: "R".into(),
@@ -250,6 +257,8 @@ pub(crate) struct SoulsBinds {
     pub(crate) crouch: SoulsBind,
     pub(crate) left: SoulsBind,
     pub(crate) parry: SoulsBind,
+    /// One hand or both: [`crate::combat_kit::PlayerKit::toggle_grip`].
+    pub(crate) grip: SoulsBind,
     /// Runs the `JUMP` binding while the layout is on.
     pub(crate) jump: SoulsKey,
     /// Interacts with what is in front ([`super::controls`]).
@@ -264,7 +273,7 @@ pub(crate) struct SoulsBinds {
 
 impl SoulsBinds {
     /// The combat binds, for the Shift pairing and the claims.
-    pub(crate) fn combat(&self) -> [SoulsBind; 9] {
+    pub(crate) fn combat(&self) -> [SoulsBind; 10] {
         [
             self.light,
             self.heavy,
@@ -275,6 +284,7 @@ impl SoulsBinds {
             self.crouch,
             self.left,
             self.parry,
+            self.grip,
         ]
     }
 }
@@ -311,6 +321,7 @@ impl Default for SoulsConfig {
                 crouch: SoulsBind::plain(Key(KeyCode::KeyX)),
                 left: SoulsBind::plain(Mouse(MouseButton::Back)),
                 parry: SoulsBind::shifted(Mouse(MouseButton::Right)),
+                grip: SoulsBind::plain(Key(KeyCode::KeyG)),
                 jump: Key(KeyCode::KeyF),
                 interact: Key(KeyCode::KeyE),
                 use_item: Key(KeyCode::KeyR),
@@ -414,6 +425,7 @@ fn resolve(file: SoulsFile) -> Result<SoulsConfig, String> {
             crouch: bind("crouch", &names.crouch)?,
             left: bind("left", &names.left)?,
             parry: bind("parry", &names.parry)?,
+            grip: bind("grip", &names.grip)?,
             jump: keyboard("jump", &names.jump)?,
             interact: key("interact", &names.interact)?,
             use_item: keyboard("use_item", &names.use_item)?,

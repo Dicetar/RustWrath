@@ -91,6 +91,7 @@ impl Plugin for SoulsPlugin {
             .add_systems(
                 Update,
                 (
+                    input::grip_toggle,
                     input::souls_input,
                     targets::toggle_lock,
                     targets::lock_follows_target,

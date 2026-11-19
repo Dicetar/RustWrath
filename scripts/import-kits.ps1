@@ -19,6 +19,11 @@ foreach ($row in $rows) {
 }
 New-Item -ItemType Directory -Force -Path $Output | Out-Null
 foreach ($row in $rows) {
-    & $Importer --extracted $Extracted --weapon $row.weapon --grip $row.grip --off-hand --out (Join-Path $Output "$($row.name).kit")
-    if ($LASTEXITCODE -ne 0) { throw "import_kit failed for $($row.name): $LASTEXITCODE" }
+    $kits = @(@{ Name = $row.name; Grip = $row.grip })
+    # A one-handed weapon can be held in both hands (the Souls grip key): its two-handed moveset.
+    if ($row.grip -eq 'one') { $kits += @{ Name = "$($row.name)-twohand"; Grip = 'two' } }
+    foreach ($kit in $kits) {
+        & $Importer --extracted $Extracted --weapon $row.weapon --grip $kit.Grip --off-hand --out (Join-Path $Output "$($kit.Name).kit")
+        if ($LASTEXITCODE -ne 0) { throw "import_kit failed for $($kit.Name): $LASTEXITCODE" }
+    }
 }
