@@ -17,13 +17,15 @@
 use std::collections::HashMap;
 
 use benilla_assets::{AnimClip, ModelAnimations};
-#[cfg(test)]
-use benilla_combat_core::spell_action;
 use benilla_combat_core::{
-    dodge_from_clip, enemy_action, melee_action, ActionId, ActionKind, ActionSpec, ActionTable,
-    ClipSummary, CombatResult, DodgeSpec, ProfilePolicy, SpellSummary, TickRate,
+    dodge_from_clip, melee_action, ActionId, ActionKind, ActionSpec, ActionTable, ClipSummary,
+    CombatResult, DodgeSpec, ProfilePolicy, TickRate,
 };
-use benilla_formats::{AnimDataCatalog, SpellCastTimeCatalog, SpellDisplay, SpellDurationCatalog};
+#[cfg(test)]
+use benilla_combat_core::{enemy_action, spell_action, SpellSummary};
+use benilla_formats::AnimDataCatalog;
+#[cfg(test)]
+use benilla_formats::{SpellCastTimeCatalog, SpellDisplay, SpellDurationCatalog};
 
 /// The dodge action every encounter shares; the host range `1..=999`.
 pub(crate) const HOST_DODGE: ActionId = ActionId(1);
@@ -31,12 +33,12 @@ pub(crate) const HOST_DODGE: ActionId = ActionId(1);
 pub(crate) const PLAYER_MELEE_MAIN: ActionId = ActionId(2);
 /// The `AnimationData.dbc` id of the Dodge clip (`Dodge`, the defense reaction anim 30).
 const DODGE_ANIM: u16 = 30;
-/// Enemy actions are encounter-assigned in `ENEMY_ACTION_BASE..=999_999` (slice 4).
-pub(crate) const ENEMY_ACTION_BASE: u32 = 1_000;
 /// Spell actions are offset by the `Spell.dbc` id from `SPELL_ACTION_BASE` upward.
+#[cfg(test)]
 pub(crate) const SPELL_ACTION_BASE: u32 = 1_000_000;
 
 /// The stable action id a learned spell compiles to.
+#[cfg(test)]
 pub(crate) fn spell_action_id(spell_id: u32) -> ActionId {
     ActionId(SPELL_ACTION_BASE.wrapping_add(spell_id))
 }
@@ -67,7 +69,7 @@ pub(crate) fn clip_summary(clip: &AnimClip) -> Option<ClipSummary> {
 /// The grouping mirrors the swing LUT's Attack2H/Attack2HL rows.
 pub(crate) fn melee_kind(main: Option<(u8, u8)>) -> ActionKind {
     match main {
-        Some((class, subclass)) if class == 2 => {
+        Some((2, subclass)) => {
             if matches!(subclass, 0x1 | 0x5 | 0x8 | 0xc | 0x6 | 0xa | 0x11) {
                 ActionKind::MeleeHeavy
             } else {
@@ -137,6 +139,7 @@ pub(crate) fn rig_dodge_clip<'a>(
 /// value, so an unbounded (permanent) channel profiles as its cast alone — the sustain has no
 /// authored end for the action clock to run to. The base-only channel duration names the
 /// per-level scaling of `SpellDuration` as a refinement, not a silent decision.
+#[cfg(test)]
 pub(crate) fn spell_summary(
     display: &SpellDisplay,
     cast_times: &SpellCastTimeCatalog,
@@ -190,6 +193,7 @@ pub(crate) fn player_dodge_spec(
 /// The `AnimationData` fallback chain is honoured — a rig whose Attack2H falls back to Attack1H
 /// gets one move, not two copies of the same clip. This is the "what enemy uses what animation"
 /// automation: the enemy FSM (`EnemyBrain`) consumes the list it produces.
+#[cfg(test)]
 pub(crate) fn enemy_melee_actions(
     first_id: u32,
     anims: &ModelAnimations,
@@ -225,6 +229,10 @@ pub(crate) fn enemy_melee_actions(
     Ok(moves)
 }
 
+/// The `(entity, main-hand weapon, kit generation)` a profile table was compiled for; a change
+/// recompiles.
+pub(crate) type ProfileBuildKey = (bevy::prelude::Entity, Option<(u8, u8)>, u32);
+
 /// The compiled profile set the playback path consumes: the validated action table plus the
 /// binding from action id to the clip id the local rig plays for it. `combat_playback.rs` fills
 /// it for the local player and plays requested actions through the one-shot driver path.
@@ -236,7 +244,7 @@ pub(crate) struct CombatProfiles {
     pub(crate) anims: HashMap<ActionId, u16>,
     /// The `(entity, main-hand weapon, kit generation)` the current table was compiled for; a
     /// change here (rig load, weapon swap, a new kit file) recompiles.
-    pub(crate) built_for: Option<(bevy::prelude::Entity, Option<(u8, u8)>, u32)>,
+    pub(crate) built_for: Option<ProfileBuildKey>,
     /// The table was compiled from the local Souls kit ([`crate::combat_kit`]) rather than the
     /// stock clips, so presses resolve through the kit.
     pub(crate) from_kit: bool,

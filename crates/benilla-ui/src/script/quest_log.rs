@@ -606,6 +606,50 @@ fn set_collapsed(model: &mut Model, index: u32, collapse: bool) {
 }
 
 impl Model {
+    /// The 1-based log row holding `quest_id`, the reference's `GetQuestIndex`; `None` off the log.
+    pub(crate) fn quest_log_index_of(&self, quest_id: u32) -> Option<usize> {
+        self.quest_log
+            .entries
+            .iter()
+            .position(|r| !r.is_header && r.quest_id == quest_id)
+            .map(|n| n + 1)
+    }
+
+    /// `ComputeBlobQuestObjectives`: which of a log quest's blobs are live. 0 for a quest off the
+    /// log, without its record, or failed; all bits for a complete one (its turn-in blob, objective
+    /// -1); else bit `i` for each creature or GameObject quad short of its count, bit `i + 4` for
+    /// each item quad short of its count, and `0x10000` while an event quest's complete bit is
+    /// clear. The reference's intermediate-item bits (`i + 10`) have no source here: this record
+    /// carries no intermediate items.
+    pub(crate) fn poi_objective_mask(&self, quest_id: u32) -> u32 {
+        let Some((record, slot)) = self
+            .quest_log_index_of(quest_id)
+            .and_then(|index| self.quest_row_parts(index))
+        else {
+            return 0;
+        };
+        if slot.state & SLOT_FAILED != 0 {
+            return 0;
+        }
+        if slot.state & SLOT_COMPLETE != 0 || turn_in_passes(self, record, slot) {
+            return u32::MAX;
+        }
+        let held = |item: u32| self.quest_store.held.get(&item).copied().unwrap_or(0);
+        let mut mask = 0u32;
+        for (i, o) in record.objectives.iter().enumerate() {
+            if o.creature_or_go != 0 && u32::from(slot.counters[i]) < o.required_count {
+                mask |= 1 << i;
+            }
+            if o.item_id != 0 && held(o.item_id) < o.item_count {
+                mask |= 1 << (i + 4);
+            }
+        }
+        if record.needs_complete_bit && slot.state & SLOT_COMPLETE == 0 {
+            mask |= 0x10000;
+        }
+        mask
+    }
+
     /// The display row at the 1-based `index`, visible or folded.
     fn quest_row(&self, index: usize) -> Option<&QuestLogRow> {
         index
@@ -731,6 +775,72 @@ fn lines(record: &QuestRecordView) -> impl Iterator<Item = Line> + '_ {
         .chain(creatures)
         .chain(items)
         .chain(reputation)
+}
+
+/// The three values a leaderboard line answers (`0x4e0110`'s tails): the text filled from the
+/// VM's own `GlobalStrings.lua`, the kind and `finished` as 1 or nil; three nils for no line.
+fn leaderboard_values(lua: &Lua, parts: Option<LineParts>) -> mlua::Result<MultiValue> {
+    let Some(p) = parts else {
+        return Ok(MultiValue::from_vec(vec![
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+        ]));
+    };
+    // The VM's own `GlobalStrings.lua`, read through `0x703bf0`.
+    let template = |key: &str| global(lua, key).unwrap_or_default();
+    let text = match &p.text {
+        LineText::Raw(text) => text.clone(),
+        LineText::Count {
+            key,
+            name,
+            cur,
+            req,
+        } => fill(
+            &template(key),
+            &[
+                Arg::S(name),
+                Arg::D(i64::from(*cur)),
+                Arg::D(i64::from(*req)),
+            ],
+        ),
+        LineText::Faction {
+            name,
+            current,
+            required,
+            female,
+        } => {
+            // `FACTION_STANDING_LABEL<rank + 1>` (`0x84b5dc`) through `0x612bf0`.
+            let label = |rank: u8| {
+                crate::strings::standing_label(&|k| global(lua, k), rank.into(), *female)
+            };
+            fill(
+                &template("QUEST_FACTION_NEEDED"),
+                &[
+                    Arg::S(name),
+                    Arg::S(&label(*current)),
+                    Arg::S(&label(*required)),
+                ],
+            )
+        }
+    };
+    Ok(MultiValue::from_vec(vec![
+        Value::String(lua.create_string(&text)?),
+        Value::String(lua.create_string(p.kind)?),
+        flag(p.finished),
+    ]))
+}
+
+/// The 1-based leaderboard line a quest blob's objective index names on a row: 0..4 the creature
+/// or GameObject quads, 4..10 the item quads ([`Model::poi_objective_mask`]'s bits), 16 the event.
+fn poi_line(record: &QuestRecordView, objective: i64) -> Option<usize> {
+    let want = match objective {
+        0..=3 => Line::Creature(objective as usize),
+        4..=9 => Line::Item(objective as usize - 4),
+        16 => Line::Event,
+        _ => return None,
+    };
+    lines(record).position(|l| l == want).map(|n| n + 1)
 }
 
 /// The line `GetQuestLogLeaderBoard` answers for the 1-based `line`. The event, creature and item
@@ -1569,57 +1679,31 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 let index = quest.unwrap_or(model.quest_log_selection) as usize;
                 line_parts(&mut model, index, i)
             };
-            let Some(p) = parts else {
-                return Ok(MultiValue::from_vec(vec![
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Nil,
-                ]));
-            };
-            // The VM's own `GlobalStrings.lua`, read through `0x703bf0`.
-            let template = |key: &str| global(lua, key).unwrap_or_default();
-            let text = match &p.text {
-                LineText::Raw(text) => text.clone(),
-                LineText::Count {
-                    key,
-                    name,
-                    cur,
-                    req,
-                } => fill(
-                    &template(key),
-                    &[
-                        Arg::S(name),
-                        Arg::D(i64::from(*cur)),
-                        Arg::D(i64::from(*req)),
-                    ],
-                ),
-                LineText::Faction {
-                    name,
-                    current,
-                    required,
-                    female,
-                } => {
-                    // `FACTION_STANDING_LABEL<rank + 1>` (`0x84b5dc`) through `0x612bf0`.
-                    let label = |rank: u8| {
-                        crate::strings::standing_label(&|k| global(lua, k), rank.into(), *female)
-                    };
-                    fill(
-                        &template("QUEST_FACTION_NEEDED"),
-                        &[
-                            Arg::S(name),
-                            Arg::S(&label(*current)),
-                            Arg::S(&label(*required)),
-                        ],
-                    )
-                }
-            };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&text)?),
-                Value::String(lua.create_string(p.kind)?),
-                flag(p.finished),
-            ]))
+            leaderboard_values(lua, parts)
         })?,
     )?;
+    // GetQuestPOILeaderBoard(questPOIIndex, questLogIndex): the leaderboard line of the objective a
+    // quest blob names (`WorldMapFrame.lua:1898`, from `WorldMapBlobFrame:GetTooltipIndex`). Its
+    // usage text is the leaderboard's own, as the reference shares the string. A Wrath native.
+    if lua.app_data_ref::<Model>().is_some_and(|m| m.is_wrath()) {
+        g.set(
+            "GetQuestPOILeaderBoard",
+            lua.create_function(|lua, (poi, quest): (Value, Value)| {
+                let poi =
+                    binding_abi::number_arg(lua, poi, "Usage: GetQuestLogLeaderBoard(index)")?;
+                let quest = binding_abi::index_or(lua, quest)?;
+                let parts = {
+                    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                    let index = quest.unwrap_or(model.quest_log_selection) as usize;
+                    let line = model
+                        .quest_row_parts(index)
+                        .and_then(|(record, _)| poi_line(record, i64::from(poi)));
+                    line.and_then(|line| line_parts(&mut model, index, line))
+                };
+                leaderboard_values(lua, parts)
+            })?,
+        )?;
+    }
 
     // ── Detail counts + money ────────────────────────────────────────────────────────────────────
     fn install_detail_count(

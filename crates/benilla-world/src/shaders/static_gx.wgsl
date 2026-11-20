@@ -315,14 +315,15 @@ fn fragment(in: GxVsOut) -> @location(0) vec4<f32> {
             // Exterior-lit groups light by the sun (mode 1), interior ones by the MOHD ambient
             // (mode 3) or, WINDOW, the midpoint pair (mode 2). A TRANS batch draws its lit pass
             // (mode 1 or 2) at SrcAlpha, then the ambient pass at InvSrcAlpha: one lerp here.
-            let l_lit = select(lit_nl, lit_window, is_win && (interior || class_trans));
+            // Unified mode 2 is selected by WINDOW before the group-class branch.
+            let l_lit = select(lit_nl, lit_window, is_win);
             let c_lit = clamp(
                 l_lit * (127.0 / 255.0) + vc_u + e_half,
                 vec3<f32>(0.0),
                 vec3<f32>(1.0),
             );
             let c_amb = clamp(
-                select(amb, lit_window, is_win && !class_trans) * (127.0 / 255.0) + vc_u + e_half,
+                select(amb, lit_window, is_win) * (127.0 / 255.0) + vc_u + e_half,
                 vec3<f32>(0.0),
                 vec3<f32>(1.0),
             );

@@ -1,11 +1,12 @@
-//! Project queued `SMSG_PARTYKILLLOG` and `SMSG_ATTACKERSTATEUPDATE` rows into the Wrath VM's
-//! `COMBAT_LOG_EVENT_UNFILTERED` contract. A kill or swing is an ordered event, not a replaceable
-//! snapshot: the view keeps a bounded pending queue and this feed removes each row only after it
-//! has been signalled. The decoded packet proves the event; both endpoint names still come from
-//! the VM's own unit views or the existing name-query cache, never from a guess. A swing keeps
-//! 12340's raw hit word, school mask and victim state; a wounded or blocked swing posts
-//! `SWING_DAMAGE` and every other shown swing outcome posts `SWING_MISSED` with the reference's
-//! own miss string.
+//! Project queued `SMSG_PARTYKILLLOG`, `SMSG_ATTACKERSTATEUPDATE` and
+//! `SMSG_SPELLNONMELEEDAMAGELOG` rows into the Wrath VM's `COMBAT_LOG_EVENT_UNFILTERED` contract.
+//! A kill, swing or spell hit is an ordered event, not a replaceable snapshot: the view keeps a
+//! bounded pending queue and this feed removes each row only after it has been signalled. The
+//! decoded packet proves the event; both endpoint names still come from the VM's own unit views or
+//! the existing name-query cache, never from a guess. A swing keeps 12340's raw hit word, school
+//! mask and victim state; a wounded or blocked swing posts `SWING_DAMAGE` and every other shown
+//! swing outcome posts `SWING_MISSED` with the reference's own miss string. A spell-damage row
+//! posts `SPELL_DAMAGE` with 12340's twenty-value shape and the packet's raw school mask.
 
 use benilla_ui::script::{ScriptValue, UiScript, UiTarget};
 use bevy::prelude::*;
@@ -15,7 +16,9 @@ use crate::net::NetCommands;
 use crate::query_cache::Ask;
 use crate::script_calls::VmWith;
 use crate::ui_script::UiClock;
-use crate::wrath::{WrathPartyKill, WrathSwing, WrathWorldView, COMBAT_LOG_NAME_RETRY_SECONDS};
+use crate::wrath::{
+    WrathPartyKill, WrathSpellDamage, WrathSwing, WrathWorldView, COMBAT_LOG_NAME_RETRY_SECONDS,
+};
 
 /// Capacity loss and unresolved-name counts already reported, so each diagnostic is logged once
 /// per scope rather than every frame.
@@ -25,6 +28,8 @@ pub(crate) struct CombatLogMemo {
     unresolved: u64,
     swing_dropped: u64,
     swing_unresolved: u64,
+    spell_damage_dropped: u64,
+    spell_damage_unresolved: u64,
 }
 
 /// The visible marker for an endpoint whose name never resolved inside the retry window. It is
@@ -37,10 +42,11 @@ pub(crate) fn feed(
         Option<Res<'static, UiClock>>,
         Option<Res<'static, NameCache>>,
         Option<Res<'static, NetCommands>>,
+        Option<Res<'static, crate::ui_action::Spells>>,
     )>,
     mut memo: Local<CombatLogMemo>,
 ) {
-    vm.feed(|script, (mut world, clock, names, net), fires| {
+    vm.feed(|script, (mut world, clock, names, net, spells), fires| {
         let Some(script) = script.filter(|script| script.target() == UiTarget::Wrath335) else {
             return;
         };
@@ -81,6 +87,20 @@ pub(crate) fn feed(
             );
         }
         memo.swing_unresolved = world.swing_unresolved;
+        if world.spell_damage_dropped > memo.spell_damage_dropped {
+            debug!(
+                dropped = world.spell_damage_dropped,
+                "wrath: combat-log queue capacity lost spell-damage rows"
+            );
+        }
+        memo.spell_damage_dropped = world.spell_damage_dropped;
+        if world.spell_damage_unresolved > memo.spell_damage_unresolved {
+            debug!(
+                unresolved = world.spell_damage_unresolved,
+                "wrath: combat-log spell-damage rows delivered with an unknown endpoint after name resolution timed out"
+            );
+        }
+        memo.spell_damage_unresolved = world.spell_damage_unresolved;
 
         let now = clock.as_deref().map_or(0.0, |clock| clock.ui_now);
         let ask = match net.as_deref() {
@@ -196,6 +216,58 @@ pub(crate) fn feed(
                 swing_event_args(timestamp, &swing, outcome, &source, &target),
             );
             world.swings.remove(index);
+        }
+
+        let mut index = 0;
+        while index < world.spell_damages.len() {
+            let hit = world.spell_damages[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                // A row from a retired world is never delivered into the replacement chain.
+                world.spell_damages.remove(index);
+                continue;
+            }
+            let source = endpoint_name(script, world, names.as_deref(), hit.attacker, ask);
+            let target = endpoint_name(script, world, names.as_deref(), hit.target, ask);
+            let timestamp = if hit.received_at > 0.0 {
+                hit.received_at
+            } else {
+                now
+            };
+            if source.is_none() || target.is_none() {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at {
+                    now - hit.received_at
+                } else {
+                    0.0
+                };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    // The retry window is spent. Deliver the spell-damage event with a visible
+                    // unknown marker for the side(s) that did not resolve, then retire the row
+                    // so a later feed cannot replay it. The known endpoint keeps its real name.
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        spell_damage_args(
+                            timestamp,
+                            &hit,
+                            source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            spells.as_deref(),
+                        ),
+                    );
+                    world.spell_damage_unresolved = world.spell_damage_unresolved.saturating_add(1);
+                    world.spell_damages.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let (source, target) = (source.unwrap_or_default(), target.unwrap_or_default());
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                spell_damage_args(timestamp, &hit, &source, &target, spells.as_deref()),
+            );
+            world.spell_damages.remove(index);
         }
     });
 }
@@ -434,6 +506,53 @@ fn swing_missed_args(
     if let Some(amount) = kind.amount(swing) {
         args.push(ScriptValue::Number(amount));
     }
+    args
+}
+
+/// The twenty values `CombatLogEntry::PushEvent` sends for `SPELL_DAMAGE`
+/// (`UnitCombatLog_C.cpp:1241-1361`, `SendDamageEvent` at `:2373`, `HandleSpellNonMeleeDamageLog`
+/// at `:2520`): 8 header values, then spellId/spellName/spellSchoolMask (3), then the 0x10 block
+/// damage, overkill, school, resisted, blocked, absorbed, critical, glancing, crushing (9). The
+/// packet school byte is kept as 12340's raw school mask here (unlike the 1.12 chat translation
+/// which converts to an index). Absent resisted/blocked/absorbed are nil, not 0. Critical/glancing/
+/// crushing are 1.0 or nil. `HandleSpellNonMeleeDamageLog` reads crit as `hitInfo & 0x2`; the spell
+/// non-melee path passes glancing/crushing as false to `SendDamageEvent`. If the spell record is
+/// missing, `PushEvent` pushes nil name and 0 school.
+fn spell_damage_args(
+    timestamp: f64,
+    hit: &WrathSpellDamage,
+    source_name: &str,
+    target_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+) -> Vec<ScriptValue> {
+    let mut args = combat_log_header(
+        timestamp,
+        "SPELL_DAMAGE",
+        hit.attacker,
+        source_name,
+        hit.target,
+        target_name,
+    );
+    let spell_name = spells
+        .and_then(|spells| spells.catalog.get(hit.spell_id))
+        .map(|def| def.name.clone());
+    let spell_school = spells
+        .and_then(|spells| spells.catalog.school_mask(hit.spell_id))
+        .unwrap_or(0);
+    args.push(ScriptValue::Int(i64::from(hit.spell_id)));
+    args.push(spell_name.map_or(ScriptValue::Nil, ScriptValue::Str));
+    args.push(ScriptValue::Int(i64::from(spell_school)));
+    args.extend([
+        ScriptValue::Number(f64::from(hit.damage)),
+        ScriptValue::Number(f64::from(hit.overkill)),
+        ScriptValue::Int(i64::from(hit.school)),
+        nonzero(i64::from(hit.resist)),
+        nonzero(i64::from(hit.blocked)),
+        nonzero(i64::from(hit.absorb)),
+        present(hit.hit_info & 0x2 != 0),
+        ScriptValue::Nil,
+        ScriptValue::Nil,
+    ]);
     args
 }
 
@@ -1418,4 +1537,204 @@ mod tests {
         assert_eq!(combat_log_flags(0xF110_0000_0000_0011), 0x4000);
         assert_eq!(combat_log_flags(0), 0);
     }
+
+    fn spell_damage_hit() -> crate::wrath::WrathSpellDamage {
+        crate::wrath::WrathSpellDamage {
+            target: 0xF130_0000_0000_0022,
+            attacker: 0x0000_0000_0000_0011,
+            spell_id: 133,
+            damage: 40,
+            overkill: 3,
+            school: 0x04,
+            absorb: 0,
+            resist: 0,
+            blocked: 0,
+            hit_info: 0x2, // crit in 12340 spell-damage hitInfo (HandleSpellNonMeleeDamageLog :2520)
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 3,
+            received_at: 1234.5,
+        }
+    }
+
+    /// \`SPELL_DAMAGE\` posts 20 values: 8 header + spellId/name/schoolMask + 9 damage values
+    /// (\`PushEvent\` 0x10 block, \`UnitCombatLog_C.cpp:1241-1361\`, \`SendDamageEvent\` :2373).
+    #[test]
+    fn spell_damage_event_has_the_twenty_wrath_values() {
+        let mut scope = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        scope
+            .run(
+                r#"
+                Fired = nil
+                local listener = CreateFrame("Frame", "WrathSpellDamageTestListener")
+                listener:SetScript("OnEvent", function(_, event, ...)
+                    Fired = { event, ... }
+                end)
+                listener:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+                "#,
+            )
+            .unwrap();
+
+        let hit = spell_damage_hit();
+        scope.fire_event(
+            "COMBAT_LOG_EVENT_UNFILTERED",
+            spell_damage_args(1234.5, &hit, "Firna", "Kobold Vermin", None),
+        );
+
+        let event: String = scope.eval("return Fired[1]").unwrap();
+        let timestamp: f64 = scope.eval("return Fired[2]").unwrap();
+        let subevent: String = scope.eval("return Fired[3]").unwrap();
+        let source_guid: String = scope.eval("return Fired[4]").unwrap();
+        let source_name: String = scope.eval("return Fired[5]").unwrap();
+        let source_flags: i64 = scope.eval("return Fired[6]").unwrap();
+        let dest_guid: String = scope.eval("return Fired[7]").unwrap();
+        let dest_name: String = scope.eval("return Fired[8]").unwrap();
+        let dest_flags: i64 = scope.eval("return Fired[9]").unwrap();
+        let spell_id: i64 = scope.eval("return Fired[10]").unwrap();
+        let spell_name: Option<String> = scope.eval("return Fired[11]").unwrap();
+        let spell_school: i64 = scope.eval("return Fired[12]").unwrap();
+        let damage: f64 = scope.eval("return Fired[13]").unwrap();
+        let overkill: f64 = scope.eval("return Fired[14]").unwrap();
+        let school: i64 = scope.eval("return Fired[15]").unwrap();
+        let resisted: Option<f64> = scope.eval("return Fired[16]").unwrap();
+        let blocked: Option<f64> = scope.eval("return Fired[17]").unwrap();
+        let absorbed: Option<f64> = scope.eval("return Fired[18]").unwrap();
+        let critical: Option<f64> = scope.eval("return Fired[19]").unwrap();
+        let glancing: Option<f64> = scope.eval("return Fired[20]").unwrap();
+        let crushing: Option<f64> = scope.eval("return Fired[21]").unwrap();
+        let extra: Option<f64> = scope.eval("return Fired[22]").unwrap();
+
+        assert_eq!(event, "COMBAT_LOG_EVENT_UNFILTERED");
+        assert_eq!(timestamp, 1234.5);
+        assert_eq!(subevent, "SPELL_DAMAGE");
+        assert_eq!(source_guid, "0x0000000000000011");
+        assert_eq!(source_name, "Firna");
+        assert_eq!(source_flags, 0x400);
+        assert_eq!(dest_guid, "0xF130000000000022");
+        assert_eq!(dest_name, "Kobold Vermin");
+        assert_eq!(dest_flags, 0x800);
+        assert_eq!(spell_id, 133);
+        assert_eq!(spell_name, None, "no catalog row: name is nil");
+        assert_eq!(spell_school, 0, "no catalog row: school mask is 0");
+        assert_eq!(damage, 40.0);
+        assert_eq!(overkill, 3.0, "overkill passes through");
+        assert_eq!(school, 0x04, "damage school is the raw packet mask");
+        assert_eq!((resisted, blocked, absorbed), (None, None, None), "absent amounts are nil");
+        assert_eq!((critical, glancing, crushing), (Some(1.0), None, None), "crit 1.0, glance/crush nil");
+        assert_eq!(extra, None, "exactly the twenty SPELL_DAMAGE values");
+    }
+
+    /// If the spell record is missing, \`PushEvent\` pushes nil name and 0 school
+    /// (\`UnitCombatLog_C.cpp:1241-1361\`).
+    #[test]
+    fn spell_damage_missing_catalog_posts_nil_name_and_zero_school() {
+        let mut hit = spell_damage_hit();
+        hit.resist = 5;
+        hit.blocked = 7;
+        hit.absorb = 9;
+        hit.hit_info = 0; // no crit
+        let args = spell_damage_args(10.0, &hit, "Firna", "Kobold Vermin", None);
+        assert_eq!(args.len(), 20);
+        assert_eq!(args[9], ScriptValue::Int(133));
+        assert_eq!(args[10], ScriptValue::Nil, "missing record: nil name");
+        assert_eq!(args[11], ScriptValue::Int(0), "missing record: zero school mask");
+        assert_eq!(args[15], ScriptValue::Number(5.0), "nonzero resist is a number");
+        assert_eq!(args[16], ScriptValue::Number(7.0), "nonzero blocked is a number");
+        assert_eq!(args[17], ScriptValue::Number(9.0), "nonzero absorb is a number");
+        assert_eq!(args[18], ScriptValue::Nil, "no crit");
+        assert_eq!(args[19], ScriptValue::Nil);
+        assert_eq!(args[20], ScriptValue::Nil);
+    }
+
+    /// The feed drains the spell-damage queue like swings: resolves names, posts one
+    /// \`SPELL_DAMAGE\` row with 20 values, and retires it so a later feed cannot replay it.
+    #[test]
+    fn feed_delivers_a_spell_damage_row() {
+        use crate::ui_script::UiClock;
+        use bevy::ecs::system::RunSystemOnce;
+        use bevy::prelude::App;
+
+        let mut script = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        script.set_unit(
+            "player",
+            Some(UnitState {
+                name: Some("Firna".to_owned()),
+                guid: 0x11,
+                ..UnitState::default()
+            }),
+        );
+        script.set_unit_by_guid(
+            0xF130_0000_0000_0022,
+            Some(UnitState {
+                name: Some("Kobold Vermin".to_owned()),
+                guid: 0xF130_0000_0000_0022,
+                ..UnitState::default()
+            }),
+        );
+        script
+            .run(
+                r#"
+                SEEN = 0
+                Fired = nil
+                local listener = CreateFrame("Frame", "WrathSpellDamageFeedTest")
+                listener:SetScript("OnEvent", function(_, event, ...)
+                    SEEN = SEEN + 1
+                    Fired = { event, ... }
+                end)
+                listener:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+                "#,
+            )
+            .unwrap();
+
+        let mut world = WrathWorldView::default();
+        world.phase = Some(benilla_protocol_wrath::session::Phase::InWorld);
+        world.player_guid = 0x11;
+        world.session_epoch = 4;
+        world.world_generation = 5;
+        world.apply_spell_damage(
+            spell_damage_hit(),
+            4,
+            5,
+            97.0,
+        );
+
+        let mut app = App::new();
+        app.insert_resource(world)
+            .insert_resource(UiClock {
+                ui_now: 100.0,
+                ..Default::default()
+            })
+            .init_resource::<NameCache>()
+            .insert_non_send_resource(script);
+        app.world_mut().run_system_once(feed).unwrap();
+
+        {
+            let script = app.world().non_send_resource::<UiScript>();
+            assert_eq!(script.eval::<i64>("return SEEN").unwrap(), 1);
+            assert_eq!(script.eval::<String>("return Fired[3]").unwrap(), "SPELL_DAMAGE");
+            assert_eq!(script.eval::<i64>("return Fired[10]").unwrap(), 133);
+            assert_eq!(script.eval::<f64>("return Fired[13]").unwrap(), 40.0);
+            assert_eq!(script.eval::<f64>("return Fired[14]").unwrap(), 3.0, "overkill passes through");
+            assert_eq!(script.eval::<i64>("return Fired[15]").unwrap(), 4, "raw packet school mask");
+            assert_eq!(script.eval::<Option<f64>>("return Fired[16]").unwrap(), None);
+            assert_eq!(script.eval::<Option<f64>>("return Fired[17]").unwrap(), None);
+            assert_eq!(script.eval::<Option<f64>>("return Fired[18]").unwrap(), None);
+            assert_eq!(script.eval::<Option<f64>>("return Fired[19]").unwrap(), Some(1.0), "crit 1.0");
+            assert_eq!(script.eval::<Option<f64>>("return Fired[20]").unwrap(), None);
+            assert_eq!(script.eval::<Option<f64>>("return Fired[21]").unwrap(), None);
+            assert_eq!(script.eval::<Option<f64>>("return Fired[22]").unwrap(), None, "exactly 20 values");
+        }
+        assert!(
+            app.world().resource::<WrathWorldView>().spell_damages.is_empty(),
+            "delivered row is retired"
+        );
+
+        app.world_mut().run_system_once(feed).unwrap();
+        assert_eq!(
+            app.world().non_send_resource::<UiScript>().eval::<i64>("return SEEN").unwrap(),
+            1,
+            "a later feed cannot replay a retired spell-damage row"
+        );
+    }
+
 }

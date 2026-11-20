@@ -33,3 +33,39 @@ Execution checks described above are acceptance requirements, not authorization.
 Handoff: exact source identity and changed paths; externally visible behavior; evidence actually collected; unresolved acceptance; next dependent slice. Close only after acceptance is supported. See [the completion plan](D:/WOW/PROJECT_B_COMPLETION_PLAN.md) for the mandatory full stock-client replacement release gate.
 
 
+## Source gap table (2026-11-22)
+
+Read-only source audit on branch `oc/gap-26-quest-loot` (HEAD 52749c0f). Every symbol below was
+confirmed by grep against the working tree; no file, function or field is invented. "Covered" means
+the source path exists, not that it was exercised. Runtime proof is called out as Blocked.
+
+| Acceptance / behavior | Status | Source owner (file:function) | Gap or ticket |
+|---|---|---|---|
+| Pin an existing nearby quest and initial character/inventory state | Blocked: needs owner run | crates/benilla-app/src/ui_quest/net.rs:quest_giver_status; crates/benilla-app/src/quest_markers/query.rs (marker query) | No client "pin" feature exists; choosing a real giver/quest is a live setup act. Owner must walk to a giver in the client and record the quest id + starting inventory. |
+| Gossip / questgiver window opens and lists the quest | Covered | crates/benilla-app/src/ui_gossip/mod.rs:GossipState; crates/benilla-app/src/ui_quest/net.rs:quest_greeting / quest_detail | Live open needs owner run. |
+| Accept quest sends the accept command and fills a quest-log slot | Covered | crates/benilla-app/src/ui_quest/verbs.rs:QuestVerbs::accept; crates/benilla-app/src/ui_quest_log.rs (slot watch) | Slot-add confirmation is runtime (quest_trace Stage::QuestSlotAdded). |
+| Objective progress (kill / item / complete) updates counters | Covered | crates/benilla-app/src/ui_quest/net.rs:quest_objective_kill / quest_objective_item / quest_objectives_complete; crates/benilla-ui/src/script/quest_log.rs:QuestSlotView.counters | Kill credit depends on issue 25 (ordinary combat); cross-slice dependency, not a gap here. |
+| Loot window opens on the corpse / chest | Covered | crates/benilla-app/src/ui_loot/net.rs:on_response; crates/benilla-app/src/ui_loot/mod.rs:LootState::open | Live window paint needs owner run. |
+| Take a loot item (CMSG_AUTOSTORE_LOOT_ITEM) and it lands in a bag | Covered | crates/benilla-app/src/ui_loot/calls.rs (take dispatcher); crates/benilla-app/src/wrath.rs:ActionIntent::LootTake → ClientCommand::AutostoreLootItem | Item-in-bag confirmation is runtime. |
+| Group / party loot roll window and RollOnLoot vote | Covered | crates/benilla-app/src/ui_loot_roll.rs:LootRolls | Only the party-loot branch; solo loot uses the take path above. |
+| Reward choice selected at turn-in | Covered | crates/benilla-app/src/ui_quest/verbs.rs:QuestVerbs::reward (chosen_reward latch) | — |
+| Turn-in sends CMSG_QUESTGIVER_CHOOSE_REWARD and the reward item is pushed to a bag | Covered | crates/benilla-app/src/ui_quest/verbs.rs:QuestVerbs::complete; crates/benilla-app/src/ui_quest/net.rs:on_complete / quest_complete; crates/benilla-app/src/wrath.rs (ItemPushResult → RewardItemPushed) | Reward-in-bag confirmation is runtime. |
+| Objective and reward state come from the server | Covered | crates/benilla-app/src/field_watch.rs (FieldNotice::QuestLog); crates/benilla-app/src/ui_quest/net.rs:quest_complete; crates/benilla-app/src/wrath_inventory.rs:WrathInventory::apply | Slots and counters are read from PLAYER_QUEST_LOG; reward via QuestComplete. |
+| Failed / repeated interactions do not duplicate reward or loot | Covered | crates/benilla-app/src/ui_quest/verbs.rs (acted latch, pending_accepts dedup, pending_selection); crates/benilla-app/src/ui_loot/mod.rs:LootState::remove_slot; crates/benilla-app/src/ui_loot_roll.rs:LootRolls::start (duplicate roll ignored) | Source guards exist and are unit-tested; duplicate-free live behavior is Blocked: needs owner run. |
+| Reconnect after the reward and confirm inventory/quest state persists | Blocked: needs owner run | crates/benilla-app/src/ui_quest_log.rs:QuestLog::clear_session (templates kept); crates/benilla-app/src/ui_quest/net.rs:on_login / on_worldport / world_enter_reset; crates/benilla-app/src/wrath_inventory.rs | Persistence is server-authoritative; the client re-reads on reconnect. Must confirm quest log + bags in a live reconnect. |
+| Record protocol correctness, UI completeness and gameplay outcome separately | Covered | crates/benilla-app/src/quest_trace.rs:quest_ui_correlations / turn_in_correlations / slot_correlations / loot_vendor_correlations | Diagnostics exist; a run must collect and file the three records. |
+| List uncovered quest types | Missing | (none) | No source or doc enumerates which quest types the narrow slice does not cover (escort, dungeon, raid, daily, world, auto-complete). Small doc ticket below. |
+
+## Small tickets
+
+No source gap blocks the core slice; the path (gossip → accept → objective → loot → turn-in →
+reward push → inventory) has owners and unit tests. The remaining work is one documentation gap
+and the live-only checks below.
+
+- **Enumerate uncovered quest types (doc-only).** Files: `.scratch/project-b/issues/26-quest-loot-reward.md` (this note) or a linked note. Acceptance: a short list names the quest types the narrow path does not cover (escort, dungeon, raid, daily, world, auto-complete) and points each at a future ticket. Check: review finds every named type with a one-line rationale. No source gap, so no new owner.
+- **Live-only check — accept + slot add (owner run).** Files: none (runtime). Acceptance: after accepting the pinned quest, the quest-log slot appears with the server's objective text. Check: quest_trace Stage::QuestSlotAdded recorded with no telemetry gap; screenshot of the open quest log.
+- **Live-only check — loot window + item in bag (owner run).** Files: none (runtime). Acceptance: killing/ opening the pinned source shows a loot window; taking the item removes the row (Stage::LootSlotRemoved) and the item appears in a bag. Check: LootSlotRemoved and RewardItemPushed/ItemPushResult both observed; bag shows the item.
+- **Live-only check — turn-in reward, no duplicate (owner run).** Files: none (runtime). Acceptance: choosing the reward fires one CMSG_QUESTGIVER_CHOOSE_REWARD, the reward lands once in a bag, and a repeated turn-in click does not add a second copy. Check: QuestCompletePacket + one RewardItemPushed; turn_in_correlations names a single ChooseReward write; bag count is one.
+- **Live-only check — reconnect persistence (owner run).** Files: none (runtime). Acceptance: after the reward, reconnecting shows the same quest-log state and the reward item still in bags. Check: post-reconnect quest log and bag match the pre-reconnect snapshot; no client error.
+
+

@@ -177,6 +177,12 @@ pub struct TradeSkillState {
 }
 
 impl super::UiScript {
+    /// Set the remote player name and serialized list link supplied by the host's trade-list packet.
+    /// Local lists leave this unset because no link-data producer exists in the UI crate.
+    pub fn set_trade_skill_link(&mut self, link: Option<(String, String)>) {
+        self.model_mut().trade_skill_link = link;
+    }
+
     /// Pushes the open window's snapshot, or `None` on close; the app re-pushes on any change.
     ///
     /// Persistence follows the reference (`0x4fc910`, keyed by `0xbde064`): a different skill line

@@ -3,6 +3,8 @@
 //! guard and the guard counter, poise and hyperarmor, the crouch and crouch attack, the jump
 //! attacks, the left-hand chain and the parry. Every request goes through the engine
 //! ([`submit_and_play`]), so buffering, cancel windows, stamina and refusals are its rules.
+//! An accepted jump attack keeps its playback clock through touchdown. If the kit has only
+//! a landing row or the air request was refused, touchdown submits the landing row once.
 //!
 //! The raw keys run through the binding dispatch's typing gate ([`UiKeyboardCapture`]): a focused
 //! EditBox eats every key and a shown keyboard frame eats the key it consumed.
@@ -271,16 +273,6 @@ fn left_action(kit: &Kit, running: Option<ActionId>) -> Option<ActionId> {
         .and_then(|action| action.next_light)
         .or_else(|| kit.action_named("LeftLight1").map(|action| action.id))
         .or_else(|| kit_row(kit, "PairedLight1"))
-}
-
-/// The air swing's row for a jump attack's landing row: `JumpLightLand` → `JumpLight`.
-fn air_name(landing: &str) -> String {
-    landing.strip_suffix("Land").unwrap_or(landing).to_string()
-}
-
-/// Whether a kit row is a jump attack's air swing.
-fn is_air_swing(name: &str) -> bool {
-    matches!(name, "JumpLight" | "JumpHeavy" | "PairedJump")
 }
 
 /// Whether the running action is a dodge inside its i-frames.
@@ -599,67 +591,20 @@ pub(super) fn souls_input(
         );
     }
 
-    // The jump attack, as ER plays it: a light, heavy or (paired) left press in the air starts
-    // the kit's air swing (`JumpLight`, `JumpHeavy`, `PairedJump`) at once, its hit live in the
-    // air. Coming down before that hit, the landing row (`JumpLightLand`, ...) takes over and
-    // carries it, the swing already paid for; after it, the swing's recovery ends on the ground
-    // (ER's short landing). A kit read before the air rows holds the press for the landing.
     let airborne = player.airborne();
     let landed = souls.was_airborne && !airborne;
     souls.was_airborne = airborne;
     let jumping = features.jump_attacks && airborne;
-    if !features.jump_attacks || (!airborne && !landed) {
-        souls.air_attack = None;
-    }
-    let air_running = kit_now
-        .and_then(|kit| running_action(kit, &playback))
-        .filter(|(_, action, _)| is_air_swing(&action.name))
-        .map(|(_, action, frame)| {
-            (
-                action.id,
-                action.hits.first().map(|hit| (hit.from, hit.to)),
-                frame,
-            )
-        });
-    let mut landing = None;
-    if landed {
-        if let Some(row) = souls.air_attack.take() {
-            match air_running {
-                // The swing's hit already came: its own recovery finishes on the ground.
-                Some((_, Some((hit_from, _)), frame)) if frame >= hit_from => {}
-                Some((id, _, _)) => {
-                    // Down before the hit: the landing carries it, the swing refunded so the
-                    // jump attack costs once.
-                    let refund = profiles
-                        .table
-                        .as_ref()
-                        .and_then(|table| table.get(id))
-                        .map_or(0, |spec| spec.stamina_cost);
-                    if let Some(engine) = playback.engine.as_mut() {
-                        if let Err(error) = engine.release(now) {
-                            warn!("souls: the air swing did not end at the landing: {error}");
-                        }
-                        engine.set_stamina(engine.stamina().saturating_add(refund), now);
-                    }
-                    landing = Some(row);
-                }
-                // No air row in this kit, or the swing was refused: the landing swing plays.
-                None => landing = Some(row),
-            }
-        }
-    }
-    if !airborne && !landed {
-        // On the ground past the air swing's hit: its recovery ends (ER's short landing).
-        if let Some((_, Some((_, hit_to)), frame)) = air_running {
-            if frame >= hit_to {
-                if let Some(engine) = playback.engine.as_mut() {
-                    if let Err(error) = engine.release(now) {
-                        warn!("souls: the air swing did not end after landing: {error}");
-                    }
-                }
-            }
-        }
-    }
+    // Keep one press per jump. A landing row is pending; an air row records that the engine
+    // already accepted the press, even if the action finishes before touchdown.
+    let landing = if jumping {
+        None
+    } else {
+        souls
+            .air_attack
+            .take()
+            .filter(|row| features.jump_attacks && landed && row.ends_with("Land"))
+    };
 
     // The presses.
     let active = playback.engine.as_ref().and_then(|engine| engine.active());
@@ -669,12 +614,12 @@ pub(super) fn souls_input(
             .sprint_ended_at
             .is_some_and(|at| t - at < RUN_ATTACK_GRACE_SECONDS);
     let mut heavy_pressed = None;
+    let mut air_row = None;
     let (units, relations, mut link) = critical;
     let mut crit = None;
     let request = if let Some(row) = landing {
         kit_now.and_then(|kit| kit_row(kit, row))
     } else if jumping {
-        let mut swing = None;
         if souls.air_attack.is_none() {
             souls.air_attack = if input.just_pressed(binds.light) {
                 Some("JumpLightLand")
@@ -685,13 +630,11 @@ pub(super) fn souls_input(
             } else {
                 None
             };
-            swing = souls
-                .air_attack
-                .zip(kit_now)
-                .and_then(|(row, kit)| kit.action_named(&air_name(row)))
-                .map(|action| action.id);
+            air_row = souls.air_attack.and_then(|row| row.strip_suffix("Land"));
         }
-        swing
+        air_row
+            .and_then(|name| kit_now?.action_named(name))
+            .map(|row| row.id)
     } else if dodge_press {
         match kit_now {
             Some(kit) => resolve_dodge(kit, flags, Some(roll_load(link.load))),
@@ -779,6 +722,9 @@ pub(super) fn souls_input(
             )
         });
         if accepted {
+            if let Some(name) = air_row {
+                souls.air_attack = Some(name);
+            }
             if let Some(name) = kit_now
                 .and_then(|kit| kit.action(action))
                 .map(|row| row.name.as_str())

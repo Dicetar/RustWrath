@@ -1,6 +1,9 @@
 //! Elden Ring motion on our rig and relayed Souls players: kit actions play the ER clip each
 //! row was read from (`source`), and, on their own switch, idle, guard, walk, run, sprint, crouch
 //! and airborne play the ER locomotion clips.
+//! Touchdown changes only the visual source of a jump attack. The air and landing clips
+//! share the action clock, with hit opening, hit closing and recovery end aligned. The same
+//! mapping drives the upper-body carry after movement releases the attack.
 //!
 //! **The clips** are the reference's bake, `player_anims.bin` (`ERAN`: model-space joint positions
 //! per frame at 30 fps, plus the head's axes and optional weapon axes, with root motion removed).
@@ -17,11 +20,13 @@
 //!   so the torso twists with the swing;
 //! - the Head takes the bake's head axes;
 //! - each distinct hand attachment aligns the held item's shaft and bit with the baked weapon
-//!   axes when available. The wrist follows the ER palm;
+//!   axes when available. After blending, the equipment attachment point is seated at its
+//!   authored position in the wrist's coordinate system;
 //! - arm segments aim along the ER arm; the wrist takes the knuckle/thumb frame;
 //! - the pelvis uses anatomical up. Each leg reaches for the scaled ER ankle with the ER knee
 //!   as its pole. An ankle-to-toe frame transfers pitch relative to a planted foot. The bind
-//!   height of the sole accounts for different boots and the digitigrade Tauren hoof.
+//!   height of the sole accounts for different boots and the digitigrade Tauren hoof on the
+//!   ground. In the air the ankle follows the baked offset from the hip.
 //!
 //! Every other bone keeps the stock animation. The pass writes the bone locals in
 //! [`benilla_world::rig_anim::PosePost`], after the M2 evaluator and before the strafe twist and
@@ -35,6 +40,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use benilla_combat_core::{Kit, KitAction, Milli};
 use benilla_world::rig_anim::RigPose;
 use bevy::prelude::*;
 
@@ -43,7 +49,7 @@ use crate::combat_kit::PlayerKit;
 use crate::combat_mode::CombatModeView;
 use crate::combat_playback::CombatPlaybackState;
 use crate::combat_profiles::CombatProfiles;
-use crate::creature_anim::{AnimDriver, BodyTwist};
+use crate::creature_anim::{move_flags, AnimDriver, BodyTwist};
 use crate::entities::{BoneAttach, HandKeyBones};
 use crate::net::SelfPlayer;
 
@@ -187,10 +193,10 @@ const CROUCH_RUN_CLIP_SPEED: f32 = 3.0;
 
 /// The stock base clips ER locomotion may stand in for: Stand 0, Walk 4, Run 5, ShuffleLeft 11,
 /// ShuffleRight 12, Walkbackwards 13, the ready stances 25-29, JumpStart/Jump/JumpEnd/Fall
-/// 37-40, StealthWalk 119, StealthStand 120 and Sprint 143. Anything else (a cast, an emote, a
+/// 37-40, StealthWalk 119, StealthStand 120, Sprint 143 and JumpLandRun 187. Anything else (a cast, an emote, a
 /// swim, a mount) keeps the stock animation.
 fn stands_in_for(base: u16) -> bool {
-    matches!(base, 0 | 4 | 5 | 11 | 12 | 13 | 25..=29 | 37..=40 | 119 | 120 | 143)
+    matches!(base, 0 | 4 | 5 | 11..=13 | 25..=29 | 37..=40 | 119 | 120 | 143 | 187)
 }
 
 /// One baked clip.
@@ -418,8 +424,46 @@ enum Drive {
         bind_up: Vec3,
         bind_side: Vec3,
     },
-    /// The actual item attachment below the wrist, indexed like `HAND_ATTACH`.
+    /// The attachment takes the weapon axes. Its origin is seated after all pose layers blend.
     Grip { side: usize },
+}
+
+/// A held item's actual attachment point in the wrist's coordinate system.
+#[derive(Debug)]
+struct PalmSocket {
+    /// Wrist child first, ending at the socket bone.
+    chain: Vec<usize>,
+    offset: Vec3,
+    held: Vec3,
+}
+
+impl PalmSocket {
+    fn point(&self, locals: &[Transform]) -> Vec3 {
+        self.chain
+            .iter()
+            .rev()
+            .fold(self.offset, |p, &b| locals[b].transform_point(p))
+    }
+
+    fn place(&self, locals: &mut [Transform], wrist_point: Vec3) -> bool {
+        let (&bone, helpers) = self.chain.split_last().expect("nonempty socket chain");
+        let parent = helpers
+            .iter()
+            .fold(bevy::math::Affine3A::IDENTITY, |m, &b| {
+                m * locals[b].compute_affine()
+            });
+        if parent.matrix3.determinant().abs() <= f32::EPSILON {
+            return false;
+        }
+        let socket = &mut locals[bone];
+        let translation = parent.inverse().transform_point3(wrist_point)
+            - socket.rotation * (socket.scale * self.offset);
+        if !translation.is_finite() || socket.translation == translation {
+            return false;
+        }
+        socket.translation = translation;
+        true
+    }
 }
 
 /// The roles of one rig's bones.
@@ -427,6 +471,7 @@ enum Drive {
 struct RigMap {
     /// Driven bones, parents first.
     driven: Vec<(usize, Drive)>,
+    grips: [Option<PalmSocket>; 2],
     pelvis: usize,
     /// Model units per ER metre.
     scale: f32,
@@ -508,7 +553,14 @@ impl Leg {
         })
     }
 
-    fn pose(&self, pose: &Pose, parents: &[i16], binds: &[Vec3], work: &mut [Transform]) {
+    fn pose(
+        &self,
+        pose: &Pose,
+        parents: &[i16],
+        binds: &[Vec3],
+        work: &mut [Transform],
+        grounded: bool,
+    ) {
         let [h, k, a, t] = self.joints.map(|j| pose.at(j));
         let hips = (pose.at(J::RThigh) - pose.at(J::LThigh)).normalize_or(Vec3::X);
         let thigh = k - h;
@@ -537,9 +589,11 @@ impl Leg {
             return;
         };
         let [hip_bone, _, foot_bone] = self.bones;
-        let hip = model_parent(parents, work, hip_bone).transform_point(binds[hip_bone]);
         let mut reach = (a - h) * self.scale;
-        reach.y = t.y * self.scale - (foot * self.contact).y - hip.y;
+        if grounded {
+            let hip = model_parent(parents, work, hip_bone).transform_point(binds[hip_bone]);
+            reach.y = t.y * self.scale - (foot * self.contact).y - hip.y;
+        }
         let axis = reach.normalize_or(Vec3::NEG_Y);
         let u = self.upper.length();
         // Fold the stock helper locals into the effective shin before solving. This is just
@@ -711,6 +765,9 @@ struct RigInput<'a> {
     head: usize,
     /// The hand attachment bones, `[right, left]`.
     hands: [usize; 2],
+    /// Socket-local equipment offsets and authored Stand locals (bind for unkeyed channels).
+    hand_offsets: [Vec3; 2],
+    stand_local: &'a dyn Fn(usize) -> Transform,
     /// The elbow attachment points in the model frame, `[right, left]`, when the model has them.
     elbows: [Option<Vec3>; 2],
     /// The thumb key bones, `[right, left]`, when the model has them.
@@ -805,6 +862,7 @@ impl RigMap {
         let scale = piv[pelvis].y / rest_pelvis.y;
 
         let mut driven = Vec::new();
+        let mut grips = [None, None];
 
         // The spine, pelvis to Head.
         let mut spine: Vec<usize> = head_chain
@@ -965,10 +1023,29 @@ impl RigMap {
                     },
                 ));
             }
-            // A shared wrist/socket must keep the palm frame. On HD rigs the socket can be
-            // below an animated origin helper. Only rotate the actual attachment bone.
             let socket = rig.hands[side];
             if socket != wrist {
+                let mut chain: Vec<_> = ancestors(rig.parents, socket)
+                    .into_iter()
+                    .take_while(|&b| b != wrist)
+                    .collect();
+                let offset = rig.hand_offsets[side];
+                let held = chain
+                    .iter()
+                    .fold(offset, |p, &b| (rig.stand_local)(b).transform_point(p));
+                // Origin helpers on some HD rigs are placed entirely by animation. If
+                // Stand is unavailable, their unposed origin can be over a yard away.
+                let held = if held.length() <= forearm {
+                    held
+                } else {
+                    finger - piv[wrist]
+                };
+                chain.reverse();
+                grips[side] = Some(PalmSocket {
+                    chain,
+                    offset,
+                    held,
+                });
                 driven.push((socket, Drive::Grip { side }));
             }
         }
@@ -1040,6 +1117,7 @@ impl RigMap {
 
         Ok(Self {
             driven,
+            grips,
             pelvis,
             scale: if legs.len() == 2 {
                 (legs[0].scale + legs[1].scale) * 0.5
@@ -1058,7 +1136,14 @@ impl RigMap {
 
     /// The retargeted locals of the driven bones over `stock` (every bone's local, stock pose),
     /// written into `work`: rotations of the driven bones and the pelvis translation.
-    fn pose(&self, pose: &Pose, parents: &[i16], binds: &[Vec3], work: &mut [Transform]) {
+    fn pose(
+        &self,
+        pose: &Pose,
+        parents: &[i16],
+        binds: &[Vec3],
+        work: &mut [Transform],
+        grounded: bool,
+    ) {
         let model = |work: &[Transform], b: Option<usize>| -> Quat {
             let Some(b) = b else {
                 return Quat::IDENTITY;
@@ -1121,8 +1206,40 @@ impl RigMap {
             work[self.pelvis].translation = translation;
         }
         for leg in &self.legs {
-            leg.pose(pose, parents, binds, work);
+            leg.pose(pose, parents, binds, work, grounded);
         }
+    }
+
+    fn grip_points(&self, locals: &[Transform]) -> [Vec3; 2] {
+        self.grips
+            .each_ref()
+            .map(|g| g.as_ref().map_or(Vec3::ZERO, |g| g.point(locals)))
+    }
+
+    /// Crossfade the rendered attachment point in wrist space. Slerping individual bones
+    /// cannot keep this point fixed when a stock helper translates or rotates below the wrist.
+    fn blend_grips(
+        &self,
+        locals: &mut [Transform],
+        written: &mut [Transform],
+        from: Option<&[Transform]>,
+        stock: [Vec3; 2],
+        weights: [f32; 2],
+        blend: f32,
+    ) -> bool {
+        let mut dirty = false;
+        for (side, grip) in self.grips.iter().enumerate() {
+            let Some(grip) = grip else { continue };
+            if weights[side] != 0. || blend < 1. {
+                let start = from.map_or(stock[side], |pose| grip.point(pose));
+                let end = stock[side].lerp(grip.held, weights[side]);
+                dirty |= grip.place(locals, start.lerp(end, blend));
+            }
+            for &b in &grip.chain {
+                written[b] = locals[b];
+            }
+        }
+        dirty
     }
 
     /// The lower body: the legs, the pelvis and the bones above it, which the locomotion keeps
@@ -1146,9 +1263,93 @@ impl RigMap {
 /// What plays: a kit action's run, or a locomotion clip.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ClipKey {
-    Action(super::Instance),
+    Action(super::Instance, SwingPart),
     /// The stance bank and the clip id.
     Loco(u8, u32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SwingPart {
+    Swing,
+    Landing,
+}
+
+fn baked_frame(kit: &Kit, frame: Milli) -> f32 {
+    frame.0 as f32 / 1000.0 * CLIP_FPS / f32::from(kit.frame_rate_hz.max(1))
+}
+
+struct LandingClip {
+    source: String,
+    /// Corresponding air and landing frames at hit open, hit close, and action end.
+    phases: [(f32, f32); 3],
+}
+
+impl LandingClip {
+    fn frame(&self, elapsed: f32) -> f32 {
+        let mut start = (0.0, 0.0);
+        for &(air, land) in &self.phases {
+            if elapsed < air && air > start.0 {
+                return start.1 + (land - start.1) * (elapsed - start.0) / (air - start.0);
+            }
+            start = (air, land);
+        }
+        start.1
+    }
+}
+
+/// Resolve the companion once per action. A jump without a usable landing clip gives the
+/// grounded pose back to stock when its last air sample has played.
+#[derive(Default)]
+enum GroundClip {
+    #[default]
+    Original,
+    Jump(Option<LandingClip>),
+}
+
+impl GroundClip {
+    fn for_action(kit: &Kit, action: &KitAction) -> Self {
+        let name = match action.name.as_str() {
+            "JumpLight" => "JumpLightLand",
+            "JumpHeavy" => "JumpHeavyLand",
+            "PairedJump" => "PairedJumpLand",
+            _ => return Self::Original,
+        };
+        Self::Jump(kit.action_named(name).map(|landing| {
+            let pair = |a, b| (baked_frame(kit, a), baked_frame(kit, b));
+            let mut phases = [(0.0, 0.0), (0.0, 0.0), pair(action.total, landing.total)];
+            if let Some((a, b)) = action.hits.first().zip(landing.hits.first()) {
+                phases[0] = pair(a.from, b.from);
+                phases[1] = pair(a.to, b.to);
+            }
+            LandingClip {
+                source: landing.source.clone(),
+                phases,
+            }
+        }))
+    }
+
+    fn sample<'a>(
+        &self,
+        clips: &'a ErClips,
+        original: &str,
+        elapsed: f32,
+        grounded: Option<bool>,
+    ) -> Option<(SwingPart, &'a ErClip, f32)> {
+        if let Self::Jump(landing) = self {
+            let air = clips.clips.get(original);
+            let past_air = air.is_none_or(|clip| elapsed >= clip.frames as f32);
+            if let (true, Some(land)) = (grounded.unwrap_or(past_air), landing) {
+                if let Some(clip) = clips.clips.get(&land.source) {
+                    return Some((SwingPart::Landing, clip, land.frame(elapsed)));
+                }
+            }
+            if grounded != Some(false) && past_air {
+                return None;
+            }
+            return Some((SwingPart::Swing, air?, elapsed));
+        }
+        Some((SwingPart::Swing, clips.clips.get(original)?, elapsed))
+    }
 }
 
 /// The upper body of the last action, carried over the locomotion once moving ended it early.
@@ -1201,6 +1402,10 @@ pub(super) struct Retarget {
     last_pos: Option<Vec3>,
     /// The retarget switches were on last frame.
     was_on: bool,
+    action_instance: Option<super::Instance>,
+    ground_clip: GroundClip,
+    /// Touchdown is latched through this swing's recovery, including a movement cancel.
+    grounded: bool,
     carry: Option<Carry>,
     /// How far the guard's arms are up over a moving body, and how far the stock draw/stow
     /// ceremony holds the arms, 0 to 1.
@@ -1338,7 +1543,7 @@ fn blend_upper(
 }
 
 /// The locomotion clip for the body's state, and its rate.
-fn loco_clip(souls: &SoulsState, forward: f32, right: f32) -> (u32, f32) {
+fn loco_clip(souls: &SoulsState, airborne: bool, forward: f32, right: f32) -> (u32, f32) {
     let speed = forward.hypot(right);
     let dir = if forward.abs() >= right.abs() {
         if forward >= 0.0 {
@@ -1352,7 +1557,7 @@ fn loco_clip(souls: &SoulsState, forward: f32, right: f32) -> (u32, f32) {
         3
     };
     let rate = |clip_speed: f32| (speed / clip_speed).clamp(0.5, 2.0);
-    if souls.was_airborne {
+    if airborne {
         (AIRBORNE, 1.0)
     } else if souls.crouched {
         if speed < STILL {
@@ -1380,6 +1585,7 @@ fn map_rig(
     twist: Option<&BodyTwist>,
     attach: Option<&BoneAttach>,
     hands: Option<&HandKeyBones>,
+    anims: Option<&benilla_assets::ModelAnimations>,
     rest: &Pose,
 ) -> Result<RigMap, String> {
     let head = twist
@@ -1391,7 +1597,7 @@ fn map_rig(
         attach
             .points
             .get(&HAND_ATTACH[side])
-            .map(|&(bone, _)| usize::from(bone))
+            .map(|&(bone, offset)| (usize::from(bone), offset))
             .ok_or("the model has no hand attachments")
     };
     let piv = pivots(&rig.parents, rig.binds());
@@ -1401,12 +1607,31 @@ fn map_rig(
             .get(&ELBOW_ATTACH[side])
             .and_then(|&(bone, offset)| piv.get(usize::from(bone)).map(|p| *p + offset))
     };
+    let stand = anims.and_then(|anims| {
+        let node = anims.pose.node(anims.find(0)?.node)?;
+        anims.pose.clips.get(node.clip as usize)
+    });
+    let hands_and_offsets = [hand(0)?, hand(1)?];
     RigMap::build(
         &RigInput {
             parents: &rig.parents,
             binds: rig.binds(),
             head,
-            hands: [hand(0)?, hand(1)?],
+            hands: hands_and_offsets.map(|(bone, _)| bone),
+            hand_offsets: hands_and_offsets.map(|(_, offset)| offset),
+            stand_local: &|b| {
+                let bind = rig.binds()[b];
+                let Some(track) =
+                    stand.and_then(|s| s.bones.iter().find(|t| usize::from(t.bone) == b))
+                else {
+                    return Transform::from_translation(bind);
+                };
+                Transform {
+                    translation: track.translation.sample(0.).unwrap_or(bind),
+                    rotation: track.rotation.sample(0.).unwrap_or(Quat::IDENTITY),
+                    scale: track.scale.sample(0.).unwrap_or(Vec3::ONE),
+                }
+            },
             elbows: [elbow(0), elbow(1)],
             thumbs: hands.map_or([None, None], |h| h.thumbs.map(|t| t.map(usize::from))),
         },
@@ -1446,6 +1671,7 @@ pub(super) fn drive_retarget(
     profiles: Res<CombatProfiles>,
     playback: Res<CombatPlaybackState>,
     souls: Res<SoulsState>,
+    player: Res<crate::player::Player>,
     mut retarget: ResMut<Retarget>,
     mut me: Query<
         (
@@ -1531,7 +1757,14 @@ pub(super) fn drive_retarget(
             .as_ref()
             .is_none_or(|(e, n, _)| *e != entity || *n != bones),
     ) {
-        let built = map_rig(&rig, twist, attach, hands, rest);
+        let built = map_rig(
+            &rig,
+            twist,
+            attach,
+            hands,
+            anims.map(|(_, model)| model),
+            rest,
+        );
         if let Err(e) = &built {
             warn!("souls retarget: the player's model cannot be mapped, stock clips play: {e}");
         }
@@ -1539,44 +1772,57 @@ pub(super) fn drive_retarget(
         r.written = None;
         r.from = None;
         r.playing = None;
+        r.action_instance = None;
         r.carry = None;
         r.guard_upper = 0.0;
         r.ceremony = [0.0; 2];
     }
 
     // What plays.
-    let mut target: Option<(ClipKey, f32, bool, f32)> = None;
+    let mut target: Option<(ClipKey, f32, bool, &ErClip)> = None;
+    let mut has_action = false;
+    let airborne = player.airborne();
+    r.grounded |= !airborne;
     if on {
         if let Some(clips) = r.clips.as_ref() {
             let running = current_kit(&kit, &profiles)
                 .and_then(|kit| running_action(kit, &playback).map(|run| (kit, run)));
+            has_action = features.retarget && running.is_some();
             // A running action plays its own clip, or the stock one when it has none here (or the
             // switch is off); locomotion never covers it.
             let action = running.filter(|_| features.retarget).and_then(
                 |(kit, (instance, action, frame))| {
-                    let clip = clips.clips.get(&action.source)?;
-                    let baked_frame = |f: benilla_combat_core::Milli| {
-                        f.0 as f32 / 1000.0 * CLIP_FPS / f32::from(kit.frame_rate_hz.max(1))
-                    };
-                    if r.playing != Some(ClipKey::Action(instance)) {
+                    if r.action_instance != Some(instance) {
                         use benilla_combat_core::ActionKind::{MeleeHeavy, MeleeLight};
+                        r.action_instance = Some(instance);
+                        r.ground_clip = GroundClip::for_action(kit, action);
+                        r.grounded = !airborne;
                         r.carry = action
                             .cancel
                             .movement
                             .filter(|_| matches!(action.kind, MeleeLight | MeleeHeavy))
-                            .map(|from| Carry {
-                                instance,
-                                source: action.source.clone(),
-                                release_from: baked_frame(from),
-                                end: baked_frame(action.total).min((clip.frames - 1) as f32),
+                            .and_then(|from| {
+                                let total = baked_frame(kit, action.total);
+                                let end = match r.ground_clip {
+                                    GroundClip::Original => total
+                                        .min((clips.clips.get(&action.source)?.frames - 1) as f32),
+                                    GroundClip::Jump(_) => total,
+                                };
+                                Some(Carry {
+                                    instance,
+                                    source: action.source.clone(),
+                                    release_from: baked_frame(kit, from),
+                                    end,
+                                })
                             });
                     }
-                    Some((
-                        ClipKey::Action(instance),
-                        baked_frame(frame),
-                        false,
-                        clip.blend,
-                    ))
+                    let (part, clip, frame) = r.ground_clip.sample(
+                        clips,
+                        &action.source,
+                        baked_frame(kit, frame),
+                        Some(r.grounded),
+                    )?;
+                    Some((ClipKey::Action(instance, part), frame, false, clip))
                 },
             );
             target = action.or_else(|| {
@@ -1593,7 +1839,7 @@ pub(super) fn drive_retarget(
                 if !features.retarget_locomotion || !stock_loco {
                     return None;
                 }
-                let (id, rate) = loco_clip(&souls, forward, right);
+                let (id, rate) = loco_clip(&souls, airborne, forward, right);
                 let bank = if id == GUARD { guard_bank } else { loco_bank };
                 let clip = clips.named_in(bank, id)?;
                 let previous = match r.playing {
@@ -1608,7 +1854,7 @@ pub(super) fn drive_retarget(
                     dt * rate * CLIP_FPS,
                 );
                 let frame = if id == GUARD { now * CLIP_FPS } else { gait };
-                Some((ClipKey::Loco(bank, id), frame, true, clip.blend))
+                Some((ClipKey::Loco(bank, id), frame, true, clip))
             });
         }
     }
@@ -1621,9 +1867,11 @@ pub(super) fn drive_retarget(
             !features.retarget
                 || frame >= carry.end
                 || frame < carry.release_from
-                || (r.playing == Some(ClipKey::Action(carry.instance)) && !moving)
+                || (matches!(r.playing, Some(ClipKey::Action(i, _)) if i == carry.instance)
+                    && !moving)
         });
-    } else if key.is_none() {
+    } else if key.is_none() && !has_action {
+        r.action_instance = None;
         r.carry = None;
     }
     let Some((_, _, Ok(map))) = r.map.as_ref() else {
@@ -1653,12 +1901,12 @@ pub(super) fn drive_retarget(
         r.fade_at = now;
         r.fade_len = match target {
             Some((ClipKey::Loco(..), ..))
-                if matches!(r.playing, Some(ClipKey::Action(_))) && r.carry.is_some() =>
+                if matches!(r.playing, Some(ClipKey::Action(..))) && r.carry.is_some() =>
             {
                 MIN_BLEND_SECS
             }
-            Some((ClipKey::Loco(..), .., blend)) => (blend / CLIP_FPS).max(MIN_LOCO_BLEND_SECS),
-            Some((.., blend)) => (blend / CLIP_FPS).max(MIN_BLEND_SECS),
+            Some((ClipKey::Loco(..), .., clip)) => (clip.blend / CLIP_FPS).max(MIN_LOCO_BLEND_SECS),
+            Some((.., clip)) => (clip.blend / CLIP_FPS).max(MIN_BLEND_SECS),
             None => FADE_OUT_SECS,
         };
         r.playing = key;
@@ -1698,34 +1946,31 @@ pub(super) fn drive_retarget(
     for b in map.bones() {
         work[b] = r.stock[b];
     }
-    if let (Some((key, frame, looped, _)), Some(clips)) = (target, r.clips.as_ref()) {
-        let clip = match key {
-            ClipKey::Action(_) => current_kit(&kit, &profiles).and_then(|kit| {
-                let (_, action, _) = running_action(kit, &playback)?;
-                clips.clips.get(&action.source)
-            }),
-            ClipKey::Loco(bank, id) => clips.named_in(bank, id),
-        };
-        if let Some(clip) = clip {
-            let pose = clips.sample(clip, frame, looped);
-            map.pose(&pose, &rig.parents, rig.binds(), &mut work);
-        }
+    let stock_grips = map.grip_points(&work);
+    if let (Some((key, frame, looped, clip)), Some(clips)) = (target, r.clips.as_ref()) {
+        let pose = clips.sample(clip, frame, looped);
+        map.pose(&pose, &rig.parents, rig.binds(), &mut work, !airborne);
         // Moving cut the last action short: its upper body settles over the running legs.
         let carried = r
             .carry
             .as_ref()
             .filter(|_| matches!(key, ClipKey::Loco(..)))
-            .and_then(|carry| Some((carry, clips.clips.get(&carry.source)?)));
-        if let Some((carry, clip)) = carried {
-            let frame = carry.frame(tick);
+            .and_then(|carry| {
+                let elapsed = carry.frame(tick);
+                let (_, clip, frame) =
+                    r.ground_clip
+                        .sample(clips, &carry.source, elapsed, Some(r.grounded))?;
+                Some((carry.weight(elapsed), clip, frame))
+            });
+        if let Some((weight, clip, frame)) = carried {
             let mut upper: Vec<Transform> = rig.locals.clone();
             for b in map.bones() {
                 upper[b] = r.stock[b];
             }
             let pose = clips.sample(clip, frame, false);
-            map.pose(&pose, &rig.parents, rig.binds(), &mut upper);
+            map.pose(&pose, &rig.parents, rig.binds(), &mut upper, !airborne);
             let lower = map.lower_bones(&rig.parents);
-            blend_upper(&mut work, &upper, map, &lower, carry.weight(frame));
+            blend_upper(&mut work, &upper, map, &lower, weight);
         }
         // The guard held while moving: its arms over the gait's legs.
         let guard_clip = (in_loco && r.guard_upper > 0.0)
@@ -1737,7 +1982,7 @@ pub(super) fn drive_retarget(
                 upper[b] = r.stock[b];
             }
             let pose = clips.sample(clip, now * CLIP_FPS, true);
-            map.pose(&pose, &rig.parents, rig.binds(), &mut upper);
+            map.pose(&pose, &rig.parents, rig.binds(), &mut upper, !airborne);
             let lower = map.lower_bones(&rig.parents);
             blend_upper(&mut work, &upper, map, &lower, smoothstep(r.guard_upper));
         }
@@ -1773,6 +2018,23 @@ pub(super) fn drive_retarget(
         }
         written[b] = out;
     }
+    let grip_weights = if target.is_some() {
+        if masks.is_some() {
+            arm_weights.map(|w| 1. - w)
+        } else {
+            [1.; 2]
+        }
+    } else {
+        [0.; 2]
+    };
+    dirty |= map.blend_grips(
+        &mut rig.locals,
+        &mut written,
+        r.from.as_deref(),
+        stock_grips,
+        grip_weights,
+        k,
+    );
     if dirty {
         rig.pose_dirty = true;
     }
@@ -1807,6 +2069,26 @@ pub(super) struct RemoteAction {
     pub(super) duration: f32,
 }
 
+impl RemoteAction {
+    /// The relay already resolved the clip source against the receiver's kit.
+    fn jump(&self, kit: Option<&Kit>) -> (GroundClip, Option<f32>) {
+        if let Some(kit) = kit {
+            for name in ["JumpLight", "JumpHeavy", "PairedJump"] {
+                if let Some(row) = kit
+                    .action_named(name)
+                    .filter(|row| row.source == self.source)
+                {
+                    return (
+                        GroundClip::for_action(kit, row),
+                        row.cancel.movement.map(|from| baked_frame(kit, from)),
+                    );
+                }
+            }
+        }
+        (GroundClip::Original, None)
+    }
+}
+
 #[derive(Component)]
 pub(super) struct RemotePeer {
     pub(super) until: f32,
@@ -1832,7 +2114,7 @@ const MAX_REMOTE_BONES: usize = 512;
 #[derive(Clone, Copy, PartialEq)]
 enum RemoteClip {
     /// The relay start distinguishes successive swings using the same clip.
-    Action(f32),
+    Action(f32, SwingPart),
     Gait(u32),
 }
 
@@ -1842,6 +2124,13 @@ struct RemotePose {
     written: Option<Vec<Transform>>,
     from: Vec<Transform>,
     playing: Option<RemoteClip>,
+    was_airborne: bool,
+    action_started: Option<f32>,
+    ground_clip: GroundClip,
+    jump_move_cancel: Option<f32>,
+    landed: bool,
+    carried_action: Option<f32>,
+    lower: Vec<usize>,
     fade_at: f32,
     gait_phase: f32,
     last_pos: Vec3,
@@ -1851,14 +2140,17 @@ struct RemotePose {
 struct RemotePoses(std::collections::HashMap<Entity, RemotePose>);
 
 /// Same bake, rig mapping, sampling and pose solver as our own body. No per-body file loads.
-/// At most 16 bodies, 512 bones each; one sample and one bounded pose solve per body/frame.
+/// At most 16 bodies, 512 bones each. A movement-cancelled jump layers its upper body on the gait.
 #[allow(clippy::type_complexity)]
 fn drive_remote_retarget(
     time: Res<Time>,
     view: Res<CombatModeView>,
     config: Res<SoulsConfig>,
+    kit: Res<PlayerKit>,
+    profiles: Res<CombatProfiles>,
     retarget: Res<Retarget>,
     mut poses: ResMut<RemotePoses>,
+    mut upper: Local<Vec<Transform>>,
     mut bodies: Query<
         (
             Entity,
@@ -1870,6 +2162,8 @@ fn drive_remote_retarget(
             Option<&RemotePeer>,
             &GlobalTransform,
             Option<&AnimDriver>,
+            Option<&benilla_assets::ModelAnimations>,
+            Option<&crate::net::RemoteMotion>,
         ),
         Without<SelfPlayer>,
     >,
@@ -1881,20 +2175,18 @@ fn drive_remote_retarget(
     let now = time.elapsed_secs();
     let clips = retarget.clips.as_ref();
     let rest = retarget.rest.as_ref();
+    let kit_now = current_kit(&kit, &profiles);
     // Evict despawned bodies before admitting new ones.
     poses.0.retain(|entity, _| bodies.contains(*entity));
-    for (entity, rig, twist, attach, hands, action, peer, at, _) in &bodies {
+    for (entity, rig, twist, attach, hands, action, peer, at, _, anims, _) in &bodies {
         if poses.0.len() >= MAX_REMOTE_BODIES {
             break;
         }
         if poses.0.contains_key(&entity) || rig.locals.len() > MAX_REMOTE_BONES {
             continue;
         }
-        let ready = actions_on
-            && action.is_some_and(|a| {
-                now < a.started + a.duration
-                    && clips.is_some_and(|clips| clips.clips.contains_key(&a.source))
-            });
+        let ready =
+            actions_on && clips.is_some() && action.is_some_and(|a| now < a.started + a.duration);
         if !(ready || loco_on && peer.is_some_and(|p| now < p.until)) {
             continue;
         }
@@ -1904,11 +2196,18 @@ fn drive_remote_retarget(
         poses.0.insert(
             entity,
             RemotePose {
-                map: map_rig(&rig, twist, attach, hands, rest),
+                map: map_rig(rig, twist, attach, hands, anims, rest),
                 stock: rig.locals.clone(),
                 written: None,
                 from: rig.locals.clone(),
                 playing: None,
+                was_airborne: false,
+                action_started: None,
+                ground_clip: GroundClip::Original,
+                jump_move_cancel: None,
+                landed: false,
+                carried_action: None,
+                lower: Vec::new(),
                 fade_at: now,
                 gait_phase: 0.0,
                 last_pos: at.translation(),
@@ -1916,7 +2215,7 @@ fn drive_remote_retarget(
         );
     }
     poses.0.retain(|entity, state| {
-        let Ok((_, mut rig, twist, attach, hands, action, peer, at, driver)) =
+        let Ok((_, mut rig, twist, attach, hands, action, peer, at, driver, anims, motion)) =
             bodies.get_mut(*entity)
         else {
             return false;
@@ -1928,12 +2227,13 @@ fn drive_remote_retarget(
         if bones != state.stock.len() {
             state.map = rest.map_or_else(
                 || Err("no rest pose".into()),
-                |rest| map_rig(&rig, twist, attach, hands, rest),
+                |rest| map_rig(&rig, twist, attach, hands, anims, rest),
             );
             state.stock = rig.locals.clone();
             state.from = rig.locals.clone();
             state.written = None;
             state.playing = None;
+            state.lower.clear();
             state.fade_at = now;
         }
         let Ok(map) = &state.map else {
@@ -1950,6 +2250,7 @@ fn drive_remote_retarget(
             );
             work[b] = state.stock[b];
         }
+        let stock_grips = map.grip_points(&work);
         let delta = at.translation() - state.last_pos;
         state.last_pos = at.translation();
         let speed = if dt > 0.0 {
@@ -1958,18 +2259,65 @@ fn drive_remote_retarget(
             0.0
         };
         let running = action.filter(|a| now < a.started + a.duration);
+        let flags = motion.map(|m| m.flags);
+        let airborne = flags.is_some_and(|f| f & move_flags::FALLING != 0);
+        let touchdown = state.was_airborne && flags.is_some() && !airborne;
+        state.was_airborne = airborne;
+        let mut pose_airborne = airborne;
+        let mut carried = None;
         let mut target = running.filter(|_| actions_on).and_then(|a| {
-            let clip = clips?.clips.get(&a.source)?;
             let frame = (now - a.started).max(0.0) * CLIP_FPS;
-            Some((RemoteClip::Action(a.started), clip, frame))
+            // SWING and movement arrive separately. Latch a witnessed touchdown, while a
+            // first grounded snapshot can still be corrected by a late jump flag.
+            if state.action_started != Some(a.started) {
+                (state.ground_clip, state.jump_move_cancel) = a.jump(kit_now);
+                state.action_started = Some(a.started);
+                state.landed = false;
+            }
+            state.landed |= touchdown;
+            let grounded = if state.landed {
+                Some(true)
+            } else {
+                airborne.then_some(false)
+            };
+            if loco_on
+                && state.jump_move_cancel.is_some_and(|from| frame >= from)
+                && flags.is_some_and(|f| f & move_flags::ANY_MOVE != 0)
+            {
+                state.carried_action = Some(a.started);
+            }
+            let (part, clip, sample) = state
+                .ground_clip
+                .sample(clips?, &a.source, frame, grounded)?;
+            if matches!(state.ground_clip, GroundClip::Jump(_)) {
+                pose_airborne = part == SwingPart::Swing && grounded != Some(true);
+            }
+            if loco_on && state.carried_action == Some(a.started) {
+                let left = a.duration - frame / CLIP_FPS;
+                let weight = smoothstep((left / CARRY_FADE_SECS).clamp(0.0, 1.0));
+                carried = Some((clip, sample, weight));
+                return None;
+            }
+            Some((RemoteClip::Action(a.started, part), clip, sample))
         });
-        if target.is_none() && running.is_none() && loco_on {
+        let carrying =
+            actions_on && running.is_some_and(|a| state.carried_action == Some(a.started));
+        if target.is_none() && (running.is_none() || carrying) && loco_on {
             let stock_loco = driver.is_some_and(|d| {
                 let (base, overlay) = d.playing();
-                overlay.is_none() && matches!(base, Some(0 | 4 | 5 | 11 | 12 | 13 | 25..=29 | 143))
+                overlay.is_none()
+                    && matches!(
+                        base,
+                        Some(0 | 4 | 5 | 11..=13 | 25..=29 | 37..=40 | 143 | 187)
+                    )
             });
-            if let Some(peer) = peer.filter(|p| now < p.until && stock_loco) {
-                let (id, rate) = remote_gait(speed, peer.sprint);
+            let peer = peer.filter(|p| now < p.until);
+            if carrying || (stock_loco && peer.is_some()) {
+                let (id, rate) = if pose_airborne {
+                    (AIRBORNE, 1.0)
+                } else {
+                    remote_gait(speed, peer.is_some_and(|p| p.sprint))
+                };
                 if let Some(clip) = clips.and_then(|clips| clips.named(id)) {
                     let previous = match state.playing {
                         Some(RemoteClip::Gait(old)) => Some(old),
@@ -1997,7 +2345,7 @@ fn drive_remote_retarget(
                 let gait = matches!(key, RemoteClip::Gait(_));
                 if let Some(clips) = clips {
                     let pose = clips.sample(clip, frame, gait);
-                    map.pose(&pose, &rig.parents, rig.binds(), &mut work);
+                    map.pose(&pose, &rig.parents, rig.binds(), &mut work, !pose_airborne);
                 }
                 let minimum = if gait {
                     MIN_LOCO_BLEND_SECS
@@ -2008,6 +2356,25 @@ fn drive_remote_retarget(
             }
             None => FADE_OUT_SECS,
         };
+        if let (Some(RemoteClip::Gait(_)), Some((clip, frame, weight)), Some(clips)) =
+            (playing, carried, clips)
+        {
+            upper.clone_from(&rig.locals);
+            for b in map.bones() {
+                upper[b] = state.stock[b];
+            }
+            map.pose(
+                &clips.sample(clip, frame, false),
+                &rig.parents,
+                rig.binds(),
+                &mut upper,
+                !pose_airborne,
+            );
+            if state.lower.is_empty() {
+                state.lower = map.lower_bones(&rig.parents);
+            }
+            blend_upper(&mut work, &upper, map, &state.lower, weight);
+        }
         let blend = smoothstep(((now - state.fade_at) / fade_len).clamp(0.0, 1.0));
         let mut written = rig.locals.clone();
         for b in map.bones() {
@@ -2025,6 +2392,17 @@ fn drive_remote_retarget(
                 rig.pose_dirty = true;
             }
             written[b] = out;
+        }
+        let grip_weight = if target.is_some() { 1. } else { 0. };
+        if map.blend_grips(
+            &mut rig.locals,
+            &mut written,
+            Some(&state.from),
+            stock_grips,
+            [grip_weight; 2],
+            blend,
+        ) {
+            rig.pose_dirty = true;
         }
         state.written = Some(written);
         target.is_some() || blend < 1.0
@@ -2161,11 +2539,28 @@ mod tests {
                 let binds: Vec<_> = (0..piv.len())
                     .map(|i| piv[i] - parent_of(&parents, i).map_or(Vec3::ZERO, |p| piv[p]))
                     .collect();
+                let anims =
+                    benilla_formats::parse_m2_animations_with_external(&bytes, |id, variation| {
+                        matches!(id, 0 | 4 | 5 | 18)
+                            .then(|| {
+                                chain
+                                    .read(&format!("{path}{id:04}-{variation:02}.anim"))
+                                    .ok()
+                            })
+                            .flatten()
+                    });
+                let stand = anims.iter().find(|a| a.anim_id == 0).unwrap();
+                let standing = stock_pose(&binds, stand, 0.);
                 let rig = RigInput {
                     parents: &parents,
                     binds: &binds,
                     head: key(6).unwrap(),
                     hands: HAND_ATTACH.map(|id| usize::from(point(id).bone)),
+                    hand_offsets: HAND_ATTACH.map(|id| {
+                        let a = point(id);
+                        wow_to_bevy(a.position) - piv[usize::from(a.bone)]
+                    }),
+                    stand_local: &|b| standing[b],
                     elbows: ELBOW_ATTACH.map(|id| {
                         att.iter()
                             .find(|a| a.id == id)
@@ -2183,19 +2578,50 @@ mod tests {
                         })
                     })
                     .collect();
-                let anims =
-                    benilla_formats::parse_m2_animations_with_external(&bytes, |id, variation| {
-                        matches!(id, 0 | 4 | 5)
-                            .then(|| {
-                                chain
-                                    .read(&format!("{path}{id:04}-{variation:02}.anim"))
-                                    .ok()
-                            })
-                            .flatten()
-                    });
-                let stand = anims.iter().find(|a| a.anim_id == 0).unwrap();
+                if (profile, race, sex) == ("wm-hd", "Human", "Female") {
+                    // Socket 210 hangs from helper 115 under wrist 62. Measure the rendered
+                    // grip in wrist space, through every stock Attack2HTight variation.
+                    let a = point(1);
+                    assert_eq!(a.bone, 210);
+                    assert_eq!((parents[210], parents[115]), (115, 62));
+                    let offset = wow_to_bevy(a.position) - piv[210];
+                    let seat = |locals: &[Transform]| {
+                        locals[115].transform_point(locals[210].transform_point(offset))
+                    };
+                    let stand_seat = seat(&standing);
+                    let heavy = &clips.clips["a030_032505"];
+                    let mut old_drift = 0.0_f32;
+                    let mut fixed_drift = 0.0_f32;
+                    for attack in anims.iter().filter(|a| a.anim_id == 18) {
+                        for frame in 0..=(attack.duration * CLIP_FPS).ceil() as usize {
+                            let mut work = stock_pose(&binds, attack, frame as f32 / CLIP_FPS);
+                            old_drift = old_drift.max(seat(&work).distance(stand_seat));
+                            let pose = clips.sample(heavy, frame as f32, false);
+                            let stock_grips = map.grip_points(&work);
+                            let mut written = work.clone();
+                            map.pose(&pose, &parents, &binds, &mut work, true);
+                            map.blend_grips(
+                                &mut work,
+                                &mut written,
+                                None,
+                                stock_grips,
+                                [1.; 2],
+                                1.,
+                            );
+                            let drift = seat(&work).distance(stand_seat);
+                            assert!(drift.is_finite());
+                            fixed_drift = fixed_drift.max(drift);
+                        }
+                    }
+                    println!("wm-hd HumanFemale heavy grip displacement {old_drift:.6} -> {fixed_drift:.6} yd");
+                    assert!(old_drift > 0.6, "missing the stock weapon excursion");
+                    assert!(
+                        fixed_drift < 0.003,
+                        "heavy attack displaced the grip {fixed_drift} yd"
+                    );
+                }
                 let mut stand_world = Vec::new();
-                for (i, t) in stock_pose(&binds, stand, 0.).iter().enumerate() {
+                for (i, t) in standing.iter().enumerate() {
                     let local = t.compute_affine();
                     stand_world
                         .push(parent_of(&parents, i).map_or(local, |p| stand_world[p] * local));
@@ -2218,7 +2644,7 @@ mod tests {
                     let stock_clip = anims.iter().find(|a| a.anim_id == stock_id).unwrap();
                     let stock = stock_pose(&binds, stock_clip, frame / CLIP_FPS);
                     let mut work = stock.clone();
-                    map.pose(&pose, &parents, &binds, &mut work);
+                    map.pose(&pose, &parents, &binds, &mut work, true);
                     if profile == "wm-hd" && race == "Human" && sex == "Female" && clip == IDLE {
                         for clavicle in [34, 35] {
                             assert_eq!(work[clavicle], stock[clavicle], "idle clavicle {clavicle}");
@@ -2474,6 +2900,7 @@ mod tests {
     fn grip_aligns_the_hatchet_under_an_animated_helper() {
         let map = RigMap {
             driven: vec![(2, Drive::Grip { side: 1 })],
+            grips: [None, None],
             pelvis: 0,
             scale: 1.0,
             rest_pelvis: Vec3::ZERO,
@@ -2493,7 +2920,7 @@ mod tests {
                 weapon_axes: [None, axes],
             };
             let mut work = stock;
-            map.pose(&pose, &[-1, 0, 1], &[Vec3::ZERO; 3], &mut work);
+            map.pose(&pose, &[-1, 0, 1], &[Vec3::ZERO; 3], &mut work, true);
             assert_eq!(&work[..2], &stock[..2]);
             work[2].rotation
         };
@@ -2544,6 +2971,7 @@ mod tests {
         // One aimed bone, its pose the bind direction: the local stays identity.
         let map = RigMap {
             legs: Vec::new(),
+            grips: [None, None],
             stand_offset: 0.,
             driven: vec![(
                 1,
@@ -2560,7 +2988,7 @@ mod tests {
         let mut work = vec![Transform::IDENTITY; 2];
         let parents = [-1i16, 0];
         let binds = [Vec3::new(0.0, 2.0, 0.0), Vec3::ZERO];
-        map.pose(&rest, &parents, &binds, &mut work);
+        map.pose(&rest, &parents, &binds, &mut work, true);
         assert!(work[1].rotation.angle_between(Quat::IDENTITY) < 1e-4);
         // The rest pelvis (here the origin) is a metre under the map's: the body drops two units.
         assert!((work[0].translation - Vec3::new(0.0, 0.0, 0.0)).length() < 1e-5);
@@ -2662,6 +3090,8 @@ mod tests {
                 binds: &binds,
                 head: 5,
                 hands: [9, 16],
+                hand_offsets: [Vec3::ZERO; 2],
+                stand_local: &|b| Transform::from_translation(binds[b]),
                 elbows: [None, None],
                 thumbs: [Some(12), Some(19)],
             },
@@ -2691,7 +3121,7 @@ mod tests {
         for &b in &helpers {
             work[b].rotation = twist;
         }
-        map.pose(&pose, &parents, &binds, &mut work);
+        map.pose(&pose, &parents, &binds, &mut work, true);
         for b in helpers {
             assert_eq!(work[b].rotation, twist, "overwrote stock deform helper {b}");
         }
