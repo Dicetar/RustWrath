@@ -251,7 +251,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, (this, i): (Table, Value)| {
             let i = num(lua, i) as i64 - 1;
             with_poi(lua, &this, |st| {
-                if i > 3 || i < 0 {
+                if !(0..=3).contains(&i) {
                     0
                 } else {
                     st.mouse_over_objectives
