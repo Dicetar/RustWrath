@@ -2786,6 +2786,8 @@ pub enum ServerEvent {
         caster: u64,
         spell_id: u32,
         amount: u32,
+        overheal: u32,
+        absorbed: u32,
         critical: bool,
     },
     SpellEnergizeLog {
@@ -3288,20 +3290,26 @@ fn read_levelup_info(b: &[u8]) -> Result<ServerEvent> {
     })
 }
 
+/// `SMSG_SPELLHEALLOG` (`0x150`, `Net/Types.h` in 12340 reference): packed target, packed
+/// caster, u32 spellId, u32 amount, u32 overheal, u32 absorbed, u8 crit, u8 unused.
+/// `UnitCombatLog_C.cpp:1931` `HandleSpellHealLog`, `:1811` `UnitCombatLogHeal`.
 fn read_spell_heal_log(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let target = r.packed_guid()?;
     let caster = r.packed_guid()?;
     let spell_id = r.u32()?;
     let amount = r.u32()?;
-    let _overheal = r.u32()?;
-    let _absorb = if r.remaining() >= 5 { r.u32()? } else { 0 };
+    let overheal = r.u32()?;
+    let absorbed = if r.remaining() >= 5 { r.u32()? } else { 0 };
     let critical = r.u8()? != 0;
+    let _unused = if r.remaining() >= 1 { r.u8()? } else { 0 };
     Ok(ServerEvent::SpellHealLog {
         target,
         caster,
         spell_id,
         amount,
+        overheal,
+        absorbed,
         critical,
     })
 }
