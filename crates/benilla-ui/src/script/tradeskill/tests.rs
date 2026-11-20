@@ -118,6 +118,34 @@ fn row_kind(s: &mut UiScript, i: i64) -> (String, String) {
 }
 
 #[test]
+fn linked_trade_skill_natives_use_host_metadata_and_nil_without_it() {
+    let mut s = UiScript::new().unwrap();
+    assert_eq!(
+        s.eval::<(Option<i64>, Option<String>)>("return IsTradeSkillLinked()")
+            .unwrap(),
+        (None, None)
+    );
+    assert_eq!(
+        s.eval::<Option<String>>("return GetTradeSkillListLink()")
+            .unwrap(),
+        None
+    );
+    s.set_trade_skill_link(Some((
+        "Remote Crafter".into(),
+        "|cffffd000|Henchant:197|h[Enchanting]|h|r".into(),
+    )));
+    assert_eq!(
+        s.eval::<(i64, String)>("return IsTradeSkillLinked()")
+            .unwrap(),
+        (1, "Remote Crafter".into())
+    );
+    assert_eq!(
+        s.eval::<String>("return GetTradeSkillListLink()").unwrap(),
+        "|cffffd000|Henchant:197|h[Enchanting]|h|r"
+    );
+}
+
+#[test]
 fn grouped_visible_rows_ordered_by_class_then_name_tie_then_tier_then_name() {
     let mut s = UiScript::new().unwrap();
     s.keep_calls();

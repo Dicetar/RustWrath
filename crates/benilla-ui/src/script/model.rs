@@ -1114,6 +1114,9 @@ pub(crate) struct Model {
     /// The Create All count (`0xbde060`), set with the spell and counted down by each of our own
     /// casts of it (`0x4fd7ca`); a disarm leaves it.
     pub(crate) trade_skill_repeat_count: u32,
+    /// Linked-tradeskill metadata supplied by the host when a remote list is opened:
+    /// `(player name, list link)`. Absent for local lists or until the host has a producer.
+    pub(crate) trade_skill_link: Option<(String, String)>,
 
     /// The craft window's recipes, kept past a close as the reference's list (`[0xbdcfc8]`) is,
     /// until the next open rebuilds it.
@@ -2005,6 +2008,7 @@ impl Model {
             trade_skill_selected_spell: 0,
             trade_skill_repeat_spell: 0,
             trade_skill_repeat_count: 0,
+            trade_skill_link: None,
             craft: None,
             craft_open: false,
             craft_selection: 0,

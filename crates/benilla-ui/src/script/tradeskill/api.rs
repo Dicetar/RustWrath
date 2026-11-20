@@ -84,6 +84,36 @@ fn opt_str(lua: &Lua, s: Option<&String>) -> mlua::Result<Value> {
 pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();
 
+    // IsTradeSkillLinked(): (1, player name) only when the host supplied remote-list metadata;
+    // otherwise the reference returns two nils. The current app has no packet producer for that
+    // metadata, so local lists correctly take the unsupported branch instead of fabricating one.
+    g.set(
+        "IsTradeSkillLinked",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let Some((name, _)) = model.trade_skill_link.as_ref() else {
+                return Ok(MultiValue::from_vec(vec![Value::Nil, Value::Nil]));
+            };
+            Ok(MultiValue::from_vec(vec![
+                Value::Integer(1),
+                Value::String(lua.create_string(name)?),
+            ]))
+        })?,
+    )?;
+
+    // GetTradeSkillListLink(): the serialized link is host-owned and nil until a trade-list
+    // producer calls `UiScript::set_trade_skill_link`.
+    g.set(
+        "GetTradeSkillListLink",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let Some((_, link)) = model.trade_skill_link.as_ref() else {
+                return Ok(Value::Nil);
+            };
+            Ok(Value::String(lua.create_string(link)?))
+        })?,
+    )?;
+
     // GetTradeSkillLine(): ("UNKNOWN", 0, 0) with no window open, as the reference answers.
     g.set(
         "GetTradeSkillLine",
