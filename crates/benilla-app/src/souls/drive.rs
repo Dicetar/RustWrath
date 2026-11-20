@@ -9,6 +9,12 @@
 //!   body does not walk out of an attack. Held movement past the cancel releases the action.
 //!   A roll is driven at its debt's own pace ([`SoulsDrive::speed`]): the frame covers what the
 //!   clip moved, so the roll carries its whole distance while it plays.
+//! - **Unit collision** (`unit_collision`, ER controls on). WoW has no unit-to-unit collision, so
+//!   an attack's forward root motion would carry the body through the enemy it hits. The
+//!   attackable units near the body are handed to the controller, which slides the mover round
+//!   them ([`crate::player::bodies`]), and an attack's forward debt stops at contact with the
+//!   nearest one ahead ([`body_gap`]), so it is dropped rather than run against the body: a
+//!   string of swings stays at arm's length. A roll's debt is not cut; the mover still stops it.
 //! - **Turn lock.** Inside the kit's no-turn windows the facing is held where it was.
 //! - **Turn rate.** Inside the kit's turn-rate windows the controller caps the frame's turn at the
 //!   window's degrees a second, so an attack tracks a target only so fast.
@@ -36,6 +42,7 @@ use crate::combat_playback::CombatPlaybackState;
 use crate::combat_profiles::CombatProfiles;
 use crate::player::camera::FlyCam;
 use crate::player::{Player, SoulsDrive};
+use crate::target::RelationWorld;
 
 /// Debt below this many yards on an axis is not chased (the controller would overshoot it).
 const DEADBAND_YARDS: f32 = 0.25;
@@ -47,6 +54,8 @@ const ROLL_SPEED_CAP: f32 = 40.0;
 const MIN_FRAME_SECONDS: f32 = 0.001;
 /// A frame's displacement above this is a teleport or a correction, not movement to count.
 const TELEPORT_YARDS: f32 = 5.0;
+/// A body blocks the lunge only inside this arc off the facing, radians either side.
+const BODY_ARC: f32 = std::f32::consts::FRAC_PI_3;
 /// Under the free camera the body turns toward the run's bearing this fast, degrees a second.
 const FREE_TURN_DEGREES: f32 = 720.0;
 /// An action's facing snaps to the held bearing through its first frames (kit milli-frames).
@@ -109,6 +118,8 @@ pub(super) fn drive_controller(
     time: Res<Time>,
     cams: Query<&FlyCam>,
     targets: Query<&GlobalTransform>,
+    relations: RelationWorld,
+    units: super::targets::Units,
     mut souls: ResMut<SoulsState>,
     mut player: ResMut<Player>,
 ) {
@@ -116,9 +127,31 @@ pub(super) fn drive_controller(
         if player.souls != SoulsDrive::default() {
             player.souls = SoulsDrive::default();
         }
+        if !player.unit_bodies.is_empty() {
+            player.unit_bodies.clear();
+        }
         return;
     }
     let features = config.features;
+    // Unit collision, with the ER controls only: the attackable bodies near us, for the mover
+    // and for the lunge's stop below.
+    let collide = features.unit_collision && er.active();
+    let bodies: Vec<(Vec3, f32)> = if collide {
+        let me = player.pos;
+        units
+            .iter()
+            .filter(|(_, _, _, at)| {
+                (at.translation() - me).xz().length() < crate::player::bodies::GATHER_YARDS
+            })
+            .filter(|(_, guid, store, _)| super::targets::attackable(&relations, guid.0, store))
+            .map(|(_, _, store, at)| (at.translation(), store.0.unit_bounding_radius()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if player.unit_bodies != bodies {
+        player.unit_bodies = bodies;
+    }
     let mut drive = SoulsDrive {
         active: true,
         free_camera: er.active() && er.free_camera,
@@ -223,6 +256,14 @@ pub(super) fn drive_controller(
         ));
         drive.speed = Some((track.debt.length() / dt).min(ROLL_SPEED_CAP));
     } else if features.root_motion && !released {
+        // Body block: the forward debt goes no further than contact with a body ahead, and what
+        // is cut is dropped, so the swing does not spring forward when the body moves off.
+        if track.debt.y > 0.0 {
+            let bodies = player.unit_bodies.iter().copied();
+            if let Some(gap) = body_gap(player.pos, player.facing(), bodies) {
+                track.debt.y = track.debt.y.min(gap.max(0.0));
+            }
+        }
         // Right is positive on the controller's strafe axis; the debt's x is left.
         drive.axes = Some((chase(track.debt.y), -chase(track.debt.x)));
     } else {
@@ -262,6 +303,26 @@ pub(super) fn drive_controller(
     }
     souls.drive = track;
     write_drive(&mut player, drive);
+}
+
+/// How far the body at `pos` facing `yaw` can go forward before it touches the nearest of
+/// `bodies` (position, bounding radius) ahead of it, yards; negative when already inside one,
+/// `None` with none ahead.
+fn body_gap(pos: Vec3, yaw: f32, bodies: impl Iterator<Item = (Vec3, f32)>) -> Option<f32> {
+    let (forward, _) = basis(yaw);
+    bodies
+        .filter_map(|(at, radius)| {
+            let to = at - pos;
+            let planar = Vec2::new(to.x, to.z).length();
+            if to.y.abs() > crate::player::bodies::BODY_HEIGHT_YARDS
+                || planar < 1e-3
+                || to.dot(forward) / planar < BODY_ARC.cos()
+            {
+                return None;
+            }
+            Some(planar - crate::player::bodies::contact(radius))
+        })
+        .min_by(f32::total_cmp)
 }
 
 /// The bearing the held movement keys name off the camera's yaw `cam_yaw`, or `None` with none
@@ -327,6 +388,32 @@ mod tests {
         assert_eq!(chase(0.3), 1);
         assert_eq!(chase(-0.3), -1);
         assert_eq!(chase(0.1), 0);
+    }
+
+    /// A body ahead stops the lunge at contact; one behind, off to the side or on another floor
+    /// does not, and the nearest of two ahead wins.
+    #[test]
+    fn body_gap_stops_at_contact_ahead() {
+        let (forward, left) = basis(0.0);
+        let at = |f: f32, l: f32| forward * f + left * l;
+        // 3 yd ahead, radius 1: 3 - 0.4 - 1 = 1.6 to go.
+        let gap = body_gap(Vec3::ZERO, 0.0, [(at(3.0, 0.0), 1.0)].into_iter()).unwrap();
+        assert!((gap - 1.6).abs() < 1e-5, "{gap}");
+        // Absent radius reads 0 and is held to the floor.
+        let gap = body_gap(Vec3::ZERO, 0.0, [(at(1.0, 0.0), 0.0)].into_iter()).unwrap();
+        assert!((gap - 0.3).abs() < 1e-5, "{gap}");
+        // Behind, beside, above: none.
+        for body in [at(-2.0, 0.0), at(0.5, 3.0), at(2.0, 0.0) + Vec3::Y * 5.0] {
+            assert_eq!(body_gap(Vec3::ZERO, 0.0, [(body, 1.0)].into_iter()), None);
+        }
+        // Already inside: negative; the nearest wins.
+        let gap = body_gap(
+            Vec3::ZERO,
+            0.0,
+            [(at(5.0, 0.0), 1.0), (at(0.8, 0.1), 0.5)].into_iter(),
+        )
+        .unwrap();
+        assert!(gap < 0.0, "{gap}");
     }
 
     /// The free camera's stick: forward is the camera's yaw, right turns the bearing clockwise

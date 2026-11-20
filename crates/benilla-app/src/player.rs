@@ -27,6 +27,7 @@ mod approach;
 mod arc;
 mod net;
 // Writes the frame onto the body we drive: pose, `MovementState`, the counter-twist gap.
+pub(crate) mod bodies;
 mod body_pose;
 pub(crate) mod camera;
 mod camera_axes;

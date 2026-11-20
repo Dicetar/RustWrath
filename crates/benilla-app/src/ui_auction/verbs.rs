@@ -110,20 +110,48 @@ impl AuctionVerbs<'_, '_> {
                     return;
                 };
                 match start {
-                    Err(key) => show_error(script, sink, key),
+                    Err(key) => {
+                        show_error(script, sink, key);
+                        // Too few items to make the stacks also lets go of the sell item.
+                        if key == "ERR_AUCTION_ENOUGH_ITEMS" {
+                            script.clear_auction_sell_item();
+                        }
+                    }
                     Ok(req) => {
-                        let _ = commands.0.send(ClientCommand::AuctionSellItem {
+                        let mut sell = super::Multisell {
                             auctioneer,
-                            item_guid: req.item_guid,
+                            total: req.stacks.len() as u32,
+                            left: req.stacks.into(),
                             bid: req.min_bid,
                             buyout: req.buyout,
-                            etime_minutes: req.duration,
-                        });
-                        // The sell slot's clear follows the send whatever the server answers
-                        // (`0x4ce92a` → `0x4cd640`): the unlock and `NEW_AUCTION_UPDATE` fire in
-                        // the call.
-                        script.clear_auction_sell_item();
+                            duration: req.duration,
+                        };
+                        let Some(first) = sell.left.pop_front() else {
+                            return;
+                        };
+                        if sell.left.is_empty() {
+                            let _ = commands.0.send(sell.send(first));
+                            // The sell slot's clear follows the send whatever the server answers
+                            // (`0x4ce92a` → `0x4cd640`): the unlock and `NEW_AUCTION_UPDATE` fire
+                            // in the call.
+                            script.clear_auction_sell_item();
+                        } else {
+                            // More than one stack: the progress bar's start, then the first
+                            // stack; the rest follow each `ERR_AUCTION_STARTED`, and the sell
+                            // item stays attached until the last.
+                            script.signal_auction_multisell(
+                                "AUCTION_MULTISELL_START",
+                                &[i64::from(sell.total)],
+                            );
+                            let _ = commands.0.send(sell.send(first));
+                            auction.multisell = Some(sell);
+                        }
                     }
+                }
+            }
+            AuctionCall::CancelSell => {
+                if auction.multisell.take().is_some() {
+                    super::multisell_step(script, super::MultisellStep::Failure);
                 }
             }
             // The driver promotes the column in the engine's stack with a session or without,

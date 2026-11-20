@@ -1672,6 +1672,8 @@ pub(super) fn writer_loop(
                             w.questgiver_choose_reward(npc, quest, choice)
                         }
                         ClientCommand::QuestQuery { quest } => w.quest_query(quest),
+                        // No 1.12 opcode: quest POIs belong to the 3.3.5 wire.
+                        ClientCommand::QuestPoiQuery { .. } => Ok(()),
                         ClientCommand::QuestgiverStatusQuery { npc } => w.questgiver_status_query(npc),
                         ClientCommand::QuestgiverHello { npc } => w.questgiver_hello(npc),
                         ClientCommand::QuestlogRemove { slot } => w.questlog_remove_quest(slot),
@@ -1759,13 +1761,20 @@ pub(super) fn writer_loop(
                             list_from,
                             auction_ids,
                         } => w.auction_list_bidder_items(auctioneer, list_from, &auction_ids),
+                        // The donor packet carries one item, the whole stack.
                         ClientCommand::AuctionSellItem {
                             auctioneer,
-                            item_guid,
+                            items,
                             bid,
                             buyout,
                             etime_minutes,
-                        } => w.auction_sell_item(auctioneer, item_guid, bid, buyout, etime_minutes),
+                        } => w.auction_sell_item(
+                            auctioneer,
+                            items.first().map_or(0, |i| i.0),
+                            bid,
+                            buyout,
+                            etime_minutes,
+                        ),
                         ClientCommand::AuctionPlaceBid {
                             auctioneer,
                             auction_id,

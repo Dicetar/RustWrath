@@ -846,14 +846,16 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
         let is_win = m.sidn.w > 0.5;
         let class_trans = m.tint.w > 1.5;
         let e_half = 0.5 * (m.sidn.rgb * wow_light.grade.x + highlight);
-        let l_lit = select(lit_nl, lit_window, is_win && (is_interior || class_trans));
+        // Unified mode 2 is selected by WINDOW for both exterior and interior batches; the
+        // reference chooses it before the group-class branch, not only for interior groups.
+        let l_lit = select(lit_nl, lit_window, is_win);
         let c_lit = clamp(
             (l_lit + point_diffuse) * (127.0 / 255.0) + vc_u + e_half,
             vec3<f32>(0.0),
             vec3<f32>(1.0),
         );
         let c_amb = clamp(
-            select(amb, lit_window, is_win && !class_trans) * (127.0 / 255.0) + vc_u + e_half,
+            select(amb, lit_window, is_win) * (127.0 / 255.0) + vc_u + e_half,
             vec3<f32>(0.0),
             vec3<f32>(1.0),
         );

@@ -374,14 +374,10 @@ fn white_lerp_byte(ch: u8, t: f64) -> u8 {
     ((s.to_bits() >> 14) & 0xff) as u8
 }
 
-/// The reference's bright-doorway fade, FixColorVertexAlpha (`0x6c43d0`), run once per group in
-/// place over its MOCV before any draw; transition corridors are authored near-black and rely on
-/// it. Per vertex, `dist` is the nearest [`portal_distance`] over portals to exterior neighbours
-/// (`MOGI.flags & 0x48 != 0`): at 0 the vertex goes white-opaque, under [`DOORWAY_FADE_REACH`] with
-/// alpha 0 it is white-lerped by `t = 1 − 0.15·dist` with alpha `t·255`, else it is untouched. The
-/// MOPY pre-pass `0x6c41e0` is gated (`DAT_00ca8064`) and a reference capture shows it unrun, so it
-/// is not run here.
-fn fix_color_vertex_alpha(
+/// The renderer's geometric portal attenuation (`AttenTransVerts`, `MapObj.cpp:1134`) over MOCV
+/// for portals to exterior neighbours. This is separate from the load-time `FixColorVertexAlpha`
+/// conversion below.
+fn attenuate_transparent_vertices(
     colors: &mut [Color],
     group: &WmoGroup,
     root: &WmoRoot,
@@ -440,6 +436,38 @@ fn fix_color_vertex_alpha(
     }
 }
 
+/// Apply Wrath's load-time `FixColorVertexAlpha` conversion to MOCV.
+fn fix_color_vertex_alpha(
+    colors: &mut [Color],
+    batches: &[benilla_wmo::Batch],
+    transparency_count: usize,
+) {
+    let first_exterior = if transparency_count == 0 {
+        0
+    } else {
+        batches
+            .get(transparency_count - 1)
+            .map_or(0, |batch| usize::from(batch.vertex_end) + 1)
+    };
+
+    for (index, color) in colors.iter_mut().enumerate() {
+        if index >= first_exterior {
+            let alpha = u32::from(color.a);
+            let r = (u32::from(color.r) + ((alpha * u32::from(color.r)) >> 6)) >> 1;
+            let g = (u32::from(color.g) + ((alpha * u32::from(color.g)) >> 6)) >> 1;
+            let b = (u32::from(color.b) + ((alpha * u32::from(color.b)) >> 6)) >> 1;
+            color.r = r.min(0xff) as u8;
+            color.g = g.min(0xff) as u8;
+            color.b = b.min(0xff) as u8;
+            color.a = 0xff;
+        } else {
+            color.r >>= 1;
+            color.g >>= 1;
+            color.b >>= 1;
+        }
+    }
+}
+
 /// The group's MOCV as the renderer uploads it, BGRA, with the doorway fade applied.
 pub fn wmo_group_fixed_colors(group_bytes: &[u8], root: &WmoRoot) -> Option<Vec<[u8; 4]>> {
     let Ok(ParsedWmo::Group(group)) = parse_wmo(&mut Cursor::new(group_bytes)) else {
@@ -478,9 +506,13 @@ fn fixed_colors(group: &WmoGroup, group_bytes: &[u8], root: &WmoRoot) -> Option<
     // `MOHD.flags & 0x8` skips the load-time MOCV fix-up (`MapObjRead.cpp:323`); Stormwind's
     // root sets it, and its corridors' colours are final as authored.
     if !root.skips_color_fix() {
+        let trans_n = find_wmo_chunk(group_bytes, b"PGOM")
+            .filter(|m| m.len() >= 0x2a)
+            .map_or(0, |m| u16::from_le_bytes([m[0x28], m[0x29]]) as usize);
+        fix_color_vertex_alpha(&mut colors, &group.render_batches, trans_n);
         let refs = wmo_group_header(group_bytes)
             .map_or((0, 0), |h| (h.portal_ref_start, h.portal_ref_count));
-        fix_color_vertex_alpha(&mut colors, group, root, refs);
+        attenuate_transparent_vertices(&mut colors, group, root, refs);
     }
     Some(colors)
 }
@@ -744,6 +776,87 @@ mod tests {
     }
 
     /// All 13 shipped overrides are `0`, water, so the no-liquid sentinel cannot be zero.
+    #[test]
+    fn fix_color_vertex_alpha_matches_wrath_batch_boundary() {
+        let mut colors = vec![
+            Color {
+                b: 0x40,
+                g: 0x80,
+                r: 0xc0,
+                a: 0x20,
+            },
+            Color {
+                b: 0x20,
+                g: 0x60,
+                r: 0xa0,
+                a: 0x80,
+            },
+            Color {
+                b: 0x10,
+                g: 0x30,
+                r: 0x50,
+                a: 0x00,
+            },
+        ];
+        let batches = vec![benilla_wmo::Batch {
+            start_index: 0,
+            count: 3,
+            vertex_start: 0,
+            vertex_end: 1,
+            material_id: 0,
+        }];
+
+        fix_color_vertex_alpha(&mut colors, &batches, 1);
+
+        assert_eq!(
+            colors[0],
+            Color {
+                b: 0x20,
+                g: 0x40,
+                r: 0x60,
+                a: 0x20
+            }
+        );
+        assert_eq!(
+            colors[1],
+            Color {
+                b: 0x10,
+                g: 0x30,
+                r: 0x50,
+                a: 0x80
+            }
+        );
+        assert_eq!(
+            colors[2],
+            Color {
+                b: 0x08,
+                g: 0x18,
+                r: 0x28,
+                a: 0xff
+            }
+        );
+    }
+
+    #[test]
+    fn no_transparency_batches_put_all_vertices_in_the_exterior_range() {
+        let mut colors = vec![Color {
+            b: 0x10,
+            g: 0x20,
+            r: 0x30,
+            a: 0x40,
+        }];
+        fix_color_vertex_alpha(&mut colors, &[], 0);
+        assert_eq!(
+            colors[0],
+            Color {
+                b: 0x10,
+                g: 0x20,
+                r: 0x30,
+                a: 0xff
+            }
+        );
+    }
+
     #[test]
     fn reads_the_whole_group_liquid_override() {
         let group_with = |liquid: u32| {

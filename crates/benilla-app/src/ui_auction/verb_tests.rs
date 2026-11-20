@@ -42,6 +42,12 @@ struct House {
 
 impl House {
     fn new(money: u32) -> Self {
+        Self::with_target(money, benilla_ui::script::UiTarget::Vanilla112)
+    }
+
+    /// A house whose VM runs `target`'s contract: the Wrath-only events (the multisell bar's)
+    /// reach a listener only in a Wrath VM.
+    fn with_target(money: u32, target: benilla_ui::script::UiTarget) -> Self {
         let mut app = crate::game_plugins::schedule_tests::headless_client_unrun();
         let (tx, rx) = crossbeam_channel::unbounded();
         app.insert_resource(NetCommands(tx));
@@ -56,7 +62,7 @@ impl House {
         world.resource_mut::<GuidIndex>().0.insert(ME, me);
         world.resource_mut::<SelfGuid>().0 = Some(ME);
         world.resource_mut::<AuctionOpen>().open(AUCTIONEER, 1);
-        let mut script = UiScript::new().expect("a VM");
+        let mut script = UiScript::with_target(target).expect("a VM");
         let mut lua = String::new();
         for key in [
             "ERR_AUCTION_MIN_BID",
@@ -433,7 +439,8 @@ fn a_start_sends_and_empties_the_slot_inside_the_call() {
     }
     h.run("PickupContainerItem(0, 1) ClickAuctionSellItemButton() HEARD = {}");
     let _ = h.sent();
-    h.run("StartAuction(100, 0, 480) AFTER = table.getn(HEARD) StartAuction(100, 0, 480)");
+    // Run-time index 2 is 24 hours; the stack size defaults to the attached stack's count.
+    h.run("StartAuction(100, 0, 2, 1) AFTER = table.getn(HEARD) StartAuction(100, 0, 2, 1)");
     assert_eq!(
         h.eval::<i64>("return AFTER"),
         1,
@@ -443,13 +450,95 @@ fn a_start_sends_and_empties_the_slot_inside_the_call() {
         text(h.sent()),
         text([ClientCommand::AuctionSellItem {
             auctioneer: AUCTIONEER,
-            item_guid: 0x4001,
+            items: vec![(0x4001, 1)],
             bid: 100,
             buyout: 0,
-            etime_minutes: 480,
+            etime_minutes: 1440,
         }]),
-        "one send; the second call finds the slot empty"
+        "one send carrying a nonzero count; the second call finds the slot empty"
     );
+}
+
+/// A multisell (Wrath `SellNextItem`): two stacks of five cut from a stack of ten go out one at
+/// a time, each after the last one's `STARTED`, with the progress events, and the sell slot
+/// clears after the last.
+#[test]
+fn a_multisell_sends_each_stack_after_the_last_started() {
+    use benilla_protocol::messages::AuctionCommandTail;
+    use benilla_protocol::SessionEvent;
+    let mut h = House::with_target(0, benilla_ui::script::UiTarget::Wrath335);
+    {
+        let mut script = h.app.world_mut().non_send_resource_mut::<UiScript>();
+        script.set_container(
+            0,
+            Some(ContainerState {
+                name: None,
+                num_slots: 16,
+                slots: [(
+                    1,
+                    ContainerSlot {
+                        item_id: 2589,
+                        count: 10,
+                        quality: Some(1),
+                        guid: 0x4001,
+                        ..Default::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            }),
+        );
+    }
+    h.run(
+        r#"PickupContainerItem(0, 1) ClickAuctionSellItemButton() HEARD = {}
+        local f = CreateFrame("Frame")
+        for _, e in ipairs({"AUCTION_MULTISELL_START", "AUCTION_MULTISELL_UPDATE",
+                            "AUCTION_MULTISELL_FAILURE"}) do f:RegisterEvent(e) end
+        f:SetScript("OnEvent", function()
+            table.insert(HEARD, event .. "=" .. tostring(arg1) .. "/" .. tostring(arg2))
+        end)"#,
+    );
+    let _ = h.sent();
+    let sells = |h: &House| {
+        h.sent()
+            .into_iter()
+            .filter(|c| matches!(c, ClientCommand::AuctionSellItem { .. }))
+            .collect::<Vec<_>>()
+    };
+    let stack = || ClientCommand::AuctionSellItem {
+        auctioneer: AUCTIONEER,
+        items: vec![(0x4001, 5)],
+        bid: 100,
+        buyout: 200,
+        etime_minutes: 720,
+    };
+    h.run("StartAuction(100, 200, 1, 5, 2)");
+    assert_eq!(text(sells(&h)), text([stack()]), "the first stack alone");
+    let started = || SessionEvent::AuctionCommandResult {
+        auction_id: 9,
+        action: 0,
+        error: 0,
+        tail: AuctionCommandTail::Empty,
+    };
+    for _ in 0..2 {
+        crate::net::handlers::dispatch(h.app.world_mut(), vec![started()]);
+        super::net::fire_house_lane(h.app.world_mut());
+    }
+    assert_eq!(
+        text(sells(&h)),
+        text([stack()]),
+        "the second after the first STARTED"
+    );
+    assert_eq!(
+        h.eval::<Vec<String>>("return HEARD"),
+        [
+            "AUCTION_MULTISELL_START=2/nil",
+            "AUCTION_MULTISELL_UPDATE=1/2",
+            "AUCTION_MULTISELL_UPDATE=2/2",
+            "NEW_AUCTION_UPDATE",
+        ]
+    );
+    assert!(h.house().multisell.is_none());
 }
 
 /// A damaged item's `StartAuction` shows `ERR_AUCTION_REPAIR_ITEM` inside the call
@@ -482,7 +571,7 @@ fn a_damaged_items_start_is_refused_inside_the_call() {
     }
     h.run("PickupContainerItem(0, 1) ClickAuctionSellItemButton() HEARD = {}");
     let _ = h.sent();
-    h.run("StartAuction(100, 0, 480) AFTER = table.getn(LINES)");
+    h.run("StartAuction(100, 0, 2) AFTER = table.getn(LINES)");
     assert_eq!(h.eval::<i64>("return AFTER"), 1);
     assert_eq!(
         h.eval::<String>("return LINES[1]"),

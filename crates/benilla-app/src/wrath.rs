@@ -4728,6 +4728,26 @@ fn translate_gameplay(
             money: c.money,
             items: Vec::new(),
         })],
+        WrathGameplayEvent::QuestPois(pois) => vec![SessionEvent::QuestPois(
+            pois.into_iter()
+                .map(|q| {
+                    let areas = q
+                        .blobs
+                        .into_iter()
+                        .map(|b| benilla_protocol::QuestPoiArea {
+                            objective_index: b.objective_index,
+                            map_id: b.map_id as u32,
+                            world_map_area_id: b.world_map_area_id as u32,
+                            floor: b.floor as u32,
+                            priority: b.priority as u32,
+                            flags: b.flags as u32,
+                            points: b.points,
+                        })
+                        .collect();
+                    (q.quest_id, areas)
+                })
+                .collect(),
+        )],
         WrathGameplayEvent::QuestTemplate(t) => {
             vec![SessionEvent::QuestTemplate(Box::new(QuestTemplate {
                 quest_id: t.quest_id,
@@ -6345,6 +6365,15 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_QUEST_QUERY,
                 gameplay::quest_query(quest),
             )),
+            ClientCommand::QuestPoiQuery { quests } => {
+                match benilla_protocol_wrath::quest_poi::query(&quests) {
+                    Ok(payload) => Some((
+                        benilla_protocol_wrath::quest_poi::CMSG_QUEST_POI_QUERY,
+                        payload,
+                    )),
+                    Err(_) => None,
+                }
+            }
             ClientCommand::GameObjUse { guid } => Some((
                 benilla_protocol_wrath::opcode::CMSG_GAMEOBJ_USE,
                 guid.to_le_bytes().to_vec(),
@@ -7604,13 +7633,13 @@ fn wrath_tap_commands(
             )),
             ClientCommand::AuctionSellItem {
                 auctioneer,
-                item_guid,
+                items,
                 bid,
                 buyout,
                 etime_minutes,
             } => Some((
                 benilla_protocol_wrath::opcode::CMSG_AUCTION_SELL_ITEM,
-                gameplay::auction_sell_item(auctioneer, item_guid, bid, buyout, etime_minutes),
+                gameplay::auction_sell_item(auctioneer, &items, bid, buyout, etime_minutes),
             )),
             ClientCommand::AuctionPlaceBid {
                 auctioneer,
@@ -16471,6 +16500,21 @@ mod field_audit_tests {
     use super::*;
     use benilla_protocol_wrath::fields;
 
+    /// The store's value at `index` only when it was delivered: `ObjectFields`' own reader is
+    /// private, and answers 0 for an absent descriptor field, which would hide a projection
+    /// that skipped a slot.
+    trait Delivered {
+        fn delivered(&self, index: u16) -> Option<u32>;
+    }
+
+    impl Delivered for benilla_protocol::ObjectFields {
+        fn delivered(&self, index: u16) -> Option<u32> {
+            self.raw_fields()
+                .find(|&(at, _)| at == index)
+                .map(|(_, value)| value)
+        }
+    }
+
     fn audit_window(pairs: &[(u16, u32)], end: u16) -> crate::wrath_inventory::WrathFieldWindow {
         let mut values = vec![0u32; usize::from(end)];
         let mut delivered = vec![0u64; values.len().div_ceil(64)];
@@ -16642,25 +16686,38 @@ mod field_audit_tests {
 
         let entity = world.resource::<GuidIndex>().0[&OBJ];
         let store = &world.get::<ObjectStore>(entity).expect("ObjectStore").0;
-        // Read through the public present-field iterator: a gated field must be absent, not zero.
-        let field = |index: u16| {
-            store
-                .raw_fields()
-                .find(|(slot, _)| *slot == index)
-                .map(|(_, value)| value)
-        };
-        assert_eq!(field(2), Some(0x1), "ObjectType::Object mask");
-        assert_eq!(field(3), Some(777), "OBJECT_FIELD_ENTRY");
+        assert_eq!(store.delivered(2), Some(0x1), "ObjectType::Object mask");
+        assert_eq!(store.delivered(3), Some(777), "OBJECT_FIELD_ENTRY");
         assert_eq!(
-            field(4),
+            store.delivered(4),
             Some(1.5f32.to_bits()),
             "OBJECT_FIELD_SCALE_X"
         );
-        assert_eq!(field(5), None, "OBJECT_FIELD_PADDING stays unmapped");
-        assert_eq!(field(22), None, "UNIT_FIELD_HEALTH gated off Object");
-        assert_eq!(field(34), None, "UNIT_FIELD_LEVEL gated off Object");
-        assert_eq!(field(36), None, "UNIT_FIELD_BYTES_0 gated off Object");
-        assert_eq!(field(46), None, "UNIT_FIELD_FLAGS gated off Object");
+        assert_eq!(
+            store.delivered(5),
+            None,
+            "OBJECT_FIELD_PADDING stays unmapped"
+        );
+        assert_eq!(
+            store.delivered(22),
+            None,
+            "UNIT_FIELD_HEALTH gated off Object"
+        );
+        assert_eq!(
+            store.delivered(34),
+            None,
+            "UNIT_FIELD_LEVEL gated off Object"
+        );
+        assert_eq!(
+            store.delivered(36),
+            None,
+            "UNIT_FIELD_BYTES_0 gated off Object"
+        );
+        assert_eq!(
+            store.delivered(46),
+            None,
+            "UNIT_FIELD_FLAGS gated off Object"
+        );
     }
 
     /// Synthetic Item and Container update blocks map into 1.12 donor slots while preserving
@@ -16720,40 +16777,40 @@ mod field_audit_tests {
 
         let item_ent = world.resource::<GuidIndex>().0[&ITEM];
         let item_store = &world.get::<ObjectStore>(item_ent).expect("item store").0;
-        assert_eq!(item_store.get_u32(14), Some(5), "ITEM_FIELD_STACK_COUNT");
-        assert_eq!(item_store.get_u32(21), Some(0x01), "ITEM_FIELD_FLAGS");
+        assert_eq!(item_store.delivered(14), Some(5), "ITEM_FIELD_STACK_COUNT");
+        assert_eq!(item_store.delivered(21), Some(0x01), "ITEM_FIELD_FLAGS");
         assert_eq!(
-            item_store.get_u32(22),
+            item_store.delivered(22),
             Some(1894),
             "ITEM_FIELD_ENCHANTMENT_1_1"
         );
         assert_eq!(
-            item_store.get_u32(43),
+            item_store.delivered(43),
             Some(0x11),
             "ITEM_FIELD_PROPERTY_SEED -> 43"
         );
         assert_eq!(
-            item_store.get_u32(44),
+            item_store.delivered(44),
             Some(0x22),
             "ITEM_FIELD_RANDOM_PROPERTIES_ID -> 44"
         );
         assert_eq!(
-            item_store.get_u32(45),
+            item_store.delivered(45),
             None,
             "donor 45 ITEM_FIELD_ITEM_TEXT_ID unwritten"
         );
         assert_eq!(
-            item_store.get_u32(46),
+            item_store.delivered(46),
             Some(25),
             "ITEM_FIELD_DURABILITY -> 46"
         );
         assert_eq!(
-            item_store.get_u32(47),
+            item_store.delivered(47),
             Some(50),
             "ITEM_FIELD_MAXDURABILITY -> 47"
         );
         assert_eq!(
-            item_store.get_u32(62),
+            item_store.delivered(62),
             None,
             "CREATE_PLAYED_TIME not in donor"
         );
@@ -16761,22 +16818,22 @@ mod field_audit_tests {
         let bag_ent = world.resource::<GuidIndex>().0[&BAG];
         let bag_store = &world.get::<ObjectStore>(bag_ent).expect("bag store").0;
         assert_eq!(
-            bag_store.get_u32(48),
+            bag_store.delivered(48),
             Some(8),
             "CONTAINER_FIELD_NUM_SLOTS -> 48"
         );
         assert_eq!(
-            bag_store.get_u32(49),
+            bag_store.delivered(49),
             None,
             "CONTAINER_ALIGN_PAD stays unmapped"
         );
         assert_eq!(
-            bag_store.get_u32(50),
+            bag_store.delivered(50),
             Some(ITEM as u32),
             "CONTAINER_FIELD_SLOT_1 low -> 50"
         );
         assert_eq!(
-            bag_store.get_u32(51),
+            bag_store.delivered(51),
             Some((ITEM >> 32) as u32),
             "CONTAINER_FIELD_SLOT_1 high -> 51"
         );
@@ -16840,70 +16897,74 @@ mod field_audit_tests {
 
         let entity = world.resource::<GuidIndex>().0[&UNIT];
         let store = &world.get::<ObjectStore>(entity).expect("unit store").0;
-        assert_eq!(store.get_u32(20), Some(0x55), "UNIT_FIELD_CHANNEL_OBJECT");
-        assert_eq!(store.get_u32(144), Some(15407), "UNIT_CHANNEL_SPELL -> 144");
-        assert_eq!(store.get_u32(22), Some(120), "UNIT_FIELD_HEALTH -> 22");
-        assert_eq!(store.get_u32(23), Some(80), "UNIT_FIELD_POWER1 -> 23");
-        assert_eq!(store.get_u32(26), Some(60), "UNIT_FIELD_POWER4 -> 26");
+        assert_eq!(store.delivered(20), Some(0x55), "UNIT_FIELD_CHANNEL_OBJECT");
         assert_eq!(
-            store.get_u32(36),
+            store.delivered(144),
+            Some(15407),
+            "UNIT_CHANNEL_SPELL -> 144"
+        );
+        assert_eq!(store.delivered(22), Some(120), "UNIT_FIELD_HEALTH -> 22");
+        assert_eq!(store.delivered(23), Some(80), "UNIT_FIELD_POWER1 -> 23");
+        assert_eq!(store.delivered(26), Some(60), "UNIT_FIELD_POWER4 -> 26");
+        assert_eq!(
+            store.delivered(36),
             Some(0x0001_0201),
             "UNIT_FIELD_BYTES_0 -> 36"
         );
         assert_eq!(
-            store.get_u32(129),
+            store.delivered(129),
             Some(0.75f32.to_bits()),
             "BOUNDINGRADIUS -> 129"
         );
         assert_eq!(
-            store.get_u32(130),
+            store.delivered(130),
             Some(2.25f32.to_bits()),
             "COMBATREACH -> 130"
         );
-        assert_eq!(store.get_u32(131), Some(1234), "DISPLAYID -> 131");
+        assert_eq!(store.delivered(131), Some(1234), "DISPLAYID -> 131");
         assert_eq!(
-            store.get_u32(132),
+            store.delivered(132),
             Some(1234),
             "delivered NATIVEDISPLAYID=0 keeps display fallback"
         );
-        assert_eq!(store.get_u32(133), Some(2410), "MOUNTDISPLAYID -> 133");
+        assert_eq!(store.delivered(133), Some(2410), "MOUNTDISPLAYID -> 133");
         assert_eq!(
-            store.get_u32(138),
+            store.delivered(138),
             Some((0x02 << 24) | (0x05 << 16) | 0x01),
             "donor BYTES_1 packs stand=1, shapeshift=5 (byte 2), vis_flags=0x02 (byte 3)"
         );
-        assert_eq!(store.get_u32(139), Some(77), "PETNUMBER -> 139");
+        assert_eq!(store.delivered(139), Some(77), "PETNUMBER -> 139");
         assert_eq!(
-            store.get_u32(140),
+            store.delivered(140),
             Some(1_700_000),
             "PET_NAME_TIMESTAMP -> 140"
         );
-        assert_eq!(store.get_u32(141), Some(300), "PETEXPERIENCE -> 141");
-        assert_eq!(store.get_u32(142), Some(900), "PETNEXTLEVELEXP -> 142");
+        assert_eq!(store.delivered(141), Some(300), "PETEXPERIENCE -> 141");
+        assert_eq!(store.delivered(142), Some(900), "PETNEXTLEVELEXP -> 142");
         assert_eq!(
-            store.get_u32(145),
+            store.delivered(145),
             Some(1.0f32.to_bits()),
             "MOD_CAST_SPEED -> 145"
         );
-        assert_eq!(store.get_u32(146), Some(688), "CREATED_BY_SPELL -> 146");
-        assert_eq!(store.get_u32(148), Some(69), "NPC_EMOTESTATE -> 148");
-        assert_eq!(store.get_u32(150), Some(25), "STAT0 -> 150");
-        assert_eq!(store.get_u32(155), Some(450), "RESISTANCES[0] -> 155");
-        assert_eq!(store.get_u32(162), Some(200), "BASE_MANA -> 162");
-        assert_eq!(store.get_u32(163), Some(150), "BASE_HEALTH -> 163");
+        assert_eq!(store.delivered(146), Some(688), "CREATED_BY_SPELL -> 146");
+        assert_eq!(store.delivered(148), Some(69), "NPC_EMOTESTATE -> 148");
+        assert_eq!(store.delivered(150), Some(25), "STAT0 -> 150");
+        assert_eq!(store.delivered(155), Some(450), "RESISTANCES[0] -> 155");
+        assert_eq!(store.delivered(162), Some(200), "BASE_MANA -> 162");
+        assert_eq!(store.delivered(163), Some(150), "BASE_HEALTH -> 163");
         assert_eq!(
-            store.get_u32(164),
+            store.delivered(164),
             Some((0x05 << 24) | 0x01),
             "BYTES_2 -> 164"
         );
-        assert_eq!(store.get_u32(165), Some(85), "ATTACK_POWER -> 165");
+        assert_eq!(store.delivered(165), Some(85), "ATTACK_POWER -> 165");
         assert_eq!(
-            store.get_u32(173),
+            store.delivered(173),
             Some((-10i32) as u32),
             "POWER_COST_MODIFIER[0] -> 173"
         );
         assert_eq!(
-            store.get_u32(180),
+            store.delivered(180),
             Some(0.9f32.to_bits()),
             "POWER_COST_MULTIPLIER[0] -> 180"
         );
@@ -16915,7 +16976,7 @@ mod field_audit_tests {
         audit_step(&session, &mut world);
         let store = &world.get::<ObjectStore>(entity).expect("unit store").0;
         assert_eq!(
-            store.get_u32(132),
+            store.delivered(132),
             Some(5678),
             "non-zero NATIVEDISPLAYID -> 132"
         );
@@ -16968,55 +17029,67 @@ mod field_audit_tests {
 
         let entity = world.resource::<GuidIndex>().0[&PLAYER];
         let store = &world.get::<ObjectStore>(entity).expect("player store").0;
-        assert_eq!(store.get_u32(190), Some(0x04), "PLAYER_FLAGS -> 190");
-        assert_eq!(store.get_u32(193), Some(0x0102_0304), "PLAYER_BYTES -> 193");
+        assert_eq!(store.delivered(190), Some(0x04), "PLAYER_FLAGS -> 190");
         assert_eq!(
-            store.get_u32(194),
+            store.delivered(193),
+            Some(0x0102_0304),
+            "PLAYER_BYTES -> 193"
+        );
+        assert_eq!(
+            store.delivered(194),
             Some(0x0506_0708),
             "PLAYER_BYTES_2 -> 194"
         );
-        assert_eq!(store.get_u32(198), Some(783), "QUEST_LOG_1_1 -> 198");
-        assert_eq!(store.get_u32(716), Some(450), "PLAYER_XP -> 716");
-        assert_eq!(store.get_u32(718), Some(43), "PLAYER_SKILL_INFO_1_1 -> 718");
+        assert_eq!(store.delivered(198), Some(783), "QUEST_LOG_1_1 -> 198");
+        assert_eq!(store.delivered(716), Some(450), "PLAYER_XP -> 716");
         assert_eq!(
-            store.get_u32(1111),
+            store.delivered(718),
+            Some(43),
+            "PLAYER_SKILL_INFO_1_1 -> 718"
+        );
+        assert_eq!(
+            store.delivered(1111),
             Some(0x0000_000F),
             "EXPLORED_ZONES_1 -> 1111"
         );
-        assert_eq!(store.get_u32(1176), Some(12345), "COINAGE -> 1176");
-        assert_eq!(store.get_u32(1177), Some(12), "UNIT_FIELD_POSSTAT0 -> 1177");
+        assert_eq!(store.delivered(1176), Some(12345), "COINAGE -> 1176");
         assert_eq!(
-            store.get_u32(1187),
+            store.delivered(1177),
+            Some(12),
+            "UNIT_FIELD_POSSTAT0 -> 1177"
+        );
+        assert_eq!(
+            store.delivered(1187),
             Some(30),
             "RESISTANCEBUFFMODSPOSITIVE -> 1187"
         );
         assert_eq!(
-            store.get_u32(1250),
+            store.delivered(1250),
             Some(4),
             "KILLS low u16 -> SESSION_KILLS 1250"
         );
         assert_eq!(
-            store.get_u32(1251),
+            store.delivered(1251),
             Some(9),
             "KILLS high u16 -> YESTERDAY_KILLS 1251"
         );
         assert_eq!(
-            store.get_u32(1255),
+            store.delivered(1255),
             Some(1234),
             "LIFETIME_HONORABLE_KILLS -> 1255"
         );
         assert_eq!(
-            store.get_u32(1257),
+            store.delivered(1257),
             Some(700),
             "YESTERDAY_CONTRIBUTION -> 1257"
         );
         assert_eq!(
-            store.get_u32(1260),
+            store.delivered(1260),
             Some(0x0000_0007),
             "PLAYER_FIELD_BYTES2 -> 1260"
         );
         assert_eq!(
-            store.get_u32(1261),
+            store.delivered(1261),
             Some(3),
             "WATCHED_FACTION_INDEX -> 1261"
         );
@@ -17107,38 +17180,38 @@ mod field_audit_tests {
 
         let entity = world.resource::<GuidIndex>().0[&GO];
         let store = &world.get::<ObjectStore>(entity).expect("go store").0;
-        assert_eq!(store.get_u32(6), Some(0xABCD), "CREATED_BY -> 6");
-        assert_eq!(store.get_u32(8), Some(4211), "GAMEOBJECT_DISPLAYID -> 8");
-        assert_eq!(store.get_u32(9), Some(0x20), "GAMEOBJECT_FLAGS -> 9");
+        assert_eq!(store.delivered(6), Some(0xABCD), "CREATED_BY -> 6");
+        assert_eq!(store.delivered(8), Some(4211), "GAMEOBJECT_DISPLAYID -> 8");
+        assert_eq!(store.delivered(9), Some(0x20), "GAMEOBJECT_FLAGS -> 9");
         assert_eq!(
-            store.get_u32(10),
+            store.delivered(10),
             Some(0.1f32.to_bits()),
             "PARENTROTATION[0] -> 10"
         );
         assert_eq!(
-            store.get_u32(13),
+            store.delivered(13),
             Some(0.9f32.to_bits()),
             "PARENTROTATION[3] -> 13"
         );
-        assert_eq!(store.get_u32(14), Some(1), "BYTES_1[0] state -> 14");
-        assert_eq!(store.get_u32(15), Some(100.0f32.to_bits()), "POS_X -> 15");
-        assert_eq!(store.get_u32(18), Some(1.25f32.to_bits()), "FACING -> 18");
-        assert_eq!(store.get_u32(19), Some(1), "DYNAMIC low u16 -> 19");
-        assert_eq!(store.get_u32(20), Some(114), "FACTION -> 20");
-        assert_eq!(store.get_u32(21), Some(3), "BYTES_1[1] type_id -> 21");
-        assert_eq!(store.get_u32(22), Some(5), "LEVEL -> 22");
-        assert_eq!(store.get_u32(23), Some(3), "BYTES_1[2] art_kit -> 23");
+        assert_eq!(store.delivered(14), Some(1), "BYTES_1[0] state -> 14");
+        assert_eq!(store.delivered(15), Some(100.0f32.to_bits()), "POS_X -> 15");
+        assert_eq!(store.delivered(18), Some(1.25f32.to_bits()), "FACING -> 18");
+        assert_eq!(store.delivered(19), Some(1), "DYNAMIC low u16 -> 19");
+        assert_eq!(store.delivered(20), Some(114), "FACTION -> 20");
+        assert_eq!(store.delivered(21), Some(3), "BYTES_1[1] type_id -> 21");
+        assert_eq!(store.delivered(22), Some(5), "LEVEL -> 22");
+        assert_eq!(store.delivered(23), Some(3), "BYTES_1[2] art_kit -> 23");
         assert_eq!(
-            store.get_u32(24),
+            store.delivered(24),
             Some(100),
             "BYTES_1[3] anim_progress -> 24"
         );
         assert_eq!(
-            store.get_u32(131),
+            store.delivered(131),
             None,
             "UNIT_FIELD_DISPLAYID gated off GO"
         );
-        assert_eq!(store.get_u32(46), None, "UNIT_FIELD_FLAGS gated off GO");
+        assert_eq!(store.delivered(46), None, "UNIT_FIELD_FLAGS gated off GO");
 
         // Flip GO state 1 -> 0 (open door/chest) and verify FieldChanged fires for index 14.
         world
@@ -17199,20 +17272,24 @@ mod field_audit_tests {
 
         let entity = world.resource::<GuidIndex>().0[&DYN];
         let store = &world.get::<ObjectStore>(entity).expect("dyn store").0;
-        assert_eq!(store.get_u32(6), Some(PLAYER as u32), "CASTER low -> 6");
-        assert_eq!(store.get_u32(8), Some(1), "BYTES -> 8");
-        assert_eq!(store.get_u32(9), Some(2120), "SPELLID -> 9");
-        assert_eq!(store.get_u32(10), Some(8.0f32.to_bits()), "RADIUS -> 10");
+        assert_eq!(store.delivered(6), Some(PLAYER as u32), "CASTER low -> 6");
+        assert_eq!(store.delivered(8), Some(1), "BYTES -> 8");
+        assert_eq!(store.delivered(9), Some(2120), "SPELLID -> 9");
+        assert_eq!(store.delivered(10), Some(8.0f32.to_bits()), "RADIUS -> 10");
         assert_eq!(
-            store.get_u32(11),
+            store.delivered(11),
             Some(12.5f32.to_bits()),
             "POS_X (11) must not be clobbered by DYNAMICOBJECT_CASTTIME"
         );
-        assert_eq!(store.get_u32(12), Some((-44.0f32).to_bits()), "POS_Y -> 12");
-        assert_eq!(store.get_u32(13), Some(5.0f32.to_bits()), "POS_Z -> 13");
-        assert_eq!(store.get_u32(14), Some(0.25f32.to_bits()), "FACING -> 14");
         assert_eq!(
-            store.get_u32(22),
+            store.delivered(12),
+            Some((-44.0f32).to_bits()),
+            "POS_Y -> 12"
+        );
+        assert_eq!(store.delivered(13), Some(5.0f32.to_bits()), "POS_Z -> 13");
+        assert_eq!(store.delivered(14), Some(0.25f32.to_bits()), "FACING -> 14");
+        assert_eq!(
+            store.delivered(22),
             None,
             "UNIT_FIELD_HEALTH gated off DynamicObject"
         );
@@ -17262,51 +17339,55 @@ mod field_audit_tests {
         let entity = world.resource::<GuidIndex>().0[&CORPSE];
         let store = &world.get::<ObjectStore>(entity).expect("corpse store").0;
         assert_eq!(
-            store.get_u32(6),
+            store.delivered(6),
             Some(PLAYER as u32),
             "CORPSE_FIELD_OWNER -> 6"
         );
         assert_eq!(
-            store.get_u32(8),
+            store.delivered(8),
             Some(4.0f32.to_bits()),
             "FACING (8) must not be clobbered by CORPSE_FIELD_PARTY"
         );
         assert_eq!(
-            store.get_u32(9),
+            store.delivered(9),
             Some(1.0f32.to_bits()),
             "POS_X (9) must not be clobbered by CORPSE_FIELD_PARTY+1"
         );
-        assert_eq!(store.get_u32(10), Some(2.0f32.to_bits()), "POS_Y -> 10");
-        assert_eq!(store.get_u32(11), Some(3.0f32.to_bits()), "POS_Z -> 11");
+        assert_eq!(store.delivered(10), Some(2.0f32.to_bits()), "POS_Y -> 10");
+        assert_eq!(store.delivered(11), Some(3.0f32.to_bits()), "POS_Z -> 11");
         assert_eq!(
-            store.get_u32(12),
+            store.delivered(12),
             Some(49),
             "CORPSE_FIELD_DISPLAY_ID 10 -> 12"
         );
         assert_eq!(
-            store.get_u32(13),
+            store.delivered(13),
             Some(902 | (5 << 24)),
             "CORPSE_FIELD_ITEM[0] 11 -> 13"
         );
         assert_eq!(
-            store.get_u32(32),
+            store.delivered(32),
             Some(0x0601_0200),
             "CORPSE_FIELD_BYTES_1 30 -> 32"
         );
         assert_eq!(
-            store.get_u32(33),
+            store.delivered(33),
             Some(0x0304_0506),
             "CORPSE_FIELD_BYTES_2 31 -> 33"
         );
-        assert_eq!(store.get_u32(34), Some(15), "CORPSE_FIELD_GUILD 32 -> 34");
-        assert_eq!(store.get_u32(35), Some(0x04), "CORPSE_FIELD_FLAGS 33 -> 35");
+        assert_eq!(store.delivered(34), Some(15), "CORPSE_FIELD_GUILD 32 -> 34");
         assert_eq!(
-            store.get_u32(36),
+            store.delivered(35),
+            Some(0x04),
+            "CORPSE_FIELD_FLAGS 33 -> 35"
+        );
+        assert_eq!(
+            store.delivered(36),
             Some(0x00),
             "CORPSE_FIELD_DYNAMIC_FLAGS 34 -> 36"
         );
         assert_eq!(
-            store.get_u32(37),
+            store.delivered(37),
             None,
             "CORPSE_FIELD_PAD (35) stays unmapped"
         );

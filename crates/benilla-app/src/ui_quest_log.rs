@@ -65,6 +65,8 @@ pub(crate) struct QuestLog {
     /// The quests a `SMSG_QUESTGIVER_QUEST_FAILED` found uncached, whose line waits for the record
     /// (`0x5dc920`).
     pub(crate) giver_failures: Vec<u32>,
+    /// The quest POI answers (Wrath `SMSG_QUEST_POI_QUERY_RESPONSE`) the feed has not landed.
+    pois: Vec<(u32, Vec<benilla_protocol::QuestPoiArea>)>,
 }
 
 impl crate::query_cache::AskOnce for QuestLog {
@@ -289,7 +291,16 @@ mod net {
             .net_handler(K::QuestItemLooted, on_item_looted)
             .net_handler(K::QuestObjectiveKill, on_kill)
             .net_handler(K::QuestObjectivesComplete, on_complete)
+            .net_handler(K::QuestPois, on_quest_pois)
             .net_handler(K::Disconnected, on_session_end);
+    }
+
+    /// `SMSG_QUEST_POI_QUERY_RESPONSE`: held for the feed, which lands it in the VM's POI store.
+    fn on_quest_pois(In(ev): In<SessionEvent>, mut quest_log: ResMut<QuestLog>) {
+        if let SessionEvent::QuestPois(pois) = ev {
+            debug!("net: quest POIs for {} quests", pois.len());
+            quest_log.pois.extend(pois);
+        }
     }
 
     /// What an added item's toast reads off the player: the bags and the item cache.
@@ -915,6 +926,35 @@ pub(crate) fn feed_quest_log(
         let seat = memo.player != Some(guid.0);
         // The rebuild's misses, each looked up with a callback (`0x4de65f`) below.
         let asks = script.take_quest_record_asks();
+        // The world map's POI misses (`QuestMapUpdateAllQuests`), asked at most 25 a packet as the
+        // log holds, and the answers since the last feed landed.
+        for chunk in script.take_quest_poi_asks().chunks(25) {
+            let _ = reads.commands.0.send(ClientCommand::QuestPoiQuery {
+                quests: chunk.to_vec(),
+            });
+        }
+        let pois = std::mem::take(&mut quest_log.pois);
+        if !pois.is_empty() {
+            script.land_quest_pois(
+                pois.into_iter()
+                    .map(|(quest, areas)| {
+                        let blobs = areas
+                            .into_iter()
+                            .map(|a| benilla_ui::script::QuestPoiBlobView {
+                                objective_index: a.objective_index,
+                                map_id: a.map_id,
+                                world_map_area_id: a.world_map_area_id,
+                                floor: a.floor,
+                                priority: a.priority,
+                                flags: a.flags,
+                                points: a.points,
+                            })
+                            .collect();
+                        (quest, blobs)
+                    })
+                    .collect(),
+            );
+        }
 
         let landing = !quest_log.fresh.is_empty() || !asks.is_empty();
         // The macro inputs, read when a record is to be built or a name may have landed.

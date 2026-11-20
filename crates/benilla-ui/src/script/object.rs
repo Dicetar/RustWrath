@@ -219,7 +219,7 @@ pub(crate) fn receiver_in(lua: &Lua, this: &Value, table: &'static str) -> mlua:
 
 /// Every frame kind, so [`guard_receivers`] reaches every kind's method tables. The match makes
 /// a new kind a compile error until it is listed here.
-fn every_frame_kind() -> [FrameKind; 21] {
+fn every_frame_kind() -> [FrameKind; 22] {
     let kinds = [
         FrameKind::Frame,
         FrameKind::WorldFrame,
@@ -242,6 +242,7 @@ fn every_frame_kind() -> [FrameKind; 21] {
         FrameKind::GameTooltip,
         FrameKind::Minimap,
         FrameKind::Cooldown,
+        FrameKind::QuestPoiFrame,
     ];
     for kind in kinds {
         match kind {
@@ -265,7 +266,8 @@ fn every_frame_kind() -> [FrameKind; 21] {
             | FrameKind::MovieFrame
             | FrameKind::GameTooltip
             | FrameKind::Minimap
-            | FrameKind::Cooldown => {}
+            | FrameKind::Cooldown
+            | FrameKind::QuestPoiFrame => {}
         }
     }
     kinds
@@ -482,6 +484,12 @@ pub(crate) fn registered_frame_kind(lua: &Lua, kind: &str) -> Option<FrameKind> 
     if model.target == super::UiTarget::Wrath335 && enum_token(kind) == "COOLDOWN" {
         return (model.vm == VmKind::InGame).then_some(FrameKind::Cooldown);
     }
+    // 3.3.5a's `QuestPOIFrame` (`FrameXML_RegisterFactory("QuestPOIFrame", ..)`), a game-layer
+    // factory: `WorldMapFrame.xml`'s `WorldMapBlobFrame`, which every map-size toggle scales
+    // (`script/questpoiframe.rs`).
+    if model.target == super::UiTarget::Wrath335 && enum_token(kind) == "QUESTPOIFRAME" {
+        return (model.vm == VmKind::InGame).then_some(FrameKind::QuestPoiFrame);
+    }
     let t = frame_type(kind)?;
     let registered = match t.factory {
         Factory::Startup => true,
@@ -615,6 +623,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     super::region::install(lua)?;
     super::statusbar::install(lua)?;
     super::cooldown::install(lua)?;
+    super::questpoiframe::install(lua)?;
     super::button::install(lua)?;
     super::editbox::install(lua)?;
     // After every table above exists: each of the 19 Region-map names gets one shared
@@ -788,6 +797,7 @@ fn kind_method_registries(kind: Option<FrameKind>) -> &'static [&'static str] {
         Some(FrameKind::Minimap) => &[super::minimap::REG_MINIMAP_METHODS],
         Some(FrameKind::GameTooltip) => &[super::tooltip::REG_TOOLTIP_METHODS],
         Some(FrameKind::Cooldown) => &[super::cooldown::REG_COOLDOWN_METHODS],
+        Some(FrameKind::QuestPoiFrame) => &[super::questpoiframe::REG_QUESTPOI_METHODS],
         _ => &[],
     }
 }

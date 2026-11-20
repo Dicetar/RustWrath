@@ -799,7 +799,8 @@ impl From<benilla_ui::widget::FrameKind> for UiFrameKind {
             | FrameKind::ColorSelect
             | FrameKind::SimpleHtml
             | FrameKind::MovieFrame
-            | FrameKind::Cooldown => UiFrameKind::Other,
+            | FrameKind::Cooldown
+            | FrameKind::QuestPoiFrame => UiFrameKind::Other,
         }
     }
 }

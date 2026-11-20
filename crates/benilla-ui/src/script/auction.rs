@@ -243,20 +243,90 @@ pub struct AuctionQuery {
     pub usable: u8,
 }
 
-/// `StartAuction`'s send (`0x4ce8c5`-`0x4ce925`): the sell slot's item as the attach stored it.
+/// `StartAuction`'s sends (Wrath `Script_StartAuction`): one `CMSG_AUCTION_SELL_ITEM` per stack,
+/// each the `(item guid, count)` pieces that make it up. A single stack goes out at once; more are
+/// the multisell, sent one at a time, each after the last one's `ERR_AUCTION_STARTED`
+/// (`CGAuctionHouse::SellNextItem`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct AuctionStartRequest {
-    /// The item's guid as the attach found it (`[0xb72608]`, sent at `0x4ce8f3`).
-    pub item_guid: u64,
+    pub stacks: Vec<Vec<(u64, u32)>>,
     pub min_bid: u32,
-    /// `0` = no buyout; else at least the minimum bid (`0x4ce87b`-`0x4ce883`).
+    /// `0` = no buyout; else at least the minimum bid.
     pub buyout: u32,
-    /// Minutes: 120, 480 or 1440, the only values the verb sends (`0x4ce8a0`).
+    /// Minutes: 720, 1440 or 2880 ([`run_time`]).
     pub duration: u32,
 }
 
-/// The run times `StartAuction` and the deposit accept, in minutes (`0x807028`, `0x80e4b0`).
-const RUN_TIMES: [u32; 3] = [120, 480, 1440];
+/// Wrath's run times in minutes (`AUCTION_RUN_TIMES`, `s_depositRunTimes`): the Lua passes an
+/// index, 1 to 3, and AzerothCore accepts exactly these (`HandleAuctionSellItem`).
+const RUN_TIMES: [u32; 3] = [720, 1440, 2880];
+
+/// The run time a Lua index names: `index - 1` truncated to 32 bits and compared unsigned, so 0, a
+/// negative or anything past 3 is the 24-hour default.
+fn run_time(index: f64) -> u32 {
+    let i = binding_abi::ftol(index - 1.0) as u32;
+    RUN_TIMES.get(i as usize).copied().unwrap_or(1440)
+}
+
+/// The carried bags' stacks of `entry` that the auction house takes, backpack first and each bag's
+/// slots in order, as `(guid, count)`: `FindSellItemsCallback` over `m_bag.FindItem`, which
+/// `FindSellableItems` totals and `FindItemForAuction` collects.
+fn sellable_stacks(model: &Model, entry: u32) -> Vec<(u64, u32)> {
+    let mut out = Vec::new();
+    for bag in 0..=4i64 {
+        let Some(c) = model.containers.get(&bag) else {
+            continue;
+        };
+        let mut slots: Vec<_> = c.slots.iter().collect();
+        slots.sort_by_key(|(k, _)| **k);
+        for (_, s) in slots {
+            let damaged = s.durability.is_some_and(|(cur, max)| max > 0 && cur < max);
+            if s.item_id == entry
+                && s.guid != 0
+                && !damaged
+                && refusal_of(
+                    model,
+                    s.item_id,
+                    s.already_bound,
+                    s.flags,
+                    s.field_duration,
+                    s.occupied_seats,
+                )
+                .is_none()
+            {
+                out.push((s.guid, s.count.max(1)));
+            }
+        }
+    }
+    out
+}
+
+/// The multisell's stacks as `SellNextItem` cuts them, `stacks` of `stack_size` each from the
+/// collected pieces, taken from the last collected backwards; `None` when the pieces run out
+/// (`OnMultisellFailure`), which a collection of at least the total never does.
+fn cut_stacks(
+    mut pieces: Vec<(u64, u32)>,
+    stack_size: u32,
+    stacks: u32,
+) -> Option<Vec<Vec<(u64, u32)>>> {
+    let mut out = Vec::new();
+    for _ in 0..stacks {
+        let mut want = stack_size;
+        let mut stack = Vec::new();
+        while want > 0 {
+            let last = pieces.last_mut()?;
+            let take = want.min(last.1);
+            stack.push((last.0, take));
+            last.1 -= take;
+            want -= take;
+            if last.1 == 0 {
+                pieces.pop();
+            }
+        }
+        out.push(stack);
+    }
+    Some(out)
+}
 
 /// `PlaceAuctionBid` past its row (`0x4cf610`): the bid as passed and the fields of the record its
 /// checks read, as the call found them.
@@ -369,6 +439,8 @@ pub enum AuctionCall {
     /// `StartAuction` past its slot: with an auctioneer (`0x4ce7da`), the damaged item's refusal
     /// or the send and the sell slot's clear (`0x4ce925`, `0x4ce92a`).
     Start(Result<AuctionStartRequest, &'static str>),
+    /// `CancelSell()`: stop a multisell in flight.
+    CancelSell,
     /// `SortAuctionItems` past its names (`0x4cfc00`): list `list`'s driver promotes `column` in
     /// the engine's stack, with a session or without (`0x4cd850`).
     Sort { list: usize, column: u8 },
@@ -532,6 +604,13 @@ impl super::UiScript {
     pub fn clear_auction_sell_item(&mut self) {
         super::tick::verb(&self.lua, clear_sell_slot);
     }
+
+    /// A multisell step for the stock progress bar: `AUCTION_MULTISELL_START` (total),
+    /// `AUCTION_MULTISELL_UPDATE` (created, total) or `AUCTION_MULTISELL_FAILURE`.
+    pub fn signal_auction_multisell(&mut self, event: &'static str, args: &[i64]) {
+        let args: Vec<_> = args.iter().map(|&n| super::ScriptValue::Int(n)).collect();
+        super::tick::verb(&self.lua, |model| model.raise(event, args));
+    }
 }
 
 /// The sell-slot clear (`0x4cd640`): it lifts the attached item's lock with its
@@ -570,7 +649,19 @@ fn sell_refusal(model: &Model, item: &cursor::CursorItem) -> Option<&'static str
             .filter(|s| s.guid == item.guid)?;
         (s.already_bound, s.flags, s.field_duration, s.occupied_seats)
     };
-    let record = model.item_templates.get(&item.item_id);
+    refusal_of(model, item.item_id, bound, flags, duration, seats)
+}
+
+/// [`sell_refusal`]'s tests over one item's fields and its entry's record.
+fn refusal_of(
+    model: &Model,
+    item_id: u32,
+    bound: bool,
+    flags: u32,
+    duration: u32,
+    seats: Option<u32>,
+) -> Option<&'static str> {
+    let record = model.item_templates.get(&item_id);
     /// `BIND_QUEST_ITEM` and `BIND_QUEST_ITEM1`.
     const QUEST_BONDING: [u32; 2] = [4, 5];
     if bound {
@@ -777,38 +868,62 @@ fn row_at(model: &Model, kind: &str, index: usize) -> Option<AuctionItemRow> {
         .cloned()
 }
 
-/// The sell slot's `(name, texture, count, quality, canUse, stackValue)`, `stackValue` being the
-/// vendor price times the stack: the base of the suggested opening price and the deposit.
-fn sell_item_info(model: &Model) -> Option<(String, Option<String>, u32, i64, bool, u32)> {
+/// What `GetAuctionSellItemInfo` answers for the sell slot.
+struct SellInfo {
+    name: String,
+    texture: Option<String>,
+    /// The attached stack's size.
+    count: u32,
+    quality: i64,
+    can_use: bool,
+    /// The vendor price per item, the base of the suggested price and the deposit.
+    unit_price: u32,
+    /// The record's stack limit (`m_stackable`).
+    stack_max: u32,
+    /// Every sellable item of the entry in the carried bags ([`sellable_stacks`]).
+    total: u32,
+}
+
+impl SellInfo {
+    /// The vendor price of the whole attached stack; a 32-bit multiply, as the reference's.
+    fn price(&self) -> u32 {
+        self.unit_price.wrapping_mul(self.count)
+    }
+}
+
+/// The sell slot's [`SellInfo`].
+fn sell_item_info(model: &Model) -> Option<SellInfo> {
     let it = model.auction_sell_item.as_ref()?;
     // The real stack size, not the split-carry field: the deposit is per stack.
     let count = cursor::held_count(model, it);
     let template = model.item_templates.get(&it.item_id);
-    let name = cursor::item_link_name(it.link.as_deref());
-    let quality = it.quality.map_or(-1, i64::from);
-    let sell_price = template.map_or(0, |v| v.sell_price);
-    let can_use = super::item_stats::item_usable_by_id(model, it.item_id);
-    // The price is a 32-bit `imul` in both readers (`0x4ce295`, `0x4ce703`).
-    Some((
-        name,
-        it.texture.clone(),
+    let total = sellable_stacks(model, it.item_id)
+        .iter()
+        .fold(0u32, |n, (_, c)| n.wrapping_add(*c));
+    Some(SellInfo {
+        name: cursor::item_link_name(it.link.as_deref()),
+        texture: it.texture.clone(),
         count,
-        quality,
-        can_use,
-        sell_price.wrapping_mul(count),
-    ))
+        quality: it.quality.map_or(-1, i64::from),
+        can_use: super::item_stats::item_usable_by_id(model, it.item_id),
+        unit_price: template.map_or(0, |v| v.sell_price),
+        stack_max: template.map_or(1, |v| v.stackable),
+        // The attached stack is still in its bag slot, so the scan counts it; a slot the scan
+        // misses (a record not yet cached) still offers the stack in hand.
+        total: total.max(count),
+    })
 }
 
-/// The reference client's deposit, `0x644bc0(rate, stackValue, minutes)`: 0 for a run time off the
-/// table at `0x80e4b0` (`0x644bd0`-`0x644be1`), else `rate × stackValue` in 32 bits (`0x644be9`)
-/// over 100, times `minutes / 120` (`0x644bf3`-`0x644c17`). The inner floor zeroes a cheap stack
-/// the server still charges a few copper for.
-fn deposit_for(rate: u32, stack_value: u32, minutes: u32) -> u32 {
+/// Wrath's deposit, `CalculateAuctionDeposit(rate, value, minutes)`: for a run time on the table,
+/// `rate × value / 100` in 32 bits as a float, times the minutes over 240, truncated; never under
+/// 1 silver, and 1 silver for a run time off the table.
+fn deposit_for(rate: u32, value: u32, minutes: u32) -> u32 {
     if !RUN_TIMES.contains(&minutes) {
-        return 0;
+        return 100;
     }
-    // At most `u32::MAX / 100 × 12`, so the x87 product `_ftol` truncates is exact.
-    rate.wrapping_mul(stack_value) / 100 * (minutes / 120)
+    let base = (rate.wrapping_mul(value) / 100) as f32;
+    let deposit = binding_abi::ftol(f64::from(base * minutes as f32 * 0.004_166_666_9_f32)) as u32;
+    deposit.max(100)
 }
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
@@ -1440,57 +1555,96 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // StartAuction(minBid, buyoutPrice, runTime), runTime in minutes.
+    // StartAuction(minBid, buyoutPrice, runTime[, stackSize[, numStacks]]) (Wrath
+    // `Script_StartAuction`): `runTime` is the duration's index ([`run_time`]). One stack the
+    // attached item covers goes out as it is; otherwise the carried bags' sellable stacks of the
+    // entry are collected (`FindItemForAuction`) and cut into `numStacks` stacks of `stackSize`
+    // ([`cut_stacks`]), sent one at a time by the engine.
     g.set(
         "StartAuction",
-        lua.create_function(|lua, (bid, buyout, run): (Value, Value, Value)| {
-            const USAGE: &str = "Usage: StartAuction(minBid, buyoutPrice, runTime)";
-            let min_bid = super::binding_abi::number_arg(lua, bid, USAGE)? as u32;
-            let buyout = super::binding_abi::number_arg(lua, buyout, USAGE)? as u32;
-            let duration = super::binding_abi::number_arg(lua, run, USAGE)? as u32;
-            let call = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                // An empty slot, its stored guid zero, ends it before the send (`0x4ce7e4`); the
-                // host tests the auctioneer ahead of it (`0x4ce7da`).
-                let guid = model.auction_sell_item.as_ref().map_or(0, |it| it.guid);
-                if guid == 0 {
-                    return Ok(());
-                }
-                // A damaged item, not wrapped (`flags & 8`), with a max durability whose current
-                // falls short, refuses with `ERR_AUCTION_REPAIR_ITEM` (`0x4ce80f`-`0x4ce83f`). An
-                // item not found skips the check (`0x4ce802`).
-                let damaged = model
-                    .containers
-                    .values()
-                    .flat_map(|c| c.slots.values())
-                    .find(|s| s.guid == guid)
-                    .is_some_and(|s| {
-                        s.flags & 0x8 == 0
-                            && s.durability.is_some_and(|(cur, max)| max > 0 && cur < max)
-                    });
-                if damaged {
-                    Err("ERR_AUCTION_REPAIR_ITEM")
-                } else {
-                    // A buyout under the minimum bid is raised to it (`0x4ce87b`-`0x4ce883`).
-                    let buyout = if buyout != 0 && buyout < min_bid {
-                        min_bid
-                    } else {
-                        buyout
-                    };
-                    // A run time off the table returns silently (`0x4ce8a0`-`0x4ce8b8`).
-                    if !RUN_TIMES.contains(&duration) {
+        lua.create_function(
+            |lua, (bid, buyout, run, stack, stacks): (Value, Value, Value, Value, Value)| {
+                const USAGE: &str = "Usage: StartAuction(minBid, buyoutPrice, runTime, count)";
+                let min_bid = binding_abi::float_arg(lua, bid, USAGE)?;
+                let buyout = binding_abi::float_arg(lua, buyout, USAGE)?;
+                let run = binding_abi::float_arg(lua, run, USAGE)?;
+                let min_bid = binding_abi::ftol(min_bid) as u32;
+                let buyout = binding_abi::ftol(buyout) as u32;
+                let duration = run_time(run);
+                let stack_size =
+                    binding_abi::is_number(lua, stack).map(|n| binding_abi::ftol(n) as u32);
+                let num_stacks =
+                    binding_abi::is_number(lua, stacks).map_or(1, |n| binding_abi::ftol(n) as u32);
+                let call = {
+                    let model = lua.app_data_ref::<Model>().expect("model app_data");
+                    // No sell item, nothing; the host tests the auctioneer ahead of it.
+                    let Some(it) = model.auction_sell_item.as_ref().filter(|it| it.guid != 0)
+                    else {
                         return Ok(());
+                    };
+                    let guid = it.guid;
+                    // A damaged item, not wrapped (`flags & 8`), with a max durability whose
+                    // current falls short, refuses with `ERR_AUCTION_REPAIR_ITEM`. An item not
+                    // found skips the check.
+                    let damaged = model
+                        .containers
+                        .values()
+                        .flat_map(|c| c.slots.values())
+                        .find(|s| s.guid == guid)
+                        .is_some_and(|s| {
+                            s.flags & 0x8 == 0
+                                && s.durability.is_some_and(|(cur, max)| max > 0 && cur < max)
+                        });
+                    if damaged {
+                        Err("ERR_AUCTION_REPAIR_ITEM")
+                    } else {
+                        // A buyout under the minimum bid is raised to it.
+                        let buyout = if buyout != 0 && buyout < min_bid {
+                            min_bid
+                        } else {
+                            buyout
+                        };
+                        let held = cursor::held_count(&model, it);
+                        // No stack size (or 0) is the attached stack whole: AzerothCore drops a
+                        // zero count without an answer.
+                        let stack_size = stack_size.filter(|&n| n > 0).unwrap_or(held);
+                        let stacks = if held >= stack_size && num_stacks <= 1 {
+                            Some(vec![vec![(guid, stack_size)]])
+                        } else {
+                            let wanted = stack_size.wrapping_mul(num_stacks);
+                            let mut pieces = Vec::new();
+                            let mut total = 0u32;
+                            for piece in sellable_stacks(&model, it.item_id) {
+                                if total >= wanted || pieces.len() >= 200 {
+                                    break;
+                                }
+                                total = total.wrapping_add(piece.1);
+                                pieces.push(piece);
+                            }
+                            (total >= wanted)
+                                .then(|| cut_stacks(pieces, stack_size, num_stacks))
+                                .flatten()
+                        };
+                        match stacks {
+                            Some(stacks) => Ok(AuctionStartRequest {
+                                stacks,
+                                min_bid,
+                                buyout,
+                                duration,
+                            }),
+                            None => Err("ERR_AUCTION_ENOUGH_ITEMS"),
+                        }
                     }
-                    Ok(AuctionStartRequest {
-                        item_guid: guid,
-                        min_bid,
-                        buyout,
-                        duration,
-                    })
-                }
-            };
-            submit(lua, AuctionCall::Start(call))
-        })?,
+                };
+                submit(lua, AuctionCall::Start(call))
+            },
+        )?,
+    )?;
+
+    // CancelSell() (Wrath `Script_CancelSell`): a multisell in flight stops, as its failure does.
+    g.set(
+        "CancelSell",
+        lua.create_function(|lua, ()| submit(lua, AuctionCall::CancelSell))?,
     )?;
 
     // CancelAuction(index), always an "owner" row.
@@ -1530,24 +1684,30 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // CalculateAuctionDeposit(runTime) (`0x4ce1c0`) → copper, by the client's arithmetic
-    // ([`deposit_for`]), 0 for a run time other than 120, 480 or 1440.
+    // CalculateAuctionDeposit(runTime[, count]) (Wrath `Script_CalculateAuctionDeposit`) → copper
+    // ([`deposit_for`]) for `count` items, the attached stack by default; 0 with no house or no
+    // sell item. `runTime` is the duration's index ([`run_time`]).
     g.set(
         "CalculateAuctionDeposit",
-        lua.create_function(|lua, minutes: Value| {
-            // `is-number` else `Usage: CalculateAuctionDeposit(runTime)` (`0x8493b0`,
-            // `0x4ce1d9`); the run time is `_ftol`'s 32 bits (`0x4ce28d`).
-            let minutes =
-                binding_abi::index_arg32(lua, minutes, "Usage: CalculateAuctionDeposit(runTime)")?;
+        lua.create_function(|lua, (run, count): (Value, Value)| {
+            let run = binding_abi::float_arg(lua, run, "Usage: CalculateAuctionDeposit(runTime)")?;
+            let count = binding_abi::is_number(lua, count).map(|n| binding_abi::ftol(n) as u32);
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let rate = model.auction.as_ref().map_or(0, |a| a.deposit_percent);
-            let stack_value = sell_item_info(&model).map_or(0, |(_, _, _, _, _, v)| v);
-            Ok(i64::from(deposit_for(rate, stack_value, minutes)))
+            let (Some(house), Some(info)) = (model.auction.as_ref(), sell_item_info(&model)) else {
+                return Ok(0);
+            };
+            let value = info.unit_price.wrapping_mul(count.unwrap_or(info.count));
+            Ok(i64::from(deposit_for(
+                house.deposit_percent,
+                value,
+                run_time(run),
+            )))
         })?,
     )?;
 
-    // GetAuctionSellItemInfo() → name, texture, count, quality, canUse, price: six values always.
-    // An empty slot answers count 1 and quality -1: the stock Lua reads `count > 1` unguarded.
+    // GetAuctionSellItemInfo() → name, texture, count, quality, canUse, price, pricePerUnit,
+    // stackCount, totalCount: nine values always (Wrath `Script_GetAuctionSellItemInfo`). An empty
+    // slot answers count 1, quality -1 and zeros: the stock Lua compares them unguarded.
     g.set(
         "GetAuctionSellItemInfo",
         lua.create_function(|lua, ()| {
@@ -1555,7 +1715,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 sell_item_info(&model)
             };
-            let Some((name, texture, count, quality, can_use, price)) = info else {
+            let Some(info) = info else {
                 return Ok(MultiValue::from_vec(vec![
                     Value::Nil,
                     Value::Nil,
@@ -1563,22 +1723,28 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     Value::Integer(-1),
                     Value::Nil,
                     Value::Integer(0),
+                    Value::Integer(0),
+                    Value::Integer(0),
+                    Value::Integer(0),
                 ]));
             };
             Ok(MultiValue::from_vec(vec![
-                if name.is_empty() {
+                if info.name.is_empty() {
                     Value::Nil
                 } else {
-                    Value::String(lua.create_string(&name)?)
+                    Value::String(lua.create_string(&info.name)?)
                 },
-                match &texture {
+                match &info.texture {
                     Some(t) => Value::String(lua.create_string(t)?),
                     None => Value::Nil,
                 },
-                Value::Integer(i64::from(count)),
-                Value::Integer(quality),
-                flag(can_use),
-                Value::Integer(i64::from(price)),
+                Value::Integer(i64::from(info.count)),
+                Value::Integer(info.quality),
+                flag(info.can_use),
+                Value::Integer(i64::from(info.price())),
+                Value::Integer(i64::from(info.unit_price)),
+                Value::Integer(i64::from(info.stack_max)),
+                Value::Integer(i64::from(info.total)),
             ]))
         })?,
     )?;
@@ -2167,18 +2333,16 @@ mod tests {
         assert_eq!(eleventh(3), Value::Nil);
     }
 
-    /// A 9-copper stack at 5% over 24 h deposits 0 here, where vmangos charges 5.
+    /// Wrath's deposit: `rate × value / 100`, scaled by the run time over 240 minutes as a float
+    /// and truncated, never under 1 silver.
     #[test]
-    fn the_deposit_is_the_clients_arithmetic_truncation_and_all() {
-        assert_eq!(deposit_for(5, 9, 1440), 0);
-        // Once the inner floor clears, the duration scales it 1 / 4 / 12.
-        assert_eq!(deposit_for(5, 10_000, 120), 500);
-        assert_eq!(deposit_for(5, 10_000, 480), 2_000);
-        assert_eq!(deposit_for(5, 10_000, 1440), 6_000);
+    fn the_deposit_is_wraths_arithmetic_with_its_floor() {
+        assert_eq!(deposit_for(5, 9, 1440), 100, "the 1 silver floor");
+        assert_eq!(deposit_for(5, 10_000, 720), 1_500);
+        assert_eq!(deposit_for(5, 10_000, 1440), 3_000);
+        assert_eq!(deposit_for(5, 10_000, 2880), 6_000);
         // Blackwater's 25% on the same stack.
-        assert_eq!(deposit_for(25, 10_000, 120), 2_500);
-        // Under the two-hour unit it floors to 0; the reference never sends such a duration.
-        assert_eq!(deposit_for(5, 10_000, 60), 0);
+        assert_eq!(deposit_for(25, 10_000, 720), 7_500);
     }
 
     /// Weapon and Armor, then Consumable (flag 0: no subclass rows, but the query scans them).
@@ -2550,46 +2714,57 @@ mod tests {
         assert_eq!(s.auction_sell_item(), Some((0, held)));
     }
 
-    /// `StartAuction` (`0x4ce770`) hands the host its send, the guid the attach stored
-    /// (`0x4ce8f3`) wherever the item has since gone; the host tests the auctioneer, sends and
-    /// empties the slot. A run time off the table hands nothing and keeps the slot (`0x4ce8a0`); a
-    /// buyout under the minimum bid is raised to it (`0x4ce883`); an empty slot hands nothing
-    /// (`0x4ce7e4`).
+    /// `StartAuction(minBid, buyout, runTime[, stackSize[, numStacks]])` hands the host its
+    /// stacks, each `(guid, count)` with a nonzero count: the attached stack whole by default, the
+    /// run time an index (1 = 12h, anything off 1-3 = 24h). A buyout under the minimum bid is
+    /// raised to it; an empty slot hands nothing.
     #[test]
-    fn start_auction_hands_its_send_to_the_host() {
+    fn start_auction_hands_its_stacks_to_the_host() {
         use crate::script::cursor::two_item_bag;
         let mut s = UiScript::new().unwrap();
         s.keep_calls();
-        s.run("StartAuction(100, 0, 120)").unwrap();
+        s.run("StartAuction(100, 0, 1)").unwrap();
         assert!(s.take_auction_calls().is_empty(), "an empty slot");
         let mut bag = two_item_bag();
         for (slot, item) in bag.slots.iter_mut() {
             item.guid = 0x4000 + u64::from(*slot);
+            item.count = 4;
         }
         s.set_container(0, Some(bag));
         s.run("PickupContainerItem(0, 1) ClickAuctionSellItemButton()")
             .unwrap();
-        // The attach stored the guid (`[0xb72608]`); the item moving on leaves it.
-        s.set_container(0, Some(two_item_bag()));
-        s.run("StartAuction(100, 50, 100)").unwrap();
-        assert!(
-            s.take_auction_calls().is_empty(),
-            "a run time off the table"
-        );
-        assert_eq!(s.auction_sell_item(), Some((0, 1)));
-
-        s.run("StartAuction(100, 50, 480)").unwrap();
+        let start = |stacks: Vec<Vec<(u64, u32)>>, buyout, duration| {
+            [AuctionCall::Start(Ok(AuctionStartRequest {
+                stacks,
+                min_bid: 100,
+                buyout,
+                duration,
+            }))]
+        };
+        s.run("StartAuction(100, 50, 1)").unwrap();
         assert_eq!(
             s.take_auction_calls(),
-            [AuctionCall::Start(Ok(AuctionStartRequest {
-                item_guid: 0x4001,
-                min_bid: 100,
-                buyout: 100,
-                duration: 480,
-            }))]
+            start(vec![vec![(0x4001, 4)]], 100, 720)
+        );
+        s.run("StartAuction(100, 0, 7, 3)").unwrap();
+        assert_eq!(
+            s.take_auction_calls(),
+            start(vec![vec![(0x4001, 3)]], 0, 1440)
+        );
+        // Two stacks of two, cut from the end of the stack.
+        s.run("StartAuction(100, 0, 3, 2, 2)").unwrap();
+        assert_eq!(
+            s.take_auction_calls(),
+            start(vec![vec![(0x4001, 2)], vec![(0x4001, 2)]], 0, 2880)
+        );
+        s.run("StartAuction(100, 0, 3, 3, 2)").unwrap();
+        assert_eq!(
+            s.take_auction_calls(),
+            [AuctionCall::Start(Err("ERR_AUCTION_ENOUGH_ITEMS"))],
+            "six wanted, four held"
         );
         let err = s.run("StartAuction(100, 0)").unwrap_err().to_string();
-        assert!(err.contains("Usage: StartAuction(minBid, buyoutPrice, runTime)"));
+        assert!(err.contains("Usage: StartAuction(minBid, buyoutPrice, runTime, count)"));
     }
 
     /// A damaged item, not wrapped, hands the host the refusal `ERR_AUCTION_REPAIR_ITEM` (id 375,
@@ -2610,7 +2785,7 @@ mod tests {
             bag
         };
         s.set_container(0, Some(bag(Some((10, 40)), 0)));
-        s.run("PickupContainerItem(0, 1) ClickAuctionSellItemButton() StartAuction(100, 0, 120)")
+        s.run("PickupContainerItem(0, 1) ClickAuctionSellItemButton() StartAuction(100, 0, 1)")
             .unwrap();
         assert_eq!(
             s.take_auction_calls(),
@@ -2619,7 +2794,7 @@ mod tests {
         assert_eq!(s.auction_sell_item(), Some((0, 1)), "the slot keeps it");
 
         s.set_container(0, Some(bag(Some((10, 40)), 0x8)));
-        s.run("StartAuction(100, 0, 120)").unwrap();
+        s.run("StartAuction(100, 0, 1)").unwrap();
         assert!(
             matches!(s.take_auction_calls()[..], [AuctionCall::Start(Ok(_))]),
             "a wrapped item is not checked"
@@ -2657,21 +2832,18 @@ mod tests {
         }
     }
 
-    /// `0x644bc0` answers 0 unless the run time is one of the three at `0x80e4b0`
-    /// (`0x644bd0`-`0x644be1`), and multiplies the rate in 32 bits (`0x644be9`).
+    /// A run time off Wrath's three deposits the 1 silver floor.
     #[test]
-    fn the_deposit_is_zero_off_the_three_run_times() {
-        for minutes in [0, 60, 119, 121, 240, 479, 960, 1439, 1441, 2880] {
-            assert_eq!(deposit_for(5, 10_000, minutes), 0, "{minutes} minutes");
+    fn the_deposit_is_the_floor_off_the_three_run_times() {
+        for minutes in [0, 60, 120, 480, 1439, 1441, 2881] {
+            assert_eq!(deposit_for(5, 10_000, minutes), 100, "{minutes} minutes");
         }
-        assert_eq!(deposit_for(5, 10_000, 480), 2_000);
-        // 25 × 200,000,000 wraps to 705,032,704 (`imul ecx,edx`), over 100.
-        assert_eq!(deposit_for(25, 200_000_000, 120), 7_050_327);
     }
 
-    /// `CalculateAuctionDeposit(240)` reads 0 where it read twice the two-hour deposit.
+    /// `CalculateAuctionDeposit(runTime[, count])` takes the run time's index and an optional
+    /// item count, the attached stack by default.
     #[test]
-    fn calculate_auction_deposit_answers_zero_for_four_hours() {
+    fn calculate_auction_deposit_takes_a_run_time_index() {
         use crate::script::container::{ContainerSlot, ContainerState};
         use crate::script::cursor::CursorItem;
         use crate::script::ItemTemplateView;
@@ -2718,13 +2890,15 @@ mod tests {
             bar_placeable: false,
             consumable: false,
         });
-        let deposit = |s: &UiScript, minutes: u32| {
-            s.eval::<i64>(&format!("return CalculateAuctionDeposit({minutes})"))
+        let deposit = |s: &UiScript, args: &str| {
+            s.eval::<i64>(&format!("return CalculateAuctionDeposit({args})"))
                 .unwrap()
         };
-        assert_eq!(deposit(&s, 120), 500);
-        assert_eq!(deposit(&s, 240), 0);
-        assert_eq!(deposit(&s, 1440), 6_000);
+        assert_eq!(deposit(&s, "1"), 1_500);
+        assert_eq!(deposit(&s, "2"), 3_000);
+        assert_eq!(deposit(&s, "3"), 6_000);
+        assert_eq!(deposit(&s, "4"), 3_000, "off the table is 24 hours");
+        assert_eq!(deposit(&s, "1, 2"), 3_000, "two items");
     }
 
     /// The stack's value is a 32-bit `imul` of the vendor price and the count, in the deposit and
@@ -2782,10 +2956,10 @@ mod tests {
                 .unwrap(),
             2
         );
+        // 2c at 100% over 12 hours is 6c, under the floor.
         assert_eq!(
-            s.eval::<i64>("return CalculateAuctionDeposit(120)")
-                .unwrap(),
-            2
+            s.eval::<i64>("return CalculateAuctionDeposit(1)").unwrap(),
+            100
         );
     }
 

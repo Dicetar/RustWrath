@@ -850,16 +850,15 @@ fn the_create_gate_and_the_deposit() {
             .unwrap(),
         "an item, a 1g start price and no buyout is a valid auction"
     );
-    // 5% of the stack's vendor value (2 x 25c = 50c) floors to 2c, per two-hour unit: 24h is 24c.
+    // The run time is an index (2 = 24h). 5% of the stack's vendor value (2 x 25c = 50c) over
+    // 24h is 15c, under the 100c floor; a run-time index off the table also quotes the floor.
     assert_eq!(
-        s.eval::<i64>("return CalculateAuctionDeposit(1440)")
-            .unwrap(),
-        24
+        s.eval::<i64>("return CalculateAuctionDeposit(2)").unwrap(),
+        100
     );
     assert_eq!(
-        s.eval::<i64>("return CalculateAuctionDeposit(120)")
-            .unwrap(),
-        2
+        s.eval::<i64>("return CalculateAuctionDeposit(9)").unwrap(),
+        100
     );
     let _ = s.take_auction_calls();
     s.run("AuctionsCreateAuctionButton:Click()").unwrap();
