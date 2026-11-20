@@ -876,6 +876,8 @@ pub enum SessionEvent {
     QuestComplete(QuestComplete),
     /// The full quest template (`SMSG_QUEST_QUERY_RESPONSE`), asked once and cached by id.
     QuestTemplate(Box<QuestTemplate>),
+    /// Asked quests' map areas (Wrath `SMSG_QUEST_POI_QUERY_RESPONSE`), each quest with its blobs.
+    QuestPois(Vec<(u32, Vec<QuestPoiArea>)>),
     /// A kill objective ticked (`SMSG_QUESTUPDATE_ADD_KILL`), the announce line only; a GO
     /// `entry` is `(-id)|0x80000000`, and the durable count is in the `PLAYER_QUEST_LOG` slot.
     QuestObjectiveKill {
@@ -1328,6 +1330,20 @@ pub enum SessionEvent {
         scope: Option<(u32, u32)>,
         states: Vec<(u32, u32)>,
     },
+}
+
+/// One quest point-of-interest blob: the area a quest objective (or its turn-in, objective -1)
+/// is done in, as a polygon of world `(x, y)` points on map `map_id`, shown on the
+/// `WorldMapArea` row `world_map_area_id` at `floor`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QuestPoiArea {
+    pub objective_index: i32,
+    pub map_id: u32,
+    pub world_map_area_id: u32,
+    pub floor: u32,
+    pub priority: u32,
+    pub flags: u32,
+    pub points: Vec<(i32, i32)>,
 }
 
 impl SessionEventKind {

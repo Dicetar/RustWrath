@@ -187,6 +187,8 @@ mod cooldown;
 mod pvp;
 mod quest;
 mod quest_log;
+mod quest_poi;
+mod questpoiframe;
 pub(crate) mod region;
 mod region_map;
 mod reputation;
@@ -391,6 +393,7 @@ pub use quest::{
 pub use quest_log::{
     QuestLogCarry, QuestObjectiveView, QuestRecordView, QuestSlotView, QUEST_LOG_SLOTS,
 };
+pub use quest_poi::QuestPoiBlobView;
 pub(crate) use region::{
     apply_texture_name, apply_wrap_attrs, implicit_creation_anchor_lua, install_loaded_texture,
     load_blend_mode, load_texture_file, load_texture_name, load_xml_font_file,
@@ -1763,6 +1766,7 @@ impl UiScript {
                 crate::widget::FrameKind::GameTooltip => "GameTooltip",
                 crate::widget::FrameKind::Minimap => "Minimap",
                 crate::widget::FrameKind::Cooldown => "Cooldown",
+                crate::widget::FrameKind::QuestPoiFrame => "QuestPOIFrame",
             });
         }
         // Region leaves publish into their own name table, not the arena's.

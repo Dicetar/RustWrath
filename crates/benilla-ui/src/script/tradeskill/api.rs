@@ -84,6 +84,49 @@ fn opt_str(lua: &Lua, s: Option<&String>) -> mlua::Result<Value> {
 pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();
 
+    // IsTradeSkillLinked(): (1, player name) only when the host supplied remote-list metadata;
+    // otherwise the reference returns two nils. The current app has no packet producer for that
+    // metadata, so local lists correctly take the unsupported branch instead of fabricating one.
+    g.set(
+        "IsTradeSkillLinked",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let Some((name, _)) = model.trade_skill_link.as_ref() else {
+                return Ok(MultiValue::from_vec(vec![Value::Nil, Value::Nil]));
+            };
+            Ok(MultiValue::from_vec(vec![
+                Value::Integer(1),
+                Value::String(lua.create_string(name)?),
+            ]))
+        })?,
+    )?;
+
+    // GetTradeSkillListLink(): the serialized link is host-owned and nil until a trade-list
+    // producer calls `UiScript::set_trade_skill_link`. Unsupported branch: the player's own
+    // `|Htrade:` link over the known-recipe bitmap (`SkillLineAbility` order per line) is not
+    // encoded, so without host metadata it answers nil and the stock frame hides its link button.
+    g.set(
+        "GetTradeSkillListLink",
+        lua.create_function(|lua, ()| {
+            let link = lua
+                .app_data_ref::<Model>()
+                .expect("model app_data")
+                .trade_skill_link
+                .as_ref()
+                .map(|(_, link)| link.clone());
+            let Some(link) = link else {
+                lua.app_data_mut::<Model>()
+                    .expect("model app_data")
+                    .record_unsupported_native_once(
+                        "GetTradeSkillListLink",
+                        "the trade link's known-recipe bitmap is not encoded",
+                    );
+                return Ok(Value::Nil);
+            };
+            Ok(Value::String(lua.create_string(link)?))
+        })?,
+    )?;
+
     // GetTradeSkillLine(): ("UNKNOWN", 0, 0) with no window open, as the reference answers.
     g.set(
         "GetTradeSkillLine",
@@ -801,29 +844,6 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                 }
             });
             Ok(())
-        })?,
-    )?;
-
-    // IsTradeSkillLinked() answers `(1, ownerName)` for another player's linked list, else nil,
-    // nil. Unsupported branch: a linked list (`SMSG_TRADE_SKILL` from a clicked trade link) is not
-    // projected, so the open window is always the player's own.
-    g.set(
-        "IsTradeSkillLinked",
-        lua.create_function(|_, ()| Ok((Value::Nil, Value::Nil)))?,
-    )?;
-    // GetTradeSkillListLink(): the player's `|Htrade:` link over the known-recipe bitmap of the
-    // open line. Unsupported branch: the bitmap encoding (`SkillLineAbility` order per line) is not
-    // built, so it answers nil and the stock frame hides its link button.
-    g.set(
-        "GetTradeSkillListLink",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .record_unsupported_native_once(
-                    "GetTradeSkillListLink",
-                    "the trade link's known-recipe bitmap is not encoded",
-                );
-            Ok(Value::Nil)
         })?,
     )?;
 

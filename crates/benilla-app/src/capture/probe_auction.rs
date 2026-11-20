@@ -9,10 +9,9 @@
 //!
 //! Server behaviour the phases follow (vmangos `AuctionHouseHandler.cpp`):
 //! - One list request at a time: a second while one is in flight is dropped silently (`:710`).
-//! - `etime` is minutes, one of 1, 4 or 12 times the 2 h `MIN_AUCTION_TIME` (`:287-291`).
-//! - The deposit is `SellPrice × count × (etime / MIN_AUCTION_TIME) × depositPercent / 100`
-//!   (`AuctionHouseMgr.cpp:98`); at 120 minutes the client's `CalculateAuctionDeposit` agrees
-//!   with it to the copper.
+//! - `etime` is minutes, 720, 1440 or 2880 on AzerothCore; the Lua names it by index 1-3.
+//! - The deposit scales the stack's sell value by the run time and the house rate, at least
+//!   100 c; the client's `CalculateAuctionDeposit` quotes it.
 //! - A cancel with no bidder is free and returns the item by mail.
 //! - A GM account is refused with `RESTRICTED_ACCOUNT` unless `GM.AllowTrades` is on (`:249`).
 //!
@@ -21,7 +20,7 @@
 
 use bevy::prelude::*;
 
-use benilla_protocol::messages::{auction_action, auction_duration, auction_error};
+use benilla_protocol::messages::{auction_action, auction_error};
 use benilla_protocol::EntityKind;
 use benilla_ui::script::{UiScript, LIST, OWNER};
 
@@ -48,8 +47,8 @@ const INTERACT_MAX_YD: f32 = 5.0;
 /// deposit.
 const ITEM_ENTRY: u32 = 2589;
 const ITEM_COUNT: u32 = 5;
-/// 120 minutes, where the client's deposit quote and the server's charge agree exactly.
-const DURATION_MINUTES: u32 = auction_duration::SHORT_MINUTES;
+/// The run-time index the Lua passes: 1, 12 hours.
+const DURATION_MINUTES: u32 = 1;
 
 const SETTLE_SECS: f64 = 3.0;
 const SCAN_TIMEOUT_SECS: f64 = 15.0;
@@ -840,7 +839,7 @@ fn auction_probe(
                 }
             }
             Phase::Attach { since } => {
-                // Six values, the first nil for an empty slot. Waits for a nonzero `price` (the
+                // Nine values, the first nil for an empty slot. Waits for a nonzero `price` (the
                 // stack's vendor value) so the deposit is not quoted off a template still in
                 // flight.
                 let (name, count, price) = script
@@ -974,9 +973,8 @@ fn auction_probe(
                             error!(
                                 "PROBE_AUCTION: FAIL (5b deposit) — purse {} -> {money} c is a \
                                  {spent} c charge against the {deposit} c the client quoted over a \
-                                 stack worth {}c. At {DURATION_MINUTES} minutes the client's \
-                                 arithmetic and vmangos's agree exactly, so a gap here is a real \
-                                 disagreement about the rate or the stack value",
+                                 stack worth {}c at run-time index {DURATION_MINUTES}: a gap here is \
+                                 a real disagreement about the rate or the stack value",
                                 probe.baseline_money, probe.stack_value
                             );
                             probe.fails += 1;

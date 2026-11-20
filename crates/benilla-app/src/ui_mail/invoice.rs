@@ -1,7 +1,7 @@
 //! The auction house's mail: a notice's subject and body are colon-separated text the client
 //! parses back, the subject in `0x4ace70` and the body in `GetInboxInvoiceInfo` (`0x4af360`).
 //!
-//! The subject `<itemEntry>:<randomProperty>:<resultCode>` names the outcome and is displayed
+//! The subject `<itemEntry>:<randomProperty>:<resultCode>[:<auctionId>:<count>]` names the outcome and is displayed
 //! through the matching `AUCTION_*_MAIL_SUBJECT` string, never raw. Only won and sold notices carry
 //! a body, the invoice's numbers, fetched when the letter is opened.
 
@@ -26,14 +26,17 @@ pub(crate) struct AuctionSubject {
     pub(crate) result: u32,
 }
 
-/// Parses `<itemEntry>:<randomProperty>:<resultCode>` strictly: on top of the type byte, the
-/// reference also refuses a subject whose fields do not all parse in range.
+/// Parses `<itemEntry>:<randomProperty>:<resultCode>`: on top of the type byte, the first three
+/// fields must parse in range. Whatever follows is not read: AzerothCore appends
+/// `:<auctionId>:<count>` (`AuctionEntry::BuildAuctionMailSubject`), and the Wrath reference's
+/// `ParseInboxSubject` reads past the third field without bounding the count, so a strict
+/// three-field parse left every live auction notice with an empty subject.
 pub(crate) fn parse_subject(subject: &str) -> Option<AuctionSubject> {
     let mut parts = subject.trim().split(':');
     let entry: u32 = parts.next()?.trim().parse().ok()?;
     let random_property: i32 = parts.next()?.trim().parse().ok()?;
     let result: u32 = parts.next()?.trim().parse().ok()?;
-    if parts.next().is_some() || result > auction_mail::CANCELLED {
+    if result > auction_mail::CANCELLED {
         return None;
     }
     Some(AuctionSubject {
@@ -191,6 +194,10 @@ mod tests {
         assert_eq!((sold.entry, sold.result), (5529, auction_mail::SOLD));
         assert_eq!(subject_key(sold.result), Some("AUCTION_SOLD_MAIL_SUBJECT"));
 
+        // AzerothCore's form, with the auction id and the stack count after the result.
+        let ac = parse_subject("2589:0:1:41:20").expect("AzerothCore won");
+        assert_eq!((ac.entry, ac.result), (2589, auction_mail::WON));
+
         // Both cancel codes share one key, as in the reference's table.
         assert_eq!(
             subject_key(auction_mail::CANCELLED_TO_BIDDER),
@@ -202,7 +209,6 @@ mod tests {
     fn a_subject_that_is_not_the_triplet_is_not_an_auction_notice() {
         assert_eq!(parse_subject("Hi there"), None);
         assert_eq!(parse_subject("4428:0"), None, "two fields");
-        assert_eq!(parse_subject("4428:0:1:9"), None, "four fields");
         assert_eq!(parse_subject("4428:0:6"), None, "result code out of range");
         assert_eq!(parse_subject(""), None);
     }

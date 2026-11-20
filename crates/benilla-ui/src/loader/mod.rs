@@ -1133,6 +1133,7 @@ impl Loader<'_> {
         self.apply_slider(el, levels, wrapper, self_name, dbg_name);
         self.apply_colorselect(el, wrapper, self_name, dbg_name);
         self.apply_cooldown(el, levels, wrapper, dbg_name);
+        self.apply_quest_poi(el, levels, wrapper, dbg_name);
         self.apply_button(el, levels, wrapper, self_name, dbg_name);
         self.apply_editbox(el, wrapper, dbg_name);
         self.apply_messageframe(el, wrapper, dbg_name);

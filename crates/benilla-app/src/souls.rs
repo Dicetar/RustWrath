@@ -19,8 +19,9 @@
 //! - [`input`]: dodge on release (hold to sprint), light, heavy (charge on hold, release early for
 //!   the uncharged swing), running attacks, guard and the guard counter, poise and hyperarmor,
 //!   crouch (`X`) and the crouch attack, jump attacks, the left-hand chain (`Mouse5`) and the parry
-//!   (`Shift+MouseRight`). The last three need rows the kit names (`JumpLightLand`/
-//!   `JumpHeavyLand`, played on landing; `LeftLight1…` or `PairedLight1…`; `Parry`); without them the press does nothing.
+//!   (`Shift+MouseRight`). Jump attacks start their air row and play its landing animation
+//!   on touchdown. Older kits with only a landing row start the action on touchdown.
+//!   The left-hand chain and parry use the kit's `LeftLight1…`, `PairedLight1…` and `Parry` rows.
 //! - [`drive`]: the kit's root motion, no-turn windows and turn-rate caps, and the lock-on
 //!   facing, written to
 //!   [`crate::player::SoulsDrive`] for the controller.
@@ -152,7 +153,7 @@ pub(crate) struct SoulsState {
     crouched: bool,
     /// The body was in the air last frame.
     was_airborne: bool,
-    /// A press made in the air: the kit row of the landing swing it plays on touching down.
+    /// The jump's accepted air row, or the landing row still owed for its one press.
     air_attack: Option<&'static str>,
 }
 

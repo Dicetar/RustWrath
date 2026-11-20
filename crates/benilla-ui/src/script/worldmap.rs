@@ -27,6 +27,9 @@ pub struct WorldMapZoneView {
     pub name: String,
     /// The `AreaTable.dbc` id the feed's player-zone resolution joins on.
     pub area_id: u32,
+    /// The `WorldMapArea.dbc` row id, what `GetCurrentMapAreaID` answers (less one) and
+    /// `SetMapByID` and the quest-blob `wmaId` key on.
+    pub wma_id: u32,
     /// The `Interface\WorldMap\<file>\` art folder, `WorldMapArea`'s internal name ("Elwynn").
     pub map_file: String,
     /// The `WorldMapArea` loc rect `(left, right, top, bottom)`; at zone level, the grid's window.
@@ -127,6 +130,10 @@ pub struct WorldMapContinentView {
     /// `Map.dbc`'s localized MapName, the dropdown label (`0x4a65a0`), not the art folder.
     pub name: String,
     pub map_file: String,
+    /// The continent-wide `WorldMapArea.dbc` row's id (`areaID == 0`).
+    pub wma_id: u32,
+    /// Its `Map.dbc` id.
+    pub map_id: u32,
     /// The rect on the world sheet in UV `(u0, v0, u1, v1)`, from the `WorldMapContinent` tile
     /// bounds (`0x4a5d00`); a world-level hover or click takes the first that holds it.
     pub world_rect: (f32, f32, f32, f32),
@@ -710,6 +717,143 @@ fn select_resolved(model: &mut Model, continent: u32, zone: u32, direct_area: Op
     }
 }
 
+/// The displayed map's `WorldMapArea` row id: the zone's, else the continent's, else the instance
+/// map's; `None` on the world sheet, which has no row.
+fn current_wma_id(wm: &WorldMapState) -> Option<u32> {
+    if let Some(id) = wm.direct_area {
+        return Some(id);
+    }
+    let (c, z) = wm.selection;
+    let cont = wm.continents.get((c as usize).checked_sub(1)?)?;
+    match z {
+        0 => Some(cont.wma_id),
+        z => cont.zones.get(z as usize - 1).map(|zone| zone.wma_id),
+    }
+}
+
+/// `SetMapByID`'s lookup: the continent, zone or instance map whose `WorldMapArea` row is `id`.
+fn select_by_wma_id(model: &mut Model, id: u32) -> bool {
+    let wm = &model.worldmap;
+    let hit = wm.continents.iter().enumerate().find_map(|(ci, cont)| {
+        if cont.wma_id == id {
+            return Some((ci as i64 + 1, 0));
+        }
+        cont.zones
+            .iter()
+            .position(|z| z.wma_id == id)
+            .map(|zi| (ci as i64 + 1, zi as i64 + 1))
+    });
+    let direct = wm.direct_areas.iter().any(|(row, _)| *row == id);
+    match hit {
+        Some((c, z)) => select(model, c, z),
+        None if direct => select_direct(model, id),
+        None => return false,
+    }
+    true
+}
+
+/// The 3.3.5a map bindings `WorldMapFrame.lua` reads by `WorldMapArea` id, and the frame-rate and
+/// PvP-inactivity hooks its size toggle and update call.
+fn install_wrath_map_ids(lua: &Lua) -> mlua::Result<()> {
+    let g = lua.globals();
+    // GetCurrentMapAreaID() → the displayed map's `WorldMapArea` id plus one (stock Lua subtracts
+    // it, `WorldMapFrame.lua:1279`); 0 on the world sheet, which has no row.
+    g.set(
+        "GetCurrentMapAreaID",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(current_wma_id(&model.worldmap).map_or(0, |id| i64::from(id) + 1))
+        })?,
+    )?;
+    // SetMapByID(mapID): select the continent, zone or instance map of that `WorldMapArea` row and
+    // fire `WORLD_MAP_UPDATE`, answering true; an unknown id answers nothing and moves nothing.
+    // Dungeon floors are not modelled (no `DungeonMap.dbc` owner), so a row's default floor is
+    // not applied.
+    g.set(
+        "SetMapByID",
+        lua.create_function(|lua, id: Value| -> mlua::Result<MultiValue> {
+            let id = binding_abi::number_arg(lua, id, "Usage: SetMapByID(mapID)")?;
+            let moved = u32::try_from(id).is_ok_and(|id| {
+                select_by_wma_id(
+                    &mut lua.app_data_mut::<Model>().expect("model app_data"),
+                    id,
+                )
+            });
+            if !moved {
+                return Ok(MultiValue::new());
+            }
+            fire_world_map_update(lua);
+            Ok(MultiValue::from_vec(vec![Value::Boolean(true)]))
+        })?,
+    )?;
+    // SetDungeonMapLevel(level): with no dungeon floors modelled every map is single-level, so
+    // after the usage gate there is no floor to move to.
+    g.set(
+        "SetDungeonMapLevel",
+        lua.create_function(|lua, level: Value| {
+            binding_abi::number_arg(lua, level, "Usage: SetDungeonMapLevel(level)")?;
+            Ok(())
+        })?,
+    )?;
+    // ZoomOut(): one level up, zone to continent and continent (or instance map) to the world
+    // sheet, then `WORLD_MAP_UPDATE`.
+    g.set(
+        "ZoomOut",
+        lua.create_function(|lua, ()| {
+            {
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                let (c, z) = model.worldmap.selection;
+                if model.worldmap.direct_area.is_none() && c != 0 && z != 0 {
+                    select(&mut model, i64::from(c), 0);
+                } else {
+                    select(&mut model, 0, 0);
+                }
+            }
+            fire_world_map_update(lua);
+            Ok(())
+        })?,
+    )?;
+    // ToggleMapFramerate(): the reference throttles the 3D world while the full-screen map is up;
+    // this client has no such throttle, so the toggle has nothing to switch.
+    g.set("ToggleMapFramerate", lua.create_function(|_, ()| Ok(()))?)?;
+    // PlayerIsPVPInactive("unit") → whether a battleground member was flagged inactive; the
+    // server's inactivity flag is not fed to this client, so no unit is.
+    g.set(
+        "PlayerIsPVPInactive",
+        lua.create_function(|lua, unit: Value| {
+            if !matches!(unit, Value::String(_)) {
+                return Err(mlua::Error::runtime("Usage: PlayerIsPVPInactive(\"unit\")"));
+            }
+            let _ = lua;
+            Ok(Value::Nil)
+        })?,
+    )?;
+    // GetQuestWorldMapAreaID(questID) → mapID, floorNumber: the `WorldMapArea` row and floor of
+    // the quest's first live blob, (0, 0) without POI data.
+    g.set(
+        "GetQuestWorldMapAreaID",
+        lua.create_function(|lua, quest: Value| {
+            let quest =
+                binding_abi::number_arg(lua, quest, "Usage: GetQuestWorldMapAreaID(questID)")?;
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let Ok(quest) = u32::try_from(quest) else {
+                return Ok((0i64, 0i64));
+            };
+            let mask = model.poi_objective_mask(quest);
+            let blob = model.quest_poi.pois.get(&quest).and_then(|blobs| {
+                blobs
+                    .iter()
+                    .find(|b| super::quest_poi::blob_live(mask, b))
+                    .or_else(|| blobs.first())
+            });
+            Ok(blob.map_or((0, 0), |b| {
+                (i64::from(b.world_map_area_id), i64::from(b.floor))
+            }))
+        })?,
+    )?;
+    Ok(())
+}
+
 /// Register the world-map globals.
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();
@@ -819,14 +963,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             "IsZoomOutAvailable",
             lua.create_function(|_, ()| Ok(false))?,
         )?;
-        // Wrath's debug-zone-map and quest-map hooks are not part of the 1.12 map surface. The
-        // former answers false so the stock UI never exposes a debug map; the latter is a no-op
-        // where the quest map would repaint.
+        // Wrath's debug-zone-map hook: false, so the stock UI never exposes a debug map.
+        // `QuestMapUpdateAllQuests` is the quest POI store's (`script/quest_poi.rs`).
         g.set("HasDebugZoneMap", lua.create_function(|_, ()| Ok(false))?)?;
-        g.set(
-            "QuestMapUpdateAllQuests",
-            lua.create_function(|_, ()| Ok(0i64))?,
-        )?;
         // Dungeon floor count and battlefield vehicle count: benilla has no dungeon-map floors
         // and no battlefield vehicles, so the stock maps see zero of each.
         g.set(
@@ -837,6 +976,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             "GetNumBattlefieldVehicles",
             lua.create_function(|_, ()| Ok(0i64))?,
         )?;
+        install_wrath_map_ids(lua)?;
     }
 
     g.set(

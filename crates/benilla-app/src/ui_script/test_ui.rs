@@ -509,6 +509,11 @@ const WRATH_KIT_CONSTANTS: &str = r#"
     -- The Wrath talent UI's tab bound (three: two trees and the pet's); the stock
     -- `InspectTalentFrame.lua` loops to it, and the 1.12 file had no such constant.
     MAX_TALENT_TABS = 3
+    -- 3.3.5a `Constants.lua:415-418`'s world-map tile grid; `WorldMapFrame_Update` loops to it.
+    NUM_WORLDMAP_DETAIL_TILES = 12
+    NUM_WORLDMAP_PATCH_TILES = 6
+    NUM_WORLDMAP_DETAIL_TILE_ROWS = 3
+    NUM_WORLDMAP_DETAIL_TILE_COLS = 4
     -- 3.3.5a `Constants.lua`'s shared colour constants, as that file defines them.
     NORMAL_FONT_COLOR_CODE = "|cffffd200"
     HIGHLIGHT_FONT_COLOR_CODE = "|cffffffff"
