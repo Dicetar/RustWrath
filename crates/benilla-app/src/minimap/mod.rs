@@ -353,6 +353,7 @@ fn emit_minimap(
     world: benilla_world::world_point::WorldPoint,
     asset_server: Res<AssetServer>,
     corpse: Res<MinimapCorpse>,
+    spirit_healer: Res<MinimapSpiritHealer>,
     blip_inputs: blips::BlipInputs,
     mut composite: ResMut<composite::MinimapComposite>,
     rig: Option<Res<composite::CompositeRig>>,
@@ -675,14 +676,15 @@ fn emit_minimap(
     });
     let mut hover = blips::MinimapBlipHover::None;
     if let Some(ctx) = &blip_ctx {
-        // The guard-directions marker and the corpse ride this pass as landmarks, as the reference
-        // appends its static blip slots after the DBC scan, so they draw even without
-        // `AreaPOI.dbc`. The icons need only their atlas (`0x4ed21f`).
+        // The guard marker, corpse, and spirit healer ride this pass as landmarks, as the reference
+        // appends its static blip slots after the DBC scan, so they draw even without `AreaPOI.dbc`.
+        // The icons need only their atlas (`0x4ed21f`).
         blips::emit_landmarks(
             ctx,
             pois.as_ref().map(|p| &p.0),
             poi_marker.on_map(map.0),
             corpse.0.as_ref(),
+            spirit_healer.0.as_ref(),
             map.0,
             assets.tex(MinimapArtSlot::Icons),
             &mut quads,
@@ -857,8 +859,12 @@ fn stage_masks(
 #[derive(Resource, Default)]
 pub(crate) struct MinimapCorpse(pub(crate) Option<benilla_formats::AreaPoi>);
 
+/// The spirit healer's static blip while a release location is active on the player's map.
+#[derive(Resource, Default)]
+pub(crate) struct MinimapSpiritHealer(pub(crate) Option<benilla_formats::AreaPoi>);
+
 /// Aim the minimap's arrow children, the arrow half of its render (`0x4ec950`), after the tick and
-/// before the paint that draws them: the landmark selection's three records (rebuilt when its
+/// before the paint that draws them: the landmark selection's static records (rebuilt when their
 /// identities change) and the party and pet records, by bearing. With an empty mask name the render
 /// returns before any of it (`0x4ec968`), so the arrows keep what they had.
 fn feed_minimap_arrows(
@@ -881,10 +887,12 @@ fn feed_minimap_arrows(
     >,
     self_store: Query<&crate::net::ObjectStore, With<crate::net::SelfPlayer>>,
     mut corpse: ResMut<MinimapCorpse>,
+    mut spirit_healer: ResMut<MinimapSpiritHealer>,
     inside: Res<MinimapInside>,
     mut listed: Local<crate::ui_script::VmMemo<Option<Vec<blips::ArrowKey>>>>,
 ) {
     let corpse_point = vm.own().corpse;
+    let release = vm.own().release_location;
     vm.run(|script| {
         let (Some(script), Some(assets), Some(map)) = (script, assets, map) else {
             return;
@@ -898,6 +906,18 @@ fn feed_minimap_arrows(
             corpse.0 =
                 dead.map(|p| blips::corpse_landmark(p, map.0, script.global_text("CORPSE_RED")));
         }
+        let healer = release
+            .filter(|release| release.map_id == map.0 as i32)
+            .map(|release| {
+                blips::spirit_healer_landmark(
+                    release.position,
+                    map.0,
+                    script.global_text("SPIRIT_HEALER_RELEASE_RED"),
+                )
+            });
+        if spirit_healer.0.as_ref() != healer.as_ref() {
+            spirit_healer.0 = healer;
+        }
         if assets.tex(MinimapArtSlot::Mask).is_none() || !player.active {
             return;
         }
@@ -910,6 +930,7 @@ fn feed_minimap_arrows(
                 .flat_map(|p| p.0.rows().map(|(_, poi)| poi)),
             poi_marker.on_map(map.0),
             corpse.0.as_ref(),
+            spirit_healer.0.as_ref(),
             map.0,
             wx,
             wy,
@@ -973,6 +994,7 @@ impl Plugin for MinimapPlugin {
             .init_resource::<MinimapInside>()
             .init_resource::<MinimapPing>()
             .init_resource::<MinimapCorpse>()
+            .init_resource::<MinimapSpiritHealer>()
             .init_resource::<composite::MinimapComposite>()
             .add_systems(Startup, setup_minimap.after(AssetSet::Open))
             .add_systems(Startup, composite::setup_composite)
