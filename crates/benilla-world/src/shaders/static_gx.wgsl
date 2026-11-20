@@ -333,6 +333,11 @@ fn fragment(in: GxVsOut) -> @location(0) vec4<f32> {
             }
             // The unfolded texel: near-black MOCV would zero `tex_rgb`'s division.
             rgb = clamp(2.0 * base.rgb * c_u, vec3<f32>(0.0), vec3<f32>(1.0));
+            if ((in.word & WORD_UNLIT) != 0u) {
+                // Unified mode 0 draws 2·tex·MOCV; the generic static unlit override is
+                // fullbright and would erase this MapObjU mode.
+                rgb = clamp(2.0 * base.rgb * vc.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+            }
         }
     } else if ((in.word & WORD_INTERIOR) != 0u) {
         // ---- interior M2 props: wow_model.wgsl's interior-prop branch ----
@@ -390,7 +395,7 @@ fn fragment(in: GxVsOut) -> @location(0) vec4<f32> {
         rgb = folded * primary;
     }
     // Unlit (M2 UNLIT 0x01, WMO UNLIT on an exterior group): texture × vertex colour, no light.
-    if ((in.word & WORD_UNLIT) != 0u) {
+    if ((in.word & WORD_UNLIT) != 0u && (in.word & WORD_UNIFIED) == 0u) {
         rgb = folded;
     }
     // Planar eye-Z fog; other fog modes belong to blends never admitted here. The interior triple
