@@ -23,8 +23,8 @@
 //! on `SMSG_SPELL_GO`, a different clock. No start timestamp, cast id or total cast time is
 //! invented here; the UI resolves display/rank and total time from its spell catalog.
 //!
-//! Interruptibility is `None` unless the wire actually establishes it (it does not in the
-//! START/GO payloads). The consumer must use spell metadata for the "not interruptible" bit.
+//! Interruptibility is not present in START/GO. The presentation drain derives it from the
+//! spell catalog and observed aura effects, and leaves it `None` until those catalogs exist.
 
 use std::collections::BTreeMap;
 
@@ -319,15 +319,36 @@ pub struct WrathCastEvent {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum WrathCastEventKind {
-    Started { remaining_ms: Option<u32> },
-    Delayed { delay_ms: u32, accumulated_ms: u32 },
-    Launched { server_time_ms: u32 },
-    Failed { reason: u8 },
-    Interrupted { reason: u8 },
-    ChannelStarted { duration_ms: u32 },
-    ChannelUpdated { remaining_ms: u32 },
+    Started {
+        remaining_ms: Option<u32>,
+    },
+    Delayed {
+        delay_ms: u32,
+        accumulated_ms: u32,
+    },
+    Launched {
+        server_time_ms: u32,
+    },
+    Failed {
+        reason: u8,
+    },
+    Interrupted {
+        reason: u8,
+    },
+    ChannelStarted {
+        duration_ms: u32,
+    },
+    ChannelUpdated {
+        remaining_ms: u32,
+    },
     ChannelEnded,
-    ScopeInvalidated { reason: WrathScopeLoss },
+    /// The active cast's interruptibility changed because the unit's spell/aura state changed.
+    InterruptibilityChanged {
+        not_interruptible: bool,
+    },
+    ScopeInvalidated {
+        reason: WrathScopeLoss,
+    },
 }
 
 /// The caster whose entry an update can change.

@@ -118,6 +118,12 @@ pub(crate) fn feed(
                 Kind::ChannelStarted { .. } => (&["UNIT_SPELLCAST_CHANNEL_START"], false),
                 Kind::ChannelUpdated { .. } => (&["UNIT_SPELLCAST_CHANNEL_UPDATE"], false),
                 Kind::ChannelEnded => (&["UNIT_SPELLCAST_CHANNEL_STOP"], true),
+                Kind::InterruptibilityChanged {
+                    not_interruptible: true,
+                } => (&["UNIT_SPELLCAST_NOT_INTERRUPTIBLE"], false),
+                Kind::InterruptibilityChanged {
+                    not_interruptible: false,
+                } => (&["UNIT_SPELLCAST_INTERRUPTIBLE"], false),
                 Kind::ScopeInvalidated { .. } if channel => {
                     (&["UNIT_SPELLCAST_CHANNEL_STOP"], true)
                 }

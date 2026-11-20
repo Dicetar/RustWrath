@@ -8943,6 +8943,8 @@ fn wrath_net_drain(
     mut control: ResMut<WrathControl>,
     mut view: ResMut<WrathWorldView>,
     mut actions: Option<ResMut<WrathWmActions>>,
+    known: Option<Res<crate::ui_action::PlayerActions>>,
+    spells: Option<Res<crate::ui_action::Spells>>,
     mut cast_events: MessageWriter<crate::wrath_native::WrathCastEvent>,
     mut item_text_events: MessageWriter<crate::wrath_native::WrathItemText>,
     clock: Option<Res<crate::ui_script::UiClock>>,
@@ -9639,6 +9641,7 @@ fn wrath_net_drain(
                             Kind::ChannelStarted { .. } => CastEdge::ChannelStarted,
                             Kind::ChannelUpdated { .. } => CastEdge::ChannelUpdated,
                             Kind::ChannelEnded => CastEdge::ChannelEnded,
+                            Kind::InterruptibilityChanged { .. } => continue,
                             Kind::ScopeInvalidated { .. } => CastEdge::ScopeInvalidated,
                         };
                         Some(Stage::Cast {
@@ -9824,6 +9827,12 @@ fn wrath_net_drain(
     }
 
     let Some(digest) = control.take_digest() else {
+        refresh_cast_interruptibility(
+            &mut view,
+            known.as_deref(),
+            spells.as_deref(),
+            &mut cast_events,
+        );
         return;
     };
     let new_session = digest.session_epoch != view.session_epoch;
@@ -9922,6 +9931,100 @@ fn wrath_net_drain(
         changes.removed.push(guid);
     }
     view.last_changes = changes;
+    refresh_cast_interruptibility(
+        &mut view,
+        known.as_deref(),
+        spells.as_deref(),
+        &mut cast_events,
+    );
+}
+
+/// Recompute the 12340 cast-bar interruptibility predicate after aura/spellbook state changes.
+/// START/GO do not carry this bit; the reference derives it from PreventionType, the known
+/// interrupt/silence school masks, and immunity aura effects.
+fn refresh_cast_interruptibility(
+    view: &mut WrathWorldView,
+    known: Option<&crate::ui_action::PlayerActions>,
+    spells: Option<&crate::ui_action::Spells>,
+    cast_events: &mut MessageWriter<crate::wrath_native::WrathCastEvent>,
+) {
+    let (Some(known), Some(spells)) = (known, spells) else {
+        return;
+    };
+    let mut interrupt_mask = 0u32;
+    let mut silence_mask = 0u32;
+    for &id in &known.spells {
+        let Some(spell) = spells.catalog.get(id) else {
+            continue;
+        };
+        let school = spells.catalog.school_mask(id).unwrap_or(0);
+        if spell
+            .effects
+            .iter()
+            .zip(spell.effect_apply_aura)
+            .any(|(&effect, aura)| effect == 6 && aura == 27)
+        {
+            silence_mask |= school;
+        }
+        if spell.effects.contains(&68) {
+            interrupt_mask |= school;
+        }
+    }
+    let aura_spell_ids: BTreeMap<u64, Vec<u32>> = view
+        .entities
+        .iter()
+        .map(|(&guid, unit)| (guid, unit.auras.iter().map(|aura| aura.spell_id).collect()))
+        .collect();
+    for (caster, cast) in &mut view.casts {
+        let Some(definition) = spells.catalog.get(cast.identity.spell_id) else {
+            continue;
+        };
+        let previous = cast.interruptible;
+        let mut interrupt = interrupt_mask;
+        let mut silence = silence_mask;
+        if definition.prevention_type == 1 {
+            for spell_id in aura_spell_ids.get(caster).into_iter().flatten() {
+                let Some(aura_spell) = spells.catalog.get(*spell_id) else {
+                    continue;
+                };
+                for (&kind, &misc) in aura_spell
+                    .effect_apply_aura
+                    .iter()
+                    .zip(aura_spell.effect_misc_value.iter())
+                {
+                    match kind {
+                        37 if misc == 68 => interrupt = 0,
+                        38 if misc == 27 => silence = 0,
+                        39 => {
+                            let mask = u32::try_from(misc).unwrap_or(u32::MAX);
+                            interrupt &= !mask;
+                            silence &= !mask;
+                        }
+                        77 if misc == 9 => silence = 0,
+                        77 if misc == 26 => interrupt = 0,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let value = Some(definition.prevention_type != 1 || interrupt != 0 || silence != 0);
+        cast.interruptible = value;
+        if previous != value {
+            cast_events.write(crate::wrath_native::WrathCastEvent {
+                scope: cast.scope,
+                attempt_serial: Some(cast.attempt_serial),
+                identity: Some(cast.identity),
+                target: cast.target,
+                targets: Some(cast.targets.clone()),
+                observed_at_unix_ms: cast.observed_at_unix_ms,
+                start_ui_now_seconds: cast.start_ui_now_seconds,
+                ui_now_seconds: cast.last_update_ui_now_seconds,
+                kind: crate::wrath_native::WrathCastEventKind::InterruptibilityChanged {
+                    not_interruptible: !value.expect("interruptibility is computed above"),
+                },
+            });
+        }
+    }
 }
 
 /// An ECS entity translated from a Wrath digest. Presentation clears exactly this scope without
