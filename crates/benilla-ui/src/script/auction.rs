@@ -1706,17 +1706,24 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // GetAuctionSellItemInfo() → name, texture, count, quality, canUse, price, pricePerUnit,
-    // stackCount, totalCount: nine values always (Wrath `Script_GetAuctionSellItemInfo`). An empty
-    // slot answers count 1, quality -1 and zeros: the stock Lua compares them unguarded.
+    // stackCount, totalCount: nine values always on Wrath (`Script_GetAuctionSellItemInfo`), the
+    // first six on 1.12 (`0x4ce590`, which has no multisell). An empty slot answers count 1,
+    // quality -1 and zeros: the stock Lua compares them unguarded.
     g.set(
         "GetAuctionSellItemInfo",
         lua.create_function(|lua, ()| {
-            let info = {
+            let (info, wrath) = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
-                sell_item_info(&model)
+                (sell_item_info(&model), model.is_wrath())
+            };
+            let shaped = |mut values: Vec<Value>| {
+                if !wrath {
+                    values.truncate(6);
+                }
+                Ok(MultiValue::from_vec(values))
             };
             let Some(info) = info else {
-                return Ok(MultiValue::from_vec(vec![
+                return shaped(vec![
                     Value::Nil,
                     Value::Nil,
                     Value::Integer(1),
@@ -1726,9 +1733,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     Value::Integer(0),
                     Value::Integer(0),
                     Value::Integer(0),
-                ]));
+                ]);
             };
-            Ok(MultiValue::from_vec(vec![
+            shaped(vec![
                 if info.name.is_empty() {
                     Value::Nil
                 } else {
@@ -1745,7 +1752,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 Value::Integer(i64::from(info.unit_price)),
                 Value::Integer(i64::from(info.stack_max)),
                 Value::Integer(i64::from(info.total)),
-            ]))
+            ])
         })?,
     )?;
 

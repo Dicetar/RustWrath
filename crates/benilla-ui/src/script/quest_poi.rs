@@ -206,11 +206,14 @@ fn update_icons(model: &mut Model) {
 
 impl super::UiScript {
     /// The log quests with no POI data yet, each asked once: the app sends them in one
-    /// `CMSG_QUEST_POI_QUERY`.
+    /// `CMSG_QUEST_POI_QUERY`. 1.12 has no quest POIs, so it asks nothing.
     pub fn take_quest_poi_asks(&mut self) -> Vec<u32> {
         let mut model = self.model_mut();
         let model = &mut *model;
         let mut asks = Vec::new();
+        if !model.is_wrath() {
+            return asks;
+        }
         for row in model.quest_log.entries.iter().filter(|r| !r.is_header) {
             if row.quest_id != 0
                 && !model.quest_poi.pois.contains_key(&row.quest_id)

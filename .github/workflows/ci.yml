@@ -53,8 +53,10 @@ jobs:
           persist-credentials: false
       - name: Free disk space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      # Wayland and xkbcommon: a test build of the world crates without benilla-app unifies
+      # winit's default Wayland backend, whose build script needs libwayland-client.
       - name: System libraries
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq pkg-config libasound2-dev libudev-dev
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
       - name: Toolchain
         run: rustup toolchain install && rustc -V
       # Saved on failure too: main carries known failing gates, and a cache saved only on green
