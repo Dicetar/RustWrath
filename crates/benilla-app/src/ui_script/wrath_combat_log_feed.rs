@@ -17,7 +17,7 @@ use crate::query_cache::Ask;
 use crate::script_calls::VmWith;
 use crate::ui_script::UiClock;
 use crate::wrath::{
-    WrathPartyKill, WrathSpellDamage, WrathSpellMiss, WrathSwing, WrathWorldView,
+    WrathPartyKill, WrathSpellDamage, WrathSpellHeal, WrathSpellMiss, WrathSwing, WrathWorldView,
     COMBAT_LOG_NAME_RETRY_SECONDS,
 };
 
@@ -33,6 +33,8 @@ pub(crate) struct CombatLogMemo {
     spell_damage_unresolved: u64,
     spell_miss_dropped: u64,
     spell_miss_unresolved: u64,
+    spell_heal_dropped: u64,
+    spell_heal_unresolved: u64,
 }
 
 /// The visible marker for an endpoint whose name never resolved inside the retry window. It is
@@ -118,6 +120,20 @@ pub(crate) fn feed(
             );
         }
         memo.spell_miss_unresolved = world.spell_miss_unresolved;
+        if world.spell_heal_dropped > memo.spell_heal_dropped {
+            debug!(
+                dropped = world.spell_heal_dropped,
+                "wrath: combat-log queue capacity lost spell-heal rows"
+            );
+        }
+        memo.spell_heal_dropped = world.spell_heal_dropped;
+        if world.spell_heal_unresolved > memo.spell_heal_unresolved {
+            debug!(
+                unresolved = world.spell_heal_unresolved,
+                "wrath: combat-log spell-heal rows delivered with an unknown endpoint after name resolution timed out"
+            );
+        }
+        memo.spell_heal_unresolved = world.spell_heal_unresolved;
 
         let now = clock.as_deref().map_or(0.0, |clock| clock.ui_now);
         let ask = match net.as_deref() {
@@ -285,6 +301,58 @@ pub(crate) fn feed(
                 spell_damage_args(timestamp, &hit, &source, &target, spells.as_deref()),
             );
             world.spell_damages.remove(index);
+        }
+
+        let mut index = 0;
+        while index < world.spell_heals.len() {
+            let hit = world.spell_heals[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                // A row from a retired world is never delivered into the replacement chain.
+                world.spell_heals.remove(index);
+                continue;
+            }
+            let source = endpoint_name(script, world, names.as_deref(), hit.caster, ask);
+            let target = endpoint_name(script, world, names.as_deref(), hit.target, ask);
+            let timestamp = if hit.received_at > 0.0 {
+                hit.received_at
+            } else {
+                now
+            };
+            if source.is_none() || target.is_none() {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at {
+                    now - hit.received_at
+                } else {
+                    0.0
+                };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    // The retry window is spent. Deliver the spell-heal event with a visible
+                    // unknown marker for the side(s) that did not resolve, then retire the row
+                    // so a later feed cannot replay it. The known endpoint keeps its real name.
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        spell_heal_args(
+                            timestamp,
+                            &hit,
+                            source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            spells.as_deref(),
+                        ),
+                    );
+                    world.spell_heal_unresolved = world.spell_heal_unresolved.saturating_add(1);
+                    world.spell_heals.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let (source, target) = (source.unwrap_or_default(), target.unwrap_or_default());
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                spell_heal_args(timestamp, &hit, &source, &target, spells.as_deref()),
+            );
+            world.spell_heals.remove(index);
         }
 
         let mut index = 0;
@@ -617,6 +685,47 @@ fn spell_damage_args(
         present(hit.hit_info & 0x2 != 0),
         ScriptValue::Nil,
         ScriptValue::Nil,
+    ]);
+    args
+}
+
+/// The fifteen values `CombatLogEntry::PushEvent` sends for a shown heal
+/// (`UnitCombatLog_C.cpp:1241-1361`, `SendHealEvent` at `:2001`, `UnitCombatLogHeal` at
+/// `:1811`, `HandleSpellHealLog` at `:1931`, `SMSG_SPELL_HEAL_LOG` `0x150` in
+/// `Net/Types.h`): 8 header values, then spellId/spellName/spellSchoolMask (3), then the 0x20
+/// block amount, overheal, absorbed, critical as 1.0 or nil (4). `UnitCombatLogHeal` returns
+/// without an entry when amount, overheal and absorbed are all zero; that row is dropped before
+/// it reaches the feed. If the spell record is missing, `PushEvent` pushes nil name and 0
+/// school.
+fn spell_heal_args(
+    timestamp: f64,
+    hit: &WrathSpellHeal,
+    source_name: &str,
+    target_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+) -> Vec<ScriptValue> {
+    let mut args = combat_log_header(
+        timestamp,
+        "SPELL_HEAL",
+        hit.caster,
+        source_name,
+        hit.target,
+        target_name,
+    );
+    let spell_name = spells
+        .and_then(|spells| spells.catalog.get(hit.spell_id))
+        .map(|def| def.name.clone());
+    let spell_school = spells
+        .and_then(|spells| spells.catalog.school_mask(hit.spell_id))
+        .unwrap_or(0);
+    args.push(ScriptValue::Int(i64::from(hit.spell_id)));
+    args.push(spell_name.map_or(ScriptValue::Nil, ScriptValue::Str));
+    args.push(ScriptValue::Int(i64::from(spell_school)));
+    args.extend([
+        ScriptValue::Number(f64::from(hit.amount)),
+        ScriptValue::Number(f64::from(hit.overheal)),
+        ScriptValue::Number(f64::from(hit.absorbed)),
+        present(hit.critical),
     ]);
     args
 }
@@ -2025,5 +2134,133 @@ mod tests {
             "missing record: zero school mask"
         );
         assert_eq!(args[11], ScriptValue::Str("DODGE".to_owned()));
+    }
+
+    fn spell_heal_hit() -> crate::wrath::WrathSpellHeal {
+        crate::wrath::WrathSpellHeal {
+            target: 0xF130_0000_0000_0022,
+            caster: 0x0000_0000_0000_0011,
+            spell_id: 2050,
+            amount: 42,
+            overheal: 3,
+            absorbed: 7,
+            critical: true,
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 3,
+            received_at: 1234.5,
+        }
+    }
+
+    /// `SPELL_HEAL` posts 15 values: 8 header + spellId/name/schoolMask + 4 heal values
+    /// (`PushEvent` 0x20 block, `UnitCombatLog_C.cpp:1241-1361`, `SendHealEvent` :2001,
+    /// `HandleSpellHealLog` :1931, `SMSG_SPELL_HEAL_LOG` 0x150 in `Net/Types.h`): amount,
+    /// overheal, absorbed, critical as 1.0 or nil.
+    #[test]
+    fn spell_heal_event_has_the_fifteen_wrath_values() {
+        let mut scope = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        scope
+            .run(
+                r#"
+                Fired = nil
+                local listener = CreateFrame("Frame", "WrathSpellHealTestListener")
+                listener:SetScript("OnEvent", function(_, event, ...)
+                    Fired = { event, ... }
+                end)
+                listener:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+                "#,
+            )
+            .unwrap();
+
+        let hit = spell_heal_hit();
+        scope.fire_event(
+            "COMBAT_LOG_EVENT_UNFILTERED",
+            spell_heal_args(1234.5, &hit, "Firna", "Teammate", None),
+        );
+
+        let event: String = scope.eval("return Fired[1]").unwrap();
+        let timestamp: f64 = scope.eval("return Fired[2]").unwrap();
+        let subevent: String = scope.eval("return Fired[3]").unwrap();
+        let source_guid: String = scope.eval("return Fired[4]").unwrap();
+        let source_name: String = scope.eval("return Fired[5]").unwrap();
+        let source_flags: i64 = scope.eval("return Fired[6]").unwrap();
+        let dest_guid: String = scope.eval("return Fired[7]").unwrap();
+        let dest_name: String = scope.eval("return Fired[8]").unwrap();
+        let dest_flags: i64 = scope.eval("return Fired[9]").unwrap();
+        let spell_id: i64 = scope.eval("return Fired[10]").unwrap();
+        let spell_name: Option<String> = scope.eval("return Fired[11]").unwrap();
+        let spell_school: i64 = scope.eval("return Fired[12]").unwrap();
+        let amount: f64 = scope.eval("return Fired[13]").unwrap();
+        let overheal: f64 = scope.eval("return Fired[14]").unwrap();
+        let absorbed: f64 = scope.eval("return Fired[15]").unwrap();
+        let critical: Option<f64> = scope.eval("return Fired[16]").unwrap();
+        let extra: Option<f64> = scope.eval("return Fired[17]").unwrap();
+
+        assert_eq!(event, "COMBAT_LOG_EVENT_UNFILTERED");
+        assert_eq!(timestamp, 1234.5);
+        assert_eq!(subevent, "SPELL_HEAL");
+        assert_eq!(source_guid, "0x0000000000000011");
+        assert_eq!(source_name, "Firna");
+        assert_eq!(source_flags, 0x400);
+        assert_eq!(dest_guid, "0xF130000000000022");
+        assert_eq!(dest_name, "Teammate");
+        assert_eq!(dest_flags, 0x800);
+        assert_eq!(spell_id, 2050);
+        assert_eq!(spell_name, None, "no catalog row: name is nil");
+        assert_eq!(spell_school, 0, "no catalog row: school mask is 0");
+        assert_eq!(amount, 42.0);
+        assert_eq!(overheal, 3.0);
+        assert_eq!(absorbed, 7.0);
+        assert_eq!(critical, Some(1.0));
+        assert_eq!(extra, None, "exactly the fifteen SPELL_HEAL values");
+    }
+
+    /// `UnitCombatLogHeal` (`UnitCombatLog_C.cpp:1811`) returns without an entry when amount,
+    /// overheal and absorbed are all zero, so the row is dropped before it reaches the feed.
+    #[test]
+    fn spell_heal_zero_row_is_dropped() {
+        let mut world = WrathWorldView::default();
+        world.session_epoch = 1;
+        world.world_generation = 2;
+        world.apply_spell_heal(
+            crate::wrath::WrathSpellHeal {
+                amount: 0,
+                overheal: 0,
+                absorbed: 0,
+                ..spell_heal_hit()
+            },
+            1,
+            2,
+            10.0,
+        );
+        assert!(
+            world.spell_heals.is_empty(),
+            "a zero heal row produces no combat-log entry"
+        );
+        assert_eq!(
+            world.spell_heal_revision, 0,
+            "dropping a zero row must not advance the heal revision"
+        );
+    }
+
+    /// If the spell record is missing, `PushEvent` pushes nil name and 0 school
+    /// (`UnitCombatLog_C.cpp:1241-1361`).
+    #[test]
+    fn spell_heal_missing_catalog_posts_nil_name_and_zero_school() {
+        let mut hit = spell_heal_hit();
+        hit.critical = false;
+        let args = spell_heal_args(10.0, &hit, "Firna", "Teammate", None);
+        assert_eq!(args.len(), 15);
+        assert_eq!(args[8], ScriptValue::Int(2050));
+        assert_eq!(args[9], ScriptValue::Nil, "missing record: nil name");
+        assert_eq!(
+            args[10],
+            ScriptValue::Int(0),
+            "missing record: zero school mask"
+        );
+        assert_eq!(args[11], ScriptValue::Number(42.0));
+        assert_eq!(args[12], ScriptValue::Number(3.0));
+        assert_eq!(args[13], ScriptValue::Number(7.0));
+        assert_eq!(args[14], ScriptValue::Nil, "critical 1.0 or nil");
     }
 }
