@@ -1038,3 +1038,99 @@ fn wrath_map_timer_globals_answer_quietly() {
     assert!(!s.eval::<bool>("return IsZoomOutAvailable()").unwrap());
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+
+/// The stock Wrath map opens with its controls: the continent/zone dropdowns, the zoom-out and
+/// size buttons, the quest-objectives toggle and the quest blob frame all exist and show, and the
+/// open and its updates raise nothing.
+#[test]
+fn the_wrath_map_opens_with_its_controls_and_no_script_errors() {
+    use benilla_ui::script::{WorldMapContinentView, WorldMapZoneView};
+    let _data = benilla_formats::wow_data_or_skip!();
+    let mut s = UiScript::with_target(benilla_ui::script::UiTarget::Wrath335).unwrap();
+    s.set_screen_size(1600.0, 900.0);
+    s.set_unit(
+        "player",
+        Some(benilla_ui::script::UnitState {
+            exists: true,
+            name: Some("Probefour".into()),
+            level: 60,
+            ..Default::default()
+        }),
+    );
+    // The map and what its OnLoad and open touch, in the production order; the Wrath target seats
+    // the startup CVars and the Constants stand-ins first (`test_ui::load_ui`).
+    super::test_ui::load_kit_counting(
+        &s,
+        &[&[
+            r"Interface\FrameXML\GlobalStrings.lua",
+            // `WorldMapFrame_Update` loops to `NUM_WORLDMAP_DETAIL_TILES`.
+            r"Interface\FrameXML\Constants.lua",
+            r"Interface\FrameXML\Fonts.xml",
+            r"Interface\FrameXML\Localization.xml",
+            r"Interface\FrameXML\BasicControls.xml",
+            r"Interface\FrameXML\LocaleProperties.lua",
+            r"Interface\FrameXML\UIParent.xml",
+            r"Interface\FrameXML\MoneyFrame.lua",
+            r"Interface\FrameXML\MoneyFrame.xml",
+            r"Interface\FrameXML\GameTooltip.xml",
+            r"Interface\FrameXML\UIDropDownMenu.xml",
+            r"Interface\FrameXML\UIPanelTemplates.lua",
+            r"Interface\FrameXML\UIPanelTemplates.xml",
+            // The track-quest and show-objectives boxes inherit `OptionsCheckButtonTemplate`.
+            r"Interface\FrameXML\OptionsPanelTemplates.xml",
+            // `StaticPopup.lua` reads `AUTOCOMPLETE_LIST` at load.
+            r"Interface\FrameXML\AutoComplete.lua",
+            r"Interface\FrameXML\StaticPopup.xml",
+            r"Interface\FrameXML\PartyMemberFrame.lua",
+            r"Interface\FrameXML\RaidFrame.lua",
+            r"Interface\FrameXML\QuestPOI.xml",
+            r"Interface\FrameXML\WorldMapFrame.xml",
+        ]],
+        r"Interface\FrameXML\WorldMapFrame.xml",
+    );
+    // The load's own raises are reported; what the test holds to is the open's.
+    eprintln!("load errors: {:#?}", s.take_errors());
+    s.set_world_map_catalog(vec![WorldMapContinentView {
+        name: "Eastern Kingdoms".into(),
+        map_file: "Azeroth".into(),
+        zones: vec![WorldMapZoneView {
+            name: "Elwynn Forest".into(),
+            area_id: 12,
+            map_file: "Elwynn".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }]);
+    s.set_world_map_feed(Some((1, 1)), None, 0.0, None, Vec::new(), Vec::new());
+    s.tick(0.01);
+    s.run("ToggleWorldMap()").unwrap();
+    for _ in 0..3 {
+        s.tick(0.05);
+    }
+    let shown = |s: &UiScript, name: &str| {
+        s.eval::<bool>(&format!(
+            "return {name} ~= nil and {name}:IsVisible() and true or false"
+        ))
+        .unwrap()
+    };
+    let mut report = Vec::new();
+    for name in [
+        "WorldMapFrame",
+        "WorldMapBlobFrame",
+        "WorldMapContinentDropDown",
+        "WorldMapZoneDropDown",
+        "WorldMapZoomOutButton",
+        "WorldMapQuestShowObjectives",
+        "WorldMapFrameSizeDownButton",
+        "WorldMapFrameSizeUpButton",
+        "WorldMapLevelDropDown",
+    ] {
+        report.push((name, shown(&s, name)));
+    }
+    eprintln!("visibility: {report:#?}");
+    eprintln!("errors: {:#?}", s.errors());
+    for (name, visible) in &report[..7] {
+        assert!(visible, "{name} is not showing");
+    }
+    assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
+}

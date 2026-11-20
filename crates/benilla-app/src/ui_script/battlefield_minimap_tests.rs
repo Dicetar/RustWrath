@@ -79,6 +79,8 @@ fn catalog() -> Vec<WorldMapContinentView> {
     vec![WorldMapContinentView {
         name: "Kalimdor".into(),
         map_file: "Kalimdor".into(),
+        wma_id: 0,
+        map_id: 0,
         world_rect: (0.0, 0.0, 1.0, 1.0),
         loc_rect: (10000.0, -10000.0, 10000.0, -10000.0),
         sheet: None,
@@ -87,6 +89,7 @@ fn catalog() -> Vec<WorldMapContinentView> {
             name: "Warsong Gulch".into(),
             area_id: 3277,
             map_file: "WarsongGulch".into(),
+            wma_id: 0,
             loc_rect: (1000.0, 0.0, 1000.0, 0.0),
             overlays: vec![
                 overlay("SilverwingHold", 300, 200, 100, 50, 1),

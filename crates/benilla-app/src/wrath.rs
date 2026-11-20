@@ -4658,6 +4658,26 @@ fn translate_gameplay(
             money: c.money,
             items: Vec::new(),
         })],
+        WrathGameplayEvent::QuestPois(pois) => vec![SessionEvent::QuestPois(
+            pois.into_iter()
+                .map(|q| {
+                    let areas = q
+                        .blobs
+                        .into_iter()
+                        .map(|b| benilla_protocol::QuestPoiArea {
+                            objective_index: b.objective_index,
+                            map_id: b.map_id as u32,
+                            world_map_area_id: b.world_map_area_id as u32,
+                            floor: b.floor as u32,
+                            priority: b.priority as u32,
+                            flags: b.flags as u32,
+                            points: b.points,
+                        })
+                        .collect();
+                    (q.quest_id, areas)
+                })
+                .collect(),
+        )],
         WrathGameplayEvent::QuestTemplate(t) => {
             vec![SessionEvent::QuestTemplate(Box::new(QuestTemplate {
                 quest_id: t.quest_id,
@@ -6275,6 +6295,15 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_QUEST_QUERY,
                 gameplay::quest_query(quest),
             )),
+            ClientCommand::QuestPoiQuery { quests } => {
+                match benilla_protocol_wrath::quest_poi::query(&quests) {
+                    Ok(payload) => Some((
+                        benilla_protocol_wrath::quest_poi::CMSG_QUEST_POI_QUERY,
+                        payload,
+                    )),
+                    Err(_) => None,
+                }
+            }
             ClientCommand::GameObjUse { guid } => Some((
                 benilla_protocol_wrath::opcode::CMSG_GAMEOBJ_USE,
                 guid.to_le_bytes().to_vec(),
@@ -7534,13 +7563,13 @@ fn wrath_tap_commands(
             )),
             ClientCommand::AuctionSellItem {
                 auctioneer,
-                item_guid,
+                items,
                 bid,
                 buyout,
                 etime_minutes,
             } => Some((
                 benilla_protocol_wrath::opcode::CMSG_AUCTION_SELL_ITEM,
-                gameplay::auction_sell_item(auctioneer, item_guid, bid, buyout, etime_minutes),
+                gameplay::auction_sell_item(auctioneer, &items, bid, buyout, etime_minutes),
             )),
             ClientCommand::AuctionPlaceBid {
                 auctioneer,

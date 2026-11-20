@@ -1437,6 +1437,10 @@ pub(crate) struct Model {
 
     /// The world map's pushed catalog and feed, and its selection.
     pub(crate) worldmap: super::worldmap::WorldMapState,
+    /// The quest POI blobs by quest, and the map's visible list over them.
+    pub(crate) quest_poi: super::quest_poi::QuestPoiStore,
+    /// `SetCreature`'s creature-cache view: displays by entry, panes waiting on an answer, asks.
+    pub(crate) creature_panes: super::modelframe::CreaturePanes,
     /// Nameplate `Button`s under `WorldFrame`, never shrunk, visible to `GetChildren()`.
     pub(crate) nameplates: super::nameplate::NamePlates,
     /// Chat bubble `Frame`s under `WorldFrame`, pooled the same way.
@@ -2080,6 +2084,8 @@ impl Model {
             clock_sync_zero: false,
             shown_chat_lines: Vec::new(),
             worldmap: super::worldmap::WorldMapState::default(),
+            quest_poi: Default::default(),
+            creature_panes: Default::default(),
             nameplates: super::nameplate::NamePlates::default(),
             chat_bubbles: super::chat_bubble::ChatBubbles::default(),
             worldstate: super::worldstate::WorldStateUiState::default(),

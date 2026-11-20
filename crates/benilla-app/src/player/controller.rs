@@ -741,6 +741,7 @@ pub(super) fn control(
         let mut swim_pitch = 0.0_f32;
         // Pre-step feet Y, the true take-off height: the step already rises one jump tick.
         let launch_y = player.pos.y;
+        let pre_step = player.pos;
         let mover::Outcome {
             held,
             grounded,
@@ -797,6 +798,17 @@ pub(super) fn control(
                 mover_speeds.map_or(super::AIR_NUDGE_SPEED, |s| s.walk.min(s.run)),
             )
         };
+
+        // Souls unit collision ([`super::bodies`]): the frame's move slides round the hostile
+        // bodies. A held, gated, knocked or riding frame is not ours to steer.
+        if !held
+            && !gated
+            && !player.knock_arc
+            && player.ride.is_none()
+            && !player.unit_bodies.is_empty()
+        {
+            player.pos = super::bodies::block(pre_step, player.pos, &player.unit_bodies);
+        }
 
         // Traced here, the first point that knows both the latch and the mover's verdict.
         if let Some(k) = knockback {

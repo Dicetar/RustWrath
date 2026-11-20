@@ -19,6 +19,8 @@ fn push_catalog(s: &mut UiScript) {
         WorldMapContinentView {
             name: "Kalimdor".into(),
             map_file: "Kalimdor".into(),
+            wma_id: 0,
+            map_id: 0,
             world_rect: (0.08882, 0.07910, 0.40020, 0.86952),
             loc_rect: (17066.6, -19733.2, 12799.9, -11733.3),
             sheet: Some(WorldMapSheetRow {
@@ -32,6 +34,7 @@ fn push_catalog(s: &mut UiScript) {
                     name: "Durotar".into(),
                     area_id: 14,
                     map_file: "Durotar".into(),
+                    wma_id: 0,
                     loc_rect: (-1800.0, -6800.0, -3800.0, -8500.0),
                     overlays: Vec::new(),
                 },
@@ -39,6 +42,7 @@ fn push_catalog(s: &mut UiScript) {
                     name: "The Barrens".into(),
                     area_id: 17,
                     map_file: "Barrens".into(),
+                    wma_id: 0,
                     loc_rect: (-1000.0, -11000.0, -5500.0, -17000.0),
                     overlays: Vec::new(),
                 },
@@ -47,6 +51,8 @@ fn push_catalog(s: &mut UiScript) {
         WorldMapContinentView {
             name: "Eastern Kingdoms".into(),
             map_file: "Azeroth".into(),
+            wma_id: 0,
+            map_id: 0,
             world_rect: (0.62375, 0.02695, 0.92315, 0.87126),
             loc_rect: (16000.0, -19199.9, 7466.6, -16000.0),
             sheet: Some(WorldMapSheetRow {
@@ -60,6 +66,7 @@ fn push_catalog(s: &mut UiScript) {
                     name: "Elwynn Forest".into(),
                     area_id: 12,
                     map_file: "Elwynn".into(),
+                    wma_id: 0,
                     // Synthetic, inside EK's rect: w=2000, h=1500, for round highlight coords.
                     loc_rect: (-8000.0, -10000.0, -400.0, -1900.0),
                     // Northshire (bit 125) and Goldshire (124) carry the real exploreFlags; hit
@@ -103,6 +110,7 @@ fn push_catalog(s: &mut UiScript) {
                     name: "Stormwind City".into(),
                     area_id: 1519,
                     map_file: "StormwindCity".into(),
+                    wma_id: 0,
                     loc_rect: (-8200.0, -8900.0, -400.0, -1100.0),
                     overlays: Vec::new(),
                 },
@@ -120,6 +128,7 @@ fn push_direct_areas(s: &mut UiScript) {
             name: name.into(),
             area_id,
             map_file: folder.into(),
+            wma_id: 0,
             // A synthetic rect: the app owns every projection, so nothing here reads it.
             loc_rect: (1500.0, 500.0, 1600.0, 600.0),
             overlays,
@@ -574,6 +583,8 @@ fn worldmap_world_level_hover_lights_the_continent() {
         WorldMapContinentView {
             name: "Wide".into(),
             map_file: "Wide".into(),
+            wma_id: 0,
+            map_id: 0,
             world_rect: (0.0, 0.0, 0.5, 1.0),
             loc_rect: (1.0, 0.0, 1.0, 0.0),
             sheet: Some(WorldMapSheetRow {
@@ -586,6 +597,8 @@ fn worldmap_world_level_hover_lights_the_continent() {
         WorldMapContinentView {
             name: "Rowless".into(),
             map_file: "Rowless".into(),
+            wma_id: 0,
+            map_id: 0,
             world_rect: (0.5, 0.0, 1.0, 1.0),
             loc_rect: (1.0, 0.0, 1.0, 0.0),
             ..Default::default()

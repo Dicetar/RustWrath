@@ -66,7 +66,28 @@ impl Plugin for UiSpellbookPlugin {
                     .in_set(BookFeed)
                     .before(crate::ui_action::CooldownEvents)
                     .before(crate::ui_cast::feed_cast_reports),
-            );
+            )
+            .add_systems(Update, feed_creature_panes);
+    }
+}
+
+/// `SetCreature`'s creature cache (the companion tab's preview): the entries a pane asked for go
+/// to the creature query, and each answer lands its template's display on the waiting panes.
+fn feed_creature_panes(
+    script: Option<NonSendMut<benilla_ui::script::UiScript>>,
+    names: Option<Res<crate::names::NameCache>>,
+    commands: Option<Res<crate::net::NetCommands>>,
+) {
+    let (Some(mut script), Some(names), Some(commands)) = (script, names, commands) else {
+        return;
+    };
+    for entry in script.take_creature_asks() {
+        names.resolve_creature(entry, 0, crate::query_cache::Ask::Event(&commands));
+    }
+    for entry in script.pending_creature_entries() {
+        if let Some(display) = names.creature_record(entry).map(|r| r.display_id) {
+            script.land_creature_display(entry, display);
+        }
     }
 }
 

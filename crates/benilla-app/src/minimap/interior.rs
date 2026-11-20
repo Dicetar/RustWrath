@@ -5,10 +5,61 @@ use bevy::math::{Affine3A, Vec3};
 use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
 use benilla_assets::WmoModel;
 
-/// MOGP flags: the flood skips `& 0x8` exterior groups (`0x6a5020`), the emit skips `& 0x88`
-/// (`0x6a5270`).
+/// MOGP flags: `0x8` exterior, `0x40` the outdoor-lit interior class a city street carries; the
+/// flood keeps to groups whose `0x48` bits match the seed's (`QueryMapObjMinimapGroup`).
 const GROUP_EXTERIOR: u32 = 0x8;
-const GROUP_NO_EMIT: u32 = 0x88;
+const GROUP_EXTERIOR_LIT: u32 = 0x40;
+/// A portal into a group flagged `0x80` is never crossed.
+const GROUP_NO_MINIMAP_PORTAL: u32 = 0x80;
+/// The two MOGP group ids (`WMOAreaTable.WMOGroupID`) the flood neither leaves nor enters.
+const FLOOD_STOP_GROUP_IDS: [u32; 2] = [23015, 23016];
+/// `minimapPortalMax`'s default: the recursion depth cap.
+const MINIMAP_PORTAL_MAX: u32 = 99;
+
+/// The `WMOAreaTable` flag bits the minimap reads (`MinimapUpdate`): the whole-WMO row's `0x1`
+/// (outdoor area) and `0x18` (indoor area) open the building's map, a group row's `0x20` forces the
+/// outdoor map.
+const AREA_OUTDOOR: u32 = 0x1;
+const AREA_INDOOR: u32 = 0x18;
+const AREA_FORCE_OUTDOOR: u32 = 0x20;
+
+/// How the building's map draws: the whole-WMO tile set `<wmo>_<groupCount>_<x>_<y>` gridded over
+/// the MOHD box, or the portal flood's per-group tiles from a seed group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum InteriorMap {
+    Whole,
+    Groups { seed: usize, inside: bool },
+}
+
+/// `MinimapUpdate`'s building verdict for a player linked to `group_flags`' group (MOGP flags) under
+/// the group's and the whole WMO's `WMOAreaTable` flags; `None` draws the terrain.
+///
+/// The group row's `0x20` forces the outdoor map. Otherwise the building's map opens when the root
+/// row says outdoor or indoor area, or the group is not exterior. The root's indoor-area bits then
+/// pick the whole-WMO set unless the group carries neither `0x8` nor `0x40`
+/// (`CMapEntity::QueryMapObjMinimap`): Stormwind's root row is `0x10`, so its `0x40` streets and
+/// exterior groups draw the whole city while a shop interior floods its own groups.
+pub(super) fn interior_map_mode(
+    group_flags: u32,
+    group_row: Option<u32>,
+    root_row: Option<u32>,
+    seed: usize,
+) -> Option<InteriorMap> {
+    if group_row.is_some_and(|f| f & AREA_FORCE_OUTDOOR != 0) {
+        return None;
+    }
+    let root = root_row.unwrap_or(0);
+    let inside = group_flags & GROUP_EXTERIOR == 0;
+    let indoor_area = root & AREA_INDOOR != 0;
+    if !(root & AREA_OUTDOOR != 0 || indoor_area || inside) {
+        return None;
+    }
+    if indoor_area && group_flags & (GROUP_EXTERIOR | GROUP_EXTERIOR_LIT) != 0 {
+        Some(InteriorMap::Whole)
+    } else {
+        Some(InteriorMap::Groups { seed, inside })
+    }
+}
 
 /// The `md5translate.trs` key stem of a WMO's interior tiles: the model path without `World\` and
 /// `.wmo` (name builder `0x6da330`), backslashed and lowercased, the trs lookup being
@@ -37,7 +88,12 @@ fn interior_window(p: [f32; 3], c: f32) -> ([f32; 3], [f32; 3]) {
 }
 
 /// Which groups' tiles draw, per absolute group index: the reference's portal flood-fill from the
-/// player's group (`0x6a5020`) inside the query box.
+/// player's group (`QueryMapObjMinimapGroup`) inside the query box.
+///
+/// The flood keeps to the seed's class: inside, the groups whose `0x48` bits equal the seed's `0x40`
+/// (a street floods streets, a room rooms); outside, the exterior groups. Every group it keeps
+/// emits; it never crosses into a `0x80` group or past group ids 23015/23016, and stops at
+/// `minimapPortalMax` levels.
 ///
 /// The box is [`interior_window`] grown by `c` on every side (`0x6d96b6`-`0x6d96f3`), moved into
 /// the model frame as the AABB of its image (`0x6dc540`), its top z then replaced by the seed
@@ -50,12 +106,23 @@ pub(super) fn interior_group_selection(
     player_pos: Vec3,
     radius: f32,
     seed: usize,
+    inside: bool,
 ) -> Vec<bool> {
     let n = model.group_nav.len();
     let mut drawable = vec![false; n];
     if seed >= n {
         return drawable;
     }
+    let class_bits = if inside {
+        GROUP_EXTERIOR | GROUP_EXTERIOR_LIT
+    } else {
+        GROUP_EXTERIOR
+    };
+    let class = if inside {
+        model.group_nav[seed].flags & GROUP_EXTERIOR_LIT
+    } else {
+        GROUP_EXTERIOR
+    };
     let c = radius;
     let (wmin, wmax) = interior_window(bevy_to_wow(player_pos), c);
     let (wmin, wmax) = (wmin.map(|v| v - c), wmax.map(|v| v + c));
@@ -95,23 +162,24 @@ pub(super) fn interior_group_selection(
     };
 
     let mut visited = vec![false; n];
-    let mut stack = vec![seed];
-    while let Some(g) = stack.pop() {
+    let mut stack = vec![(seed, 0u32)];
+    while let Some((g, depth)) = stack.pop() {
         if g >= n || visited[g] {
             continue;
         }
-        visited[g] = true;
         let gn = &model.group_nav[g];
-        if gn.flags & GROUP_EXTERIOR != 0 {
-            continue; // an exterior group is not flooded
+        if gn.flags & class_bits != class {
+            continue; // another class: a street does not flood a room, nor a room the street
         }
-        // The XY gate blocks emit and recursion both (`0x6a51f4`); a stacked storey shares the XY
-        // footprint and passes it.
+        visited[g] = true;
+        // The XY gate blocks emit and recursion both; a stacked storey shares the XY footprint and
+        // passes it.
         if !xy_overlap(gn.bbox_min, gn.bbox_max) {
             continue;
         }
-        if gn.flags & GROUP_NO_EMIT == 0 {
-            drawable[g] = true;
+        drawable[g] = true;
+        if FLOOD_STOP_GROUP_IDS.contains(&gn.area_table_id) || depth >= MINIMAP_PORTAL_MAX {
+            continue;
         }
         // Cross a portal unless its polygon is wholly outside one box plane, Z included.
         let start = gn.ref_start as usize;
@@ -119,6 +187,12 @@ pub(super) fn interior_group_selection(
         for r in &model.portal_refs[start..end] {
             let nb = r.group as usize;
             if r.group == u16::MAX || nb >= n || visited[nb] {
+                continue;
+            }
+            let target = &model.group_nav[nb];
+            if target.flags & GROUP_NO_MINIMAP_PORTAL != 0
+                || FLOOD_STOP_GROUP_IDS.contains(&target.area_table_id)
+            {
                 continue;
             }
             let Some(info) = model.portal_infos.get(r.portal as usize) else {
@@ -136,7 +210,7 @@ pub(super) fn interior_group_selection(
                 }
             }
             if and == 0 {
-                stack.push(nb);
+                stack.push((nb, depth + 1));
             }
         }
     }
@@ -231,10 +305,12 @@ mod tests {
             doodad_base: Default::default(),
             doodad_owner: Default::default(),
             doodad_groups: Default::default(),
+            bbox: None,
             convex_volume: Vec::new(),
         };
 
-        let drawable = interior_group_selection(&model, &Affine3A::IDENTITY, Vec3::ZERO, 25.0, 0);
+        let drawable =
+            interior_group_selection(&model, &Affine3A::IDENTITY, Vec3::ZERO, 25.0, 0, true);
         assert!(drawable[0], "the player's own group draws");
         assert!(
             drawable[1],
@@ -320,10 +396,12 @@ mod tests {
             doodad_base: Default::default(),
             doodad_owner: Default::default(),
             doodad_groups: Default::default(),
+            bbox: None,
             convex_volume: Vec::new(),
         };
 
-        let drawable = interior_group_selection(&model, &Affine3A::IDENTITY, Vec3::ZERO, 25.0, 0);
+        let drawable =
+            interior_group_selection(&model, &Affine3A::IDENTITY, Vec3::ZERO, 25.0, 0, true);
         assert!(drawable[0]);
         assert!(
             !drawable[1],
@@ -392,7 +470,7 @@ mod tests {
         use bevy::math::{Affine3A, Vec3};
         let at = |g1_x: [f32; 2], portal_x: f32| {
             let model = two_groups(3.0, g1_x, portal_x, 1.0);
-            interior_group_selection(&model, &Affine3A::IDENTITY, Vec3::ZERO, 25.0, 0)[1]
+            interior_group_selection(&model, &Affine3A::IDENTITY, Vec3::ZERO, 25.0, 0, true)[1]
         };
         assert!(
             !at([-45.0, -30.0], -4.0),
@@ -412,6 +490,7 @@ mod tests {
             benilla_assets::coords::wow_to_bevy([30.0, 0.0, 0.0]),
             25.0,
             0,
+            true,
         );
         assert!(
             !west[1],
@@ -428,7 +507,7 @@ mod tests {
         use bevy::math::{Affine3A, Vec3};
         let crossed = |seed_top: f32, portal_z: f32| {
             let model = two_groups(seed_top, [-5.0, 5.0], 0.0, portal_z);
-            interior_group_selection(&model, &Affine3A::IDENTITY, Vec3::ZERO, 25.0, 0)[1]
+            interior_group_selection(&model, &Affine3A::IDENTITY, Vec3::ZERO, 25.0, 0, true)[1]
         };
         assert!(
             crossed(40.0, 35.0),
@@ -455,5 +534,65 @@ mod tests {
             Some("wmo\\azeroth\\buildings\\stormwind\\stormwind"),
         );
         assert_eq!(wmo_minimap_stem("not/a/model.txt"), None);
+    }
+
+    /// Stormwind's whole-WMO row is `0x10`: its `0x40` street groups and `0x8` exterior groups
+    /// draw the whole-city set, a shop room (neither bit) floods its own groups, and a group row's
+    /// `0x20` (the Valley of Heroes) forces the terrain map. A building with no indoor root row
+    /// opens only for an interior group.
+    #[test]
+    fn the_root_area_row_picks_the_whole_wmo_set_for_streets() {
+        use super::{interior_map_mode, InteriorMap};
+        let (street, exterior, room) = (0x2841, 0x8 | 0x1, 0x2205);
+        assert_eq!(
+            interior_map_mode(street, Some(0x4), Some(0x10), 7),
+            Some(InteriorMap::Whole)
+        );
+        assert_eq!(
+            interior_map_mode(exterior, None, Some(0x10), 46),
+            Some(InteriorMap::Whole)
+        );
+        assert_eq!(
+            interior_map_mode(room, Some(0), Some(0x10), 21),
+            Some(InteriorMap::Groups {
+                seed: 21,
+                inside: true
+            })
+        );
+        assert_eq!(interior_map_mode(street, Some(0x20), Some(0x10), 7), None);
+        assert_eq!(interior_map_mode(exterior, None, None, 3), None);
+        assert_eq!(
+            interior_map_mode(room, None, None, 3),
+            Some(InteriorMap::Groups {
+                seed: 3,
+                inside: true
+            })
+        );
+        assert_eq!(
+            interior_map_mode(exterior, None, Some(0x1), 3),
+            Some(InteriorMap::Groups {
+                seed: 3,
+                inside: false
+            })
+        );
+    }
+
+    /// The flood keeps to the seed's `0x48` class: a street seed (`0x40`) does not flood into a
+    /// room, a room seed does not flood into the street, and no flood enters a `0x80` group.
+    #[test]
+    fn the_flood_keeps_to_the_seed_groups_class() {
+        use super::interior_group_selection;
+        use bevy::math::{Affine3A, Vec3};
+        let with_flags = |f0: u32, f1: u32| {
+            let mut model = two_groups(3.0, [3.0, 13.0], 4.0, 1.0);
+            model.group_nav[0].flags = f0;
+            model.group_nav[1].flags = f1;
+            interior_group_selection(&model, &Affine3A::IDENTITY, Vec3::ZERO, 25.0, 0, true)
+        };
+        assert_eq!(with_flags(0x40, 0x40), [true, true], "street to street");
+        assert_eq!(with_flags(0x40, 0), [true, false], "street to room");
+        assert_eq!(with_flags(0, 0x40), [true, false], "room to street");
+        assert_eq!(with_flags(0, 0x80), [true, false], "into a 0x80 group");
+        assert_eq!(with_flags(0, 0), [true, true], "room to room");
     }
 }

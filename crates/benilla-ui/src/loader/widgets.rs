@@ -619,6 +619,31 @@ impl Loader<'_> {
         }
     }
 
+    /// `QuestPOIFrame`'s LoadXML attributes, `filltexture` and `bordertexture`, through the
+    /// widget's own setters per level, the instance's level last. Stock `WorldMapBlobFrame` sets
+    /// neither and paints them from its OnLoad instead.
+    pub(super) fn apply_quest_poi(
+        &mut self,
+        el: &Element,
+        levels: &Levels,
+        wrapper: &Table,
+        dbg: &str,
+    ) {
+        if !el.tag.eq_ignore_ascii_case("QuestPOIFrame") {
+            return;
+        }
+        for level in levels {
+            for (attr, setter) in [
+                ("filltexture", "SetFillTexture"),
+                ("bordertexture", "SetBorderTexture"),
+            ] {
+                if let Some(path) = level.attr(attr) {
+                    self.call(wrapper, setter, path.to_string(), dbg);
+                }
+            }
+        }
+    }
+
     /// `<ColorSelect>`'s four textures (`0x78b580`, `0x78b850`, `0x78b8a0`, `0x78ba90`): the hue
     /// wheel, the value strip and a thumb for each. The client generates the wheel and the strip,
     /// so a file-less element still creates its region, for layout, hit tests and paint.
