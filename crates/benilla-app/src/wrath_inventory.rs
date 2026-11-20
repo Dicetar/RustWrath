@@ -37,7 +37,6 @@ pub(crate) const WRATH_KEYRING_SLOTS: u8 = 32;
 pub(crate) const WRATH_BANK_SLOT_FIRST: u8 = 39;
 pub(crate) const WRATH_BANK_BAG_SLOT_FIRST: u8 = 67;
 #[cfg(test)]
-#[cfg(test)]
 pub(crate) const WRATH_BUYBACK_SLOT_FIRST: u8 = 74;
 pub(crate) const WRATH_KEYRING_SLOT_FIRST: u8 = 86;
 
