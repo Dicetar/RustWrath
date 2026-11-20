@@ -17,7 +17,8 @@ use crate::query_cache::Ask;
 use crate::script_calls::VmWith;
 use crate::ui_script::UiClock;
 use crate::wrath::{
-    WrathPartyKill, WrathSpellDamage, WrathSwing, WrathWorldView, COMBAT_LOG_NAME_RETRY_SECONDS,
+    WrathPartyKill, WrathSpellDamage, WrathSpellMiss, WrathSwing, WrathWorldView,
+    COMBAT_LOG_NAME_RETRY_SECONDS,
 };
 
 /// Capacity loss and unresolved-name counts already reported, so each diagnostic is logged once
@@ -30,6 +31,8 @@ pub(crate) struct CombatLogMemo {
     swing_unresolved: u64,
     spell_damage_dropped: u64,
     spell_damage_unresolved: u64,
+    spell_miss_dropped: u64,
+    spell_miss_unresolved: u64,
 }
 
 /// The visible marker for an endpoint whose name never resolved inside the retry window. It is
@@ -101,6 +104,20 @@ pub(crate) fn feed(
             );
         }
         memo.spell_damage_unresolved = world.spell_damage_unresolved;
+        if world.spell_miss_dropped > memo.spell_miss_dropped {
+            debug!(
+                dropped = world.spell_miss_dropped,
+                "wrath: combat-log queue capacity lost spell-miss rows"
+            );
+        }
+        memo.spell_miss_dropped = world.spell_miss_dropped;
+        if world.spell_miss_unresolved > memo.spell_miss_unresolved {
+            debug!(
+                unresolved = world.spell_miss_unresolved,
+                "wrath: combat-log spell-miss rows delivered with an unknown endpoint after name resolution timed out"
+            );
+        }
+        memo.spell_miss_unresolved = world.spell_miss_unresolved;
 
         let now = clock.as_deref().map_or(0.0, |clock| clock.ui_now);
         let ask = match net.as_deref() {
@@ -268,6 +285,54 @@ pub(crate) fn feed(
                 spell_damage_args(timestamp, &hit, &source, &target, spells.as_deref()),
             );
             world.spell_damages.remove(index);
+        }
+
+        let mut index = 0;
+        while index < world.spell_misses.len() {
+            let hit = world.spell_misses[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                world.spell_misses.remove(index);
+                continue;
+            }
+            let source = endpoint_name(script, world, names.as_deref(), hit.caster, ask);
+            let target = endpoint_name(script, world, names.as_deref(), hit.target, ask);
+            let timestamp = if hit.received_at > 0.0 {
+                hit.received_at
+            } else {
+                now
+            };
+            if source.is_none() || target.is_none() {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at {
+                    now - hit.received_at
+                } else {
+                    0.0
+                };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        spell_miss_args(
+                            timestamp,
+                            &hit,
+                            source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            spells.as_deref(),
+                        ),
+                    );
+                    world.spell_miss_unresolved = world.spell_miss_unresolved.saturating_add(1);
+                    world.spell_misses.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let (source, target) = (source.unwrap_or_default(), target.unwrap_or_default());
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                spell_miss_args(timestamp, &hit, &source, &target, spells.as_deref()),
+            );
+            world.spell_misses.remove(index);
         }
     });
 }
@@ -553,6 +618,70 @@ fn spell_damage_args(
         ScriptValue::Nil,
         ScriptValue::Nil,
     ]);
+    args
+}
+
+/// `SMSG_SPELL_MISS_LOG` (`0x24B`, `UnitCombatLog_C.cpp:1888` `HandleSpellLogMiss`):
+/// missType indexes `g_spellMissStrings` at `:150` (0 NONE, 1 MISS, 2 RESIST, 3 DODGE, 4 PARRY,
+/// 5 BLOCK, 6 EVADE, 7 IMMUNE, 8 IMMUNE, 9 DEFLECT, 10 ABSORB, 11 REFLECT).
+fn spell_miss_string(miss_type: u8) -> &'static str {
+    match miss_type {
+        0 => "NONE",
+        1 => "MISS",
+        2 => "RESIST",
+        3 => "DODGE",
+        4 => "PARRY",
+        5 => "BLOCK",
+        6 => "EVADE",
+        7 => "IMMUNE",
+        8 => "IMMUNE",
+        9 => "DEFLECT",
+        10 => "ABSORB",
+        11 => "REFLECT",
+        _ => "MISS",
+    }
+}
+
+/// The values `CombatLogEntry::PushEvent` sends for `SPELL_MISSED`
+/// (`UnitCombatLog_C.cpp:1241-1361`, `UnitCombatLogSpellMissed` `:1573`,
+/// `QueueMissedSpellText` `:1470`, `SetMissInfo` `:311`): 8 header values, then
+/// spellId/spellName/spellSchoolMask (3), then the miss string (0x4). `SetMissInfo` sets
+/// `0x2000` for missType 10 (ABSORB), `0x4000` for missType 2 (RESIST) and `0x8000` for
+/// missType 5 (BLOCK), and `PushEvent` appends that amount slot as integer 0 from this packet
+/// (no other miss type appends an amount). The decompiled `UnitCombatLogSpellMissed` call from
+/// `HandleSpellLogMiss` (`:1888`, `a5=true`) is labelled `DAMAGE_SHIELD_MISSED` (event 41);
+/// this feed implements `SPELL_MISSED` (event 8). If the spell record is missing, `PushEvent`
+/// pushes nil name and 0 school.
+fn spell_miss_args(
+    timestamp: f64,
+    hit: &WrathSpellMiss,
+    source_name: &str,
+    target_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+) -> Vec<ScriptValue> {
+    let mut args = combat_log_header(
+        timestamp,
+        "SPELL_MISSED",
+        hit.caster,
+        source_name,
+        hit.target,
+        target_name,
+    );
+    let spell_name = spells
+        .and_then(|spells| spells.catalog.get(hit.spell_id))
+        .map(|def| def.name.clone());
+    let spell_school = spells
+        .and_then(|spells| spells.catalog.school_mask(hit.spell_id))
+        .unwrap_or(0);
+    args.push(ScriptValue::Int(i64::from(hit.spell_id)));
+    args.push(spell_name.map_or(ScriptValue::Nil, ScriptValue::Str));
+    args.push(ScriptValue::Int(i64::from(spell_school)));
+    args.push(ScriptValue::Str(
+        spell_miss_string(hit.miss_type).to_owned(),
+    ));
+    if matches!(hit.miss_type, 2 | 5 | 10) {
+        args.push(ScriptValue::Int(0));
+    }
     args
 }
 
@@ -1795,5 +1924,106 @@ mod tests {
             1,
             "a later feed cannot replay a retired spell-damage row"
         );
+    }
+
+    fn spell_miss_hit(miss_type: u8) -> crate::wrath::WrathSpellMiss {
+        crate::wrath::WrathSpellMiss {
+            caster: 0x0000_0000_0000_0011,
+            target: 0xF130_0000_0000_0022,
+            spell_id: 133,
+            miss_type,
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 3,
+            received_at: 1234.5,
+        }
+    }
+
+    /// `SPELL_MISSED` posts 12 values for a miss with no amount slot: 8 header +
+    /// spellId/name/schoolMask + miss string (`PushEvent` 0x4, `UnitCombatLog_C.cpp:1241-1361`,
+    /// `UnitCombatLogSpellMissed` :1573, `HandleSpellLogMiss` :1888).
+    #[test]
+    fn spell_missed_posts_the_twelve_wrath_values() {
+        let mut scope = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        scope
+            .run(
+                r#"
+                Fired = nil
+                local listener = CreateFrame("Frame", "WrathSpellMissTestListener")
+                listener:SetScript("OnEvent", function(_, event, ...)
+                    Fired = { event, ... }
+                end)
+                listener:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+                "#,
+            )
+            .unwrap();
+
+        let hit = spell_miss_hit(1); // MISS
+        scope.fire_event(
+            "COMBAT_LOG_EVENT_UNFILTERED",
+            spell_miss_args(1234.5, &hit, "Firna", "Kobold Vermin", None),
+        );
+
+        let event: String = scope.eval("return Fired[1]").unwrap();
+        let timestamp: f64 = scope.eval("return Fired[2]").unwrap();
+        let subevent: String = scope.eval("return Fired[3]").unwrap();
+        let source_guid: String = scope.eval("return Fired[4]").unwrap();
+        let source_name: String = scope.eval("return Fired[5]").unwrap();
+        let source_flags: i64 = scope.eval("return Fired[6]").unwrap();
+        let dest_guid: String = scope.eval("return Fired[7]").unwrap();
+        let dest_name: String = scope.eval("return Fired[8]").unwrap();
+        let dest_flags: i64 = scope.eval("return Fired[9]").unwrap();
+        let spell_id: i64 = scope.eval("return Fired[10]").unwrap();
+        let spell_name: Option<String> = scope.eval("return Fired[11]").unwrap();
+        let spell_school: i64 = scope.eval("return Fired[12]").unwrap();
+        let miss: String = scope.eval("return Fired[13]").unwrap();
+        let extra: Option<f64> = scope.eval("return Fired[14]").unwrap();
+
+        assert_eq!(event, "COMBAT_LOG_EVENT_UNFILTERED");
+        assert_eq!(timestamp, 1234.5);
+        assert_eq!(subevent, "SPELL_MISSED");
+        assert_eq!(source_guid, "0x0000000000000011");
+        assert_eq!(source_name, "Firna");
+        assert_eq!(source_flags, 0x400);
+        assert_eq!(dest_guid, "0xF130000000000022");
+        assert_eq!(dest_name, "Kobold Vermin");
+        assert_eq!(dest_flags, 0x800);
+        assert_eq!(spell_id, 133);
+        assert_eq!(spell_name, None, "no catalog row: name is nil");
+        assert_eq!(spell_school, 0, "no catalog row: school mask is 0");
+        assert_eq!(miss, "MISS");
+        assert_eq!(extra, None, "exactly the twelve SPELL_MISSED values");
+    }
+
+    /// missType 10 (ABSORB) sets `0x2000` in `SetMissInfo` (:311) and `PushEvent` appends the
+    /// amount slot as integer 0 from `SMSG_SPELL_MISS_LOG`.
+    #[test]
+    fn spell_missed_absorb_appends_the_zero_amount() {
+        let hit = spell_miss_hit(10);
+        let args = spell_miss_args(10.0, &hit, "Firna", "Kobold Vermin", None);
+        assert_eq!(args.len(), 13);
+        assert_eq!(args[11], ScriptValue::Str("ABSORB".to_owned()));
+        assert_eq!(
+            args[12],
+            ScriptValue::Int(0),
+            "absorb amount slot is integer 0"
+        );
+    }
+
+    /// If the spell record is missing, `PushEvent` pushes nil name and 0 school
+    /// (`UnitCombatLog_C.cpp:1241-1361`).
+    #[test]
+    fn spell_missed_missing_catalog_posts_nil_name_and_zero_school() {
+        let hit = spell_miss_hit(3); // DODGE
+        let args = spell_miss_args(10.0, &hit, "Firna", "Kobold Vermin", None);
+        assert_eq!(args.len(), 12);
+        assert_eq!(args[8], ScriptValue::Int(133));
+        assert_eq!(args[9], ScriptValue::Nil, "missing record: nil name");
+        assert_eq!(
+            args[10],
+            ScriptValue::Int(0),
+            "missing record: zero school mask"
+        );
+        assert_eq!(args[11], ScriptValue::Str("DODGE".to_owned()));
     }
 }
