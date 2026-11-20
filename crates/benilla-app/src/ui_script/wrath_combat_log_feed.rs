@@ -1643,31 +1643,32 @@ mod tests {
         hit.hit_info = 0; // no crit
         let args = spell_damage_args(10.0, &hit, "Firna", "Kobold Vermin", None);
         assert_eq!(args.len(), 20);
-        assert_eq!(args[9], ScriptValue::Int(133));
-        assert_eq!(args[10], ScriptValue::Nil, "missing record: nil name");
+        // Vec index 8 is the first value after the eight-value header.
+        assert_eq!(args[8], ScriptValue::Int(133));
+        assert_eq!(args[9], ScriptValue::Nil, "missing record: nil name");
         assert_eq!(
-            args[11],
+            args[10],
             ScriptValue::Int(0),
             "missing record: zero school mask"
         );
         assert_eq!(
-            args[15],
+            args[14],
             ScriptValue::Number(5.0),
             "nonzero resist is a number"
         );
         assert_eq!(
-            args[16],
+            args[15],
             ScriptValue::Number(7.0),
             "nonzero blocked is a number"
         );
         assert_eq!(
-            args[17],
+            args[16],
             ScriptValue::Number(9.0),
             "nonzero absorb is a number"
         );
-        assert_eq!(args[18], ScriptValue::Nil, "no crit");
-        assert_eq!(args[19], ScriptValue::Nil);
-        assert_eq!(args[20], ScriptValue::Nil);
+        assert_eq!(args[17], ScriptValue::Nil, "no crit");
+        assert_eq!(args[18], ScriptValue::Nil, "no glance");
+        assert_eq!(args[19], ScriptValue::Nil, "no crush");
     }
 
     /// The feed drains the spell-damage queue like swings: resolves names, posts one
