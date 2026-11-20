@@ -85,6 +85,8 @@ pub(crate) enum RimArrow {
     Guide,
     /// The player's corpse ([`corpse_landmark`]).
     Corpse,
+    /// The spirit healer release point ([`spirit_healer_landmark`]).
+    SpiritHealer,
 }
 
 impl RimArrow {
@@ -94,6 +96,7 @@ impl RimArrow {
             RimArrow::Landmark => -2,
             RimArrow::Guide => 1,
             RimArrow::Corpse => 2,
+            RimArrow::SpiritHealer => 3,
         }
     }
 }
@@ -101,9 +104,22 @@ impl RimArrow {
 /// The corpse's static blip (`0x6dacd0`): slot 2, icon 7, flags 2, rank −1, named by
 /// `CORPSE_RED`, present only while the corpse is on the map the player is on (`0x492010`).
 pub(crate) fn corpse_landmark(position: [f32; 3], map_id: u32, name: String) -> AreaPoi {
+    static_landmark(position, map_id, 7, name)
+}
+
+/// The spirit-healer static blip (`s_dynamicPOIs[3]`): icon 8, flags 2, rank -1.
+pub(crate) fn spirit_healer_landmark(
+    position: [f32; 3],
+    map_id: u32,
+    name: String,
+) -> AreaPoi {
+    static_landmark(position, map_id, 8, name)
+}
+
+fn static_landmark(position: [f32; 3], map_id: u32, icon: u32, name: String) -> AreaPoi {
     AreaPoi {
         importance: -1_i32 as u32,
-        icon: 7,
+        icon,
         faction_id: 0,
         pos: position,
         continent_id: map_id,
@@ -295,13 +311,14 @@ pub(super) struct LandmarkSelection<'a> {
     pub(super) arrows: Vec<(f32, &'a AreaPoi, RimArrow)>,
 }
 
-/// The landmark selection (module doc). `marker`, the guard-directions POI, and `corpse` are
-/// appended after the DBC scan as the reference appends its static blip slots 1 and 2: both skip
-/// the candidacy gate, and only the corpse (`0xcea848`) skips the 694.444-yd cut (`0x6d9cc2`).
+/// The landmark selection (module doc). `marker`, `corpse`, and `spirit_healer` are appended
+/// after the DBC scan as the reference appends its static blip slots 1, 2, and 3: they skip the
+/// candidacy gate, and the static records skip the 694.444-yd cut (`0x6d9cc2`).
 pub(super) fn select_landmarks<'a>(
     pois: impl Iterator<Item = &'a AreaPoi>,
     marker: Option<&'a AreaPoi>,
     corpse: Option<&'a AreaPoi>,
+    spirit_healer: Option<&'a AreaPoi>,
     map_id: u32,
     wx: f32,
     wy: f32,
@@ -313,14 +330,17 @@ pub(super) fn select_landmarks<'a>(
         .filter(|p| p.continent_id == map_id && p.flags & FLAG_CANDIDATE != 0)
         .map(|p| (p, RimArrow::Landmark))
         .chain(marker.map(|m| (m, RimArrow::Guide)))
-        .chain(corpse.map(|c| (c, RimArrow::Corpse)));
+        .chain(corpse.map(|c| (c, RimArrow::Corpse)))
+        .chain(spirit_healer.map(|s| (s, RimArrow::SpiritHealer)));
     for (p, art) in candidates {
         let d = ((p.pos[0] - wx).powi(2) + (p.pos[1] - wy).powi(2)).sqrt();
         if d / radius_yd <= BLIP_EDGE_RATIO {
             if p.flags & FLAG_IN_RANGE_ICON != 0 {
                 icons.push(p);
             }
-        } else if d <= LANDMARK_RANK_YD || art == RimArrow::Corpse {
+        } else if d <= LANDMARK_RANK_YD
+            || matches!(art, RimArrow::Corpse | RimArrow::SpiritHealer)
+        {
             arrows.push((d, p, art));
         }
     }
@@ -349,6 +369,7 @@ pub(super) fn emit_landmarks(
     cat: Option<&AreaPoiCatalog>,
     marker: Option<&AreaPoi>,
     corpse: Option<&AreaPoi>,
+    spirit_healer: Option<&AreaPoi>,
     map_id: u32,
     poi_icons: Option<&Handle<Image>>,
     quads: &mut UiQuads,
@@ -358,6 +379,7 @@ pub(super) fn emit_landmarks(
         cat.into_iter().flat_map(|c| c.rows().map(|(_, p)| p)),
         marker,
         corpse,
+        spirit_healer,
         map_id,
         ctx.wx,
         ctx.wy,
@@ -627,7 +649,7 @@ mod tests {
             poi(3, 0x1d, 556.0, "Stormwind"),
             poi(3, 0x5, 601.0, "Goldshire"),
         ];
-        let sel = select_landmarks(rows.iter(), None, None, 0, 0.0, 0.0, 133.0);
+        let sel = select_landmarks(rows.iter(), None, None, None, 0, 0.0, 0.0, 133.0);
         assert!(sel.icons.is_empty(), "no Flags&2 row is in range");
         let names: Vec<&str> = sel.arrows.iter().map(|(_, p, _)| p.name.as_str()).collect();
         assert_eq!(names, ["Stormwind", "Goldshire"]);
@@ -643,7 +665,7 @@ mod tests {
             poi(3, 1, 400.0, "city-mid"),
             poi(0, 1, 695.0, "beyond-rank"),
         ];
-        let sel = select_landmarks(rows.iter(), None, None, 0, 0.0, 0.0, 100.0);
+        let sel = select_landmarks(rows.iter(), None, None, None, 0, 0.0, 0.0, 100.0);
         let names: Vec<&str> = sel.arrows.iter().map(|(_, p, _)| p.name.as_str()).collect();
         assert_eq!(names, ["minor-near", "minor-far", "city-near"]);
     }
@@ -657,7 +679,7 @@ mod tests {
             poi(3, 0x5, 400.0, "Northshire Abbey"),
         ];
         let marker = poi(0, 0x63, 500.0, "Stormwind Warrior Trainer");
-        let sel = select_landmarks(cities.iter(), Some(&marker), None, 0, 0.0, 0.0, 133.0);
+        let sel = select_landmarks(cities.iter(), Some(&marker), None, None, 0, 0.0, 0.0, 133.0);
         let names: Vec<&str> = sel.arrows.iter().map(|(_, p, _)| p.name.as_str()).collect();
         assert_eq!(
             names,
@@ -676,7 +698,7 @@ mod tests {
     #[test]
     fn the_guard_marker_draws_its_icon_in_range() {
         let marker = poi(0, 0x63, 50.0, "The Bank");
-        let sel = select_landmarks(std::iter::empty(), Some(&marker), None, 0, 0.0, 0.0, 133.0);
+        let sel = select_landmarks(std::iter::empty(), Some(&marker), None, None, 0, 0.0, 0.0, 133.0);
         assert!(sel.arrows.is_empty(), "in range — no rim arrow");
         assert_eq!(sel.icons.len(), 1);
         assert_eq!(
@@ -691,7 +713,7 @@ mod tests {
     fn the_guard_marker_skips_the_candidacy_filter() {
         let mut marker = poi(0, 0, 300.0, "The Inn"); // Flags bit 0 clear: a DBC row would drop
         marker.continent_id = 571; // and a continent that isn't the displayed one
-        let sel = select_landmarks(std::iter::empty(), Some(&marker), None, 0, 0.0, 0.0, 133.0);
+        let sel = select_landmarks(std::iter::empty(), Some(&marker), None, None, 0, 0.0, 0.0, 133.0);
         assert_eq!(sel.arrows.len(), 1, "appended unconditionally");
     }
 
@@ -701,7 +723,7 @@ mod tests {
         tower.icon = 9; // col 1, row 1
         let plain = poi(3, 0x5, 50.0, "Northshire Abbey");
         let rows = [tower, plain];
-        let sel = select_landmarks(rows.iter(), None, None, 0, 0.0, 0.0, 133.0);
+        let sel = select_landmarks(rows.iter(), None, None, None, 0, 0.0, 0.0, 133.0);
         assert_eq!(sel.arrows.len(), 0);
         assert_eq!(sel.icons.len(), 1, "only the Flags&2 tower draws in range");
         assert_eq!(
@@ -724,7 +746,7 @@ mod tests {
         ];
         let far = corpse_landmark([2000.0, 0.0, 0.0], 0, "Corpse".into());
         let marker = poi(0, 0x63, 700.0, "The Bank");
-        let sel = select_landmarks(cities.iter(), Some(&marker), Some(&far), 0, 0.0, 0.0, 133.0);
+        let sel = select_landmarks(cities.iter(), Some(&marker), Some(&far), None, 0, 0.0, 0.0, 133.0);
         let names: Vec<&str> = sel.arrows.iter().map(|(_, p, _)| p.name.as_str()).collect();
         assert_eq!(names, ["Corpse", "Goldshire", "Northshire Abbey"]);
         let (rim, _) = rim_arrow_records(&sel, 0.0, 0.0);
@@ -732,13 +754,30 @@ mod tests {
         assert_eq!((rim[1].slot, rim[1].indoors), (-2, false));
 
         let near = corpse_landmark([50.0, 0.0, 0.0], 0, "Corpse".into());
-        let sel = select_landmarks(std::iter::empty(), None, Some(&near), 0, 0.0, 0.0, 133.0);
+        let sel = select_landmarks(std::iter::empty(), None, Some(&near), None, 0, 0.0, 0.0, 133.0);
         assert!(sel.arrows.is_empty());
         assert_eq!(sel.icons.len(), 1);
         assert_eq!(
             poi_icon_cell(sel.icons[0].icon),
             Some([0.875, 1.0, 0.0, 0.125])
         );
+    }
+
+    #[test]
+    fn spirit_healer_uses_icon_eight_and_static_slot_three() {
+        let healer = spirit_healer_landmark([2000.0, 0.0, 0.0], 0, "Spirit Healer".into());
+        let sel = select_landmarks(std::iter::empty(), None, None, Some(&healer), 0, 0.0, 0.0, 133.0);
+        assert_eq!(sel.arrows.len(), 1);
+        assert_eq!(sel.arrows[0].2, RimArrow::SpiritHealer);
+        assert_eq!(sel.arrows[0].1.icon, 8);
+        let (records, _) = rim_arrow_records(&sel, 0.0, 0.0);
+        assert_eq!(records[0].slot, 3);
+        assert!(records[0].indoors);
+
+        let near = spirit_healer_landmark([50.0, 0.0, 0.0], 0, "Spirit Healer".into());
+        let sel = select_landmarks(std::iter::empty(), None, None, Some(&near), 0, 0.0, 0.0, 133.0);
+        assert_eq!(sel.icons.len(), 1);
+        assert_eq!(poi_icon_cell(sel.icons[0].icon), Some([0.0, 0.125, 0.125, 0.25]));
     }
 
     /// Slot 4 is the pet, our charm else our summon, found only as a streamed unit (`0x6dad60`,
