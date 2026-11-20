@@ -318,9 +318,15 @@ fn feed_death(
         let prev = feed.mirror.filter(|&(g, ..)| g == guid);
         feed.mirror = Some((guid, dead, ghost));
         match (prev, dead, ghost) {
-            // Alive to dead, or logging in dead: arm the release window.
+            // Alive to dead, or logging in dead: arm the release window. A body returning with
+            // no mirror (a reconnect, or a first login while dead) has lost the session's corpse
+            // state with it, so it re-asks where the corpse is; the mirror written above keeps
+            // this to the first such frame. An alive-to-dead death itself asks nothing.
             (Some((_, false, false)) | None, true, false) => {
                 feed.died_at = Some(now);
+                if prev.is_none() {
+                    let _ = net.0.send(ClientCommand::CorpseQuery);
+                }
             }
             // Dead to ghost (released), or to alive (a pre-release res).
             (Some((_, true, false)), d, g) if g || !d => {
@@ -1595,6 +1601,133 @@ mod tests {
         assert!(
             feed.died_at.is_none(),
             "the release window is the dead session's, and re-arms at the next login"
+        );
+    }
+
+    /// A live self body and its captured command channel, for the world-edge tests. It starts
+    /// alive, so the feed's first frame fills the mirror.
+    fn feed_app() -> (App, crossbeam_channel::Receiver<ClientCommand>, Entity) {
+        use benilla_protocol::messages::ObjectType;
+        use benilla_protocol::ObjectFields;
+        const ME: u64 = 0x7;
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut app = App::new();
+        app.insert_resource(NetCommands(tx))
+            .insert_resource(crate::net::NetStatus {
+                connected: true,
+                last_reason: None,
+            })
+            .init_resource::<SelfGuid>()
+            .init_resource::<DeathNet>()
+            .init_resource::<DeathFeedState>()
+            .init_resource::<crate::names::NameCache>()
+            .init_resource::<crate::net::GuidIndex>()
+            .init_resource::<crate::items::Items>()
+            .init_resource::<Time<Real>>()
+            .add_message::<crate::net::DisconnectedMessage>()
+            .add_systems(Update, feed_death);
+        app.insert_non_send_resource(UiScript::new().unwrap());
+        let alive =
+            ObjectFields::from_pairs(&[(22, 100), (28, 100)]).into_created(ObjectType::Player);
+        let me = app
+            .world_mut()
+            .spawn((ObjectStore(alive), Transform::default(), SelfPlayer))
+            .id();
+        app.world_mut()
+            .resource_mut::<crate::net::GuidIndex>()
+            .0
+            .insert(ME, me);
+        app.world_mut().resource_mut::<SelfGuid>().0 = Some(ME);
+        (app, rx, me)
+    }
+
+    /// Replace the self body's descriptor: health and `PLAYER_FLAGS`.
+    fn set_body(app: &mut App, me: Entity, health: u32, flags: u32) {
+        use benilla_protocol::messages::ObjectType;
+        use benilla_protocol::ObjectFields;
+        let store = ObjectFields::from_pairs(&[(22, health), (28, 100), (190, flags)])
+            .into_created(ObjectType::Player);
+        app.world_mut().get_mut::<ObjectStore>(me).unwrap().0 = store;
+    }
+
+    /// Drain the captured channel's corpse asks.
+    fn corpse_queries(rx: &crossbeam_channel::Receiver<ClientCommand>) -> usize {
+        rx.try_iter()
+            .filter(|c| matches!(c, ClientCommand::CorpseQuery))
+            .count()
+    }
+
+    /// A lost link's real edge: the `DisconnectedMessage` clears the feed, then the world entry
+    /// marks us connected again.
+    fn reconnect(app: &mut App) {
+        app.world_mut()
+            .resource_mut::<crate::net::NetStatus>()
+            .connected = false;
+        app.world_mut()
+            .write_message(crate::net::DisconnectedMessage::new(
+                "link lost".into(),
+                benilla_protocol::SessionEnd::Lost,
+            ));
+        app.world_mut()
+            .run_system_once(end_session_death_feed)
+            .expect("the teardown runs");
+        app.world_mut()
+            .resource_mut::<crate::net::NetStatus>()
+            .connected = true;
+    }
+
+    /// A reconnect that finds the body dead asks where the corpse is exactly once, leaving the
+    /// alive-to-dead death and the release-window arming as they were.
+    #[test]
+    fn reconnect_while_dead_resends_corpse_query() {
+        let (mut app, rx, me) = feed_app();
+        app.update();
+        assert_eq!(corpse_queries(&rx), 0, "a living body asks nothing");
+
+        // Dying in-session: the alive-to-dead arm asks nothing.
+        set_body(&mut app, me, 0, 0);
+        app.update();
+        assert_eq!(corpse_queries(&rx), 0, "dying asks nothing");
+
+        // The lost link clears the feed; the same dead body returns.
+        reconnect(&mut app);
+        app.update();
+        assert_eq!(
+            corpse_queries(&rx),
+            1,
+            "the first frame of the returning dead body asks once"
+        );
+        assert!(
+            app.world().resource::<DeathFeedState>().died_at.is_some(),
+            "the dead return re-arms the release window"
+        );
+    }
+
+    /// The ask is latched by the session's mirror: later frames, however long the answer waits,
+    /// send none.
+    #[test]
+    fn no_duplicate_corpse_query_after_reconnect() {
+        let (mut app, rx, me) = feed_app();
+        app.update();
+        set_body(&mut app, me, 0, 0);
+        app.update();
+        reconnect(&mut app);
+        app.update();
+        assert_eq!(corpse_queries(&rx), 1);
+
+        // No corpse answer arrives, and the body does not change: no second ask.
+        for _ in 0..20 {
+            app.update();
+        }
+        assert_eq!(
+            corpse_queries(&rx),
+            0,
+            "the mirror latch holds for the whole session"
+        );
+        assert_eq!(
+            app.world().resource::<DeathFeedState>().mirror,
+            Some((0x7, true, false)),
+            "the returning body was seen, so the ask is spent"
         );
     }
 }

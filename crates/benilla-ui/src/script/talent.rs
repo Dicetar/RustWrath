@@ -373,24 +373,25 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let wrath = model.target == super::UiTarget::Wrath335;
             let is_pet = wrath && is_truthy_arg(args.get(2));
-            if is_pet && model.wrath_talents.pet_tabs.is_empty() && i == 1 {
-                if !model.wrath_talents.pet_talents.is_empty()
-                    || model.wrath_talents.pet_unspent_points > 0
-                {
-                    let spent: i64 = model
-                        .wrath_talents
-                        .pet_talents
-                        .iter()
-                        .map(|&(_, max_rank_idx)| i64::from(max_rank_idx) + 1)
-                        .sum();
-                    return Ok(MultiValue::from_vec(vec![
-                        Value::String(lua.create_string("Pet")?),
-                        Value::Nil,
-                        Value::Integer(spent),
-                        Value::String(lua.create_string("HunterPetFerocity")?),
-                        Value::Integer(i64::from(preview_points(&model, true, 0, Some(1)))),
-                    ]));
-                }
+            if is_pet
+                && model.wrath_talents.pet_tabs.is_empty()
+                && i == 1
+                && (!model.wrath_talents.pet_talents.is_empty()
+                    || model.wrath_talents.pet_unspent_points > 0)
+            {
+                let spent: i64 = model
+                    .wrath_talents
+                    .pet_talents
+                    .iter()
+                    .map(|&(_, max_rank_idx)| i64::from(max_rank_idx) + 1)
+                    .sum();
+                return Ok(MultiValue::from_vec(vec![
+                    Value::String(lua.create_string("Pet")?),
+                    Value::Nil,
+                    Value::Integer(spent),
+                    Value::String(lua.create_string("HunterPetFerocity")?),
+                    Value::Integer(i64::from(preview_points(&model, true, 0, Some(1)))),
+                ]));
             }
             let mut preview = 0u32;
             let tabs = if is_pet {
