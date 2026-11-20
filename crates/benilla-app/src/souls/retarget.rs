@@ -589,12 +589,6 @@ impl Leg {
             return;
         };
         let [hip_bone, _, foot_bone] = self.bones;
-        let mut reach = (a - h) * self.scale;
-        if grounded {
-            let hip = model_parent(parents, work, hip_bone).transform_point(binds[hip_bone]);
-            reach.y = t.y * self.scale - (foot * self.contact).y - hip.y;
-        }
-        let axis = reach.normalize_or(Vec3::NEG_Y);
         let u = self.upper.length();
         // Fold the stock helper locals into the effective shin before solving. This is just
         // the foot's bind translation on a classic human, but includes a moving Tauren hock.
@@ -607,6 +601,18 @@ impl Leg {
         if !l.is_finite() || l <= f32::EPSILON {
             return;
         }
+        // Preserve the authored bend on free feet even when this rig's upper/lower
+        // proportions differ from the donor's. The stock helper pose sets shin reach.
+        let mut reach = thigh.normalize_or(Vec3::NEG_Y) * u + shin.normalize_or(Vec3::NEG_Y) * l;
+        if grounded {
+            let hip = model_parent(parents, work, hip_bone).transform_point(binds[hip_bone]);
+            // Sole correction is a contact constraint, not an airborne ankle target.
+            let sole_height = (-self.contact.y).max(f32::EPSILON);
+            let contact = smoothstep((1. - t.y * self.scale / sole_height).clamp(0., 1.));
+            let planted = t.y * self.scale - (foot * self.contact).y - hip.y;
+            reach.y += (planted - reach.y) * contact;
+        }
+        let axis = reach.normalize_or(Vec3::NEG_Y);
         let margin = u.min(l) * 0.0001;
         let d = reach.length().clamp((u - l).abs() + margin, u + l - margin);
         let along = (u * u - l * l + d * d) / (2. * d);
@@ -2613,6 +2619,8 @@ mod tests {
                 let mut rig_skin_error = 0.0_f32;
                 let mut knee_error = 0.0_f32;
                 let mut foot_facing = 1.0_f32;
+                let mut thigh_max = 0.0_f32;
+                let mut shin_max = 0.0_f32;
                 let mut grip_error = 0.0_f32;
                 let mut heavy_frames = 0;
                 let arm_chain = |socket| {
@@ -2826,13 +2834,33 @@ mod tests {
                         assert!(
                             thigh_error.is_finite() && shin_error.is_finite() && sole.is_finite()
                         );
+                        if clip == 27110 && side == 1 {
+                            let mut free = stock.clone();
+                            map.pose(&pose, &parents, &binds, &mut free, false);
+                            let point = |b| {
+                                model_parent(&parents, &free, b)
+                                    .transform_point(free[b].translation)
+                            };
+                            let free_shin = (point(ankle) - point(knee))
+                                .angle_between(er[2] - er[1])
+                                .to_degrees();
+                            println!("LEG {profile} {race}{sex} {clip}:{frame} toe={:.3} mapped={:?} landmarks={:?} parents={:?} pivots={:?} free={free_shin:.1} grounded={shin_error:.1}",
+                                er[3].y, map.legs[side].bones, [hip,knee,ankle,toe], [hip,knee,ankle,toe].map(|b| parents[b]), [hip,knee,ankle,toe].map(|b| piv[b]));
+                        }
                         knee_error = knee_error.max(thigh_error.max(shin_error));
-                        foot_facing = foot_facing.min(foot_forward.dot(Vec3::NEG_Z));
-                        if clip == IDLE
-                            && (foot_forward.dot(Vec3::NEG_Z) <= 0.
-                                || (at(ankle).x - at(hip).x) * (er[2].x - er[0].x) < -0.002)
+                        thigh_max = thigh_max.max(thigh_error);
+                        shin_max = shin_max.max(shin_error);
+                        let planted = er[3].y * map.legs[side].scale <= 0.02;
+                        if planted {
+                            foot_facing = foot_facing.min(foot_forward.dot(Vec3::NEG_Z));
+                        }
+                        if thigh_error > 70.
+                            || shin_error > 70.
+                            || (planted && foot_forward.dot(Vec3::NEG_Z) <= 0.)
+                            || (clip == IDLE
+                                && (at(ankle).x - at(hip).x) * (er[2].x - er[0].x) < -0.002)
                         {
-                            println!("RIG {profile} {race}{sex} side {side} has reversed idle foot or knee");
+                            println!("RIG {profile} {race}{sex} side {side} failed limits at {clip}:{frame} thigh={thigh_error:.1} shin={shin_error:.1} planted={planted} forward={foot_forward:.2}");
                             failures += 1;
                         }
                         println!("{profile} {race}{sex} {clip}:{frame} {side} thigh={thigh_error:.1} shin={shin_error:.1} sole={:.3} er_toe={:.3} foot_fwd={foot_forward:.2} ankle={:.2}",sole.y,er[3].y,at(ankle));
@@ -2869,7 +2897,7 @@ mod tests {
                         );
                     }
                 }
-                println!("RIG {profile} {race}{sex} skin={rig_skin_error:.6}yd knee={knee_error:.1}deg foot={foot_facing:.3} heavy_frames={heavy_frames} stand_grip_drift={grip_error:.6}yd clavicles={clavicles:?}");
+                println!("RIG {profile} {race}{sex} skin={rig_skin_error:.6}yd knee={knee_error:.1}deg thigh={thigh_max:.1} shin={shin_max:.1} foot={foot_facing:.3} heavy_frames={heavy_frames} stand_grip_drift={grip_error:.6}yd clavicles={clavicles:?}");
             }
         }
         assert_eq!(failures, 0, "installed rig failures (see RIG lines)");

@@ -4,11 +4,15 @@ Branch `astra/all-rigs`, independently based on `d9d35507`. No main changes.
 
 `installed_player_limbs` now visits both sexes of Human, Orc, Dwarf, Night Elf, Scourge, Tauren, Gnome, Troll, Blood Elf and Draenei on base and wm-hd. It keeps the independent landmarks for the original four rigs; the other rigs use the mapped hinges plus stock helper locals as the skin oracle. It discovers `Heavy*`, `RunHeavy` and `JumpHeavyLand` sources from installed kit rows and checks the attachment seat each baked frame. The `RIG` summary includes skin drift, maximum thigh/shin angle error, worst foot-facing dot, heavy frame count, stock grip drift and clavicle indices.
 
-The sccache-backed `installed_player_limbs -- --ignored --nocapture` passed (1 test; all 40 profile/rig combinations). CI run [44782443533](https://github.com/Dicetar/RustWrath/actions/runs/44782443533) was still in progress at the last check. The original HumanFemale grip regression remains.
+The sccache-backed `installed_player_limbs -- --ignored --nocapture` passed (1 test; all 40 profile/rig combinations). CI run [44782443533](https://github.com/Dicetar/RustWrath/actions/runs/44782443533) was still in progress at the last check. The fixture retains the original wm-hd HumanFemale grip regression check; the measured grip error in that check passed.
 
 In game: check idle, moving guard and walk/run knees and feet on all available race/sex/profile combinations. Check heavy, running heavy and the jump-heavy landing with a visible weapon; palm contact should stay fixed and shoulder pads should follow stock clavicles without pinching. Try the stance and sheathed-gait switches separately on the stance branch. No client/server launch or login performed.
 
-## Fixture results
+## Contact-solve follow-up
+
+The earlier fixture's worst errors were on the lifted left foot at `27110:14` (ER toe Y 1.085). The previous solver substituted a sole-relative ankle height on that foot merely because the character was grounded. The revised solve uses authored thigh and shin directions scaled independently by the mapped thigh length and the current stock shin-helper chain length. It blends in the sole constraint only within one bind ankle height of the ground. The expanded fixture logs the hip/knee/ankle/toe indices, parents, pivots and unconstrained-versus-grounded shin error on that sample. It rejects segment errors over 70°, planted feet within 0.02 yd of the ER floor facing backward, and wrist-space seat drift of 0.003 yd or more. The table below is the pre-change baseline, not the revised result.
+
+## Baseline fixture results
 
 All rows: 10,429 baked heavy frames checked, zero helper skin and wrist-space Stand seat drift to 6 decimal places, and forward-facing feet at idle. The minimum forward dot across sampled poses was -0.307 on every rig at 27110:14 (lifted foot); this is not an idle reversal. The max segment angle is a diagnostic, not a pass threshold. Largest shin deviations on Gnome, Tauren and Draenei female occur on the raised-foot sample with the grounded solve forced on. No production change is claimed for those outliers; next isolate the contact constraint versus a chain-selection issue with a matching gameplay sample.
 
