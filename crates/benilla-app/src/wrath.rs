@@ -6812,10 +6812,6 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_PUSHQUESTTOPARTY,
                 gameplay::push_quest_to_party(quest),
             )),
-            ClientCommand::QuestPushResultForQuest { sharer, quest, msg } => Some((
-                u32::from(benilla_protocol_wrath::opcode::MSG_QUEST_PUSH_RESULT),
-                gameplay::quest_push_result(sharer, quest, msg.0),
-            )),
             ClientCommand::QuestPushResult { .. } => {
                 debug!("wrath: quest-share decline refused: the 12340 packet requires a quest id");
                 None
