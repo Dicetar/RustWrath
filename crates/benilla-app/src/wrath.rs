@@ -16499,30 +16499,25 @@ mod field_audit_tests {
 
         let entity = world.resource::<GuidIndex>().0[&OBJ];
         let store = &world.get::<ObjectStore>(entity).expect("ObjectStore").0;
-        assert_eq!(store.get_u32(2), Some(0x1), "ObjectType::Object mask");
-        assert_eq!(store.get_u32(3), Some(777), "OBJECT_FIELD_ENTRY");
+        // Read through the public present-field iterator: a gated field must be absent, not zero.
+        let field = |index: u16| {
+            store
+                .raw_fields()
+                .find(|(slot, _)| *slot == index)
+                .map(|(_, value)| value)
+        };
+        assert_eq!(field(2), Some(0x1), "ObjectType::Object mask");
+        assert_eq!(field(3), Some(777), "OBJECT_FIELD_ENTRY");
         assert_eq!(
-            store.get_u32(4),
+            field(4),
             Some(1.5f32.to_bits()),
             "OBJECT_FIELD_SCALE_X"
         );
-        assert_eq!(
-            store.get_u32(5),
-            None,
-            "OBJECT_FIELD_PADDING stays unmapped"
-        );
-        assert_eq!(
-            store.get_u32(22),
-            None,
-            "UNIT_FIELD_HEALTH gated off Object"
-        );
-        assert_eq!(store.get_u32(34), None, "UNIT_FIELD_LEVEL gated off Object");
-        assert_eq!(
-            store.get_u32(36),
-            None,
-            "UNIT_FIELD_BYTES_0 gated off Object"
-        );
-        assert_eq!(store.get_u32(46), None, "UNIT_FIELD_FLAGS gated off Object");
+        assert_eq!(field(5), None, "OBJECT_FIELD_PADDING stays unmapped");
+        assert_eq!(field(22), None, "UNIT_FIELD_HEALTH gated off Object");
+        assert_eq!(field(34), None, "UNIT_FIELD_LEVEL gated off Object");
+        assert_eq!(field(36), None, "UNIT_FIELD_BYTES_0 gated off Object");
+        assert_eq!(field(46), None, "UNIT_FIELD_FLAGS gated off Object");
     }
 
     /// Synthetic Item and Container update blocks map into 1.12 donor slots while preserving
