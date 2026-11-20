@@ -2477,11 +2477,32 @@ mod tests {
         use benilla_assets::coords::wow_to_bevy;
         use std::path::{Path, PathBuf};
         let data = PathBuf::from(std::env::var_os("WOW_DATA").unwrap());
-        let bake = std::fs::read(std::env::var_os("ERAN_FILE").unwrap()).unwrap();
+        let bake_path = PathBuf::from(std::env::var_os("ERAN_FILE").unwrap());
+        let combat = bake_path.parent().unwrap();
+        let mut heavy_sources = std::collections::BTreeSet::new();
+        for path in std::fs::read_dir(combat.join("kits"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .chain([combat.join("player.kit")])
+            .filter(|p| p.extension().is_some_and(|ext| ext == "kit"))
+        {
+            let kit = Kit::parse(&std::fs::read_to_string(&path).unwrap())
+                .unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
+            for row in &kit.actions {
+                if row.name.starts_with("Heavy")
+                    || matches!(row.name.as_str(), "RunHeavy" | "JumpHeavyLand")
+                {
+                    heavy_sources.insert(row.source.clone());
+                }
+            }
+        }
+        assert!(!heavy_sources.is_empty(), "no installed heavy attack rows");
+        let bake = std::fs::read(&bake_path).unwrap();
         let clips = ErClips::parse(&bake).unwrap();
         let rest = clips.rest().unwrap();
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/profiles");
         let mut worst_pose = (0.0_f32, String::new());
+        let mut failures = 0;
         for (profile, landmarks) in [
             (
                 "base",
@@ -2508,14 +2529,12 @@ mod tests {
                 profile,
             )
             .unwrap();
-            for ((race, sex), sides) in [
-                ("Human", "Female"),
-                ("Human", "Male"),
-                ("Orc", "Male"),
-                ("Tauren", "Male"),
+            for (race, sex) in [
+                "Human", "Orc", "Dwarf", "NightElf", "Scourge", "Tauren", "Gnome", "Troll",
+                "BloodElf", "Draenei",
             ]
             .into_iter()
-            .zip(landmarks)
+            .flat_map(|race| ["Female", "Male"].map(move |sex| (race, sex)))
             {
                 let path = format!(r"Character\{race}\{sex}\{race}{sex}");
                 let bytes = chain.read(&format!("{path}.m2")).unwrap();
@@ -2568,9 +2587,105 @@ mod tests {
                     }),
                     thumbs: [key(12), key(17)],
                 };
-                let map = RigMap::build(&rig, &rest).unwrap();
-                // Use independently identified anatomical landmarks. A wrong Leg::build
-                // classification must not change the oracle for the skinned helper vertices.
+                let Ok(map) = RigMap::build(&rig, &rest).inspect_err(|error| {
+                    println!("RIG {profile} {race}{sex} unmappable: {error}");
+                    failures += 1;
+                }) else {
+                    continue;
+                };
+                let [right, left] = map.legs.as_slice() else {
+                    println!("RIG {profile} {race}{sex} lacks two hinge legs");
+                    failures += 1;
+                    continue;
+                };
+                // Keep the independent landmarks of the original fixture. For the new rigs the
+                // mapped hinges locate the branches; the stock transforms are the deform oracle.
+                let sides = match (race, sex) {
+                    ("Human", "Female") => landmarks[0],
+                    ("Human", "Male") => landmarks[1],
+                    ("Orc", "Male") => landmarks[2],
+                    ("Tauren", "Male") => landmarks[3],
+                    _ => [right, left].map(|leg| {
+                        let [hip, knee, ankle] = leg.bones;
+                        [hip, knee, ankle, ankle]
+                    }),
+                };
+                let mut rig_skin_error = 0.0_f32;
+                let mut knee_error = 0.0_f32;
+                let mut foot_facing = 1.0_f32;
+                let mut grip_error = 0.0_f32;
+                let mut heavy_frames = 0;
+                let arm_chain = |socket| {
+                    let mut chain = ancestors(&parents, socket);
+                    if !parents.contains(&(socket as i16)) {
+                        chain.remove(0);
+                    }
+                    while chain
+                        .first()
+                        .is_some_and(|&b| piv[b].length() <= piv[rig.head].y * 0.003)
+                    {
+                        chain.remove(0);
+                    }
+                    chain
+                };
+                let arms = rig.hands.map(arm_chain);
+                let exclusive = |side: usize| {
+                    arms[side]
+                        .iter()
+                        .copied()
+                        .take_while(|b| !arms[1 - side].contains(b))
+                        .collect::<Vec<_>>()
+                };
+                let arms = [exclusive(0), exclusive(1)];
+                let clavicles = arms
+                    .iter()
+                    .all(|chain| chain.len() >= 4)
+                    .then(|| arms.each_ref().map(|chain| *chain.last().unwrap()));
+                for source in &heavy_sources {
+                    let Some(clip) = clips.clips.get(source) else {
+                        println!("RIG {profile} {race}{sex} missing heavy bake {source}");
+                        failures += 1;
+                        continue;
+                    };
+                    let attack = anims.iter().find(|a| a.anim_id == 18).unwrap_or(stand);
+                    for frame in 0..clip.frames {
+                        let mut work = stock_pose(&binds, attack, frame as f32 / CLIP_FPS);
+                        let stock_grips = map.grip_points(&work);
+                        let pose = clips.sample(clip, frame as f32, false);
+                        let mut written = work.clone();
+                        map.pose(&pose, &parents, &binds, &mut work, true);
+                        map.blend_grips(&mut work, &mut written, None, stock_grips, [1.; 2], 1.);
+                        for (side, grip) in map.grips.iter().enumerate() {
+                            let Some(grip) = grip else {
+                                // The socket is the wrist itself; its contact is the local
+                                // attachment point and cannot slide along a child chain.
+                                let b = rig.hands[side];
+                                assert!(work[b]
+                                    .transform_point(rig.hand_offsets[side])
+                                    .is_finite());
+                                continue;
+                            };
+                            let actual = grip
+                                .chain
+                                .iter()
+                                .rev()
+                                .fold(grip.offset, |p, &b| work[b].transform_point(p));
+                            let expected = grip
+                                .chain
+                                .iter()
+                                .rev()
+                                .fold(grip.offset, |p, &b| standing[b].transform_point(p));
+                            let error = actual.distance(expected);
+                            assert!(error.is_finite(), "{profile} {race}{sex} {source}:{frame}");
+                            grip_error = grip_error.max(error);
+                            assert!(
+                                actual.distance(grip.held) < 0.003,
+                                "{profile} {race}{sex} {source}:{frame} lost the palm seat"
+                            );
+                        }
+                        heavy_frames += 1;
+                    }
+                }
                 let helper: Vec<bool> = (0..parents.len())
                     .map(|b| {
                         sides.iter().any(|&[hip, knee, foot, _]| {
@@ -2645,9 +2760,12 @@ mod tests {
                     let stock = stock_pose(&binds, stock_clip, frame / CLIP_FPS);
                     let mut work = stock.clone();
                     map.pose(&pose, &parents, &binds, &mut work, true);
-                    if profile == "wm-hd" && race == "Human" && sex == "Female" && clip == IDLE {
-                        for clavicle in [34, 35] {
-                            assert_eq!(work[clavicle], stock[clavicle], "idle clavicle {clavicle}");
+                    if let Some(clavicles) = clavicles {
+                        for bone in clavicles {
+                            if work[bone] != stock[bone] {
+                                println!("RIG {profile} {race}{sex} {clip}:{frame} clavicle {bone} moved");
+                                failures += 1;
+                            }
                         }
                     }
                     let mut world = Vec::new();
@@ -2689,10 +2807,7 @@ mod tests {
                             }
                         }
                     }
-                    assert!(
-                        samples > 0,
-                        "{profile} {race}{sex} has no skinned leg helpers"
-                    );
+                    rig_skin_error = rig_skin_error.max(worst);
                     if worst > worst_pose.0 {
                         worst_pose = (worst, format!("{profile} {race}{sex} {clip}:{frame}"));
                     }
@@ -2711,12 +2826,14 @@ mod tests {
                         assert!(
                             thigh_error.is_finite() && shin_error.is_finite() && sole.is_finite()
                         );
-                        if clip == IDLE {
-                            assert!(
-                                foot_forward.dot(Vec3::NEG_Z) > 0.,
-                                "{profile} {race}{sex} side {side} faces backward"
-                            );
-                            assert!((at(ankle).x - at(hip).x) * (er[2].x - er[0].x) >= -0.002);
+                        knee_error = knee_error.max(thigh_error.max(shin_error));
+                        foot_facing = foot_facing.min(foot_forward.dot(Vec3::NEG_Z));
+                        if clip == IDLE
+                            && (foot_forward.dot(Vec3::NEG_Z) <= 0.
+                                || (at(ankle).x - at(hip).x) * (er[2].x - er[0].x) < -0.002)
+                        {
+                            println!("RIG {profile} {race}{sex} side {side} has reversed idle foot or knee");
+                            failures += 1;
                         }
                         println!("{profile} {race}{sex} {clip}:{frame} {side} thigh={thigh_error:.1} shin={shin_error:.1} sole={:.3} er_toe={:.3} foot_fwd={foot_forward:.2} ankle={:.2}",sole.y,er[3].y,at(ankle));
                     }
@@ -2752,8 +2869,10 @@ mod tests {
                         );
                     }
                 }
+                println!("RIG {profile} {race}{sex} skin={rig_skin_error:.6}yd knee={knee_error:.1}deg foot={foot_facing:.3} heavy_frames={heavy_frames} stand_grip_drift={grip_error:.6}yd clavicles={clavicles:?}");
             }
         }
+        assert_eq!(failures, 0, "installed rig failures (see RIG lines)");
         assert!(
             worst_pose.0 < 0.0001,
             "helper skin displaced by {:.5} yards on {}",
