@@ -34,6 +34,8 @@
 //! enemy_strikes = true # judge the server's telegraphed enemy strikes (dodge, guard, parry)
 //! retarget = true     # kit actions pose the player's rig from the Elden Ring clip each row was
 //!                     # read from (benilla-config/combat/player_anims.bin)
+//! sex_stance = true   # add the current race and sex's measured stock posture to ER gaits
+//! sheathed_stock_gait = false # use stock walk/run when the weapon is sheathed
 //! retarget_locomotion = true # idle, guard, walk, run, sprint, crouch and airborne play the
 //!                     # Elden Ring locomotion clips too
 //! er_controls = true  # the Elden Ring layout below takes its keys and buttons from the WoW
@@ -109,6 +111,8 @@ pub(crate) struct SoulsFeatures {
     pub(crate) enemy_strikes: bool,
     pub(crate) retarget: bool,
     pub(crate) retarget_locomotion: bool,
+    pub(crate) sex_stance: bool,
+    pub(crate) sheathed_stock_gait: bool,
     pub(crate) er_controls: bool,
     pub(crate) free_camera: bool,
     pub(crate) unit_collision: bool,
@@ -143,6 +147,8 @@ impl Default for SoulsFeatures {
             enemy_strikes: true,
             retarget: true,
             retarget_locomotion: true,
+            sex_stance: true,
+            sheathed_stock_gait: false,
             er_controls: true,
             free_camera: true,
             unit_collision: true,
@@ -358,8 +364,9 @@ impl SoulsConfig {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 *self = Self::default();
                 info!(
-                    "souls config: none at {}; every feature on, default binds",
-                    path.display()
+                    "souls config: none at {}; default binds — {:?}",
+                    path.display(),
+                    self.features
                 );
                 return;
             }

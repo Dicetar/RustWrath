@@ -478,6 +478,8 @@ struct RigMap {
     /// The ER pelvis at rest.
     rest_pelvis: Vec3,
     legs: Vec<Leg>,
+    upper_arms: [usize; 2],
+    clavicles: [Option<usize>; 2],
     stand_offset: f32,
 }
 
@@ -939,6 +941,8 @@ impl RigMap {
         // short clavicles (0.10-0.15 against ER's 0.20) as upper arms on one side or both,
         // drove them 35-50 degrees off the stock pose and pinched her shoulders.
         let with_clavicle = wrists.iter().all(|&w| arm_chain(w).len() >= 4);
+        let mut upper_arms = wrists;
+        let mut clavicles = [None; 2];
         for (side, ((&wrist, elbow), arm)) in wrists.iter().zip(rig.elbows).zip(ARMS).enumerate() {
             // The thumb, when it is a placed bone under this wrist.
             let thumb = rig.thumbs[side].filter(|&t| {
@@ -952,6 +956,8 @@ impl RigMap {
             if chain.len() < 2 {
                 return Err("an arm with fewer than two bones".into());
             }
+            upper_arms[side] = chain[usize::from(with_clavicle)];
+            clavicles[side] = with_clavicle.then_some(chain[0]);
             let mut points: Vec<Vec3> = chain.iter().map(|&b| piv[b]).collect();
             let wrist_i = points.len() - 1;
             // The fingers' base, or the forearm carried on a little. An HD hand also carries
@@ -1118,6 +1124,8 @@ impl RigMap {
         Ok(Self {
             driven,
             grips,
+            upper_arms,
+            clavicles,
             pelvis,
             scale: if legs.len() == 2 {
                 (legs[0].scale + legs[1].scale) * 0.5
@@ -1240,6 +1248,50 @@ impl RigMap {
             }
         }
         dirty
+    }
+
+    fn measure_stance(&self, rotation: impl Fn(usize) -> Vec2) -> [f32; 5] {
+        let pelvis = rotation(self.pelvis);
+        let thigh = if self.legs.len() == 2 {
+            (rotation(self.legs[0].bones[0]).y - rotation(self.legs[1].bones[0]).y) * 0.5
+        } else {
+            0.
+        };
+        let [right, left] = self.clavicles.map(|b| b.map_or(0., |b| rotation(b).y));
+        let arm = (rotation(self.upper_arms[0]).y - rotation(self.upper_arms[1]).y) * 0.5;
+        [pelvis.x, pelvis.y, thigh, (left - right) * 0.5, arm]
+    }
+
+    fn apply_stance(
+        &self,
+        work: &mut [Transform],
+        [pitch, roll, thigh, shoulder, arm]: [f32; 5],
+        weight: f32,
+    ) {
+        let add = |work: &mut [Transform], bone: usize, offset: Quat| {
+            work[bone].rotation = (offset * work[bone].rotation).normalize();
+        };
+        add(
+            work,
+            self.pelvis,
+            Quat::from_rotation_x(pitch * weight) * Quat::from_rotation_z(roll * weight),
+        );
+        for (side, &upper) in self.upper_arms.iter().enumerate() {
+            let sign = if side == 0 { 1. } else { -1. };
+            // Clavicles still hold stock. Carry shoulder drop on the driven upper arm instead.
+            add(
+                work,
+                upper,
+                Quat::from_rotation_z((arm - shoulder) * sign * weight),
+            );
+            if let Some(leg) = self.legs.get(side).filter(|_| self.legs.len() == 2) {
+                add(
+                    work,
+                    leg.bones[0],
+                    Quat::from_rotation_z(thigh * sign * weight),
+                );
+            }
+        }
     }
 
     /// The lower body: the legs, the pelvis and the bones above it, which the locomotion keeps
@@ -1411,6 +1463,9 @@ pub(super) struct Retarget {
     /// ceremony holds the arms, 0 to 1.
     guard_upper: f32,
     ceremony: [f32; 2],
+    stance_styles: std::collections::HashMap<(u8, u8), [f32; 5]>,
+    style_weight: f32,
+    unstyled: Option<Vec<Transform>>,
 }
 
 impl Retarget {
@@ -1639,6 +1694,45 @@ fn map_rig(
     )
 }
 
+fn stance_angles(q: Quat) -> Vec2 {
+    let (x, _, z) = q.to_euler(EulerRot::XYZ);
+    Vec2::new(x, z)
+}
+
+/// Use the resident profile's stock data: the same race/sex can have different bind and
+/// animation channels in base and HD. Sample the primary variation of each cycle uniformly.
+fn stock_stance(map: &RigMap, anims: &benilla_assets::ModelAnimations) -> [f32; 5] {
+    let mut mean = [0.; 5];
+    let mut count = 0;
+    for id in [0, 4, 5] {
+        let Some((clip, pose)) = anims.find(id).and_then(|clip| {
+            let node = anims.pose.node(clip.node)?;
+            Some((clip, anims.pose.clips.get(node.clip as usize)?))
+        }) else {
+            continue;
+        };
+        for frame in 0..32 {
+            let time = clip.duration * frame as f32 / 32.;
+            let row = map.measure_stance(|bone| {
+                pose.bones
+                    .iter()
+                    .find(|b| usize::from(b.bone) == bone)
+                    .and_then(|b| b.rotation.sample(time))
+                    .map_or(Vec2::ZERO, stance_angles)
+            });
+            for (value, sample) in mean.iter_mut().zip(row) {
+                *value += sample;
+            }
+            count += 1;
+        }
+    }
+    if count == 0 {
+        mean
+    } else {
+        mean.map(|angle| angle / count as f32)
+    }
+}
+
 /// The stock evaluator can key one channel while the others still hold a post-pass write.
 fn capture_stock(
     stock: &mut Transform,
@@ -1686,6 +1780,7 @@ pub(super) fn drive_retarget(
             Option<&crate::creature_anim::CommittedSheath>,
             Option<&crate::creature_anim::VisualSheath>,
             Option<(&AnimationPlayer, &benilla_assets::ModelAnimations)>,
+            Option<&crate::net::ObjectStore>,
         ),
         With<SelfPlayer>,
     >,
@@ -1703,8 +1798,20 @@ pub(super) fn drive_retarget(
         r.last_pos = None;
         return;
     }
-    let Ok((entity, mut rig, body, twist, attach, hands, driver, wielded, sheath, visual, anims)) =
-        me.single_mut()
+    let Ok((
+        entity,
+        mut rig,
+        body,
+        twist,
+        attach,
+        hands,
+        driver,
+        wielded,
+        sheath,
+        visual,
+        anims,
+        store,
+    )) = me.single_mut()
     else {
         r.written = None;
         r.playing = None;
@@ -1741,6 +1848,12 @@ pub(super) fn drive_retarget(
         && wielded.and_then(|w| w.armed_off()) == Some((ITEM_CLASS_ARMOR, ARMOR_SUBCLASS_SHIELD));
     // Stowed, the hands are empty: the common bank.
     let drawn = melee_visible(0) && wielded.and_then(|w| w.armed_main()).is_some();
+    let stowed = (0..2).all(|slot| {
+        visual
+            .map(|v| v.for_slot(slot, 0))
+            .or_else(|| sheath.and_then(|s| s.state()))
+            == Some(0)
+    });
     let (loco_bank, guard_bank) = match stance.filter(|_| drawn) {
         Some([one, two]) => (
             if both_hands { two } else { one },
@@ -1776,11 +1889,15 @@ pub(super) fn drive_retarget(
         r.carry = None;
         r.guard_upper = 0.0;
         r.ceremony = [0.0; 2];
+        r.stance_styles.clear();
+        r.unstyled = None;
+        r.style_weight = 0.;
     }
 
     // What plays.
     let mut target: Option<(ClipKey, f32, bool, &ErClip)> = None;
     let mut has_action = false;
+    let mut attack_style = 1.;
     let airborne = player.airborne();
     r.grounded |= !airborne;
     if on {
@@ -1788,6 +1905,18 @@ pub(super) fn drive_retarget(
             let running = current_kit(&kit, &profiles)
                 .and_then(|kit| running_action(kit, &playback).map(|run| (kit, run)));
             has_action = features.retarget && running.is_some();
+            if let Some((kit, (_, action, frame))) = running {
+                let remaining = action
+                    .hits
+                    .iter()
+                    .map(|hit| hit.from)
+                    .min()
+                    .map_or(0., |first| {
+                        baked_frame(kit, first) - baked_frame(kit, frame)
+                    });
+                attack_style =
+                    smoothstep((remaining / (UPPER_BLEND_SECS * CLIP_FPS)).clamp(0., 1.));
+            }
             // A running action plays its own clip, or the stock one when it has none here (or the
             // switch is off); locomotion never covers it.
             let action = running.filter(|_| features.retarget).and_then(
@@ -1840,6 +1969,14 @@ pub(super) fn drive_retarget(
                     return None;
                 }
                 let (id, rate) = loco_clip(&souls, airborne, forward, right);
+                if features.sheathed_stock_gait
+                    && stowed
+                    && !souls.guarding
+                    && ((WALK..WALK + 4).contains(&id) || (RUN..RUN + 4).contains(&id))
+                    && driver.is_some_and(|d| matches!(d.playing().0, Some(4 | 5 | 11..=13)))
+                {
+                    return None;
+                }
                 let bank = if id == GUARD { guard_bank } else { loco_bank };
                 let clip = clips.named_in(bank, id)?;
                 let previous = match r.playing {
@@ -1875,6 +2012,7 @@ pub(super) fn drive_retarget(
         r.carry = None;
     }
     let Some((_, _, Ok(map))) = r.map.as_ref() else {
+        r.unstyled = None;
         r.written = None;
         return;
     };
@@ -1897,7 +2035,7 @@ pub(super) fn drive_retarget(
 
     // A clip change starts a blend from what was last written.
     if key != r.playing {
-        r.from = r.written.clone();
+        r.from = r.unstyled.take().or_else(|| r.written.clone());
         r.fade_at = now;
         r.fade_len = match target {
             Some((ClipKey::Loco(..), ..))
@@ -1928,6 +2066,17 @@ pub(super) fn drive_retarget(
             (value - step).max(0.0)
         }
     };
+    let style = store
+        .and_then(|s| s.0.unit_race().zip(s.0.unit_gender()))
+        .zip(anims)
+        .filter(|_| features.sex_stance)
+        .map(|(key, (_, model))| {
+            *r.stance_styles
+                .entry(key)
+                .or_insert_with(|| stock_stance(map, model))
+        });
+    let style_on = features.sex_stance && in_loco && !airborne;
+    r.style_weight = approach(r.style_weight, style_on);
     r.guard_upper = approach(r.guard_upper, in_loco && souls.guarding && moving);
     // The model loader assigns mask groups 0/1 to bones outside the right/left arm.
     // The stock driver can finish one arm's ceremony while the other is still playing.
@@ -1988,15 +2137,30 @@ pub(super) fn drive_retarget(
         }
     }
 
+    let weight = smoothstep(r.style_weight) * attack_style;
+    let unstyled = style.filter(|_| weight > 0.).map(|style| {
+        let unstyled = work.clone();
+        map.apply_stance(&mut work, style, weight);
+        unstyled
+    });
+
     // Blend and write.
     let arm_weights = r.ceremony.map(smoothstep);
     let masks = anims
         .filter(|_| in_loco && arm_weights != [0.0; 2])
         .map(|(_, model)| model.pose.bone_masks.as_slice());
     let mut written = r.written.take().unwrap_or_else(|| rig.locals.clone());
+    let mut unstyled_out = unstyled.as_ref().map(|_| written.clone());
     let mut dirty = false;
     for b in map.bones() {
         let base = r.from.as_ref().map_or(r.stock[b], |from| from[b]);
+        if let (Some(source), Some(out)) = (&unstyled, &mut unstyled_out) {
+            out[b] = Transform {
+                translation: base.translation.lerp(source[b].translation, k),
+                rotation: base.rotation.slerp(source[b].rotation, k).normalize(),
+                scale: source[b].scale,
+            };
+        }
         let mut out = Transform {
             translation: base.translation.lerp(work[b].translation, k),
             rotation: base.rotation.slerp(work[b].rotation, k).normalize(),
@@ -2038,7 +2202,9 @@ pub(super) fn drive_retarget(
     if dirty {
         rig.pose_dirty = true;
     }
+    r.unstyled = unstyled_out;
     if target.is_none() && k >= 1.0 {
+        r.unstyled = None;
         // Faded out: the stock pose is back, and the pass stops writing.
         r.written = None;
         r.from = None;
@@ -2468,6 +2634,109 @@ mod tests {
             }
         }
         locals
+    }
+
+    const PLAYER_RACES: [&str; 10] = [
+        "Human", "Orc", "Dwarf", "NightElf", "Scourge", "Tauren", "Gnome", "Troll", "BloodElf",
+        "Draenei",
+    ];
+
+    /// Mean signed stock rotations relative to bind: pelvis pitch/roll, bilateral
+    /// outward thigh, downward clavicle and outward upper-arm roll, in degrees.
+    #[test]
+    #[ignore = "requires WOW_DATA and ERAN_FILE from the owner's install"]
+    fn installed_stance_offsets() {
+        use benilla_assets::coords::wow_to_bevy;
+        use std::path::{Path, PathBuf};
+        let data = PathBuf::from(std::env::var_os("WOW_DATA").unwrap());
+        let bake = std::fs::read(std::env::var_os("ERAN_FILE").unwrap()).unwrap();
+        let rest = ErClips::parse(&bake).unwrap().rest().unwrap();
+        let manifests = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/profiles");
+        for profile in ["base", "wm-hd"] {
+            let chain = benilla_assets::open_profile_chain(
+                &data,
+                &manifests.join(format!("{profile}.mpqlist")),
+                profile,
+            )
+            .unwrap();
+            for race in PLAYER_RACES {
+                let mut means = [[0.; 5]; 2];
+                for (mean, sex) in means.iter_mut().zip(["Male", "Female"]) {
+                    let path = format!(r"Character\{race}\{sex}\{race}{sex}");
+                    let bytes = chain.read(&format!("{path}.m2")).unwrap();
+                    let skel = benilla_formats::parse_m2_skeleton(&bytes).unwrap();
+                    let att = benilla_formats::parse_m2_attachments(&bytes).unwrap();
+                    let key = |id| skel.bones.iter().position(|b| b.key_bone == id);
+                    let parents: Vec<_> = skel.bones.iter().map(|b| b.parent).collect();
+                    let piv: Vec<_> = skel.bones.iter().map(|b| wow_to_bevy(b.pivot)).collect();
+                    let binds: Vec<_> = (0..piv.len())
+                        .map(|i| piv[i] - parent_of(&parents, i).map_or(Vec3::ZERO, |p| piv[p]))
+                        .collect();
+                    let anims = benilla_formats::parse_m2_animations_with_external(
+                        &bytes,
+                        |id, variation| {
+                            matches!(id, 0 | 4 | 5)
+                                .then(|| {
+                                    chain
+                                        .read(&format!("{path}{id:04}-{variation:02}.anim"))
+                                        .ok()
+                                })
+                                .flatten()
+                        },
+                    );
+                    let stand = anims.iter().find(|a| a.anim_id == 0).unwrap();
+                    let standing = stock_pose(&binds, stand, 0.);
+                    let hands = HAND_ATTACH.map(|id| att.iter().find(|a| a.id == id).unwrap());
+                    let input = RigInput {
+                        parents: &parents,
+                        binds: &binds,
+                        head: key(6).unwrap(),
+                        hands: hands.map(|a| usize::from(a.bone)),
+                        hand_offsets: hands
+                            .map(|a| wow_to_bevy(a.position) - piv[usize::from(a.bone)]),
+                        stand_local: &|b| standing[b],
+                        elbows: ELBOW_ATTACH.map(|id| {
+                            att.iter()
+                                .find(|a| a.id == id)
+                                .map(|a| wow_to_bevy(a.position))
+                        }),
+                        thumbs: [key(12), key(17)],
+                    };
+                    let map = match RigMap::build(&input, &rest) {
+                        Ok(map) if map.legs.len() == 2 => map,
+                        result => {
+                            println!("STANCE_MISSING {profile} {race}{sex}: {result:?}");
+                            continue;
+                        }
+                    };
+                    for id in [0, 4, 5] {
+                        let anim = anims.iter().find(|a| a.anim_id == id).unwrap();
+                        for frame in 0..32 {
+                            let locals =
+                                stock_pose(&binds, anim, anim.duration * frame as f32 / 32.);
+                            let rot = |bone: usize| {
+                                let (x, _, z) = locals[bone].rotation.to_euler(EulerRot::XYZ);
+                                (x.to_degrees(), z.to_degrees())
+                            };
+                            let (pitch, roll) = rot(map.pelvis);
+                            let thigh =
+                                (rot(map.legs[0].bones[0]).1 - rot(map.legs[1].bones[0]).1) * 0.5;
+                            let shoulder = (map.clavicles[1].map_or(0., |b| rot(b).1)
+                                - map.clavicles[0].map_or(0., |b| rot(b).1))
+                                * 0.5;
+                            let arm = (rot(map.upper_arms[0]).1 - rot(map.upper_arms[1]).1) * 0.5;
+                            for (sum, value) in
+                                mean.iter_mut().zip([pitch, roll, thigh, shoulder, arm])
+                            {
+                                *sum += value / 96.;
+                            }
+                        }
+                    }
+                }
+                let delta = std::array::from_fn::<_, 5, _>(|i| means[1][i] - means[0][i]);
+                println!("STANCE {profile} {race} {delta:.3?}");
+            }
+        }
     }
 
     /// Both profiles supply real skeletons, four-weight meshes, stock clips and ER samples.
