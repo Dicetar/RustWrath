@@ -2570,10 +2570,17 @@ struct EvidenceNote {
     #[serde(default)]
     synthetic: bool,
     /// Stable provenance label: `observed` or `recovered`.
+    #[serde(default = "EvidenceNote::default_evidence_note_source")]
     source: &'static str,
 }
 
 impl EvidenceNote {
+    // Referenced only by the serde default path above; the lint cannot see string paths.
+    #[allow(dead_code)]
+    fn default_evidence_note_source() -> &'static str {
+        "observed"
+    }
+
     fn from_event(seq: u64, event: &Event) -> Self {
         Self {
             seq,
@@ -2629,10 +2636,19 @@ struct Incident {
     telemetry_gap: bool,
     /// Additive provenance for the incident's opening evidence: `observed`,
     /// `recovered_from_start_metadata`, or `unavailable`.
+    #[serde(default = "Incident::default_opening_note_source")]
     opening_note_source: &'static str,
     /// Additive boolean form of `opening_note_source == "recovered_from_start_metadata"`.
     #[serde(default)]
     opening_recovered: bool,
+}
+
+impl Incident {
+    // Referenced only by the serde default path above; the lint cannot see string paths.
+    #[allow(dead_code)]
+    fn default_opening_note_source() -> &'static str {
+        "unavailable"
+    }
 }
 
 /// The bounded evidence chain for one incident.
