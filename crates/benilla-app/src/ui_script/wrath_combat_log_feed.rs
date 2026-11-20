@@ -2264,4 +2264,3 @@ mod tests {
         assert_eq!(args[14], ScriptValue::Nil, "critical 1.0 or nil");
     }
 }
-
