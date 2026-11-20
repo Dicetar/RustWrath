@@ -644,11 +644,13 @@ impl Player {
     }
 
     /// The body's velocity in Bevy axes, which the movement hotpatch frame reports.
+    #[cfg(feature = "hotpatch")]
     pub(crate) fn velocity(&self) -> Vec3 {
         Vec3::new(self.horiz_vel.x, self.vel_y, self.horiz_vel.z)
     }
 
     /// The mouselook pitch (positive up), which the movement hotpatch frame reports.
+    #[cfg(feature = "hotpatch")]
     pub(crate) fn pitch(&self) -> f32 {
         self.mover_pitch
     }
