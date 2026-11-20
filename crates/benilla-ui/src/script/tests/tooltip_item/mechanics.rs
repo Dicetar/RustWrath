@@ -776,7 +776,10 @@ fn an_enchant_above_the_players_level_reds_and_names_its_level() {
         "a met level stays green"
     );
     assert_eq!(
-        lines.iter().filter(|(t, _)| t.starts_with("Enchantment Requires")).count(),
+        lines
+            .iter()
+            .filter(|(t, _)| t.starts_with("Enchantment Requires"))
+            .count(),
         1,
         "only the unmet enchant names its level: {lines:?}"
     );
