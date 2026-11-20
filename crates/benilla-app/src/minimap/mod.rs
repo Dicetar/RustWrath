@@ -29,7 +29,7 @@ use benilla_assets::minimap_grid::group_axis_grid;
 use benilla_assets::WmoModel;
 use benilla_formats::{tile_to_world, world_to_tile, MinimapTranslate};
 
-use interior::{interior_group_selection, wmo_minimap_stem};
+use interior::{interior_group_selection, interior_map_mode, wmo_minimap_stem, InteriorMap};
 
 use benilla_ui::widget::{MinimapArt, MinimapArtSlot, MINIMAP_DEFAULT_ZOOM};
 
@@ -37,9 +37,7 @@ use crate::player::Player;
 use crate::ui_pass::{UiQuad, UiQuadAppend, UiQuadMask, UiQuads, UvRect};
 use benilla_assets::MapCatalogRes;
 use benilla_assets::{AssetSet, LockRecover, LooseOpen, WorldAssets};
-use benilla_world::wmo_portal::{
-    down_ray_seeds, terrain_z_local, WmoPortalInstance, INTERIOR_PROBE_HEIGHT,
-};
+use benilla_world::wmo_portal::WmoPortalInstance;
 use benilla_world::world_map::CurrentMap;
 
 /// Yards per ADT tile.
@@ -305,42 +303,39 @@ fn setup_minimap(
     }
 }
 
-/// The minimap's one containment verdict: the placement, model, tile stem and seed group of the
-/// WMO the player is in, or `None` for terrain. Indoors the reference draws the building's own
-/// tiles and no terrain, and the same flag (`0xceaa60`) picks the zoom index.
+/// The minimap's one containment verdict (`MinimapUpdate`): the placement, model, tile stem and
+/// draw mode of the building the player's position links to, or `None` for terrain. Indoors the
+/// reference draws the building's own tiles and no terrain, and the same flag picks the zoom index.
 ///
-/// The gate is the reference's indoor byte (`0xbc8300`), the CGLight node's down-ray bit
-/// `[node+0x90] & 1` (`0x670547`): the nearest face within 1000 yd straight down, terrain racing
-/// and the WMO winning ties, belongs to a group without MOGP `0x8`. That is the zone-text claim
-/// `CurrentAreaInterior`, read through `world.area_interior()`; [`down_ray_seeds`] only supplies
-/// the flood seed once the gate says indoors.
+/// The link is `CMap::LinkStaticEntity`'s down-ray, exterior groups included
+/// ([`benilla_world::wmo_portal::CurrentMapObjLink`]); the group's and the whole WMO's
+/// `WMOAreaTable` flags then decide ([`interior_map_mode`]), so a Stormwind street, a `0x40`
+/// interior group under a `0x10` root row, draws the whole-city set rather than its own tiles,
+/// which the city never authored.
 fn minimap_interior<'a>(
     player: &Player,
     instances: &Query<&WmoPortalInstance>,
     wmos: &'a Assets<WmoModel>,
     world: &benilla_world::world_point::WorldPoint,
     asset_server: &AssetServer,
-) -> Option<(Affine3A, &'a WmoModel, String, usize)> {
-    if !player.active || player.detached || world.area_interior().is_none() {
+) -> Option<(Affine3A, &'a WmoModel, String, InteriorMap)> {
+    if !player.active || player.detached {
         return None;
     }
-    let eye = player.pos + Vec3::Y * INTERIOR_PROBE_HEIGHT;
-    // The down-ray races the terrain, as the zone tracker does: grass above a mine is not in it.
-    let terrain = world.terrain_height_under(eye);
-    instances.iter().find_map(|inst| {
-        let model = wmos.get(&inst.handle)?;
-        if model.wmo_id == 0 {
-            return None;
-        }
-        let local_from_world = inst.world_from_local.inverse();
-        let eye_local = bevy_to_wow(local_from_world.transform_point3(eye));
-        let terrain_local = terrain.map(|z| terrain_z_local(&local_from_world, eye, z));
-        let in_group = down_ray_seeds(model, eye_local, terrain_local).in_group?;
-        let stem = asset_server
-            .get_path(inst.handle.id())
-            .and_then(|p| wmo_minimap_stem(&p.path().to_string_lossy()))?;
-        Some((inst.world_from_local, model, stem, in_group))
-    })
+    let link = world.map_obj_link()?;
+    let inst = instances.get(link.instance).ok()?;
+    let model = wmos.get(&inst.handle)?;
+    if model.wmo_id == 0 {
+        return None;
+    }
+    let group = model.group_nav.get(link.group)?;
+    let (group_row, root_row) =
+        world.wmo_area_flags(model.wmo_id, u32::from(inst.name_set), group.area_table_id);
+    let mode = interior_map_mode(group.flags, group_row, root_row, link.group)?;
+    let stem = asset_server
+        .get_path(inst.handle.id())
+        .and_then(|p| wmo_minimap_stem(&p.path().to_string_lossy()))?;
+    Some((inst.world_from_local, model, stem, mode))
 }
 
 /// Fill the widget hole: the tiles masked to the circle, then the landmark icons and the dots, at
@@ -357,7 +352,8 @@ fn emit_minimap(
     wmos: Res<Assets<WmoModel>>,
     world: benilla_world::world_point::WorldPoint,
     asset_server: Res<AssetServer>,
-    corpse: Res<MinimapCorpse>,
+    // One parameter for the static blips: a system takes at most 16.
+    (corpse, spirit_healer): (Res<MinimapCorpse>, Res<MinimapSpiritHealer>),
     blip_inputs: blips::BlipInputs,
     mut composite: ResMut<composite::MinimapComposite>,
     rig: Option<Res<composite::CompositeRig>>,
@@ -422,8 +418,8 @@ fn emit_minimap(
     if assets.tex(MinimapArtSlot::Mask).is_none() {
         // An empty mask name leaves no texture, and the render returns at once (`0x4ec959`,
         // `0x4ec968`): no tiles, and with no scale no landmarks, rim arrows or dots either.
-    } else if let Some((world_from_local, model, stem, in_group)) = interior {
-        // Interior: the WMO's own per-group tiles, drawn white. They are baked in the model frame
+    } else if let Some((world_from_local, model, stem, mode)) = interior {
+        // Interior: the WMO's own tiles, the whole-building set or the flooded groups', drawn white. They are baked in the model frame
         // (north = model +X), so each sits at its model-space centre through the placement and the
         // whole set turns by one placement yaw (`0x6da180`).
         if cache.interior_stem.as_deref() != Some(stem.as_str()) {
@@ -453,30 +449,56 @@ fn emit_minimap(
         let rt_half = composite::RT_SIZE as f32 * 0.5;
         composite.active = true;
 
-        // The portal flood-fill from the player's group (`0x6a5020`). Its query box uses the draw
-        // radius (`0x6d96b6`), so zooming in also tightens the box's Z extent.
-        let drawable =
-            interior_group_selection(model, &world_from_local, player.pos, radius, in_group);
-        // Draw order (`0x4ebeb0`, keyed at `0x6d9e30`): ascending by `Zmidpoint − playerZ`, the
-        // player's own group keyed `FLT_MAX`, so it draws last and no storey covers the room.
-        let player_z = bevy_to_wow(world_from_local.inverse().transform_point3(player.pos))[2];
-        let sort_key = |gi: usize| -> f32 {
-            if gi == in_group {
-                f32::MAX
-            } else {
-                let gn = &model.group_nav[gi];
-                0.5 * (gn.bbox_min[2] + gn.bbox_max[2]) - player_z
+        // What draws, as `(tile group number, model-space box)` in draw order.
+        let sources: Vec<(usize, [f32; 3], [f32; 3])> = match mode {
+            // The whole-WMO set over the MOHD box, numbered by the group count
+            // (`CMapObj::GetMinimapQuads`).
+            InteriorMap::Whole => model
+                .bbox
+                .map(|(lo, hi)| (model.group_nav.len(), lo, hi))
+                .into_iter()
+                .collect(),
+            InteriorMap::Groups { seed, inside } => {
+                // The portal flood-fill from the player's group. Its query box uses the draw
+                // radius, so zooming in also tightens the box's Z extent.
+                let drawable = interior_group_selection(
+                    model,
+                    &world_from_local,
+                    player.pos,
+                    radius,
+                    seed,
+                    inside,
+                );
+                // Draw order (`0x4ebeb0`, keyed at `0x6d9e30`): ascending by `Zmidpoint − playerZ`,
+                // the player's own group keyed `FLT_MAX`, so it draws last and no storey covers
+                // the room.
+                let player_z =
+                    bevy_to_wow(world_from_local.inverse().transform_point3(player.pos))[2];
+                let sort_key = |gi: usize| -> f32 {
+                    if gi == seed {
+                        f32::MAX
+                    } else {
+                        let gn = &model.group_nav[gi];
+                        0.5 * (gn.bbox_min[2] + gn.bbox_max[2]) - player_z
+                    }
+                };
+                let mut order: Vec<usize> = (0..model.group_nav.len())
+                    .filter(|&gi| drawable[gi])
+                    .collect();
+                order.sort_by(|&a, &b| sort_key(a).total_cmp(&sort_key(b)));
+                order
+                    .into_iter()
+                    .map(|gi| {
+                        let gn = &model.group_nav[gi];
+                        (gi, gn.bbox_min, gn.bbox_max)
+                    })
+                    .collect()
             }
         };
-        let mut order: Vec<usize> = (0..model.group_nav.len())
-            .filter(|&gi| drawable[gi])
-            .collect();
-        order.sort_by(|&a, &b| sort_key(a).total_cmp(&sort_key(b)));
-        for gi in order {
-            let gn = &model.group_nav[gi];
-            let (nx, tw_x) = group_axis_grid(gn.bbox_max[0] - gn.bbox_min[0]);
-            let (ny, tw_y) = group_axis_grid(gn.bbox_max[1] - gn.bbox_min[1]);
-            let mid_z = 0.5 * (gn.bbox_min[2] + gn.bbox_max[2]);
+        for &(gi, bbox_min, bbox_max) in &sources {
+            let (nx, tw_x) = group_axis_grid(bbox_max[0] - bbox_min[0]);
+            let (ny, tw_y) = group_axis_grid(bbox_max[1] - bbox_min[1]);
+            let mid_z = 0.5 * (bbox_min[2] + bbox_max[2]);
             for col in 0..nx {
                 for row in 0..ny {
                     // The grid cell plus the outer-edge bleed: a boundary cell grows 1 yd on its
@@ -484,14 +506,14 @@ fn emit_minimap(
                     // `fadd` of `0xca8098`). The bleed matters: `GEQUAL 224/255` on a linear-
                     // filtered edge reaches only 0.122 texel past the last opaque texel centre, so
                     // merely abutting groups would show the black clear along the wall.
-                    let x0 = gn.bbox_min[0] + col as f32 * tw_x
+                    let x0 = bbox_min[0] + col as f32 * tw_x
                         - if col == 0 { EDGE_BLEED_YD } else { 0.0 };
-                    let x1 = gn.bbox_min[0]
+                    let x1 = bbox_min[0]
                         + (col + 1) as f32 * tw_x
                         + if col + 1 == nx { EDGE_BLEED_YD } else { 0.0 };
-                    let y0 = gn.bbox_min[1] + row as f32 * tw_y
+                    let y0 = bbox_min[1] + row as f32 * tw_y
                         - if row == 0 { EDGE_BLEED_YD } else { 0.0 };
-                    let y1 = gn.bbox_min[1]
+                    let y1 = bbox_min[1]
                         + (row + 1) as f32 * tw_y
                         + if row + 1 == ny { EDGE_BLEED_YD } else { 0.0 };
                     let tc = to_target([0.5 * (x0 + x1), 0.5 * (y0 + y1), mid_z]);
@@ -529,9 +551,9 @@ fn emit_minimap(
         static MM_STATS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if *MM_STATS.get_or_init(|| std::env::var_os("WOW_MM_STATS").is_some()) {
             eprintln!(
-                "MM-STATS: radius {radius} yd, groups {}/{} selected, {} tiles composited",
-                drawable.iter().filter(|d| **d).count(),
-                drawable.len(),
+                "MM-STATS: radius {radius} yd, {mode:?}, {} of {} groups, {} tiles composited",
+                sources.len(),
+                model.group_nav.len(),
                 composite.tiles.len(),
             );
         }
@@ -654,14 +676,15 @@ fn emit_minimap(
     });
     let mut hover = blips::MinimapBlipHover::None;
     if let Some(ctx) = &blip_ctx {
-        // The guard-directions marker and the corpse ride this pass as landmarks, as the reference
-        // appends its static blip slots after the DBC scan, so they draw even without
-        // `AreaPOI.dbc`. The icons need only their atlas (`0x4ed21f`).
+        // The guard marker, corpse, and spirit healer ride this pass as landmarks, as the reference
+        // appends its static blip slots after the DBC scan, so they draw even without `AreaPOI.dbc`.
+        // The icons need only their atlas (`0x4ed21f`).
         blips::emit_landmarks(
             ctx,
             pois.as_ref().map(|p| &p.0),
             poi_marker.on_map(map.0),
             corpse.0.as_ref(),
+            spirit_healer.0.as_ref(),
             map.0,
             assets.tex(MinimapArtSlot::Icons),
             &mut quads,
@@ -836,8 +859,12 @@ fn stage_masks(
 #[derive(Resource, Default)]
 pub(crate) struct MinimapCorpse(pub(crate) Option<benilla_formats::AreaPoi>);
 
+/// The spirit healer's static blip while a release location is active on the player's map.
+#[derive(Resource, Default)]
+pub(crate) struct MinimapSpiritHealer(pub(crate) Option<benilla_formats::AreaPoi>);
+
 /// Aim the minimap's arrow children, the arrow half of its render (`0x4ec950`), after the tick and
-/// before the paint that draws them: the landmark selection's three records (rebuilt when its
+/// before the paint that draws them: the landmark selection's static records (rebuilt when their
 /// identities change) and the party and pet records, by bearing. With an empty mask name the render
 /// returns before any of it (`0x4ec968`), so the arrows keep what they had.
 fn feed_minimap_arrows(
@@ -860,10 +887,12 @@ fn feed_minimap_arrows(
     >,
     self_store: Query<&crate::net::ObjectStore, With<crate::net::SelfPlayer>>,
     mut corpse: ResMut<MinimapCorpse>,
+    mut spirit_healer: ResMut<MinimapSpiritHealer>,
     inside: Res<MinimapInside>,
     mut listed: Local<crate::ui_script::VmMemo<Option<Vec<blips::ArrowKey>>>>,
 ) {
     let corpse_point = vm.own().corpse;
+    let release = vm.own().release_location;
     vm.run(|script| {
         let (Some(script), Some(assets), Some(map)) = (script, assets, map) else {
             return;
@@ -877,6 +906,20 @@ fn feed_minimap_arrows(
             corpse.0 =
                 dead.map(|p| blips::corpse_landmark(p, map.0, script.global_text("CORPSE_RED")));
         }
+        // As the corpse: rebuilt only when the release point or map changes.
+        let release_at = release
+            .filter(|release| release.map_id == map.0 as i32)
+            .map(|release| release.position);
+        let healer_named = spirit_healer.0.as_ref().map(|h| (h.pos, h.continent_id));
+        if release_at.map(|p| (p, map.0)) != healer_named {
+            spirit_healer.0 = release_at.map(|p| {
+                blips::spirit_healer_landmark(
+                    p,
+                    map.0,
+                    script.global_text("SPIRIT_HEALER_RELEASE_RED"),
+                )
+            });
+        }
         if assets.tex(MinimapArtSlot::Mask).is_none() || !player.active {
             return;
         }
@@ -889,6 +932,7 @@ fn feed_minimap_arrows(
                 .flat_map(|p| p.0.rows().map(|(_, poi)| poi)),
             poi_marker.on_map(map.0),
             corpse.0.as_ref(),
+            spirit_healer.0.as_ref(),
             map.0,
             wx,
             wy,
@@ -952,6 +996,7 @@ impl Plugin for MinimapPlugin {
             .init_resource::<MinimapInside>()
             .init_resource::<MinimapPing>()
             .init_resource::<MinimapCorpse>()
+            .init_resource::<MinimapSpiritHealer>()
             .init_resource::<composite::MinimapComposite>()
             .add_systems(Startup, setup_minimap.after(AssetSet::Open))
             .add_systems(Startup, composite::setup_composite)

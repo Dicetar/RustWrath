@@ -484,6 +484,9 @@ pub(crate) struct Player {
     /// The Souls combat drive ([`crate::souls`]), rewritten every frame before `control` reads
     /// it; the default leaves the stock controller untouched.
     pub(crate) souls: SoulsDrive,
+    /// The hostile bodies the mover slides round this frame (Bevy position, bounding radius),
+    /// gathered by the Souls drive ([`super::bodies`]); empty is the stock walk-through.
+    pub(crate) unit_bodies: Vec<(bevy::prelude::Vec3, f32)>,
     /// Souls mode: frames left to stow once the attack the sheath key stopped is echoed off
     /// ([`super::posture`]); 0 is none pending.
     pub(crate) sheath_after_stop: u8,

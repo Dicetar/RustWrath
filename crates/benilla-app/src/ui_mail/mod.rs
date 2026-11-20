@@ -167,7 +167,8 @@ impl MailOpen {
     }
 
     /// A client-side close, sending nothing as 1.12 does (`0x4acd71`): the guid goes, the rows
-    /// and the request lock stay, so a re-open inside `CheckInbox`'s window re-announces them. A
+    /// stay, so a re-open inside `CheckInbox`'s window re-announces them ([`close_core`] lifts
+    /// the VM's request lock). A
     /// result already landed still lifts the lock and signals: `0x4ad050` tests no mailbox.
     pub(crate) fn clear(&mut self) {
         self.mailbox = None;
@@ -225,6 +226,11 @@ pub(crate) fn close_core(world: &mut World) {
     crate::ui_session::note_closed(world, NpcWindow::Mail);
     crate::ui_session::fire(world, |script| {
         script.mail_closed();
+        // Deviation: the close lifts the request lock, which 12340 keeps until an answer. The
+        // server answers no request it refuses (`CanOpenMailBox`, `MailHandler.cpp:37`, out of
+        // range or a stale guid), so the reference's lock, held to the next world enter, left
+        // every later visit showing the old rows. A late answer still lands: it tests no lock.
+        script.mail_request_resolved();
         script.fire_event("MAIL_CLOSED", vec![]);
     });
     let refresh = world

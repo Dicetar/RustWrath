@@ -11,8 +11,12 @@ use super::Model;
 /// The GM stationery, `Stationery.dbc` row 61 (`0x4af2cb cmp [rec+0x11c],0x3d`).
 const STATIONERY_GM: u32 = 61;
 
-/// `CheckInbox`'s throttle window, 60 000 ms (`0x4aeb06`).
-const CHECK_INBOX_WINDOW_SECS: f64 = 60.0;
+/// `CheckInbox`'s throttle window. The 12340 reference stamps 60 000 ms (`0x4aeb06`), so a mail
+/// that lands within a minute of the last list (an auction won between two visits) stays hidden
+/// until the window runs out or a relog. Deviation, as the Wrath reference's HoT build does
+/// (`Script_CheckInbox`, `m_nextUpdateTime = now + 1`): 1 ms, which still folds a same-frame
+/// repeat into an in-place re-announce.
+const CHECK_INBOX_WINDOW_SECS: f64 = 0.001;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MailInboxAttachment {
@@ -741,7 +745,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // CheckInbox() (`0x4aeab0`): nothing while a request is in flight (`0x4aeac2`) or with no
-    // mailbox (`0x4aead8`). Within 60 s of the last list query it re-announces the held list,
+    // mailbox (`0x4aead8`). Within the window of the last list query it re-announces the held list,
     // signalling `MAIL_INBOX_UPDATE` in place (`0x4aeaf8`); otherwise it sends the query, stamps
     // the window and takes the lock (`0x4aeb06`-`0x4aeb18`), and the answer announces the list.
     g.set(
@@ -1371,9 +1375,10 @@ mod tests {
     }
 
     /// `CheckInbox` (`0x4aeab0`): no mailbox or a request in flight does nothing; the first
-    /// check queues the query and takes the lock; once answered, a check inside the 60 s window
+    /// check queues the query and takes the lock; once answered, a check inside the window
     /// re-announces the held list with `MAIL_INBOX_UPDATE` in place (`0x4aeaf8`), and past it
-    /// queries again.
+    /// queries again. The window is the HoT build's 1 ms, not 12340's 60 s, so a mail that lands
+    /// between two visits shows on the second.
     #[test]
     fn check_inbox_throttles_to_an_in_place_reannounce() {
         use crate::script::tick::heard;
@@ -1396,14 +1401,16 @@ mod tests {
         assert!(heard::take(&s).is_empty());
 
         s.mail_request_resolved();
-        s.tick(30.0);
         s.run("CheckInbox()").unwrap();
-        assert!(!checks(&mut s));
+        assert!(!checks(&mut s), "the same instant re-announces");
         assert_eq!(heard::take(&s), ["MAIL_INBOX_UPDATE"]);
 
-        s.tick(31.0);
+        s.tick(1.0);
         s.run("CheckInbox()").unwrap();
-        assert!(checks(&mut s), "the window ran out: a fresh query");
+        assert!(
+            checks(&mut s),
+            "a second later: a fresh query, not the held list"
+        );
         assert!(heard::take(&s).is_empty());
     }
 

@@ -54,6 +54,9 @@ pub enum FrameKind {
     /// `CooldownFrameTemplate` and every stock action/aura/container/target instance. The timer is
     /// this state on the frame-script `GetTime` clock; the sweep pixels are the extract's.
     Cooldown,
+    /// `CGQuestPOIFrame`, the 3.3.5a quest-area blob layer (`WorldMapFrame.xml`'s
+    /// `WorldMapBlobFrame`): which quests' areas it draws and the hover hit test over them.
+    QuestPoiFrame,
 }
 
 /// A kind's own per-frame update: the `vtable+0x38` override the update walk calls in the frame's
@@ -137,6 +140,51 @@ impl CooldownState {
     }
 }
 
+/// A `QuestPOIFrame`'s state (12340 `CGQuestPOIFrame`): the blob art and its style setters, the
+/// quests `DrawQuestBlob` has turned on, and the last hover answer `UpdateMouseOverTooltip` left
+/// for `GetNumTooltips`/`GetTooltipIndex`. The constructor's defaults are [`Self::default`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct QuestPoiState {
+    pub fill_texture: Option<String>,
+    pub border_texture: Option<String>,
+    /// 0..=255, the setter clamping then truncating.
+    pub fill_alpha: u8,
+    pub border_alpha: u8,
+    /// 0..=10.
+    pub border_scalar: f32,
+    /// 0.1..=0.5.
+    pub merge_threshold: f32,
+    pub smoothing: bool,
+    pub merging: bool,
+    /// 8..=30.
+    pub num_spline_points: u32,
+    /// The quests whose blobs are drawn, in the order they were turned on.
+    pub drawn: Vec<u32>,
+    /// The quest under the cursor at the last hover test, 0 for none.
+    pub mouse_over_quest: u32,
+    /// That quest's objective indices whose blobs hold the cursor, at most four.
+    pub mouse_over_objectives: Vec<i32>,
+}
+
+impl Default for QuestPoiState {
+    fn default() -> Self {
+        Self {
+            fill_texture: None,
+            border_texture: None,
+            fill_alpha: 255,
+            border_alpha: 255,
+            border_scalar: 1.0,
+            merge_threshold: 0.25,
+            smoothing: true,
+            merging: true,
+            num_spline_points: 20,
+            drawn: Vec::new(),
+            mouse_over_quest: 0,
+            mouse_over_objectives: Vec::new(),
+        }
+    }
+}
+
 /// The kind of a [`Region`] leaf, the client's `CScriptRegion`-derived non-frame objects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RegionKind {
@@ -179,6 +227,8 @@ pub enum KindState {
     /// A `Cooldown` widget's timer and style (`SetCooldown`, `SetReverse`, `SetDrawEdge`); the
     /// sweep is computed at extract from the frame-script clock.
     Cooldown(CooldownState),
+    /// A `QuestPOIFrame`'s drawn quests and blob style.
+    QuestPoi(QuestPoiState),
     /// The `GameTooltip` line stack, owner and fade.
     Tooltip(TooltipState),
 }

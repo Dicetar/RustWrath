@@ -1386,20 +1386,24 @@ pub fn auction_list_bidder_items(auctioneer: u64, list_from: u32, auction_ids: &
     p
 }
 
-/// `CMSG_AUCTION_SELL_ITEM` (`AuctionHouseHandler.cpp:106`): 12340 batch sell header (`u32 items_count(1)`,
-/// `u64 item_guid`, `u32 stack_size(0)` = full stack, `u32 bid, u32 buyout, u32 etime_minutes`).
+/// `CMSG_AUCTION_SELL_ITEM` (`AuctionHouseHandler.cpp:106`): one auction made of `items`, each an
+/// item guid and how many of it go in (`u32 items_count`, then `u64 guid, u32 count` each), then
+/// `u32 bid, u32 buyout, u32 etime_minutes`. AzerothCore drops the packet silently for a zero
+/// count, over 160 items, or a run time other than 720, 1440 or 2880 minutes.
 pub fn auction_sell_item(
     auctioneer: u64,
-    item_guid: u64,
+    items: &[(u64, u32)],
     bid: u32,
     buyout: u32,
     etime_minutes: u32,
 ) -> Vec<u8> {
-    let mut p = Vec::with_capacity(36);
+    let mut p = Vec::with_capacity(24 + items.len() * 12);
     p.extend_from_slice(&auctioneer.to_le_bytes());
-    p.extend_from_slice(&1u32.to_le_bytes());
-    p.extend_from_slice(&item_guid.to_le_bytes());
-    p.extend_from_slice(&0u32.to_le_bytes());
+    p.extend_from_slice(&(items.len() as u32).to_le_bytes());
+    for (guid, count) in items {
+        p.extend_from_slice(&guid.to_le_bytes());
+        p.extend_from_slice(&count.to_le_bytes());
+    }
     p.extend_from_slice(&bid.to_le_bytes());
     p.extend_from_slice(&buyout.to_le_bytes());
     p.extend_from_slice(&etime_minutes.to_le_bytes());
@@ -2241,13 +2245,14 @@ pub enum ServerEvent {
         unit: u64,
         kit_id: u32,
     },
-    /// `SMSG_SPELLNONMELEEDAMAGELOG` without the 12340-only overkill word. `school` is 12340's
-    /// mask; the app seam turns it into the 1.12 index.
+    /// `SMSG_SPELLNONMELEEDAMAGELOG`. `school` is 12340's raw mask byte; the app seam turns it
+    /// into the 1.12 index for the vanilla chat translation.
     SpellDamage {
         target: u64,
         attacker: u64,
         spell_id: u32,
         damage: u32,
+        overkill: u32,
         school: u8,
         absorb: u32,
         resist: i32,
@@ -2384,6 +2389,8 @@ pub enum ServerEvent {
     QuestOffer(QuestOfferReward),
     QuestComplete(QuestComplete),
     QuestTemplate(Box<QuestTemplate>),
+    /// `SMSG_QUEST_POI_QUERY_RESPONSE`: each asked quest's map areas.
+    QuestPois(Vec<crate::quest_poi::QuestPoi>),
     QuestObjectivesComplete {
         quest_id: u32,
     },
@@ -2964,6 +2971,9 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_QUESTGIVER_QUEST_COMPLETE => read_quest_complete(body),
         SMSG_QUEST_QUERY_RESPONSE => {
             read_quest_template(body).map(|q| ServerEvent::QuestTemplate(Box::new(q)))
+        }
+        crate::quest_poi::SMSG_QUEST_POI_QUERY_RESPONSE => {
+            crate::quest_poi::decode_response(body).map(ServerEvent::QuestPois)
         }
         SMSG_QUESTUPDATE_COMPLETE => {
             u32_body(body).map(|quest_id| ServerEvent::QuestObjectivesComplete { quest_id })
@@ -3827,7 +3837,7 @@ fn read_spell_damage(b: &[u8]) -> Result<ServerEvent> {
     let attacker = r.packed_guid()?;
     let spell_id = r.u32()?;
     let damage = r.u32()?;
-    let _overkill = r.u32()?;
+    let overkill = r.u32()?;
     let school = r.u8()?;
     let absorb = r.u32()?;
     let resist = r.u32()? as i32;
@@ -3841,6 +3851,7 @@ fn read_spell_damage(b: &[u8]) -> Result<ServerEvent> {
         attacker,
         spell_id,
         damage,
+        overkill,
         school,
         absorb,
         resist,
@@ -6831,10 +6842,15 @@ mod tests {
         // + 1 (count=1) + 1 (slot=0) + 8 (item_guid) + 8 (money+cod) + 9 (tail) = 60 bytes
         assert_eq!(mail.len(), 60);
 
-        let sell = auction_sell_item(0xAA, 0xBB, 100, 200, 720);
+        let sell = auction_sell_item(0xAA, &[(0xBB, 20)], 100, 200, 720);
         assert_eq!(sell.len(), 36);
         assert_eq!(u32::from_le_bytes(le::<4>(&sell[8..12])), 1);
         assert_eq!(u64::from_le_bytes(le::<8>(&sell[12..20])), 0xBB);
+        assert_eq!(
+            u32::from_le_bytes(le::<4>(&sell[20..24])),
+            20,
+            "a nonzero count"
+        );
         assert_eq!(u32::from_le_bytes(le::<4>(&sell[24..28])), 100);
         assert_eq!(u32::from_le_bytes(le::<4>(&sell[28..32])), 200);
         assert_eq!(u32::from_le_bytes(le::<4>(&sell[32..36])), 720);

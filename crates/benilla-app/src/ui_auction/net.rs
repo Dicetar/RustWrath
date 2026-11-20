@@ -271,6 +271,11 @@ fn settle(vm: &mut HouseVm) {
             }
             HouseEffect::Send(command) => vm.own().wire.view().send(command),
             HouseEffect::Page(list) => land_page(vm, list),
+            HouseEffect::Multisell(step) => vm.turn(|script, _| {
+                if let Some(script) = script {
+                    super::multisell_step(script, step);
+                }
+            }),
         }
     }
 }
@@ -633,11 +638,39 @@ fn auction_command_result(
 ) {
     // For the live probe: a success otherwise leaves no trace but its request.
     auction.wire.last_command = Some((auction_id, action, error));
+    // A refused sell ends a multisell in flight ahead of its line (Wrath
+    // `Packet_SMSG_AUCTION_COMMAND_RESULT` → `OnMultisellFailure`).
+    if action == auction_action::STARTED
+        && error != auction_error::OK
+        && auction.multisell.take().is_some()
+    {
+        auction
+            .effects
+            .push(HouseEffect::Multisell(super::MultisellStep::Failure));
+    }
     match error {
         auction_error::OK => match action {
-            // Started (`0x4cc4c7`): its line, the owner request armed and sent again at its
+            // Started (`0x4cc4c7`): with a multisell in flight its progress and the next stack
+            // (`SellNextItem`), then the line, the owner request armed and sent again at its
             // saved offset (`0x4cc4da`, `0x4cc4e0`).
             auction_action::STARTED => {
+                if let Some(mut sell) = auction.multisell.take() {
+                    auction
+                        .effects
+                        .push(HouseEffect::Multisell(super::MultisellStep::Update {
+                            created: sell.sent(),
+                            total: sell.total,
+                        }));
+                    match sell.left.pop_front() {
+                        Some(items) => {
+                            auction.effects.push(HouseEffect::Send(sell.send(items)));
+                            auction.multisell = Some(sell);
+                        }
+                        None => auction
+                            .effects
+                            .push(HouseEffect::Multisell(super::MultisellStep::Done)),
+                    }
+                }
                 auction.line(AuctionMessage::chat("ERR_AUCTION_STARTED"));
                 auction.owner_armed = true;
                 let offset = auction.owner_offset;

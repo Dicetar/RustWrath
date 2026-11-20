@@ -1105,6 +1105,9 @@ mod tests {
     #[test]
     fn a_bad_file_is_refused_with_its_line() {
         let text = kit().to_text();
+        // The 1-based number of the first line equal to `line`, so a keyword added to the text
+        // form does not shift the expectations.
+        let at = |line: &str| text.lines().position(|l| l == line).expect(line) + 1;
         let cases = [
             (
                 text.replacen("rustwrath-kit 1", "rustwrath-kit 2", 1),
@@ -1113,23 +1116,28 @@ mod tests {
             ),
             (
                 text.replacen("  total 30.000", "  total thirty", 1),
-                10,
+                at("  total 30.000"),
                 "not a valid value",
             ),
             (
                 text.replacen("  total 30.000", "  wobble 1", 1),
-                10,
+                at("  total 30.000"),
                 "unknown keyword",
             ),
-            (text.replacen("  total 30.000\n", "", 1), 7, "no `total`"),
+            // A missing field is reported on its action's opening line.
+            (
+                text.replacen("  total 30.000\n", "", 1),
+                at("action 1 light"),
+                "no `total`",
+            ),
             (
                 text.replacen("  stamina 7.000", "  stamina 7.000\n  stamina 7.000", 1),
-                14,
+                at("  stamina 7.000") + 1,
                 "appears twice",
             ),
             (
                 text.replacen("  input 3.000 1.500", "  input 3.000", 1),
-                11,
+                at("  input 3.000 1.500"),
                 "expected 2 values",
             ),
         ];

@@ -97,6 +97,21 @@ pub(crate) const POSITION_PROBE_LIFT: f32 = 0.1;
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CurrentAreaInterior(pub Option<WmoInteriorKeys>);
 
+/// The WMO group the player's position links to (`CMap::LinkStaticEntity`): the same down-ray as
+/// [`CurrentAreaInterior`], kept for exterior groups too. The minimap reads it
+/// (`QueryMapObjIDs`), since a city street group still selects its building's tiles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MapObjLink {
+    pub instance: Entity,
+    pub group: usize,
+    /// The group lacks MOGP `0x8` (`QueryInterior`).
+    pub interior: bool,
+}
+
+/// The player's [`MapObjLink`], `None` on open terrain.
+#[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CurrentMapObjLink(pub Option<MapObjLink>);
+
 /// The group flag `0x6706f0` answers by once the entity's indoors bit is set (`0x670735`).
 const GROUP_OUTDOORS_FOR_SPELLS: u32 = 0x8000;
 
@@ -174,10 +189,11 @@ pub(super) fn track_area_interior(
     wmos: Res<Assets<WmoModel>>,
     viewer: Res<crate::view::Viewer>,
     cam: Query<&GlobalTransform, With<WorldCamera>>,
-    instances: Query<&WmoPortalInstance>,
+    instances: Query<(Entity, &WmoPortalInstance)>,
     streamer: Res<TerrainStreamer>,
     adt_tiles: Res<Assets<AdtTile>>,
     mut current: ResMut<CurrentAreaInterior>,
+    mut link: ResMut<CurrentMapObjLink>,
 ) {
     // Cast from the position, lifted only for float safety, as the client does (`0x6a8a20`).
     let eye_world = if let Some(body) = viewer.at {
@@ -187,10 +203,10 @@ pub(super) fn track_area_interior(
     } else {
         return;
     };
-    let placements: Vec<((), &WmoPortalInstance)> = instances.iter().map(|i| ((), i)).collect();
+    let placements: Vec<(Entity, &WmoPortalInstance)> = instances.iter().collect();
     // The zone-text law is `0x8` alone: a `0x40`-only street group is indoors for naming
     // (`[node+0x90]` bit 0 is set before the `0x40` test).
-    let found = nearest_claim(
+    let claim = nearest_claim(
         &wmos,
         &placements,
         &streamer,
@@ -198,16 +214,25 @@ pub(super) fn track_area_interior(
         eye_world,
         LightAttach::DownRay,
         EXTERIOR,
-    )
-    .filter(|(claim, ..)| !claim.outdoor)
-    .map(|(claim, model, inst, ..)| WmoInteriorKeys {
-        wmo_id: model.wmo_id,
-        name_set: u32::from(inst.name_set),
-        group_area_id: model
-            .group_nav
-            .get(claim.group)
-            .map_or(0, |g| g.area_table_id),
+    );
+    let linked = claim.as_ref().map(|(claim, _, _, _, entity)| MapObjLink {
+        instance: *entity,
+        group: claim.group,
+        interior: !claim.outdoor,
     });
+    if link.0 != linked {
+        link.0 = linked;
+    }
+    let found = claim
+        .filter(|(claim, ..)| !claim.outdoor)
+        .map(|(claim, model, inst, ..)| WmoInteriorKeys {
+            wmo_id: model.wmo_id,
+            name_set: u32::from(inst.name_set),
+            group_area_id: model
+                .group_nav
+                .get(claim.group)
+                .map_or(0, |g| g.area_table_id),
+        });
     if current.0 != found {
         current.0 = found;
     }
@@ -796,6 +821,7 @@ mod tests {
             doodad_base: Default::default(),
             doodad_owner: Default::default(),
             doodad_groups: Default::default(),
+            bbox: None,
             convex_volume: Vec::new(),
         }
     }
@@ -995,6 +1021,7 @@ mod tests {
         world.init_resource::<Assets<AdtTile>>();
         world.init_resource::<TerrainStreamer>();
         world.init_resource::<CurrentAreaInterior>();
+        world.init_resource::<CurrentMapObjLink>();
         world.init_resource::<CurrentWmoInterior>();
         world.init_resource::<PlayerWmoRoom>();
         world.insert_resource(crate::view::Viewer {
