@@ -68,4 +68,26 @@ and the live-only checks below.
 - **Live-only check — turn-in reward, no duplicate (owner run).** Files: none (runtime). Acceptance: choosing the reward fires one CMSG_QUESTGIVER_CHOOSE_REWARD, the reward lands once in a bag, and a repeated turn-in click does not add a second copy. Check: QuestCompletePacket + one RewardItemPushed; turn_in_correlations names a single ChooseReward write; bag count is one.
 - **Live-only check — reconnect persistence (owner run).** Files: none (runtime). Acceptance: after the reward, reconnecting shows the same quest-log state and the reward item still in bags. Check: post-reconnect quest log and bag match the pre-reconnect snapshot; no client error.
 
+## Uncovered quest types (2026-11-23)
+
+The narrow gossip → accept → objective → loot → turn-in → reward path covers one outdoor, solo,
+one-shot, kill/item quest. The types below are outside it. `TBD-*` values are placeholders for
+future tickets, not assigned issue numbers; no runtime behavior is claimed for any row.
+
+| Quest type | Why the narrow path misses it | Source hint | Future ticket |
+|---|---|---|---|
+| Escort / party-accept | Accept needs the party verdict and `SMSG_QUEST_CONFIRM_ACCEPT`; the narrow path accepts solo and never escorts. | `quest_flags::PARTY_ACCEPT`; `ui_quest_share.rs` | `TBD-ESCORT` |
+| Dungeon | Instance map, reset and dungeon-group objectives; the route is one outdoor giver. | `QuestInfo.dbc` tag 81 "Dungeon" | `TBD-DUNGEON` |
+| Raid | Raid group, instance and raid loot rules; the narrow path is solo with party-loot only. | `QuestInfo.dbc` tag 62 "Raid"; `quest_flags::RAID` | `TBD-RAID` |
+| Daily | Daily flag, cap and reset; the narrow path has one accept/turn-in and no replay. | `ui_quest_log.rs` `flags & 0x1000`; `PLAYER_FIELD_DAILY_QUESTS_1` | `TBD-DAILY` |
+| World (world event) | Zone/world-state and calendar-driven objectives, not one giver's kill/item row. | `QuestInfo.dbc` tag 82 "World Event"; `CalendarHoliday` | `TBD-WORLD` |
+| Auto-complete | Granted and completed in one step, never in the log; the narrow path needs a log slot and turn-in. | `quest_flags::AUTO_REWARDED`; `_REWARD_REP` | `TBD-AUTOCOMPLETE` |
+| Exploration | Completes on an area trigger; no kill/item counter to update. | `quest_flags::EXPLORATION` | `TBD-EXPLORATION` |
+| Stay-alive | Survival objective with no kill/item counter. | `quest_flags::STAY_ALIVE` | `TBD-STAYALIVE` |
+| Hidden rewards | Rewards ship only in `SMSG_QUESTGIVER_OFFER_REWARD`; the turn-in choice/push path is not exercised. | `quest_flags::HIDDEN_REWARDS` | `TBD-HIDDENREWARD` |
+| Group / Elite | Suggested party size and party coordination; the narrow path is one character. | `QuestInfo.dbc` tag 1 "Elite"; `suggested_players` | `TBD-GROUP` |
+| PvP | PvP-event/flag objectives, not creature kills or item collection. | `QuestInfo.dbc` tag 41 "PvP" | `TBD-PVP` |
+| Repeatable / weekly | Replay and reset semantics; the narrow path's acted latch assumes one-shot. | giver `repeatable`; reset machinery | `TBD-REPEATABLE` |
+| Vehicle | Vehicle seat/control objectives; the client currently boards no vehicle. | `gameplay.rs` "This client boards no vehicle" | `TBD-VEHICLE` |
+
 
