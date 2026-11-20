@@ -1101,7 +1101,7 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "UnitDetailedThreatSituation",
         lua.create_function(|lua, args: mlua::MultiValue| {
-            let unit = args.get(0).cloned().unwrap_or(mlua::Value::Nil);
+            let unit = args.iter().next().cloned().unwrap_or(mlua::Value::Nil);
             let unit = crate::script::binding_abi::string_arg(
                 lua,
                 unit,

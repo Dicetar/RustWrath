@@ -677,6 +677,13 @@ pub enum WrathFeedEvent {
         session_epoch: u64,
         world_generation: u64,
     },
+    /// `SMSG_SPELLENERGIZELOG`: one energize row's raw 12340 facts. Carries the scope so a
+    /// delayed row from a retired world never reaches the Wrath VM.
+    SpellEnergize {
+        hit: WrathSpellEnergize,
+        session_epoch: u64,
+        world_generation: u64,
+    },
     /// `SMSG_PARTYKILLLOG`: the killing blow credited to a player. Carries the scope so a
     /// delayed kill from a retired world never reaches the Wrath VM.
     PartyKillLog {
@@ -2237,6 +2244,31 @@ pub struct WrathSpellHeal {
     pub received_at: f64,
 }
 
+/// One decoded `SMSG_SPELLENERGIZELOG` (`0x151`, `Net/Types.h` in 12340 reference) energize
+/// row with the world scope it belongs to, the UI clock at apply, and a monotonic sequence the
+/// UI feed uses to deliver each row exactly once. Body: packed target, packed caster, u32
+/// spellId, u32 powerType, u32 amount (`UnitCombatLog_C.cpp:1974` `HandleSpellLogEnergizeLog`,
+/// `read_spell_energize_log` in `crates/benilla-protocol-wrath/src/gameplay.rs:3305`).
+/// `UnitCombatLogEnergize` (`:1831`) returns when amount is zero. `SendEnergizeEvent` (`:2045`)
+/// divides amount by `Spell_C_GetPowerDisplayMod(powerType)`
+/// (`benilla_protocol::messages::power_display_scale`) with integer division before queueing and
+/// stores value/powerType in the 0x40 block; `PushEvent` (`:1241`, `:1365`) appends amount,
+/// powerType (2 values), so a shown energize is 8 header + spellId/spellName/spellSchoolMask +
+/// 2 = 13 values. Missing spell row: nil name, school 0.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathSpellEnergize {
+    pub target: u64,
+    pub caster: u64,
+    pub spell_id: u32,
+    pub power_type: u32,
+    pub amount: u32,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    /// `UiClock::ui_now` when the row was applied; 0 when no clock existed yet.
+    pub received_at: f64,
+}
+
 /// The decoded `SMSG_CALENDAR_SEND_CALENDAR` snapshot, kept as the wire delivered it. The UI
 /// reads the date from `zone_time` and pending invites from `invites`; the other rows stay here
 /// for the calendar windows that need them.
@@ -2347,6 +2379,15 @@ pub struct WrathWorldView {
     pub spell_heal_dropped: u64,
     /// Spell-heal rows delivered with an unknown endpoint after name resolution timed out.
     pub spell_heal_unresolved: u64,
+    /// The decoded spell-energize rows waiting for the UI feed; ordered rows up to
+    /// `SPELL_LOG_CAPACITY`.
+    pub spell_energizes: VecDeque<WrathSpellEnergize>,
+    /// Monotonic sequence for `Self::spell_energizes`, never reset on a scope clear.
+    pub spell_energize_revision: u64,
+    /// Spell-energize rows dropped because the pending queue was full.
+    pub spell_energize_dropped: u64,
+    /// Spell-energize rows delivered with an unknown endpoint after name resolution timed out.
+    pub spell_energize_unresolved: u64,
     /// Presentation mirror of the authority's active casts, keyed by caster, retaining 12340
     /// identity/timing beyond the vanilla cast-bar edges. Written only from resolved snapshots;
     /// never re-resolves wire facts. UI clocks are stamped here, not in the authority.
@@ -2416,6 +2457,10 @@ impl Default for WrathWorldView {
             spell_heal_revision: 0,
             spell_heal_dropped: 0,
             spell_heal_unresolved: 0,
+            spell_energizes: VecDeque::new(),
+            spell_energize_revision: 0,
+            spell_energize_dropped: 0,
+            spell_energize_unresolved: 0,
             casts: BTreeMap::new(),
             channels: BTreeMap::new(),
             last_cast_end: None,
@@ -2684,6 +2729,33 @@ impl WrathWorldView {
         });
     }
 
+    /// Adopt one decoded spell-energize row. Ordered event, never a replaceable snapshot: the
+    /// pending queue is bounded, and overflow drops the oldest row and records the loss.
+    /// `UnitCombatLogEnergize` (`UnitCombatLog_C.cpp:1831`) returns when amount is zero.
+    pub(crate) fn apply_spell_energize(
+        &mut self,
+        hit: WrathSpellEnergize,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        if hit.amount == 0 {
+            return;
+        }
+        self.spell_energize_revision = self.spell_energize_revision.saturating_add(1);
+        if self.spell_energizes.len() >= SPELL_LOG_CAPACITY {
+            self.spell_energizes.pop_front();
+            self.spell_energize_dropped = self.spell_energize_dropped.saturating_add(1);
+        }
+        self.spell_energizes.push_back(WrathSpellEnergize {
+            session_epoch,
+            world_generation,
+            revision: self.spell_energize_revision,
+            received_at,
+            ..hit
+        });
+    }
+
     /// Clear every scoped rune/calendar/combat-log/LFG fact on a session end or world transfer.
     fn clear_rune_calendar(&mut self) {
         self.runes.clear();
@@ -2706,6 +2778,9 @@ impl WrathWorldView {
         self.spell_heals.clear();
         self.spell_heal_dropped = 0;
         self.spell_heal_unresolved = 0;
+        self.spell_energizes.clear();
+        self.spell_energize_dropped = 0;
+        self.spell_energize_unresolved = 0;
         self.lfg_join_result = None;
         self.lfg_queue_status = None;
         self.lfg_update_player = None;
@@ -6737,10 +6812,6 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_PUSHQUESTTOPARTY,
                 gameplay::push_quest_to_party(quest),
             )),
-            ClientCommand::QuestPushResultForQuest { sharer, quest, msg } => Some((
-                u32::from(benilla_protocol_wrath::opcode::MSG_QUEST_PUSH_RESULT),
-                gameplay::quest_push_result(sharer, quest, msg.0),
-            )),
             ClientCommand::QuestPushResult { .. } => {
                 debug!("wrath: quest-share decline refused: the 12340 packet requires a quest id");
                 None
@@ -9267,6 +9338,25 @@ fn wrath_net_drain(
                     world_generation,
                 ) {
                     view.apply_spell_heal(
+                        hit,
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
+            WrathFeedEvent::SpellEnergize {
+                hit,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_spell_energize(
                         hit,
                         session_epoch,
                         world_generation,
@@ -12715,7 +12805,7 @@ pub fn run_session_with_cancel(
                 }
                 Ok(_) => {}
                 Err(e) if benilla_protocol_wrath::world::is_idle(&e) => {}
-                Err(e) if config.login_generation.is_some() && parked.is_some() => {
+                Err(_) if config.login_generation.is_some() && parked.is_some() => {
                     send_glue(SessionEvent::RosterFailed {
                         epoch: session.epoch(),
                     });
@@ -13713,6 +13803,38 @@ pub fn run_session_with_cancel(
                                     overheal,
                                     absorbed,
                                     critical,
+                                    session_epoch: session.epoch(),
+                                    world_generation: session.world_generation(),
+                                    revision: 0,
+                                    received_at: 0.0,
+                                },
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                            if session.player_guid().is_some() {
+                                for event in translate_live(
+                                    event,
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
+                                }
+                            }
+                        }
+                        Ok(event @ WrathGameplayEvent::SpellEnergizeLog {
+                            target,
+                            caster,
+                            spell_id,
+                            power_type,
+                            amount,
+                        }) => {
+                            feed.push_event(WrathFeedEvent::SpellEnergize {
+                                hit: WrathSpellEnergize {
+                                    target,
+                                    caster,
+                                    spell_id,
+                                    power_type,
+                                    amount,
                                     session_epoch: session.epoch(),
                                     world_generation: session.world_generation(),
                                     revision: 0,
