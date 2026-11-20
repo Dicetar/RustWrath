@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use crate::net::ObjectStore;
 use crate::sound::MessageSounds;
 use crate::ui_chat::{ChatEvent, ChatEventKind, ChatLog};
-use crate::ui_items::{count_of, count_of_in_player, InventoryScope};
+use crate::ui_items::{count_of_in_player, InventoryScope};
 
 /// One cast failure, as `ReportCastFailure 0x6e1a00` gets it. `arg` fills the message's `%s` (the
 /// arm table `0x6e1d8e`); the reference raises its local refusals with none, except the missing
