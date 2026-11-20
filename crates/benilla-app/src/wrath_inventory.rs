@@ -317,6 +317,11 @@ impl WrathInventory {
         self.bank_bags_purchased
     }
 
+    #[cfg(test)]
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (InventoryAddr, Option<u64>)> + '_ {
+        self.slots.iter().map(|(&addr, &value)| (addr, value))
+    }
+
     /// The typed address currently holding `guid`, if any. Used by the item watcher so an item in
     /// bank slot 25 or bank bag 7 still raises its bank signal.
     pub(crate) fn addr_of(&self, guid: u64) -> Option<InventoryAddr> {
