@@ -31,8 +31,9 @@ what the running server can do **live**, then build it.
 - **Not live:** new `item_template` rows (items are loaded once at startup; no reload). So the
   bottle must **reuse an existing item entry**, or not be an item at all. New `Spell.dbc` /
   `spell_dbc` rows are not live either; reuse existing spells.
-- **Dummy pools (seeded 2026-11-21):** usable items 911000-911049, tokens 911050-911099, spell
-  shells 900001-900090, creatures and objects. They load at the next server start, then take
+- **Dummy pools (seeded 2026-11-21):** 5,000 usable items 800000-804999, 5,000 tokens
+  805000-809999, 7,500 spell shells 850000-857499 (15 shapes × 500), 5,000 creatures
+  820000-824999 and 5,000 objects 830000-834999. They load at the next server start, then take
   behaviour from Lua live. See `integrations/sql/DUMMY_POOLS.md`.
 
 ## How random enchants work here

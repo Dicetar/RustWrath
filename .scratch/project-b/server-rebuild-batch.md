@@ -150,7 +150,7 @@ Owner request 2026-11-20: disenchanting a good roll should not waste it.
   an existing PERM enchant, and whether temporary-slot rolls count.
 - **Superseded 2026-11-21:** the owner dropped bottle-per-enchant for one chargeable Enchant Bottle
   (`.scratch/project-b/prompts/brainstorm-enchant-bottle-2026-11-20.md`). The item entry can now come
-  from the seeded dummy pools (`integrations/sql/DUMMY_POOLS.md`, items 911000-911049), which load at
+  from the seeded dummy pools (`integrations/sql/DUMMY_POOLS.md`, usable items 800000-804999), which load at
   the next server start.
 - **Check:** disenchant a random-enchanted green. The normal dust/essence should drop, plus one
   bottle per rolled enchant, and using a bottle on a fresh item should show the enchant there.
