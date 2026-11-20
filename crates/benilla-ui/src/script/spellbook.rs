@@ -563,10 +563,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                             .iter()
                             .map(|t| highest_rank_slots(&model.spellbook, t).len())
                             .sum();
-                        (
-                            offset,
-                            highest_rank_slots(&model.spellbook, tab).len(),
-                        )
+                        (offset, highest_rank_slots(&model.spellbook, tab).len())
                     }
                     _ => (0, 0),
                 };
