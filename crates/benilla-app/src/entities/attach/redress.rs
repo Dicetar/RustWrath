@@ -508,7 +508,7 @@ mod tests {
     /// Like `stand`, but with no creature model for display 42 present initially, so the first
     /// re-dress pass is not ready and must retry. The caller can insert a model later.
     fn stand_missing(
-        geosets: &[u16],
+        _geosets: &[u16],
         showing: &[usize],
         characters: Option<CharacterGeosets>,
     ) -> Standing {

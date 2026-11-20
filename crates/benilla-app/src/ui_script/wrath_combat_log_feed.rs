@@ -1343,7 +1343,7 @@ mod tests {
         use bevy::ecs::system::RunSystemOnce;
         use bevy::prelude::App;
 
-        let mut script = script_with_units();
+        let script = script_with_units();
         script
             .run(
                 r#"
@@ -1576,7 +1576,7 @@ mod tests {
         use bevy::ecs::system::RunSystemOnce;
         use bevy::prelude::App;
 
-        let mut script = script_with_units();
+        let script = script_with_units();
         script
             .run(
                 r#"
