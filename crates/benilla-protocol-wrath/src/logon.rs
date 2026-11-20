@@ -26,14 +26,65 @@ impl Logon {
     }
 }
 
+/// A logon dial that got no socket: the auth server's name did not resolve, or nothing answered
+/// at any address it resolved to. The glue tells it apart from a link lost after the connect
+/// (`GruntLogin::CantConnect` `0x8ca140` against `GruntLogin::Disconnected` `0x8ca1d0`).
+#[derive(Debug, Clone)]
+pub struct DialFailure {
+    /// What we tried to reach (`host:port`).
+    pub address: String,
+    /// `true` = the name resolved to nothing; `false` = it resolved and no address answered.
+    pub unresolved: bool,
+}
+
+impl std::fmt::Display for DialFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.unresolved {
+            write!(f, "cannot find a server called {}", self.address)
+        } else {
+            write!(f, "nothing answered at {}", self.address)
+        }
+    }
+}
+
+impl std::error::Error for DialFailure {}
+
+/// The logon socket: the first address of `addr` that answers within `timeout`, else a
+/// [`DialFailure`].
+fn dial(addr: &str, timeout: Duration) -> Result<TcpStream> {
+    let unresolved = |e: String| {
+        anyhow::Error::new(DialFailure {
+            address: addr.to_string(),
+            unresolved: true,
+        })
+        .context(e)
+    };
+    let addresses: Vec<_> = addr
+        .to_socket_addrs()
+        .map_err(|e| unresolved(format!("resolving auth server: {e}")))?
+        .collect();
+    if addresses.is_empty() {
+        return Err(unresolved("resolving auth server: no address".into()));
+    }
+    let mut last = None;
+    for a in &addresses {
+        match TcpStream::connect_timeout(a, timeout) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => last = Some(e),
+        }
+    }
+    let why = last.map_or_else(String::new, |e| format!(": {e}"));
+    Err(anyhow::Error::new(DialFailure {
+        address: addr.to_string(),
+        unresolved: false,
+    })
+    .context(format!("connecting to {addr}{why}")))
+}
+
 /// Authenticate `account`/`password` against the authserver at `addr` (`host:port`).
 pub fn logon(addr: &str, account: &str, password: &str) -> Result<Logon> {
     let timeout = Duration::from_secs(10);
-    let addresses = addr.to_socket_addrs().context("resolving auth server")?;
-    let mut stream = addresses
-        .map(|a| TcpStream::connect_timeout(&a, timeout))
-        .find_map(Result::ok)
-        .with_context(|| format!("connecting to {addr}"))?;
+    let mut stream = dial(addr, timeout)?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     let username_n = NormalizedString::new(account).context("normalizing account name")?;

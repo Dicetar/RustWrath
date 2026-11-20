@@ -898,6 +898,16 @@ fn extract_login_refusal(err: &anyhow::Error) -> Option<benilla_protocol::LoginR
     None
 }
 
+/// The logon dial's failure from a failed Wrath session's error chain: the auth server got no
+/// socket, which the glue reports as 12340's `CantConnect` (`LOGIN_FAILED`), not a lost link.
+fn extract_logon_dial(err: &anyhow::Error) -> Option<benilla_protocol::DialFailure> {
+    err.downcast_ref::<benilla_protocol_wrath::logon::DialFailure>()
+        .map(|d| benilla_protocol::DialFailure {
+            address: d.address.clone(),
+            unresolved: d.unresolved,
+        })
+}
+
 /// Map a 12340 `SMSG_CHAR_RENAME` `ResponseCodes` byte onto the status table `GlueMgr::char_rename_status`
 /// reads (`0` = success, `0x31` = `CHAR_CREATE_NAME_IN_USE`, anything else = `CHAR_RENAME_FAILED`).
 fn char_rename_status(raw: u8) -> u8 {
@@ -1801,7 +1811,7 @@ impl WrathControl {
                                     .err()
                                     .map(|e| format!("{e:#}"))
                                     .unwrap_or_default(),
-                                dial: None,
+                                dial: result.as_ref().err().and_then(extract_logon_dial),
                             },
                             live_generation,
                         );
@@ -16449,6 +16459,30 @@ mod scoped_delivery_tests {
             extract_login_refusal(&world_err),
             Some(benilla_protocol::LoginRefusal::World(0x15))
         );
+    }
+
+    /// A Wrath logon dial nothing answered reaches the glue as a dial failure, so it reads
+    /// `LOGIN_FAILED` rather than `DISCONNECTED`; a refusal or a lost link carries none.
+    #[test]
+    fn a_refused_wrath_logon_dial_is_a_dial_failure() {
+        // Bind then drop a loopback listener: its port refuses the connect.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let addr = format!("127.0.0.1:{port}");
+        let Err(err) = benilla_protocol_wrath::logon::logon(&addr, "a", "b") else {
+            panic!("a closed port answered");
+        };
+        let dial = extract_logon_dial(&err).expect("a refused dial is a DialFailure");
+        assert_eq!(dial.address, addr);
+        assert!(!dial.unresolved);
+        assert_eq!(extract_login_refusal(&err), None);
+
+        let refusal = anyhow::Error::new(benilla_protocol_wrath::auth::LogonAuthError::Proof(4));
+        assert!(extract_logon_dial(&refusal).is_none());
+        assert!(extract_logon_dial(&anyhow::anyhow!("connection reset")).is_none());
     }
 
     #[test]
