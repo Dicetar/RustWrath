@@ -508,6 +508,7 @@ fn attack_actor_blocked(
 /// only source of "Requires Mining Pick": vmangos answers a pickless cast with `ITEM_GONE`
 /// (`Spell.cpp:7301`). A missing self store skips the check, as the reference's active-player gate
 /// does.
+#[cfg(test)]
 pub(crate) fn reagent_totem_refusal(
     spell_id: u32,
     def: Option<&benilla_formats::SpellDisplay>,
@@ -519,7 +520,7 @@ pub(crate) fn reagent_totem_refusal(
     reagent_totem_refusal_in_player(spell_id, def, Some(&inv), objects)
 }
 
-/// [`reagent_totem_refusal`] over the typed [`crate::wrath_inventory::PlayerInventory`] view so
+/// `reagent_totem_refusal` over the typed [`crate::wrath_inventory::PlayerInventory`] view so
 /// reagents and totems in the 3.3.5 32-slot keyring and typed Wrath inventory are counted during
 /// the pre-send cast gate.
 pub(crate) fn reagent_totem_refusal_in_player(

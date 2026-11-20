@@ -922,7 +922,7 @@ fn deposit_for(rate: u32, value: u32, minutes: u32) -> u32 {
         return 100;
     }
     let base = (rate.wrapping_mul(value) / 100) as f32;
-    let deposit = binding_abi::ftol(f64::from(base * minutes as f32 * 0.004_166_666_9_f32)) as u32;
+    let deposit = binding_abi::ftol(f64::from(base * minutes as f32 * 0.004_166_667_f32)) as u32;
     deposit.max(100)
 }
 

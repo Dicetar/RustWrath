@@ -291,7 +291,7 @@ pub enum PublishOutcome {
     HandedOff(PublishReceipt),
     /// The handoff was busy. The caller chooses the single retry owner: retain this exact snapshot
     /// for a timed retry, or drop it because the producer already retains it.
-    Retained(RetainedObservation),
+    Retained(Box<RetainedObservation>),
     /// A newer snapshot was already accepted; drop this retained snapshot.
     Superseded { sequence: u64, latest_sequence: u64 },
 }
@@ -382,8 +382,8 @@ impl ObservationPublisher {
         let mut state = match self.shared.state.try_lock() {
             Ok(state) => state,
             Err(TryLockError::WouldBlock) => {
-                return Ok(PublishOutcome::Retained(RetainedObservation::handoff_busy(
-                    observation,
+                return Ok(PublishOutcome::Retained(Box::new(
+                    RetainedObservation::handoff_busy(observation),
                 )));
             }
             Err(TryLockError::Poisoned(_)) => return Err(Error::Disconnected),

@@ -1,10 +1,10 @@
 # WMO doorway colour parity
 
-Status: pending CI
+Status: landed
 Owner: Claude Opus 5.5
 Branch: jr/wmo-doorway-colour
 Issue: none
-Next: Read CI run 44654700061 to completion; land only after green
+Next: none; landed in main
 
 ## Reference
 
@@ -14,4 +14,4 @@ Pinned reference `D:/Projects/wow/reference/wowdecomp-reference` at `e67b6ffef23
 
 `benilla-wmo::Batch` now retains MOBA `vertex_start`/`vertex_end`. `benilla-formats` applies the Wrath load-time conversion to the MOCV split after the last transparency batch, gated by `MOHD.flags & 0x8`; the existing render-time portal attenuation remains a distinct pass. Two focused unit cases cover the conversion and empty transparency-batch boundary.
 
-`git diff --check` passes. CI run `44623297097` failed Linux rustfmt; the source formatting correction was pushed as `76249396`. Corrective CI run `44654700061` has passed Linux rustfmt so far and remains in progress. No local Cargo, client or server run; gameplay behavior is not proven.
+Landed through `eea64f24` and the follow-up main fixes in `eace0985`/`89f5dad4`. The original CI formatting failure was corrected, but the first implementation caused a visible regression: load-time FixColorVertexAlpha ran for every root, while static_gx already folds that conversion into its interior term, making inns and smithies twice as bright and forcing alpha to 255, which stopped doorway fading and left corridors black. `eace0985` restricts the conversion to unified roots (MOHD 0x2). No live gameplay acceptance is proven.

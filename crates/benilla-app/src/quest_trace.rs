@@ -2575,6 +2575,8 @@ struct EvidenceNote {
 }
 
 impl EvidenceNote {
+    // Referenced only by the serde default path above; the lint cannot see string paths.
+    #[allow(dead_code)]
     fn default_evidence_note_source() -> &'static str {
         "observed"
     }
@@ -2642,6 +2644,8 @@ struct Incident {
 }
 
 impl Incident {
+    // Referenced only by the serde default path above; the lint cannot see string paths.
+    #[allow(dead_code)]
     fn default_opening_note_source() -> &'static str {
         "unavailable"
     }

@@ -133,9 +133,7 @@ fn install_wrath(lua: &Lua) -> mlua::Result<()> {
                         } else {
                             "WM_FORGE3\t"
                         };
-                        let max_chunk = (255usize.saturating_sub(frame_prefix.len()))
-                            .min(150)
-                            .max(1);
+                        let max_chunk = (255usize.saturating_sub(frame_prefix.len())).clamp(1, 150);
                         let mut rest = body;
                         while !rest.is_empty() {
                             let mut cut = rest.len().min(max_chunk);
