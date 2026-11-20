@@ -1,10 +1,10 @@
 # Lua tradeskill linking and UI visibility
 
-Status: ready to merge
+Status: pending CI
 Owner: Claude Opus 5.5
 Branch: jr/lua-tradeskill-visibility
 Issue: none
-Next: Read CI for the pushed branch, then land after green
+Next: Read CI run 44654724323 to completion; land only after green
 
 Reference: Wrath 3.3.5a build 12340 decompilation at e67b6ffef23655dc7da061cb2d36b7963f6ef71a.
 
@@ -28,7 +28,8 @@ Unsupported branches named:
 Verification:
 - `git diff --check`: passed before handoff creation.
 - Local Cargo/client/server: not run, per owner instruction.
-- CI: not run yet; push this commit and read the branch run.
+- Initial CI run `44652834737`: Linux rustfmt failed; Linux live-code-check passed; Windows check passed while test-build was still running. Formatting correction was pushed as `5a63bd1e`.
+- Corrective CI run `44654724323`: Linux rustfmt passed and Linux clippy was still running at last check; Windows check/test-build was still running. No landing until all required checks are green.
 
 Residual risk: no local compile or live FrameXML acceptance was performed. The owner should wire the
 future network trade-list producer to `set_trade_skill_link` when that packet path is implemented.
