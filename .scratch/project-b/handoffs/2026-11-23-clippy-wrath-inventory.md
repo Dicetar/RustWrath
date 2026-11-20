@@ -1,38 +1,22 @@
-# Clippy: remove dead items in wrath_inventory.rs
+# Clippy: gate the test-only buyback slot and dense window
 
 Status: ready to merge
-Owner: Beam Free
+Owner: Beam Free (first pass) / OpenCode DeepSeek overseer (gate)
 Branch: oc/clippy-wrath-inventory
 Issue: none
 Next: land after green CI
 
 ## What changed
 
-- `crates/benilla-app/src/wrath_inventory.rs`: removed or test-gated dead items flagged by clippy,
-  with no behavior change and no `#[allow]`.
-  - Removed unused `WrathFieldWindow::len`, `is_empty`, and `player`.
-  - Removed unused `InventoryChanges::is_empty`.
-  - Gated `WrathInventory::scope` and `bank_bags_purchased` (methods) with `#[cfg(test)]`.
-  - Removed unused `WrathInventory::iter`.
-  - Gated `InventoryAddr::to_wire`, `as_bag_byte`, and `lua_bag_id` with `#[cfg(test)]`.
-  - Removed unused `InventoryAddr::label`.
-  - Removed unused `PlayerInventory::store`, `wrath`, `buyback`, and `bank_bags_purchased`.
-  - Gated `WRATH_BUYBACK_SLOT_FIRST` and the `BAG_PLAYER_INVENTORY`/slot imports with `#[cfg(test)]`.
+`WRATH_BUYBACK_SLOT_FIRST` is used only by the already `#[cfg(test)]` `InventoryAddr::to_wire`,
+and `WrathFieldWindow::from_dense` is called only from test fixtures, so both are now
+`#[cfg(test)]`. The unrelated blank-line churn from the first pass was dropped. No behavior
+change.
 
-## Kept
+## Checks
 
-- `WrathFieldWindow::from_dense`, `new`, `is_delivered`, `get`, `word_or_zero`, `guid`,
-  `from_fields`; all slot accessors and capacities on `PlayerInventory`; constants and fields used
-  by production code.
-- Serde/attribute-referenced helpers were not affected.
+No local Cargo/build/test/client/server; CI is the compile authority.
 
-## Checks not run
+## Not proven
 
-- No Cargo, no build, no clippy run, no tests, no client/server (per task).
-
-## What is not proven
-
-- No local compilation or clippy confirmation; CI must validate the fix and that no dependent code
-  relied on the removed or test-gated items.
-- No runtime/behavioral verification; the change removes only unused APIs and is intended to be
-  behavior-neutral.
+Only the lint removal; no runtime change.

@@ -37,6 +37,7 @@ pub(crate) const WRATH_KEYRING_SLOTS: u8 = 32;
 pub(crate) const WRATH_BANK_SLOT_FIRST: u8 = 39;
 pub(crate) const WRATH_BANK_BAG_SLOT_FIRST: u8 = 67;
 #[cfg(test)]
+#[cfg(test)]
 pub(crate) const WRATH_BUYBACK_SLOT_FIRST: u8 = 74;
 pub(crate) const WRATH_KEYRING_SLOT_FIRST: u8 = 86;
 
@@ -63,6 +64,7 @@ impl WrathFieldWindow {
 
     /// A window where every value counts as delivered. Used by fixtures and by callers that hold
     /// a dense legacy window; production digests go through [`Self::new`].
+    #[cfg(test)]
     pub(crate) fn from_dense(values: Vec<u32>) -> Self {
         let words = values.len().div_ceil(64);
         let mut delivered = vec![0u64; words];
@@ -199,7 +201,6 @@ impl InventoryAddr {
     pub(crate) fn is_bank(self) -> bool {
         matches!(self, Self::Bank(_) | Self::BankBag(_))
     }
-
 }
 
 /// Every address the owner tracks, in player-array order.
@@ -328,7 +329,6 @@ impl WrathInventory {
             })
             .flatten()
     }
-
 }
 
 /// The donor projection's capacity, or the Wrath owner's when the selected client is Wrath.
@@ -351,7 +351,6 @@ impl<'a> PlayerInventory<'a> {
             wrath_target,
         }
     }
-
 
     /// The typed value when the owner observed the address. An observed clear (`Some(0)`) is a
     /// value, not a miss: it must not fall through to the donor projection, which could still
@@ -440,7 +439,6 @@ impl<'a> PlayerInventory<'a> {
             crate::ui_items::KEYRING_SLOT_FIRST
         }
     }
-
 }
 
 #[cfg(test)]
