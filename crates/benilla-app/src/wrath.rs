@@ -6812,10 +6812,6 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_PUSHQUESTTOPARTY,
                 gameplay::push_quest_to_party(quest),
             )),
-            ClientCommand::QuestPushResultForQuest { sharer, quest, msg } => Some((
-                u32::from(benilla_protocol_wrath::opcode::MSG_QUEST_PUSH_RESULT),
-                gameplay::quest_push_result(sharer, quest, msg.0),
-            )),
             ClientCommand::QuestPushResult { .. } => {
                 debug!("wrath: quest-share decline refused: the 12340 packet requires a quest id");
                 None
@@ -12809,7 +12805,7 @@ pub fn run_session_with_cancel(
                 }
                 Ok(_) => {}
                 Err(e) if benilla_protocol_wrath::world::is_idle(&e) => {}
-                Err(e) if config.login_generation.is_some() && parked.is_some() => {
+                Err(_) if config.login_generation.is_some() && parked.is_some() => {
                     send_glue(SessionEvent::RosterFailed {
                         epoch: session.epoch(),
                     });

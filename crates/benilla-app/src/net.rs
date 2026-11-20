@@ -92,7 +92,6 @@ impl Plugin for NetPlugin {
             crate::quest_trace::install(app);
         }
         app.insert_resource(NetEvents(handles.events))
-            .insert_resource(NetEventSink(handles.events_out))
             .insert_resource(NetCommandTap(handles.command_tap))
             .insert_resource(NetCommands(handles.commands))
             .insert_resource(CharPick(handles.pick))
@@ -457,12 +456,6 @@ pub(crate) struct ActiveMover;
 /// The inbound event channel, drained each frame by [`apply_net_updates`].
 #[derive(Resource)]
 pub(crate) struct NetEvents(Receiver<SessionEvent>);
-
-/// An app-side sender into the same inbound stream the stock net drain reads. The Wrath adapter
-/// translates its own server packets into the established [`SessionEvent`] owners rather than
-/// maintaining a second UI/gameplay pipeline.
-#[derive(Resource, Clone)]
-pub(crate) struct NetEventSink(pub(crate) Sender<SessionEvent>);
 
 /// The stock action/UI commands when no 1.12 IO thread consumes them. In Wrath mode this is the
 /// single command tap translated to 3.3.5 client messages.
@@ -1765,14 +1758,6 @@ pub(crate) enum ClientCommand {
     /// `MSG_QUEST_PUSH_RESULT`: our decline of a shared quest, to `sharer`.
     QuestPushResult {
         sharer: u64,
-        msg: benilla_protocol::messages::QuestShareMsg,
-    },
-    /// Wrath-only typed contract: `MSG_QUEST_PUSH_RESULT` also carries the quest id
-    /// (`QuestHandler.cpp:620-635`). The 1.12 form above cannot express it and is refused on the
-    /// Wrath path instead of guessing.
-    QuestPushResultForQuest {
-        sharer: u64,
-        quest: u32,
         msg: benilla_protocol::messages::QuestShareMsg,
     },
     // ── Mail ──
