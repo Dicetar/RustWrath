@@ -237,6 +237,7 @@ pub(crate) fn seat_localized_class_names(world: &mut World, script: &mut UiScrip
 
 /// The same projection for a host that owns an archive chain but no Bevy store (direct-VM
 /// fixtures, the worldview harness): the caller lets the refusal fail rather than warn.
+#[cfg(test)]
 pub(crate) fn seat_localized_class_names_from_chain(
     script: &mut UiScript,
     chain: &mut benilla_formats::Chain,

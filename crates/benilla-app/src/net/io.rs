@@ -261,7 +261,6 @@ pub(super) enum WriterSwap {
 /// Everything [`spawn_net`] hands the app.
 pub(super) struct NetHandles {
     pub(super) events: Receiver<SessionEvent>,
-    pub(super) events_out: Sender<SessionEvent>,
     pub(super) commands: Sender<ClientCommand>,
     pub(super) command_tap: Option<Receiver<ClientCommand>>,
     pub(super) pick: ParkSender<CharRequest>,
@@ -278,7 +277,6 @@ pub(super) fn spawn_net(connect: bool) -> NetHandles {
         benilla_protocol::observe_sends(wire_trace::trace_out);
     }
     let (events_tx, events_rx) = crossbeam_channel::unbounded();
-    let events_out = events_tx.clone();
     let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
     let (park_tx, park_rx) = crossbeam_channel::unbounded::<ParkRequest>();
     let (login_tx, login_rx) = crossbeam_channel::unbounded::<LoginRequest>();
@@ -350,7 +348,6 @@ pub(super) fn spawn_net(connect: bool) -> NetHandles {
     };
     NetHandles {
         events: events_rx,
-        events_out,
         commands: cmd_tx,
         command_tap,
         pick: ParkSender::park(park_tx.clone()),
@@ -1682,8 +1679,6 @@ pub(super) fn writer_loop(
                         ClientCommand::QuestPushResult { sharer, msg } => {
                             w.quest_push_result(sharer, msg)
                         }
-                        // Wrath-only typed form; the baseline writer has no quest id to send.
-                        ClientCommand::QuestPushResultForQuest { .. } => Ok(()),
                         ClientCommand::GetMailList { mailbox } => w.get_mail_list(mailbox),
                         ClientCommand::SendMail {
                             mailbox,

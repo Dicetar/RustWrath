@@ -3,8 +3,6 @@
 
 use benilla_ui::script::{HonorState, UiScript, UnitState};
 
-use super::test_ui::load_ui as load_xml;
-
 /// A rank-12 Alliance character with thirteen distinct figures, so a swapped pair of rows fails;
 /// the numbers are the protocol crate's `inspect_honor_stats_golden`.
 fn state() -> HonorState {

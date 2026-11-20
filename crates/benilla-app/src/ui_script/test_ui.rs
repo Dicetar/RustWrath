@@ -490,8 +490,8 @@ pub(super) const MICRO_BUTTON_STAND_INS: &str = r#"
     end
 "#;
 
-/// One file's bytes, off the chain for a path or from this crate's `assets/ui` for a bare name;
-/// also the loader's `<Include>`/`<Script file=>` provider.
+// One file's bytes, off the chain for a path or from this crate's `assets/ui` for a bare name;
+// also the loader's `<Include>`/`<Script file=>` provider.
 thread_local! {
     /// Sessions that already ran the Wrath kit's constant stand-ins; production defines them in
     /// `Constants.lua`, which seats the localized catalogs first.
