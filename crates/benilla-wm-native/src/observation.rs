@@ -375,13 +375,11 @@ impl ResourceObservation {
             }
         }
         if let (Some(power_type), Some(power)) = (self.power_type, self.power) {
-            if let Some(active) = self.powers.get(usize::from(power_type)) {
-                if let Some(active) = *active {
-                    if active != power {
-                        return Err(Error::InvalidObservation(
-                            "resources.power must agree with the active powers entry",
-                        ));
-                    }
+            if let Some(active) = self.powers.get(usize::from(power_type)).and_then(|active| *active) {
+                if active != power {
+                    return Err(Error::InvalidObservation(
+                        "resources.power must agree with the active powers entry",
+                    ));
                 }
             }
         }
@@ -638,26 +636,26 @@ impl ChannelObservation {
                 }
             }
             ActivityState::Active => {
-                let spell_id = self.spell_id.ok_or_else(|| {
-                    Error::InvalidObservation("an active channel requires a spell id")
-                })?;
+                let spell_id = self.spell_id.ok_or(Error::InvalidObservation(
+                    "an active channel requires a spell id",
+                ))?;
                 if spell_id == 0 {
                     return Err(Error::InvalidObservation(
                         "an active channel requires a non-zero spell id",
                     ));
                 }
-                self.duration_ms.ok_or_else(|| {
-                    Error::InvalidObservation("an active channel requires a duration")
-                })?;
-                self.remaining_ms.ok_or_else(|| {
-                    Error::InvalidObservation("an active channel requires a remaining time")
-                })?;
-                self.start_observed_at_unix_ms.ok_or_else(|| {
-                    Error::InvalidObservation("an active channel requires a start clock")
-                })?;
-                self.update_observed_at_unix_ms.ok_or_else(|| {
-                    Error::InvalidObservation("an active channel requires an update clock")
-                })?;
+                self.duration_ms.ok_or(Error::InvalidObservation(
+                    "an active channel requires a duration",
+                ))?;
+                self.remaining_ms.ok_or(Error::InvalidObservation(
+                    "an active channel requires a remaining time",
+                ))?;
+                self.start_observed_at_unix_ms.ok_or(Error::InvalidObservation(
+                    "an active channel requires a start clock",
+                ))?;
+                self.update_observed_at_unix_ms.ok_or(Error::InvalidObservation(
+                    "an active channel requires an update clock",
+                ))?;
                 if self.last_update_ui_now_seconds.is_some() && self.start_ui_now_seconds.is_none()
                 {
                     return Err(Error::InvalidObservation(
@@ -769,9 +767,9 @@ impl LastCastEndObservation {
                         "a terminal cast edge requires an outcome",
                     ));
                 }
-                let spell_id = self.spell_id.ok_or_else(|| {
-                    Error::InvalidObservation("a terminal cast edge requires a spell id")
-                })?;
+                let spell_id = self.spell_id.ok_or(Error::InvalidObservation(
+                    "a terminal cast edge requires a spell id",
+                ))?;
                 if spell_id == 0 {
                     return Err(Error::InvalidObservation(
                         "a terminal cast edge requires a non-zero spell id",
