@@ -375,7 +375,11 @@ impl ResourceObservation {
             }
         }
         if let (Some(power_type), Some(power)) = (self.power_type, self.power) {
-            if let Some(active) = self.powers.get(usize::from(power_type)).and_then(|active| *active) {
+            if let Some(active) = self
+                .powers
+                .get(usize::from(power_type))
+                .and_then(|active| *active)
+            {
                 if active != power {
                     return Err(Error::InvalidObservation(
                         "resources.power must agree with the active powers entry",
@@ -650,12 +654,14 @@ impl ChannelObservation {
                 self.remaining_ms.ok_or(Error::InvalidObservation(
                     "an active channel requires a remaining time",
                 ))?;
-                self.start_observed_at_unix_ms.ok_or(Error::InvalidObservation(
-                    "an active channel requires a start clock",
-                ))?;
-                self.update_observed_at_unix_ms.ok_or(Error::InvalidObservation(
-                    "an active channel requires an update clock",
-                ))?;
+                self.start_observed_at_unix_ms
+                    .ok_or(Error::InvalidObservation(
+                        "an active channel requires a start clock",
+                    ))?;
+                self.update_observed_at_unix_ms
+                    .ok_or(Error::InvalidObservation(
+                        "an active channel requires an update clock",
+                    ))?;
                 if self.last_update_ui_now_seconds.is_some() && self.start_ui_now_seconds.is_none()
                 {
                     return Err(Error::InvalidObservation(
