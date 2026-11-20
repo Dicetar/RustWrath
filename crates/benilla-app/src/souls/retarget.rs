@@ -3170,6 +3170,8 @@ mod tests {
         let map = RigMap {
             driven: vec![(2, Drive::Grip { side: 1 })],
             grips: [None, None],
+            upper_arms: [1, 2],
+            clavicles: [None; 2],
             pelvis: 0,
             scale: 1.0,
             rest_pelvis: Vec3::ZERO,
@@ -3241,6 +3243,8 @@ mod tests {
         let map = RigMap {
             legs: Vec::new(),
             grips: [None, None],
+            upper_arms: [1; 2],
+            clavicles: [None; 2],
             stand_offset: 0.,
             driven: vec![(
                 1,
