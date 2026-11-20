@@ -1256,7 +1256,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 Value::Integer(i64::from(proposal.proposal_id)),
                 Value::Integer(1),
                 Value::Integer(1),
-                Value::String(lua.create_string(&format!("Dungeon #{dungeon_id}"))?),
+                Value::String(lua.create_string(format!("Dungeon #{dungeon_id}"))?),
                 Value::String(lua.create_string("")?),
                 Value::String(lua.create_string(role_str)?),
                 Value::Boolean(has_responded),
@@ -1340,7 +1340,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 Value::Integer(i64::from(stats.healers_needed)),
                 Value::Integer(i64::from(stats.dps_needed)),
                 Value::Integer(1),
-                Value::String(lua.create_string(&format!("Dungeon #{dungeon_id}"))?),
+                Value::String(lua.create_string(format!("Dungeon #{dungeon_id}"))?),
                 Value::Integer(i64::from(stats.wait_time_tank)),
                 Value::Integer(i64::from(stats.wait_time_healer)),
                 Value::Integer(i64::from(stats.wait_time_dps)),
@@ -1582,7 +1582,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 return Ok(MultiValue::new());
             };
             let id = n as i64;
-            if id < 0 || id > 31 {
+            if !(0..=31).contains(&id) {
                 return Ok(MultiValue::new());
             }
             // Voice absent: no matching session, so no values.
@@ -1598,7 +1598,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             if args.len() < 2 {
                 return Ok(MultiValue::new());
             }
-            let session = args.get(0).cloned().unwrap_or(Value::Nil);
+            let session = args.front().cloned().unwrap_or(Value::Nil);
             let index = args.get(1).cloned().unwrap_or(Value::Nil);
             if lua.coerce_number(session)?.is_none() || lua.coerce_number(index)?.is_none() {
                 return Ok(MultiValue::new());
