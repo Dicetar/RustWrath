@@ -511,8 +511,12 @@ impl Leg {
         let height = piv[*chain.first()?].y;
         // A short HD hip spacer precedes the first long descending link. The next distinct
         // pivot is the knee. Coincident ankle/foot bones are one landmark.
-        let hi = (0..chain.len().checked_sub(1)?)
-            .find(|&i| piv[chain[i]].y - piv[chain[i + 1]].y > height * 0.20)?;
+        let hi = (0..chain.len().checked_sub(1)?).find(|&i| {
+            let link = piv[chain[i]] - piv[chain[i + 1]];
+            // A hip spacer can drop by a thigh-sized fraction on short rigs, but
+            // it runs sideways toward the socket rather than down the leg.
+            link.y > height * 0.20 && link.y > 1.35 * link.x.abs()
+        })?;
         let hip = chain[hi];
         let knee = chain[hi + 1];
         let after = |start: usize| {
@@ -608,7 +612,10 @@ impl Leg {
             let hip = model_parent(parents, work, hip_bone).transform_point(binds[hip_bone]);
             // Sole correction is a contact constraint, not an airborne ankle target.
             let sole_height = (-self.contact.y).max(f32::EPSILON);
-            let contact = smoothstep((1. - t.y * self.scale / sole_height).clamp(0., 1.));
+            let near_floor = (1. - t.y * self.scale / sole_height).clamp(0., 1.);
+            // A nearly vertical, toe-down foot on the swing is not a planted sole.
+            let sole_facing = (tip.dot(Vec3::NEG_Z) * 2.).clamp(0., 1.);
+            let contact = smoothstep(near_floor * sole_facing);
             let planted = t.y * self.scale - (foot * self.contact).y - hip.y;
             reach.y += (planted - reach.y) * contact;
         }
