@@ -102,7 +102,7 @@ impl ClickChord {
             let bits = self.modifiers & mask;
             if bits == mask {
                 parts.push(both.into());
-            } else if bits != 0 && bits & (mask & mask.wrapping_neg()) != 0 {
+            } else if bits != 0 && bits & mask.isolate_lowest_one() != 0 {
                 parts.push(left.into());
             } else if bits != 0 {
                 parts.push(right.into());
