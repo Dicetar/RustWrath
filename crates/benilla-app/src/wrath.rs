@@ -2134,7 +2134,7 @@ pub struct WrathSwing {
 /// `(crit)|(glancing|crushing<<1)<<1`, so `HandleSpellNonMeleeDamageLog` (`:2520`, where
 /// `hitInfo & 0x2` is crit) maps to `hit_info` bits `0x2` (crit), `0x10000` (glancing) and
 /// `0x20000` (crushing). If the spell record is missing, `PushEvent` pushes nil name and 0 school.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WrathSpellDamage {
     pub target: u64,
     pub attacker: u64,
