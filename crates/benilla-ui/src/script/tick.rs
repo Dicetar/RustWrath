@@ -307,6 +307,13 @@ pub(crate) fn show_chat_line_into(lua: &Lua, key: &'static str, text: String) {
 /// its call (`0x703ee8`): one appended meanwhile is reached unless the running one was the tail.
 /// An engine step that cannot lend the host holds the walk for it ([`super::host::holding`]).
 pub(crate) fn fire_event_into(lua: &Lua, event: &str, args: Vec<ScriptValue>) {
+    if event == "COMBAT_LOG_EVENT_UNFILTERED" {
+        let fire_filtered = super::combat_log::record_unfiltered(lua, &args);
+        if fire_filtered {
+            // Keep raw delivery independent: Blizzard_CombatLog listens only to the filtered name.
+            fire_event_into(lua, "COMBAT_LOG_EVENT", args.clone());
+        }
+    }
     let model_mut = || lua.app_data_mut::<Model>().expect("model app_data set");
     let mut at = {
         let model = model_mut();
