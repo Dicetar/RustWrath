@@ -557,22 +557,11 @@ pub(crate) fn action_count(
     entry: u32,
     template: Option<&benilla_protocol::ItemInfo>,
 ) -> u32 {
-    action_count_in_target(UiTarget::Vanilla112, store, objects, entry, template)
-}
-
-pub(crate) fn action_count_in_target(
-    target: UiTarget,
-    store: &ObjectFields,
-    objects: &Objects,
-    entry: u32,
-    template: Option<&benilla_protocol::ItemInfo>,
-) -> u32 {
-    let inv =
-        crate::wrath_inventory::PlayerInventory::new(store, None, target == UiTarget::Wrath335);
+    let inv = crate::wrath_inventory::PlayerInventory::new(store, None, false);
     action_count_in_player(&inv, objects, entry, template)
 }
 
-/// [`action_count_in_target`] over the typed read view: the action bar's count includes the
+/// [`action_count`] over the typed read view: the action bar's count includes the
 /// Wrath bank/keyring tail the caller's capacities admit.
 pub(crate) fn action_count_in_player(
     inv: &crate::wrath_inventory::PlayerInventory<'_>,
@@ -690,16 +679,6 @@ pub(crate) fn find_item_in_player(
     )
 }
 
-/// Every occupied slot `scope` reaches, in the walker's order, for a predicate judged afterwards
-/// against the template cache.
-pub(crate) fn collect_inventory(
-    store: &ObjectFields,
-    objects: &Objects,
-    scope: InventoryScope,
-) -> Vec<(u8, u8, u64)> {
-    let donor = crate::wrath_inventory::PlayerInventory::new(store, None, false);
-    collect_inventory_in_player(&donor, objects, scope)
-}
 
 /// [`collect_inventory`] over the typed read view.
 pub(crate) fn collect_inventory_in_player(
@@ -1114,19 +1093,6 @@ pub(crate) fn item_link_full_with_gems_in_target(
     )
 }
 
-/// `CGItem_C::GetFullName` (`0x5d8bc0`): the item's name with its random property's suffix
-/// (`0x5d8b00`), or with none when `ITEM_FIELD_FLAGS` has the wrapped bit `0x8`.
-pub(crate) fn object_name(
-    fields: &ObjectFields,
-    template: &benilla_protocol::messages::ItemInfo,
-    rolls: crate::items::RollCatalogs,
-) -> String {
-    object_name_item(
-        crate::wrath_item::ItemRead::new(fields, None),
-        template,
-        rolls,
-    )
-}
 
 /// [`object_name`] over the typed item read: the 3.3.5 random-properties id comes from the row when
 /// it delivered one, so donor 43..47 are never read as Wrath enchant slots.
@@ -1178,17 +1144,6 @@ pub(crate) fn object_link_numbers_item(
 /// (`GetInventoryItemLink`, `0x4c8ce2`) and our own trade slot's (`GetTradePlayerItemLink`,
 /// `0x4c06bc`). With no record the link is white (`0x52aec5`) and nameless (`0x5d8b40`), and the
 /// record's flags read 0 (`0x5da2a0`), so the enchant goes in.
-pub(crate) fn object_link(
-    fields: &ObjectFields,
-    template: Option<&benilla_protocol::messages::ItemInfo>,
-    rolls: crate::items::RollCatalogs,
-) -> String {
-    object_link_item(
-        crate::wrath_item::ItemRead::new(fields, None),
-        template,
-        rolls,
-    )
-}
 
 /// [`object_link`] over the typed item read.
 pub(crate) fn object_link_item(
@@ -1216,23 +1171,6 @@ pub(crate) fn object_link_item(
     }
 }
 
-/// Project the existing item object into the selected UI's hyperlink layout. The first
-/// seven enchant slots survive the Wrath field adapter, including socket slots 2..4.
-pub(crate) fn object_link_in_target(
-    target: benilla_ui::script::UiTarget,
-    render_level: u32,
-    fields: &ObjectFields,
-    template: Option<&benilla_protocol::messages::ItemInfo>,
-    rolls: crate::items::RollCatalogs,
-) -> String {
-    object_link_in_target_item(
-        target,
-        render_level,
-        crate::wrath_item::ItemRead::new(fields, None),
-        template,
-        rolls,
-    )
-}
 
 /// [`object_link_in_target`] over the typed item read. The Wrath layout carries the three socket
 /// slots from the instance's enchant slots 2..4; the row is the lossless source for those.
@@ -1551,7 +1489,7 @@ mod tests {
             ObjectFields::from_pairs(&[(2, 0x3), (3, 1234)]).into_created(ObjectType::Item),
         );
         let store = ObjectFields::from_pairs(&[(648, guid as u32), (649, (guid >> 32) as u32)]);
-        let mut objects = objs.get();
+        let objects = objs.get();
         assert_eq!(
             find_item_in_target(
                 UiTarget::Wrath335,
