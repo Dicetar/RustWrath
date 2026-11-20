@@ -2644,6 +2644,9 @@ pub(crate) struct LoginFailedMessage {
     /// Which server refused us, with which byte; `None` on a transport failure.
     pub(crate) refusal: Option<benilla_protocol::LoginRefusal>,
     pub(crate) reason: String,
+    /// The logon dial never opened a socket ([`benilla_protocol::DialFailure`]): nothing
+    /// answered, as against a link that dropped after the connect.
+    pub(crate) dial: bool,
 }
 
 /// A same-map teleport of our player: snap, then ack. Read by the controller in `Input`.

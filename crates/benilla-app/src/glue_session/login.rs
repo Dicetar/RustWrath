@@ -625,6 +625,7 @@ mod tests {
         app.world_mut().write_message(LoginFailedMessage {
             refusal: None,
             reason: "connection refused".into(),
+            dial: true,
         });
         // The arm's cancel and its dialog's press, as the glue manager asks them.
         app.world_mut().write_message(GlueLogin::CloseLink);
@@ -725,6 +726,7 @@ mod tests {
         app.world_mut().write_message(LoginFailedMessage {
             refusal: Some(benilla_protocol::LoginRefusal::Logon(0x05)),
             reason: "server rejected logon: result 0x05".into(),
+            dial: false,
         });
         app.update();
         assert!(

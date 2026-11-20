@@ -1272,8 +1272,9 @@ impl GlueMgr {
         }
     }
 
-    /// A failure before the roster.
-    fn on_failed(&mut self, msg: &LoginFailedMessage) {
+    /// A failure before the roster. `wrath` picks the 12340 logon's report of a dial that never
+    /// connected.
+    fn on_failed(&mut self, msg: &LoginFailedMessage, wrath: bool) {
         match self.state {
             ScreenState::Logon => {
                 let cells = match msg.refusal {
@@ -1283,10 +1284,16 @@ impl GlueMgr {
                     Some(LoginRefusal::LogonProof(byte)) => {
                         realmd_result(byte, benilla_protocol::LogonReply::Proof)
                     }
-                    // A dial that never connected reports `LOGIN_SERVER_DOWN` (`0x5b1bb2`) and then
-                    // the unexpected disconnect (`0x5b1bb7` → `0x5b1c30`, result `0xff`), so the
-                    // dialog the next tick shows is the last, `DISCONNECTED`; a transport failure
-                    // after the connect is that disconnect alone.
+                    // 12340: a dial that never connected is `GruntLogin::CantConnect`
+                    // (`0x8ca140`), `LOGIN_SERVER_DOWN` and then `LogonResult(CANT_CONNECT)`
+                    // (`0x8cb160`), whose default arm leaves `LOGIN_FAILED`, the dialog the next
+                    // tick shows (`DisplayLoginStatus`, `0x4d80c0`: `CONNECTION_HELP`).
+                    None if wrath && msg.dial => Some((LOGIN_FAILED_STATE, RESULT_LOGIN_FAILED)),
+                    // 1.12: a dial that never connected reports `LOGIN_SERVER_DOWN` (`0x5b1bb2`)
+                    // and then the unexpected disconnect (`0x5b1bb7` → `0x5b1c30`, result `0xff`),
+                    // so the dialog the next tick shows is the last, `DISCONNECTED`. On both, a
+                    // transport failure after the connect is that disconnect alone
+                    // (`GruntLogin::Disconnected`, `0x8ca1d0`, on 12340).
                     _ => Some((LOGIN_FAILED_STATE, RESULT_DISCONNECTED)),
                 };
                 if let Some((state, result)) = cells {
@@ -2016,7 +2023,7 @@ pub(crate) fn drive_glue_mgr(
                 mgr.on_realm_list(realms, failed, &realm_name, run);
             }
             for msg in news.failures.read() {
-                mgr.on_failed(msg);
+                mgr.on_failed(msg, wrath);
             }
             for LoginGuardRefused(why) in news.notices.read() {
                 mgr.on_guard_refused(why);

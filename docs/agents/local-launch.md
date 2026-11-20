@@ -27,14 +27,38 @@ The live deployment is `D:\Projects\wow\server\WM_BridgeLab\run\bin`. The simila
 `run\worldserver.exe` is a stale duplicate. Start only the missing services,
 in database, authentication, then world order.
 
-If port 33307 is not listening and no BridgeLab MySQL process is running, start
-the existing helper with binlog maintenance disabled.
+Start every service detached, through `Win32_Process.Create`. A `Start-Process` child of an
+agent's or a Claude terminal's shell joins the Claude desktop app's job object. When the app
+restarts or updates, it kills the database and both servers at once. They leave no shutdown
+line and no crash dump, and the client then cannot reach the logon server. A process WMI
+creates is parented by `WmiPrvSE.exe`, outside that job, and outlives the app. Define the
+helper once per shell:
 
 ```powershell
-& 'D:\Projects\wow\server\wm-project\scripts\bridge_lab\Start-BridgeLabMySql.ps1' -SkipBinlogMaintenance
+function Start-Detached([string]$CommandLine, [string]$Directory) {
+    $si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly `
+        -Property @{ ShowWindow = [uint16]0 }
+    $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+        CommandLine = $CommandLine; CurrentDirectory = $Directory
+        ProcessStartupInformation = $si
+    }
+    if ($r.ReturnValue -ne 0) { throw "Win32_Process.Create failed: $($r.ReturnValue)" }
+    $r.ProcessId
+}
 ```
 
-The helper waits for database readiness. If it fails, inspect its output and
+If port 33307 is not listening and no BridgeLab MySQL process is running, run
+the existing helper, detached, with binlog maintenance disabled. The helper itself starts
+`mysqld` with `Start-Process`, which inherits the detached shell's freedom from the job.
+
+```powershell
+$mysqlHelper = 'D:\Projects\wow\server\wm-project\scripts\bridge_lab\Start-BridgeLabMySql.ps1'
+Start-Detached "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$mysqlHelper`" -SkipBinlogMaintenance" `
+    'D:\Projects\wow\server\WM_BridgeLab'
+```
+
+The helper's console output is not visible when it runs detached. Wait for port 33307 to
+listen. If it does not, inspect
 `D:\Projects\wow\server\WM_BridgeLab\logs\mysql-lab.err` before retrying.
 
 After the database is ready, start each missing server using its existing config.
@@ -42,12 +66,8 @@ The working directory is the run directory, so the relative config paths resolve
 
 ```powershell
 $run = 'D:\Projects\wow\server\WM_BridgeLab\run'
-Start-Process -FilePath (Join-Path $run 'bin\authserver.exe') `
-    -WorkingDirectory $run -ArgumentList '-c', 'configs\authserver.conf' `
-    -WindowStyle Hidden -PassThru
-Start-Process -FilePath (Join-Path $run 'bin\worldserver.exe') `
-    -WorkingDirectory $run -ArgumentList '-c', 'configs\worldserver.conf' `
-    -WindowStyle Hidden -PassThru
+Start-Detached "`"$run\bin\authserver.exe`" -c configs\authserver.conf" $run
+Start-Detached "`"$run\bin\worldserver.exe`" -c configs\worldserver.conf" $run
 ```
 
 Run only the command for a service that is missing. World startup can take

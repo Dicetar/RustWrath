@@ -41,6 +41,7 @@ fn failed(refusal: Option<LoginRefusal>) -> LoginFailedMessage {
     LoginFailedMessage {
         refusal,
         reason: "test".into(),
+        dial: false,
     }
 }
 
@@ -120,7 +121,7 @@ fn a_proof_0x0a_changes_no_dialog() {
     m.tick();
     settle(&mut m);
     m.outbox.clear();
-    m.on_failed(&failed(Some(LoginRefusal::LogonProof(0x0a))));
+    m.on_failed(&failed(Some(LoginRefusal::LogonProof(0x0a))), false);
     m.tick();
     settle(&mut m);
     assert!(m.outbox.is_empty(), "{:?}", m.outbox);
@@ -184,7 +185,7 @@ fn the_logon_shows_each_state_once_then_connects() {
 }
 
 /// A logon refusal raises its `LOGIN_*` text, `CONNECTION_HELP` for `LOGIN_FAILED`, and state 0;
-/// a dial that never connected ends on the disconnect it reports last.
+/// on 1.12 a dial that never connected ends on the disconnect it reports last.
 #[test]
 fn a_logon_refusal_opens_its_result_and_ends_the_logon() {
     for (refusal, which, key) in [
@@ -210,10 +211,38 @@ fn a_logon_refusal_opens_its_result_and_ends_the_logon() {
         m.login("a".into(), "b".into());
         settle(&mut m);
         m.outbox.clear();
-        m.on_failed(&failed(refusal));
+        m.on_failed(&failed(refusal), false);
         m.tick();
         settle(&mut m);
         assert_eq!(m.outbox, [open(which, Some(key))], "{refusal:?}");
+        assert_eq!(m.state, ScreenState::Idle);
+    }
+}
+
+/// 12340: a logon dial nothing answered ends on `LogonResult(CANT_CONNECT)`'s `LOGIN_FAILED`
+/// (`0x8cb160`) under `CONNECTION_HELP`, never the disconnect; a link lost after the connect
+/// still reports `DISCONNECTED` (`0x8ca1d0`), and 1.12 keeps it for both.
+#[test]
+fn a_wrath_dial_nothing_answered_reads_login_failed_not_disconnected() {
+    for (dial, wrath, which, key) in [
+        (true, true, "CONNECTION_HELP", "LOGIN_FAILED"),
+        (false, true, "OKAY", "DISCONNECTED"),
+        (true, false, "OKAY", "DISCONNECTED"),
+    ] {
+        let mut m = fresh();
+        m.login("a".into(), "b".into());
+        settle(&mut m);
+        m.outbox.clear();
+        let mut msg = failed(None);
+        msg.dial = dial;
+        m.on_failed(&msg, wrath);
+        m.tick();
+        settle(&mut m);
+        assert_eq!(
+            m.outbox,
+            [open(which, Some(key))],
+            "dial {dial} wrath {wrath}"
+        );
         assert_eq!(m.state, ScreenState::Idle);
     }
 }
@@ -334,7 +363,7 @@ fn a_world_refusal_opens_its_status_and_url() {
         button: None,
     };
     let mut m = connected();
-    m.on_failed(&failed(Some(LoginRefusal::World(0x1c))));
+    m.on_failed(&failed(Some(LoginRefusal::World(0x1c))), false);
     m.tick();
     settle(&mut m);
     assert_eq!(
@@ -354,7 +383,7 @@ fn a_world_refusal_opens_its_status_and_url() {
     assert_eq!(m.state, ScreenState::Idle);
 
     let mut m = connected();
-    m.on_failed(&failed(Some(LoginRefusal::World(0x0d))));
+    m.on_failed(&failed(Some(LoginRefusal::World(0x0d))), false);
     m.tick();
     settle(&mut m);
     assert_eq!(
@@ -370,7 +399,7 @@ fn a_world_refusal_opens_its_status_and_url() {
     );
 
     let mut m = connected();
-    m.on_failed(&failed(None));
+    m.on_failed(&failed(None), false);
     m.tick();
     settle(&mut m);
     assert_eq!(
@@ -391,7 +420,7 @@ fn a_world_refusal_opens_its_status_and_url() {
     // With no realm held the arm asks for the list (`0x46c06e` → `0x46b8d0` with 1).
     let mut m = connected();
     m.holder.clear();
-    m.on_failed(&failed(None));
+    m.on_failed(&failed(None), false);
     m.tick();
     settle(&mut m);
     assert_eq!(
@@ -1362,7 +1391,7 @@ fn a_world_status_past_the_table_reads_its_number() {
         let mut m = fresh();
         m.state = ScreenState::Connect;
         m.holder = vec![realm("Fake")];
-        m.on_failed(&failed(Some(LoginRefusal::World(code))));
+        m.on_failed(&failed(Some(LoginRefusal::World(code))), false);
         m.tick();
         settle(&mut m);
         m.outbox
@@ -1951,7 +1980,7 @@ fn a_failed_logons_dialog_is_pressed_in_state_1() {
         m.settle();
         m.outbox.clear();
         m.login_out.clear();
-        m.on_failed(&failed(Some(LoginRefusal::Logon(0x04))));
+        m.on_failed(&failed(Some(LoginRefusal::Logon(0x04))), false);
     }
     frame(&shared, &mut s);
     let m = shared.get();
@@ -2441,9 +2470,15 @@ fn pump(
                 lists.write(RealmListMessage { realms, failed });
             }
             E::LoginFailed {
-                refusal, reason, ..
+                refusal,
+                reason,
+                dial,
             } => {
-                failures.write(LoginFailedMessage { refusal, reason });
+                failures.write(LoginFailedMessage {
+                    refusal,
+                    reason,
+                    dial: dial.is_some(),
+                });
             }
             E::CharacterList {
                 characters,
