@@ -2259,6 +2259,16 @@ pub enum ServerEvent {
         blocked: u32,
         hit_info: u32,
     },
+    /// `SMSG_SPELL_MISS_LOG` (`0x24B`, `UnitCombatLog_C.cpp:1888` `HandleSpellLogMiss`):
+    /// one spell miss per target. The decompiled `UnitCombatLogSpellMissed` call from
+    /// `HandleSpellLogMiss` passes `a5=true` and is labelled `DAMAGE_SHIELD_MISSED` (event 41)
+    /// there; the user-facing combat-log family implemented by this slice is `SPELL_MISSED`
+    /// (event 8). See `wrath_combat_log_feed`.
+    SpellMiss {
+        caster: u64,
+        spell_id: u32,
+        misses: Vec<SpellMissTarget>,
+    },
     /// `SMSG_PERIODICAURALOG`'s counted tick list (12340 writes one; the shape is a list as in
     /// 1.12).
     PeriodicAura {
@@ -2859,6 +2869,15 @@ pub enum AttackSwingError {
     DeadOrUnattackable,
 }
 
+/// One target entry of `SMSG_SPELL_MISS_LOG` (`0x24B`, `UnitCombatLog_C.cpp:1888`
+/// `HandleSpellLogMiss`): a raw target GUID and a miss-type index into
+/// `g_spellMissStrings` (`:150`, 0..11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpellMissTarget {
+    pub target: u64,
+    pub miss_type: u8,
+}
+
 /// One periodic aura tick, shaped by its aura type (`Unit::SendPeriodicAuraLog`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PeriodicAuraTick {
@@ -2921,6 +2940,7 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_PLAY_SPELL_VISUAL => read_play_spell_visual(body),
         SMSG_PERIODICAURALOG => read_periodic_aura(body),
         SMSG_SPELLNONMELEEDAMAGELOG => read_spell_damage(body),
+        SMSG_SPELL_MISS_LOG => read_spell_miss(body),
         MSG_CORPSE_QUERY => read_corpse_query(body),
         SMSG_CORPSE_RECLAIM_DELAY => read_corpse_reclaim_delay(body),
         SMSG_RESURRECT_REQUEST => read_resurrect_request(body),
@@ -3857,6 +3877,41 @@ fn read_spell_damage(b: &[u8]) -> Result<ServerEvent> {
         resist,
         blocked,
         hit_info,
+    })
+}
+
+/// `SMSG_SPELL_MISS_LOG` (`0x24B`, `UnitCombatLog_C.cpp:1888` `HandleSpellLogMiss`):
+/// `u32 spellId, u64 caster, u8 debug, u32 count`; per target: `u64 target, u8 missType`;
+/// if `debug` is non-zero, two `f32` values follow each missType and are discarded.
+/// missType indexes `g_spellMissStrings` at `:150` (0 NONE, 1 MISS, 2 RESIST, 3 DODGE,
+/// 4 PARRY, 5 BLOCK, 6 EVADE, 7 IMMUNE, 8 IMMUNE, 9 DEFLECT, 10 ABSORB, 11 REFLECT).
+/// `UnitCombatLogSpellMissed` at `:1573` / `QueueMissedSpellText` at `:1470` /
+/// `SetMissInfo` at `:311`: for missType 10/2/5 the amount slot is set (`0x2000` absorb,
+/// `0x4000` resisted, `0x8000` blocked) and `PushEvent` pushes integer 0 for that slot from
+/// this packet; other miss types append no amount. Missing spell catalog row: name nil, school 0.
+fn read_spell_miss(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let spell_id = r.u32()?;
+    let caster = r.u64()?;
+    let debug = r.u8()?;
+    let count = r.u32()?;
+    if count > 64 {
+        return Err(DecodeError::invalid_count("spell miss target count exceeds 64").into());
+    }
+    let mut misses = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let target = r.u64()?;
+        let miss_type = r.u8()?;
+        if debug != 0 {
+            let _a = r.f32()?;
+            let _b = r.f32()?;
+        }
+        misses.push(SpellMissTarget { target, miss_type });
+    }
+    Ok(ServerEvent::SpellMiss {
+        caster,
+        spell_id,
+        misses,
     })
 }
 
