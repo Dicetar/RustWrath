@@ -264,6 +264,7 @@ pub(crate) fn enchant_lines(
 /// and asks the name cache (`0x52e29d`). A zero guid, an unwrapped item or a name not yet
 /// answered gives `None`. Only reads: the lookup is the tooltip build's, which asks it
 /// (`crate::ui_items::feed::ask_item_build_lookups`).
+#[cfg(test)]
 pub(crate) fn gift_creator_name(
     fields: &ObjectFields,
     names: &crate::names::NameCache,
@@ -286,11 +287,6 @@ pub(crate) fn gift_creator_name_item(
 /// The creator's guid (`ITEM_FIELD_CREATOR`, asked at `0x52e1f4`) and, for a wrapped item only,
 /// the giver's (`0x52e28d`), 0 where nothing is asked: the tooltip waits on a nonzero one whose
 /// name is not in yet.
-pub(crate) fn creator_guids(fields: &ObjectFields) -> (u64, u64) {
-    creator_guids_item(crate::wrath_item::ItemRead::new(fields, None))
-}
-
-/// [`creator_guids`] over the typed item read.
 pub(crate) fn creator_guids_item(read: crate::wrath_item::ItemRead<'_>) -> (u64, u64) {
     let wrapped = read
         .flags()
@@ -311,6 +307,7 @@ pub(crate) fn creator_guids_item(read: crate::wrath_item::ItemRead<'_>) -> (u64,
 /// cursor's bind question (gate `0x495d60`) and the tooltip's Soulbound line both read it. It
 /// reads the raw descriptor, not [`enchant_lines`]: Firestone and Orb of Fire both bind and print
 /// no line.
+#[cfg(test)]
 pub(crate) fn already_bound(
     fields: &ObjectFields,
     record_flags: u32,
@@ -355,12 +352,6 @@ pub(crate) fn record_flags(items: &Items, entry: u32, guid: u64) -> u32 {
 
 /// One enchant slot as the bind checks read it (`0x495eec`): the raw id must be positive (`jl` at
 /// `0x495ef4`, `0x5da306`) and name a row, where the tooltip line uses `abs(id)`.
-pub(crate) fn live_enchant(fields: &ObjectFields, slot: u8, cat: Option<&Enchants>) -> Option<u32> {
-    live_enchant_item(crate::wrath_item::ItemRead::new(fields, None), slot, cat)
-}
-
-/// [`live_enchant`] over the typed item read: the Wrath row supplies slots 8..12 when present, and
-/// its delivered zero is authoritative rather than falling back to a donor neighbour.
 pub(crate) fn live_enchant_item(
     read: crate::wrath_item::ItemRead<'_>,
     slot: u8,
