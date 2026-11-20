@@ -12809,7 +12809,7 @@ pub fn run_session_with_cancel(
                 }
                 Ok(_) => {}
                 Err(e) if benilla_protocol_wrath::world::is_idle(&e) => {}
-                Err(e) if config.login_generation.is_some() && parked.is_some() => {
+                Err(_) if config.login_generation.is_some() && parked.is_some() => {
                     send_glue(SessionEvent::RosterFailed {
                         epoch: session.epoch(),
                     });
