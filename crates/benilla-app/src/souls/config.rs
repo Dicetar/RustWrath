@@ -41,6 +41,8 @@
 //!                     # (LeftCtrl) brings the cursor up for the action bars and panels
 //! free_camera = true  # the camera orbits freely, movement is camera-relative and the body
 //!                     # faces where it runs (off: the orbit turns the body, as mouselook does)
+//! unit_collision = true # with the ER controls on, attackable units are solid: the body slides
+//!                     # round them and an attack's step forward stops at their body
 //!
 //! [binds]             # key names: A-Z, 0-9, F1-F12, Space, Tab, Backquote, Escape, Enter,
 //! light = "MouseLeft" # LeftShift, LeftCtrl, LeftAlt, CapsLock, MouseLeft, MouseRight,
@@ -109,6 +111,7 @@ pub(crate) struct SoulsFeatures {
     pub(crate) retarget_locomotion: bool,
     pub(crate) er_controls: bool,
     pub(crate) free_camera: bool,
+    pub(crate) unit_collision: bool,
 }
 
 impl Default for SoulsFeatures {
@@ -142,6 +145,7 @@ impl Default for SoulsFeatures {
             retarget_locomotion: true,
             er_controls: true,
             free_camera: true,
+            unit_collision: true,
         }
     }
 }

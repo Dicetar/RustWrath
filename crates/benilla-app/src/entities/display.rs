@@ -551,12 +551,16 @@ fn resolve_skin(
     if sub.char_slot == Some(CharSkinSlot::Object) {
         return object_texture.map(|t| asset_server.load(skin_url(dir, t)));
     }
-    match (&sub.texture, sub.skin_slot) {
-        (Some(t), _) => Some(t.clone()),
-        (None, Some(slot)) => skins
-            .get(slot as usize)
-            .and_then(|o| o.as_ref())
-            .map(|name| asset_server.load(skin_url(dir, name))),
+    // A display's variation replaces a Monster slot's texture whatever the file embeds: the HD
+    // `RidingElekkElite.m2` names `ViciousWarElekk1.blp` in its type-11 record, a file no archive
+    // ships, which the asset load (built with no skins) falls back to.
+    let variation = sub
+        .skin_slot
+        .and_then(|slot| skins.get(slot as usize))
+        .and_then(|o| o.as_ref());
+    match (variation, &sub.texture) {
+        (Some(name), _) => Some(asset_server.load(skin_url(dir, name))),
+        (None, Some(t)) => Some(t.clone()),
         (None, None) => None,
     }
 }

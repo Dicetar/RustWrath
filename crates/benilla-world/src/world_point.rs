@@ -14,7 +14,8 @@ use crate::liquid::{
 use crate::surface::SurfaceUnderfoot;
 use crate::terrain_stream::CurrentArea;
 use crate::wmo_portal::{
-    CameraInteriorClaim, CurrentAreaInterior, CurrentWmoInterior, PlayerWmoRoom, UnitWmoRoom,
+    CameraInteriorClaim, CurrentAreaInterior, CurrentMapObjLink, CurrentWmoInterior, MapObjLink,
+    PlayerWmoRoom, UnitWmoRoom,
 };
 
 /// Whose question it is: inside a building only that placement's MLIQ answers, outdoors only the
@@ -72,6 +73,7 @@ pub struct WorldPoint<'w, 's> {
     area: Res<'w, CurrentArea>,
     interior: Res<'w, CurrentWmoInterior>,
     area_interior: Res<'w, CurrentAreaInterior>,
+    map_obj_link: Res<'w, CurrentMapObjLink>,
     wmo_areas: Option<Res<'w, crate::wmo_portal::WmoAreas>>,
 }
 
@@ -89,6 +91,7 @@ pub fn init_world_point_resources(world: &mut bevy::prelude::World) {
     world.init_resource::<CurrentArea>();
     world.init_resource::<CurrentWmoInterior>();
     world.init_resource::<CurrentAreaInterior>();
+    world.init_resource::<CurrentMapObjLink>();
 }
 
 /// The nearest wet point the water ambient loop tracks ([`WorldPoint::nearest_liquid`]).
@@ -234,6 +237,32 @@ impl WorldPoint<'_, '_> {
                 .cloned(),
             areas.0.default_row(keys.wmo_id, keys.name_set).cloned(),
         ))
+    }
+
+    /// The WMO group the player's position links to, exterior groups included; `None` on open
+    /// terrain. The minimap's building test (`QueryMapObjIDs`).
+    pub fn map_obj_link(&self) -> Option<MapObjLink> {
+        self.map_obj_link.0
+    }
+
+    /// `QueryMapObjAreaTable`'s two `WMOAreaTable` flag words for a building: the group's own row
+    /// and the whole-WMO row (group `-1`), each by exact key; `None` where no row exists.
+    pub fn wmo_area_flags(
+        &self,
+        wmo_id: u32,
+        name_set: u32,
+        group_area_id: u32,
+    ) -> (Option<u32>, Option<u32>) {
+        let Some(areas) = self.wmo_areas.as_ref() else {
+            return (None, None);
+        };
+        (
+            areas
+                .0
+                .group_row(wmo_id, name_set, group_area_id)
+                .map(|r| r.flags),
+            areas.0.default_row(wmo_id, name_set).map(|r| r.flags),
+        )
     }
 
     /// The player's zone-text interior claim: indoors comes from a down-ray under the player alone

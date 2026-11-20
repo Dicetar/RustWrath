@@ -693,21 +693,55 @@ pub(super) fn install_player_model(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // `SetCreature(creatureID)` (3.3.5 `PlayerModel`, the companion tab's preview,
-    // `PetPaperDollFrame.lua:444`). Unsupported branch: the creature entry's display comes from the
-    // creature query cache, which the UI cannot reach, so the pane is cleared instead of showing
-    // the wrong model. The argument is still checked as a number.
+    // `PetPaperDollFrame.lua:444`): the creature entry's display from the creature cache onto the
+    // pane, as `SetPetStablePaperdoll` does (`0x505cb0`). An entry the cache has not answered is
+    // asked for; the pane takes the display when the answer lands
+    // ([`crate::script::UiScript::land_creature_display`]).
     if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
         m.set(
             "SetCreature",
             lua.create_function(|lua, (this, id): (Table, Value)| {
-                lua.coerce_number(id)?
+                let entry = lua
+                    .coerce_number(id)?
                     .ok_or_else(|| usage(lua, &this, "SetCreature(creatureID)"))?;
-                with_model(lua, &this, ModelState::clear_file)
+                let h = frame_handle_of(lua, &this)?;
+                with_model(lua, &this, ModelState::clear_file)?;
+                let entry = if entry.is_finite() && entry >= 0.0 {
+                    entry as u32
+                } else {
+                    0
+                };
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                model.creature_panes.pending.retain(|&(p, _)| p != h);
+                if entry == 0 {
+                    return Ok(());
+                }
+                match model.creature_panes.displays.get(&entry).copied() {
+                    Some(display) => model.set_pane_display(h, display),
+                    None => {
+                        model.creature_panes.pending.push((h, entry));
+                        if !model.creature_panes.asks.contains(&entry) {
+                            model.creature_panes.asks.push(entry);
+                        }
+                    }
+                }
+                Ok(())
             })?,
         )?;
     }
 
     lua.set_named_registry_value(REG_PLAYERMODEL_METHODS, m)
+}
+
+/// `SetCreature`'s view of the host's creature cache.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct CreaturePanes {
+    /// Creature entry → its template's first `CreatureDisplayInfo` id, as the host answered.
+    pub(crate) displays: std::collections::HashMap<u32, u32>,
+    /// Panes whose `SetCreature` entry the cache has not answered yet.
+    pub(crate) pending: Vec<(FrameHandle, u32)>,
+    /// Entries to ask the host's creature cache for, drained by [`crate::script::UiScript::take_creature_asks`].
+    pub(crate) asks: Vec<u32>,
 }
 
 impl Model {
@@ -748,6 +782,44 @@ impl Model {
 }
 
 impl crate::script::UiScript {
+    /// The creature entries `SetCreature` needs displays for since the last call.
+    pub fn take_creature_asks(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.model_mut().creature_panes.asks)
+    }
+
+    /// The entries `SetCreature` panes still wait on, for the host to re-read its cache.
+    pub fn pending_creature_entries(&self) -> Vec<u32> {
+        let model = self.model_ref();
+        let mut out: Vec<u32> = model
+            .creature_panes
+            .pending
+            .iter()
+            .map(|&(_, e)| e)
+            .collect();
+        out.dedup();
+        out
+    }
+
+    /// The host's creature cache answered `entry` with `display` (0: the template has none): every
+    /// pane waiting on it takes the display.
+    pub fn land_creature_display(&mut self, entry: u32, display: u32) {
+        let mut model = self.model_mut();
+        model.creature_panes.displays.insert(entry, display);
+        let waiting: Vec<FrameHandle> = model
+            .creature_panes
+            .pending
+            .iter()
+            .filter(|&&(_, e)| e == entry)
+            .map(|&(h, _)| h)
+            .collect();
+        model.creature_panes.pending.retain(|&(_, e)| e != entry);
+        if display != 0 {
+            for h in waiting {
+                model.set_pane_display(h, display);
+            }
+        }
+    }
+
     /// The visible character panes in the arena's registry order: what each asks the host to draw,
     /// the paint list for their copies.
     pub fn character_panes(&self) -> Vec<CharacterPaneFrame> {

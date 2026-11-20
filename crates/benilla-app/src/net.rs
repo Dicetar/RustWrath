@@ -1737,6 +1737,10 @@ pub(crate) enum ClientCommand {
     QuestQuery {
         quest: u32,
     },
+    /// Wrath `CMSG_QUEST_POI_QUERY`: the map areas of up to 25 quest-log quests.
+    QuestPoiQuery {
+        quests: Vec<u32>,
+    },
     /// `CMSG_QUESTGIVER_STATUS_QUERY`: the overhead `!`/`?` marker.
     QuestgiverStatusQuery {
         npc: u64,
@@ -1869,10 +1873,11 @@ pub(crate) enum ClientCommand {
         list_from: u32,
         auction_ids: Vec<u32>,
     },
-    /// `CMSG_AUCTION_SELL_ITEM`: `etime_minutes` is 120, 480 or 1440; the deposit is taken at once.
+    /// `CMSG_AUCTION_SELL_ITEM`: one auction of `items`, each `(guid, count)`; `etime_minutes` is
+    /// 720, 1440 or 2880 on Wrath. The deposit is taken at once.
     AuctionSellItem {
         auctioneer: u64,
-        item_guid: u64,
+        items: Vec<(u64, u32)>,
         bid: u32,
         buyout: u32,
         etime_minutes: u32,

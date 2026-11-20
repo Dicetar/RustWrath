@@ -88,6 +88,7 @@ fn map_row_view(
     WorldMapZoneView {
         name,
         area_id: a.area_id,
+        wma_id,
         map_file: a.name.clone(),
         loc_rect: (a.loc_left, a.loc_right, a.loc_top, a.loc_bottom),
         // WorldMapOverlay rows by WMA id, each revealed by its covered areas' `exploreFlag` bits.
@@ -146,7 +147,7 @@ pub(crate) fn build_catalog(
 
     let mut entries = Vec::with_capacity(cont_rows.len());
     let mut views = Vec::with_capacity(cont_rows.len());
-    for (_, cont) in cont_rows {
+    for (cont_wma_id, cont) in cont_rows {
         // Zones: this continent's other rows, sorted case-insensitively by AreaTable name, the
         // Lua zone index (`0x4a6390`'s `SStrCmpI`).
         let mut zones: Vec<(u32, &WorldMapArea, String)> = wma
@@ -217,6 +218,8 @@ pub(crate) fn build_catalog(
                 .unwrap_or(cont.name.as_str())
                 .to_string(),
             map_file: cont.name.clone(),
+            wma_id: cont_wma_id,
+            map_id: cont.map_id,
             world_rect,
             loc_rect: (cont.loc_left, cont.loc_right, cont.loc_top, cont.loc_bottom),
             sheet: wmc.get(cont.map_id).map(|c| WorldMapSheetRow {
@@ -1183,6 +1186,7 @@ mod player_zone_tests {
                 view: WorldMapZoneView {
                     name: "Warsong Gulch".into(),
                     area_id: 3277,
+                    wma_id: 443,
                     map_file: "WarsongGulch".into(),
                     loc_rect: (1.0, -1.0, 1.0, -1.0),
                     overlays: Vec::new(),

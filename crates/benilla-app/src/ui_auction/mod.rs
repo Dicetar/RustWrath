@@ -207,7 +207,66 @@ pub(crate) struct AuctionOpen {
     next_page: u32,
     /// The key stacks; neither [`Self::open`] nor [`Self::clear`] touches them.
     pub(crate) sorts: SortStacks,
+    /// A multisell in flight (Wrath `m_havePendingSell`), which the close drops.
+    pub(crate) multisell: Option<Multisell>,
     pub(crate) wire: AuctionWireLog,
+}
+
+/// `StartAuction` over more than one stack (Wrath `CGAuctionHouse::SellNextItem`): the stacks
+/// still to send, each after the last one's `ERR_AUCTION_STARTED`, and what every one carries.
+#[derive(Clone, Debug)]
+pub(crate) struct Multisell {
+    pub(crate) auctioneer: u64,
+    pub(crate) left: std::collections::VecDeque<Vec<(u64, u32)>>,
+    pub(crate) total: u32,
+    pub(crate) bid: u32,
+    pub(crate) buyout: u32,
+    pub(crate) duration: u32,
+}
+
+impl Multisell {
+    /// The send for one stack.
+    pub(crate) fn send(&self, items: Vec<(u64, u32)>) -> ClientCommand {
+        ClientCommand::AuctionSellItem {
+            auctioneer: self.auctioneer,
+            items,
+            bid: self.bid,
+            buyout: self.buyout,
+            etime_minutes: self.duration,
+        }
+    }
+
+    /// How many stacks have gone out.
+    pub(crate) fn sent(&self) -> u32 {
+        self.total - self.left.len() as u32
+    }
+}
+
+/// A multisell step the VM sees ([`HouseEffect::Multisell`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MultisellStep {
+    /// A stack started: `AUCTION_MULTISELL_UPDATE(created, total)`.
+    Update { created: u32, total: u32 },
+    /// The last stack started: the sell slot cleared.
+    Done,
+    /// A stack refused, or `CancelSell`: the slot cleared and `AUCTION_MULTISELL_FAILURE`.
+    Failure,
+}
+
+/// Show a multisell step to the VM: progress, the sell slot cleared at the end, or the slot
+/// cleared and `AUCTION_MULTISELL_FAILURE` (Wrath `OnMultisellFailure`).
+pub(crate) fn multisell_step(script: &mut UiScript, step: MultisellStep) {
+    match step {
+        MultisellStep::Update { created, total } => script.signal_auction_multisell(
+            "AUCTION_MULTISELL_UPDATE",
+            &[i64::from(created), i64::from(total)],
+        ),
+        MultisellStep::Done => script.clear_auction_sell_item(),
+        MultisellStep::Failure => {
+            script.clear_auction_sell_item();
+            script.signal_auction_multisell("AUCTION_MULTISELL_FAILURE", &[]);
+        }
+    }
 }
 
 /// How far past the tick a bid notice pushes a deadline at least (`0x15f90`, `0x4cc5a2`).
@@ -245,6 +304,8 @@ pub(crate) enum HouseEffect {
     /// A packet the handler sends at this point: a list request (`0x4cc4e0`, `0x4cc528`) or the
     /// placed bid's wave after its row's update (`0x4cc5dd`-`0x4cc60c`).
     Send(ClientCommand),
+    /// A multisell step ([`MultisellStep`]).
+    Multisell(MultisellStep),
 }
 
 /// A message an auction handler shows (`0x496720`): a refusal on the red `UIErrorsFrame`, or one of
@@ -467,6 +528,7 @@ impl AuctionOpen {
         self.owner_armed = false;
         self.bidder_armed = false;
         self.list_result_landed = [false; 3];
+        self.multisell = None;
     }
 
     /// The world-enter cascade's reset (`0x4cc280`): the session closed with its request flags

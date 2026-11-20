@@ -80,7 +80,7 @@ fn the_auction_sell_button_paints_the_attached_item_in_place() {
     });
     let name: Option<String> = s
         .hosted(&mut host, |s| {
-            s.eval("StartAuction(100, 0, 120) return AuctionsItemButtonName:GetText()")
+            s.eval("StartAuction(100, 0, 1) return AuctionsItemButtonName:GetText()")
         })
         .unwrap();
     assert!(s.errors().is_empty(), "{:?}", s.errors());
