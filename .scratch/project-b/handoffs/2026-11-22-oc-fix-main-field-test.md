@@ -8,21 +8,22 @@ Next: land after the gates/windows run is green
 
 ## What exists now
 
-`18b51e97` ("finally loaded") added a test in `crates/benilla-app/src/wrath.rs` that calls
-`ObjectFields::get_u32`, which is private to `benilla-protocol`. The gates job on main
+`18b51e97` ("finally loaded") added field-audit tests in `crates/benilla-app/src/wrath.rs` that
+call `ObjectFields::get_u32`, which was private to `benilla-protocol`. The gates job on main
 (44656735007) fails to compile with E0624, so every branch based on main is red before its own
 code is judged.
 
-The test now reads the same fields through the public `raw_fields()` iterator and still asserts
-the `Object` gate: mapped fields (2, 3, 4) are present with their narrowed values, and the
-unit-only/gated fields (5, 22, 34, 36, 46) are absent rather than zero.
+The raw reader is now public with its existing semantics and a doc comment. The first attempt
+changed one test to `raw_fields()` but the commit has dozens of other `get_u32` asserts, so the
+accessor is the smaller and consistent repair. No behavior changes.
 
 ## Checks
 
+- 44660800241 red: the first attempt did not cover the other `get_u32` asserts.
 - Not run locally: no Cargo by owner instruction.
-- Source only: one test helper in one file. No behavior change.
+- The next CI run on this branch is the compile/test evidence.
 
 ## Not proven
 
-- The CI run for this branch is the compile/test evidence; the field-audit test's live meaning is
-  unchanged from the commit that added it.
+- The field-audit test's live meaning is unchanged from the commit that added it; only visibility
+  changed.
