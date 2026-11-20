@@ -2966,7 +2966,14 @@ pub(crate) struct InspectorSnapshot {
 /// Each field stores the originating sequence number alongside the bounded enum/numeric payload so
 /// the inspector and export can distinguish a milestone whose row is still in the ring from one
 /// preserved in bounded session state after ring eviction.
-type RetainedTransfer = (u64, Option<(u64, u64)>, Option<(u64, u64)>, Option<u32>, u64, u64);
+type RetainedTransfer = (
+    u64,
+    Option<(u64, u64)>,
+    Option<(u64, u64)>,
+    Option<u32>,
+    u64,
+    u64,
+);
 type RetainedReload = (u64, Option<u64>, Option<u64>, Option<u64>);
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -8286,9 +8293,7 @@ pub(crate) fn drain_history(history: &mut History) {
                 if history
                     .session_state
                     .last_transfer
-                    .is_none_or(|(_, _, prev_to, _, _, _)| {
-                        to_key >= prev_to.unwrap_or((0, 0))
-                    })
+                    .is_none_or(|(_, _, prev_to, _, _, _)| to_key >= prev_to.unwrap_or((0, 0)))
                 {
                     history.session_state.last_transfer =
                         Some((seq, from, to, map_id, retired_local, retired_written));

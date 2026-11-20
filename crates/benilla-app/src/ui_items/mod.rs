@@ -683,7 +683,6 @@ pub(crate) fn find_item_in_player(
     )
 }
 
-
 /// [`collect_inventory_in_player`] over the typed read view.
 pub(crate) fn collect_inventory_in_player(
     inv: &crate::wrath_inventory::PlayerInventory<'_>,
@@ -1097,7 +1096,6 @@ pub(crate) fn item_link_full_with_gems_in_target(
     )
 }
 
-
 /// [`object_name_item`] over the typed item read: the 3.3.5 random-properties id comes from the row when
 /// it delivered one, so donor 43..47 are never read as Wrath enchant slots.
 pub(crate) fn object_name_item(
@@ -1174,7 +1172,6 @@ pub(crate) fn object_link_item(
         }
     }
 }
-
 
 /// [`object_link_in_target_item`] over the typed item read. The Wrath layout carries the three socket
 /// slots from the instance's enchant slots 2..4; the row is the lossless source for those.

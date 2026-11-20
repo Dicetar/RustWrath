@@ -1619,8 +1619,16 @@ mod tests {
         assert_eq!(damage, 40.0);
         assert_eq!(overkill, 3.0, "overkill passes through");
         assert_eq!(school, 0x04, "damage school is the raw packet mask");
-        assert_eq!((resisted, blocked, absorbed), (None, None, None), "absent amounts are nil");
-        assert_eq!((critical, glancing, crushing), (Some(1.0), None, None), "crit 1.0, glance/crush nil");
+        assert_eq!(
+            (resisted, blocked, absorbed),
+            (None, None, None),
+            "absent amounts are nil"
+        );
+        assert_eq!(
+            (critical, glancing, crushing),
+            (Some(1.0), None, None),
+            "crit 1.0, glance/crush nil"
+        );
         assert_eq!(extra, None, "exactly the twenty SPELL_DAMAGE values");
     }
 
@@ -1637,10 +1645,26 @@ mod tests {
         assert_eq!(args.len(), 20);
         assert_eq!(args[9], ScriptValue::Int(133));
         assert_eq!(args[10], ScriptValue::Nil, "missing record: nil name");
-        assert_eq!(args[11], ScriptValue::Int(0), "missing record: zero school mask");
-        assert_eq!(args[15], ScriptValue::Number(5.0), "nonzero resist is a number");
-        assert_eq!(args[16], ScriptValue::Number(7.0), "nonzero blocked is a number");
-        assert_eq!(args[17], ScriptValue::Number(9.0), "nonzero absorb is a number");
+        assert_eq!(
+            args[11],
+            ScriptValue::Int(0),
+            "missing record: zero school mask"
+        );
+        assert_eq!(
+            args[15],
+            ScriptValue::Number(5.0),
+            "nonzero resist is a number"
+        );
+        assert_eq!(
+            args[16],
+            ScriptValue::Number(7.0),
+            "nonzero blocked is a number"
+        );
+        assert_eq!(
+            args[17],
+            ScriptValue::Number(9.0),
+            "nonzero absorb is a number"
+        );
         assert_eq!(args[18], ScriptValue::Nil, "no crit");
         assert_eq!(args[19], ScriptValue::Nil);
         assert_eq!(args[20], ScriptValue::Nil);
@@ -1691,12 +1715,7 @@ mod tests {
         world.player_guid = 0x11;
         world.session_epoch = 4;
         world.world_generation = 5;
-        world.apply_spell_damage(
-            spell_damage_hit(),
-            4,
-            5,
-            97.0,
-        );
+        world.apply_spell_damage(spell_damage_hit(), 4, 5, 97.0);
 
         let mut app = App::new();
         app.insert_resource(world)
@@ -1711,30 +1730,69 @@ mod tests {
         {
             let script = app.world().non_send_resource::<UiScript>();
             assert_eq!(script.eval::<i64>("return SEEN").unwrap(), 1);
-            assert_eq!(script.eval::<String>("return Fired[3]").unwrap(), "SPELL_DAMAGE");
+            assert_eq!(
+                script.eval::<String>("return Fired[3]").unwrap(),
+                "SPELL_DAMAGE"
+            );
             assert_eq!(script.eval::<i64>("return Fired[10]").unwrap(), 133);
             assert_eq!(script.eval::<f64>("return Fired[13]").unwrap(), 40.0);
-            assert_eq!(script.eval::<f64>("return Fired[14]").unwrap(), 3.0, "overkill passes through");
-            assert_eq!(script.eval::<i64>("return Fired[15]").unwrap(), 4, "raw packet school mask");
-            assert_eq!(script.eval::<Option<f64>>("return Fired[16]").unwrap(), None);
-            assert_eq!(script.eval::<Option<f64>>("return Fired[17]").unwrap(), None);
-            assert_eq!(script.eval::<Option<f64>>("return Fired[18]").unwrap(), None);
-            assert_eq!(script.eval::<Option<f64>>("return Fired[19]").unwrap(), Some(1.0), "crit 1.0");
-            assert_eq!(script.eval::<Option<f64>>("return Fired[20]").unwrap(), None);
-            assert_eq!(script.eval::<Option<f64>>("return Fired[21]").unwrap(), None);
-            assert_eq!(script.eval::<Option<f64>>("return Fired[22]").unwrap(), None, "exactly 20 values");
+            assert_eq!(
+                script.eval::<f64>("return Fired[14]").unwrap(),
+                3.0,
+                "overkill passes through"
+            );
+            assert_eq!(
+                script.eval::<i64>("return Fired[15]").unwrap(),
+                4,
+                "raw packet school mask"
+            );
+            assert_eq!(
+                script.eval::<Option<f64>>("return Fired[16]").unwrap(),
+                None
+            );
+            assert_eq!(
+                script.eval::<Option<f64>>("return Fired[17]").unwrap(),
+                None
+            );
+            assert_eq!(
+                script.eval::<Option<f64>>("return Fired[18]").unwrap(),
+                None
+            );
+            assert_eq!(
+                script.eval::<Option<f64>>("return Fired[19]").unwrap(),
+                Some(1.0),
+                "crit 1.0"
+            );
+            assert_eq!(
+                script.eval::<Option<f64>>("return Fired[20]").unwrap(),
+                None
+            );
+            assert_eq!(
+                script.eval::<Option<f64>>("return Fired[21]").unwrap(),
+                None
+            );
+            assert_eq!(
+                script.eval::<Option<f64>>("return Fired[22]").unwrap(),
+                None,
+                "exactly 20 values"
+            );
         }
         assert!(
-            app.world().resource::<WrathWorldView>().spell_damages.is_empty(),
+            app.world()
+                .resource::<WrathWorldView>()
+                .spell_damages
+                .is_empty(),
             "delivered row is retired"
         );
 
         app.world_mut().run_system_once(feed).unwrap();
         assert_eq!(
-            app.world().non_send_resource::<UiScript>().eval::<i64>("return SEEN").unwrap(),
+            app.world()
+                .non_send_resource::<UiScript>()
+                .eval::<i64>("return SEEN")
+                .unwrap(),
             1,
             "a later feed cannot replay a retired spell-damage row"
         );
     }
-
 }
