@@ -871,6 +871,7 @@ fn feed_minimap_arrows(
     mut listed: Local<crate::ui_script::VmMemo<Option<Vec<blips::ArrowKey>>>>,
 ) {
     let corpse_point = vm.own().corpse;
+    let release = vm.own().release_location;
     vm.run(|script| {
         let (Some(script), Some(assets), Some(map)) = (script, assets, map) else {
             return;
@@ -884,7 +885,6 @@ fn feed_minimap_arrows(
             corpse.0 =
                 dead.map(|p| blips::corpse_landmark(p, map.0, script.global_text("CORPSE_RED")));
         }
-        let release = vm.own().release_location;
         let healer = release
             .filter(|release| release.map_id == map.0 as i32)
             .map(|release| {

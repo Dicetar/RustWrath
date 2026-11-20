@@ -108,11 +108,7 @@ pub(crate) fn corpse_landmark(position: [f32; 3], map_id: u32, name: String) -> 
 }
 
 /// The spirit-healer static blip (`s_dynamicPOIs[3]`): icon 8, flags 2, rank -1.
-pub(crate) fn spirit_healer_landmark(
-    position: [f32; 3],
-    map_id: u32,
-    name: String,
-) -> AreaPoi {
+pub(crate) fn spirit_healer_landmark(position: [f32; 3], map_id: u32, name: String) -> AreaPoi {
     static_landmark(position, map_id, 8, name)
 }
 
@@ -338,8 +334,7 @@ pub(super) fn select_landmarks<'a>(
             if p.flags & FLAG_IN_RANGE_ICON != 0 {
                 icons.push(p);
             }
-        } else if d <= LANDMARK_RANK_YD
-            || matches!(art, RimArrow::Corpse | RimArrow::SpiritHealer)
+        } else if d <= LANDMARK_RANK_YD || matches!(art, RimArrow::Corpse | RimArrow::SpiritHealer)
         {
             arrows.push((d, p, art));
         }
@@ -698,7 +693,16 @@ mod tests {
     #[test]
     fn the_guard_marker_draws_its_icon_in_range() {
         let marker = poi(0, 0x63, 50.0, "The Bank");
-        let sel = select_landmarks(std::iter::empty(), Some(&marker), None, None, 0, 0.0, 0.0, 133.0);
+        let sel = select_landmarks(
+            std::iter::empty(),
+            Some(&marker),
+            None,
+            None,
+            0,
+            0.0,
+            0.0,
+            133.0,
+        );
         assert!(sel.arrows.is_empty(), "in range — no rim arrow");
         assert_eq!(sel.icons.len(), 1);
         assert_eq!(
@@ -713,7 +717,16 @@ mod tests {
     fn the_guard_marker_skips_the_candidacy_filter() {
         let mut marker = poi(0, 0, 300.0, "The Inn"); // Flags bit 0 clear: a DBC row would drop
         marker.continent_id = 571; // and a continent that isn't the displayed one
-        let sel = select_landmarks(std::iter::empty(), Some(&marker), None, None, 0, 0.0, 0.0, 133.0);
+        let sel = select_landmarks(
+            std::iter::empty(),
+            Some(&marker),
+            None,
+            None,
+            0,
+            0.0,
+            0.0,
+            133.0,
+        );
         assert_eq!(sel.arrows.len(), 1, "appended unconditionally");
     }
 
@@ -746,7 +759,16 @@ mod tests {
         ];
         let far = corpse_landmark([2000.0, 0.0, 0.0], 0, "Corpse".into());
         let marker = poi(0, 0x63, 700.0, "The Bank");
-        let sel = select_landmarks(cities.iter(), Some(&marker), Some(&far), None, 0, 0.0, 0.0, 133.0);
+        let sel = select_landmarks(
+            cities.iter(),
+            Some(&marker),
+            Some(&far),
+            None,
+            0,
+            0.0,
+            0.0,
+            133.0,
+        );
         let names: Vec<&str> = sel.arrows.iter().map(|(_, p, _)| p.name.as_str()).collect();
         assert_eq!(names, ["Corpse", "Goldshire", "Northshire Abbey"]);
         let (rim, _) = rim_arrow_records(&sel, 0.0, 0.0);
@@ -754,7 +776,16 @@ mod tests {
         assert_eq!((rim[1].slot, rim[1].indoors), (-2, false));
 
         let near = corpse_landmark([50.0, 0.0, 0.0], 0, "Corpse".into());
-        let sel = select_landmarks(std::iter::empty(), None, Some(&near), None, 0, 0.0, 0.0, 133.0);
+        let sel = select_landmarks(
+            std::iter::empty(),
+            None,
+            Some(&near),
+            None,
+            0,
+            0.0,
+            0.0,
+            133.0,
+        );
         assert!(sel.arrows.is_empty());
         assert_eq!(sel.icons.len(), 1);
         assert_eq!(
@@ -766,7 +797,16 @@ mod tests {
     #[test]
     fn spirit_healer_uses_icon_eight_and_static_slot_three() {
         let healer = spirit_healer_landmark([2000.0, 0.0, 0.0], 0, "Spirit Healer".into());
-        let sel = select_landmarks(std::iter::empty(), None, None, Some(&healer), 0, 0.0, 0.0, 133.0);
+        let sel = select_landmarks(
+            std::iter::empty(),
+            None,
+            None,
+            Some(&healer),
+            0,
+            0.0,
+            0.0,
+            133.0,
+        );
         assert_eq!(sel.arrows.len(), 1);
         assert_eq!(sel.arrows[0].2, RimArrow::SpiritHealer);
         assert_eq!(sel.arrows[0].1.icon, 8);
@@ -775,9 +815,21 @@ mod tests {
         assert!(records[0].indoors);
 
         let near = spirit_healer_landmark([50.0, 0.0, 0.0], 0, "Spirit Healer".into());
-        let sel = select_landmarks(std::iter::empty(), None, None, Some(&near), 0, 0.0, 0.0, 133.0);
+        let sel = select_landmarks(
+            std::iter::empty(),
+            None,
+            None,
+            Some(&near),
+            0,
+            0.0,
+            0.0,
+            133.0,
+        );
         assert_eq!(sel.icons.len(), 1);
-        assert_eq!(poi_icon_cell(sel.icons[0].icon), Some([0.0, 0.125, 0.125, 0.25]));
+        assert_eq!(
+            poi_icon_cell(sel.icons[0].icon),
+            Some([0.0, 0.125, 0.125, 0.25])
+        );
     }
 
     /// Slot 4 is the pet, our charm else our summon, found only as a streamed unit (`0x6dad60`,

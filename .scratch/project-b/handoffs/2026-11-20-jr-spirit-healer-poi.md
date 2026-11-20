@@ -23,8 +23,8 @@ Implemented:
 
 Verification:
 - `git diff --check`: passed.
+- Initial CI run `44652774628`: failed rustfmt and Linux/Windows compilation; source follow-up snapshots the release location before entering the VM callback and rustfmt-formats the changed Rust files. Corrective CI run pending.
 - Local Cargo/client/server: not run, per owner instruction.
-- CI: not run yet; push this commit and read the branch run.
 
 Residual risk: no live client gameplay acceptance was performed. The marker is sourced from the
 existing network state and uses the existing minimap landmark renderer; owner should visually check
