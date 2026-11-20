@@ -109,6 +109,9 @@ pub const PARTY_KILL_CAPACITY: usize = 32;
 /// often than kills; this is a reviewed bound, not a measurement. Overflow drops the oldest row
 /// and reports the loss through `WrathWorldView::swing_dropped`.
 pub const SWING_CAPACITY: usize = 64;
+/// Pending `SMSG_SPELLNONMELEEDAMAGELOG` rows kept for the UI feed. Ordered events; overflow drops
+/// the oldest row and reports the loss through `WrathWorldView::spell_damage_dropped`.
+pub const SPELL_LOG_CAPACITY: usize = 64;
 /// How long an undelivered combat-log row may wait for an endpoint name before it is delivered
 /// with a visible unknown marker. Names usually land from the create/name-query path within a
 /// frame or two.
@@ -650,6 +653,13 @@ pub enum WrathFeedEvent {
     /// delayed swing from a retired world never reaches the Wrath VM.
     AttackerState {
         hit: WrathSwingHit,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_SPELLNONMELEEDAMAGELOG`: one non-melee spell hit's raw 12340 facts. Carries the
+    /// scope so a delayed row from a retired world never reaches the Wrath VM.
+    SpellDamage {
+        hit: WrathSpellDamage,
         session_epoch: u64,
         world_generation: u64,
     },
@@ -2112,6 +2122,37 @@ pub struct WrathSwing {
     pub received_at: f64,
 }
 
+/// One decoded `SMSG_SPELLNONMELEEDAMAGELOG` with the world scope it belongs to, the UI clock at
+/// apply, and a monotonic sequence the UI feed uses to deliver each row exactly once. `school` is
+/// 12340's raw packet school mask byte (kept raw here, unlike the 1.12 chat translation which
+/// converts to an index). Absent resisted/blocked/absorbed are represented as nil in the combat log,
+/// not 0; crit/glance/crush are 1.0 or nil. `PushEvent` (`UnitCombatLog_C.cpp:1241-1361`) sends
+/// 8 header values, then spellId/spellName/spellSchoolMask when a spell id exists (3), then the 0x10
+/// block: damage, overkill, school, resisted, blocked, absorbed, then critical, glancing, crushing as
+/// 1.0 or nil (9), total 20 for SPELL_DAMAGE. `SendDamageEvent` (`:2373`) builds that 0x10 block
+/// from damage/overkill/school/absorbed/resisted/blocked and sets `infoBits` to
+/// `(crit)|(glancing|crushing<<1)<<1`, so `HandleSpellNonMeleeDamageLog` (`:2520`, where
+/// `hitInfo & 0x2` is crit) maps to `hit_info` bits `0x2` (crit), `0x10000` (glancing) and
+/// `0x20000` (crushing). If the spell record is missing, `PushEvent` pushes nil name and 0 school.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WrathSpellDamage {
+    pub target: u64,
+    pub attacker: u64,
+    pub spell_id: u32,
+    pub damage: u32,
+    pub overkill: u32,
+    pub school: u8,
+    pub absorb: u32,
+    pub resist: i32,
+    pub blocked: u32,
+    pub hit_info: u32,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    /// `UiClock::ui_now` when the row was applied; 0 when no clock existed yet.
+    pub received_at: f64,
+}
+
 /// One decoded rune slot with the `GetTime()` anchor its cooldown byte arrived on. `cooldown` is
 /// the writer's 0..255 progress fraction; the presentation derives the start from it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2204,6 +2245,15 @@ pub struct WrathWorldView {
     pub swing_dropped: u64,
     /// Swings delivered with an unknown endpoint after name resolution timed out.
     pub swing_unresolved: u64,
+    /// The decoded spell-damage rows waiting for the UI feed; ordered rows up to
+    /// `SPELL_LOG_CAPACITY`.
+    pub spell_damages: VecDeque<WrathSpellDamage>,
+    /// Monotonic sequence for `Self::spell_damages`, never reset on a scope clear.
+    pub spell_damage_revision: u64,
+    /// Spell-damage rows dropped because the pending queue was full.
+    pub spell_damage_dropped: u64,
+    /// Spell-damage rows delivered with an unknown endpoint after name resolution timed out.
+    pub spell_damage_unresolved: u64,
     /// Presentation mirror of the authority's active casts, keyed by caster, retaining 12340
     /// identity/timing beyond the vanilla cast-bar edges. Written only from resolved snapshots;
     /// never re-resolves wire facts. UI clocks are stamped here, not in the authority.
@@ -2261,6 +2311,10 @@ impl Default for WrathWorldView {
             swing_revision: 0,
             swing_dropped: 0,
             swing_unresolved: 0,
+            spell_damages: VecDeque::new(),
+            spell_damage_revision: 0,
+            spell_damage_dropped: 0,
+            spell_damage_unresolved: 0,
             casts: BTreeMap::new(),
             channels: BTreeMap::new(),
             last_cast_end: None,
@@ -2455,6 +2509,29 @@ impl WrathWorldView {
         });
     }
 
+    /// Adopt one decoded spell-damage row. Ordered event, never a replaceable snapshot: the
+    /// pending queue is bounded, and overflow drops the oldest row and records the loss.
+    pub(crate) fn apply_spell_damage(
+        &mut self,
+        hit: WrathSpellDamage,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        self.spell_damage_revision = self.spell_damage_revision.saturating_add(1);
+        if self.spell_damages.len() >= SPELL_LOG_CAPACITY {
+            self.spell_damages.pop_front();
+            self.spell_damage_dropped = self.spell_damage_dropped.saturating_add(1);
+        }
+        self.spell_damages.push_back(WrathSpellDamage {
+            session_epoch,
+            world_generation,
+            revision: self.spell_damage_revision,
+            received_at,
+            ..hit
+        });
+    }
+
     /// Clear every scoped rune/calendar/combat-log/LFG fact on a session end or world transfer.
     fn clear_rune_calendar(&mut self) {
         self.runes.clear();
@@ -2468,6 +2545,9 @@ impl WrathWorldView {
         self.swings.clear();
         self.swing_dropped = 0;
         self.swing_unresolved = 0;
+        self.spell_damages.clear();
+        self.spell_damage_dropped = 0;
+        self.spell_damage_unresolved = 0;
         self.lfg_join_result = None;
         self.lfg_queue_status = None;
         self.lfg_update_player = None;
@@ -3877,6 +3957,7 @@ fn translate_gameplay(
             attacker,
             spell_id,
             damage,
+            overkill: _,
             school,
             absorb,
             resist,
@@ -8946,6 +9027,25 @@ fn wrath_net_drain(
                     );
                 }
             }
+            WrathFeedEvent::SpellDamage {
+                hit,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_spell_damage(
+                        hit,
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
             WrathFeedEvent::PartyKillLog {
                 killer,
                 victim,
@@ -13325,6 +13425,48 @@ pub fn run_session_with_cancel(
                                 }
                             }
                         }
+                        Ok(event @ WrathGameplayEvent::SpellDamage {
+                            target,
+                            attacker,
+                            spell_id,
+                            damage,
+                            overkill,
+                            school,
+                            absorb,
+                            resist,
+                            blocked,
+                            hit_info,
+                        }) => {
+                            feed.push_event(WrathFeedEvent::SpellDamage {
+                                hit: WrathSpellDamage {
+                                    target,
+                                    attacker,
+                                    spell_id,
+                                    damage,
+                                    overkill,
+                                    school,
+                                    absorb,
+                                    resist,
+                                    blocked,
+                                    hit_info,
+                                    session_epoch: session.epoch(),
+                                    world_generation: session.world_generation(),
+                                    revision: 0,
+                                    received_at: 0.0,
+                                },
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                            if session.player_guid().is_some() {
+                                for event in translate_live(
+                                    event,
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
+                                }
+                            }
+                        }
                         Ok(event @ WrathGameplayEvent::AttackerState {
                             attacker,
                             victim,
@@ -14104,6 +14246,7 @@ mod tests {
                 attacker: 0x11,
                 spell_id: 133,
                 damage: 40,
+                overkill: 0,
                 school: 4,
                 absorb: 0,
                 resist: 0,
