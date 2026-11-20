@@ -670,6 +670,13 @@ pub enum WrathFeedEvent {
         session_epoch: u64,
         world_generation: u64,
     },
+    /// `SMSG_SPELLHEALLOG`: one heal row's raw 12340 facts. Carries the scope so a delayed row
+    /// from a retired world never reaches the Wrath VM.
+    SpellHeal {
+        hit: WrathSpellHeal,
+        session_epoch: u64,
+        world_generation: u64,
+    },
     /// `SMSG_PARTYKILLLOG`: the killing blow credited to a player. Carries the scope so a
     /// delayed kill from a retired world never reaches the Wrath VM.
     PartyKillLog {
@@ -2204,6 +2211,32 @@ pub struct WrathRuneSlot {
     pub received_at: f64,
 }
 
+/// One decoded `SMSG_SPELLHEALLOG` (`0x150`, `Net/Types.h`) heal row with the world scope it
+/// belongs to, the UI clock at apply, and a monotonic sequence the UI feed uses to deliver each
+/// row exactly once. Body: packed target, packed caster, u32 spellId, u32 amount, u32 overheal,
+/// u32 absorbed, u8 crit, u8 unused (`UnitCombatLog_C.cpp:1931` `HandleSpellHealLog`). The
+/// combat-log event is built by `UnitCombatLogHeal` (`:1811`) / `SendHealEvent` (`:2001`) /
+/// `PushEvent` (`:1241`): `UnitCombatLogHeal` returns without an entry when amount, overheal
+/// and absorbed are all zero; otherwise `SendHealEvent` sets `m_infoFlags |= 0x20` with values
+/// amount, overheal, absorbed, crit and `PushEvent` emits 8 header values, spellId/spellName/
+/// spellSchoolMask (3), then the 0x20 block amount, overheal, absorbed, critical as 1.0 or nil
+/// (4), total 15 for a shown heal. Missing spell row: nil name, school 0.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathSpellHeal {
+    pub target: u64,
+    pub caster: u64,
+    pub spell_id: u32,
+    pub amount: u32,
+    pub overheal: u32,
+    pub absorbed: u32,
+    pub critical: bool,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    /// `UiClock::ui_now` when the row was applied; 0 when no clock existed yet.
+    pub received_at: f64,
+}
+
 /// The decoded `SMSG_CALENDAR_SEND_CALENDAR` snapshot, kept as the wire delivered it. The UI
 /// reads the date from `zone_time` and pending invites from `invites`; the other rows stay here
 /// for the calendar windows that need them.
@@ -2305,6 +2338,15 @@ pub struct WrathWorldView {
     pub spell_miss_dropped: u64,
     /// Spell-miss rows delivered with an unknown endpoint after name resolution timed out.
     pub spell_miss_unresolved: u64,
+    /// The decoded spell-heal rows waiting for the UI feed; ordered rows up to
+    /// `SPELL_LOG_CAPACITY`.
+    pub spell_heals: VecDeque<WrathSpellHeal>,
+    /// Monotonic sequence for `Self::spell_heals`, never reset on a scope clear.
+    pub spell_heal_revision: u64,
+    /// Spell-heal rows dropped because the pending queue was full.
+    pub spell_heal_dropped: u64,
+    /// Spell-heal rows delivered with an unknown endpoint after name resolution timed out.
+    pub spell_heal_unresolved: u64,
     /// Presentation mirror of the authority's active casts, keyed by caster, retaining 12340
     /// identity/timing beyond the vanilla cast-bar edges. Written only from resolved snapshots;
     /// never re-resolves wire facts. UI clocks are stamped here, not in the authority.
@@ -2370,6 +2412,10 @@ impl Default for WrathWorldView {
             spell_miss_revision: 0,
             spell_miss_dropped: 0,
             spell_miss_unresolved: 0,
+            spell_heals: VecDeque::new(),
+            spell_heal_revision: 0,
+            spell_heal_dropped: 0,
+            spell_heal_unresolved: 0,
             casts: BTreeMap::new(),
             channels: BTreeMap::new(),
             last_cast_end: None,
@@ -2610,6 +2656,34 @@ impl WrathWorldView {
         });
     }
 
+    /// Adopt one decoded spell-heal row. Ordered event, never a replaceable snapshot: the
+    /// pending queue is bounded, and overflow drops the oldest row and records the loss.
+    /// `UnitCombatLogHeal` (`UnitCombatLog_C.cpp:1811`) returns without an entry when amount,
+    /// overheal and absorbed are all zero, so a zero row is skipped here.
+    pub(crate) fn apply_spell_heal(
+        &mut self,
+        hit: WrathSpellHeal,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        if hit.amount == 0 && hit.overheal == 0 && hit.absorbed == 0 {
+            return;
+        }
+        self.spell_heal_revision = self.spell_heal_revision.saturating_add(1);
+        if self.spell_heals.len() >= SPELL_LOG_CAPACITY {
+            self.spell_heals.pop_front();
+            self.spell_heal_dropped = self.spell_heal_dropped.saturating_add(1);
+        }
+        self.spell_heals.push_back(WrathSpellHeal {
+            session_epoch,
+            world_generation,
+            revision: self.spell_heal_revision,
+            received_at,
+            ..hit
+        });
+    }
+
     /// Clear every scoped rune/calendar/combat-log/LFG fact on a session end or world transfer.
     fn clear_rune_calendar(&mut self) {
         self.runes.clear();
@@ -2629,6 +2703,9 @@ impl WrathWorldView {
         self.spell_misses.clear();
         self.spell_miss_dropped = 0;
         self.spell_miss_unresolved = 0;
+        self.spell_heals.clear();
+        self.spell_heal_dropped = 0;
+        self.spell_heal_unresolved = 0;
         self.lfg_join_result = None;
         self.lfg_queue_status = None;
         self.lfg_update_player = None;
@@ -5383,6 +5460,8 @@ fn translate_gameplay(
             caster,
             spell_id,
             amount,
+            overheal: _,
+            absorbed: _,
             critical,
         } => vec![SessionEvent::SpellHealLog(
             benilla_protocol::messages::SpellHealLog {
@@ -9169,6 +9248,25 @@ fn wrath_net_drain(
                     world_generation,
                 ) {
                     view.apply_spell_miss(
+                        hit,
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
+            WrathFeedEvent::SpellHeal {
+                hit,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_spell_heal(
                         hit,
                         session_epoch,
                         world_generation,
@@ -13579,6 +13677,42 @@ pub fn run_session_with_cancel(
                                     resist,
                                     blocked,
                                     hit_info,
+                                    session_epoch: session.epoch(),
+                                    world_generation: session.world_generation(),
+                                    revision: 0,
+                                    received_at: 0.0,
+                                },
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                            if session.player_guid().is_some() {
+                                for event in translate_live(
+                                    event,
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
+                                }
+                            }
+                        }
+                        Ok(event @ WrathGameplayEvent::SpellHealLog {
+                            target,
+                            caster,
+                            spell_id,
+                            amount,
+                            overheal,
+                            absorbed,
+                            critical,
+                        }) => {
+                            feed.push_event(WrathFeedEvent::SpellHeal {
+                                hit: WrathSpellHeal {
+                                    target,
+                                    caster,
+                                    spell_id,
+                                    amount,
+                                    overheal,
+                                    absorbed,
+                                    critical,
                                     session_epoch: session.epoch(),
                                     world_generation: session.world_generation(),
                                     revision: 0,
