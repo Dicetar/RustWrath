@@ -663,6 +663,13 @@ pub enum WrathFeedEvent {
         session_epoch: u64,
         world_generation: u64,
     },
+    /// `SMSG_SPELL_MISS_LOG`: one spell-miss row's raw 12340 facts. Carries the scope so a
+    /// delayed row from a retired world never reaches the Wrath VM.
+    SpellMiss {
+        hit: WrathSpellMiss,
+        session_epoch: u64,
+        world_generation: u64,
+    },
     /// `SMSG_PARTYKILLLOG`: the killing blow credited to a player. Carries the scope so a
     /// delayed kill from a retired world never reaches the Wrath VM.
     PartyKillLog {
@@ -2163,6 +2170,31 @@ pub struct WrathSpellDamage {
     pub received_at: f64,
 }
 
+/// One decoded `SMSG_SPELL_MISS_LOG` (`0x24B`, `UnitCombatLog_C.cpp:1888`
+/// `HandleSpellLogMiss`) target row with the world scope it belongs to, the UI clock at apply,
+/// and a monotonic sequence the UI feed uses to deliver each row exactly once. `miss_type`
+/// indexes `g_spellMissStrings` at `:150` (0 NONE, 1 MISS, 2 RESIST, 3 DODGE, 4 PARRY, 5
+/// BLOCK, 6 EVADE, 7 IMMUNE, 8 IMMUNE, 9 DEFLECT, 10 ABSORB, 11 REFLECT). `PushEvent`
+/// (`:1241`, via `UnitCombatLogSpellMissed` `:1573` / `QueueMissedSpellText` `:1470` /
+/// `SetMissInfo` `:311`) sends 8 header values, then spellId/spellName/spellSchoolMask (3),
+/// then the miss string (0x4), then the amount slot only for missType 10/2/5 (`0x2000` absorb,
+/// `0x4000` resisted, `0x8000` blocked) as integer 0 from this packet. The decompiled
+/// `UnitCombatLogSpellMissed` call from `HandleSpellLogMiss` is labelled
+/// `DAMAGE_SHIELD_MISSED` (event 41, `a5=true`); this slice implements `SPELL_MISSED` (event 8).
+/// If the spell record is missing, `PushEvent` pushes nil name and 0 school.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathSpellMiss {
+    pub caster: u64,
+    pub target: u64,
+    pub spell_id: u32,
+    pub miss_type: u8,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    /// `UiClock::ui_now` when the row was applied; 0 when no clock existed yet.
+    pub received_at: f64,
+}
+
 /// One decoded rune slot with the `GetTime()` anchor its cooldown byte arrived on. `cooldown` is
 /// the writer's 0..255 progress fraction; the presentation derives the start from it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2264,6 +2296,15 @@ pub struct WrathWorldView {
     pub spell_damage_dropped: u64,
     /// Spell-damage rows delivered with an unknown endpoint after name resolution timed out.
     pub spell_damage_unresolved: u64,
+    /// The decoded spell-miss rows waiting for the UI feed; ordered rows up to
+    /// `SPELL_LOG_CAPACITY`.
+    pub spell_misses: VecDeque<WrathSpellMiss>,
+    /// Monotonic sequence for `Self::spell_misses`, never reset on a scope clear.
+    pub spell_miss_revision: u64,
+    /// Spell-miss rows dropped because the pending queue was full.
+    pub spell_miss_dropped: u64,
+    /// Spell-miss rows delivered with an unknown endpoint after name resolution timed out.
+    pub spell_miss_unresolved: u64,
     /// Presentation mirror of the authority's active casts, keyed by caster, retaining 12340
     /// identity/timing beyond the vanilla cast-bar edges. Written only from resolved snapshots;
     /// never re-resolves wire facts. UI clocks are stamped here, not in the authority.
@@ -2325,6 +2366,10 @@ impl Default for WrathWorldView {
             spell_damage_revision: 0,
             spell_damage_dropped: 0,
             spell_damage_unresolved: 0,
+            spell_misses: VecDeque::new(),
+            spell_miss_revision: 0,
+            spell_miss_dropped: 0,
+            spell_miss_unresolved: 0,
             casts: BTreeMap::new(),
             channels: BTreeMap::new(),
             last_cast_end: None,
@@ -2542,6 +2587,29 @@ impl WrathWorldView {
         });
     }
 
+    /// Adopt one decoded spell-miss row. Ordered event, never a replaceable snapshot: the
+    /// pending queue is bounded, and overflow drops the oldest row and records the loss.
+    pub(crate) fn apply_spell_miss(
+        &mut self,
+        hit: WrathSpellMiss,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        self.spell_miss_revision = self.spell_miss_revision.saturating_add(1);
+        if self.spell_misses.len() >= SPELL_LOG_CAPACITY {
+            self.spell_misses.pop_front();
+            self.spell_miss_dropped = self.spell_miss_dropped.saturating_add(1);
+        }
+        self.spell_misses.push_back(WrathSpellMiss {
+            session_epoch,
+            world_generation,
+            revision: self.spell_miss_revision,
+            received_at,
+            ..hit
+        });
+    }
+
     /// Clear every scoped rune/calendar/combat-log/LFG fact on a session end or world transfer.
     fn clear_rune_calendar(&mut self) {
         self.runes.clear();
@@ -2558,6 +2626,9 @@ impl WrathWorldView {
         self.spell_damages.clear();
         self.spell_damage_dropped = 0;
         self.spell_damage_unresolved = 0;
+        self.spell_misses.clear();
+        self.spell_miss_dropped = 0;
+        self.spell_miss_unresolved = 0;
         self.lfg_join_result = None;
         self.lfg_queue_status = None;
         self.lfg_update_player = None;
@@ -3986,6 +4057,7 @@ fn translate_gameplay(
             blocked,
             hit_info,
         })],
+        WrathGameplayEvent::SpellMiss { .. } => Vec::new(),
         WrathGameplayEvent::PeriodicAura {
             target,
             caster,
@@ -9085,6 +9157,25 @@ fn wrath_net_drain(
                     );
                 }
             }
+            WrathFeedEvent::SpellMiss {
+                hit,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_spell_miss(
+                        hit,
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
             WrathFeedEvent::PartyKillLog {
                 killer,
                 victim,
@@ -13504,6 +13595,28 @@ pub fn run_session_with_cancel(
                                 ) {
                                     push_session_event(&events_out, &session, event);
                                 }
+                            }
+                        }
+                        Ok(WrathGameplayEvent::SpellMiss {
+                            caster,
+                            spell_id,
+                            misses,
+                        }) => {
+                            for miss in misses {
+                                feed.push_event(WrathFeedEvent::SpellMiss {
+                                    hit: WrathSpellMiss {
+                                        caster,
+                                        target: miss.target,
+                                        spell_id,
+                                        miss_type: miss.miss_type,
+                                        session_epoch: session.epoch(),
+                                        world_generation: session.world_generation(),
+                                        revision: 0,
+                                        received_at: 0.0,
+                                    },
+                                    session_epoch: session.epoch(),
+                                    world_generation: session.world_generation(),
+                                });
                             }
                         }
                         Ok(event @ WrathGameplayEvent::AttackerState {
