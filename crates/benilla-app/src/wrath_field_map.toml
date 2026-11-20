@@ -16,156 +16,182 @@
 # A translation that needs a lookup or computed value belongs in the live translation script
 # (wrath_translate.lua, overlay <benilla-config>/wrath-translate.lua), which runs after this table.
 
-# CGGameObjectData (Wrath 6..17) -> 1.12 GameObject descriptor.
-[[gameobject]] # OBJECT_FIELD_CREATED_BY
+# CGGameObjectData (Wrath 6..18) -> 1.12 GameObject descriptor (0..26).
+# Position (15..=18) comes from the movement snapshot in wrath.rs (`push_gameobject_fields`).
+[[gameobject]] # OBJECT_FIELD_CREATED_BY (6..8) -> FIELD_GAMEOBJECT_CREATED_BY (6..8)
 from = 6
 to = 6
 count = 2
 
-[[gameobject]] # GAMEOBJECT_DISPLAYID
+[[gameobject]] # GAMEOBJECT_DISPLAYID (8) -> FIELD_GAMEOBJECT_DISPLAYID (8)
 from = 8
 to = 8
 
-[[gameobject]] # GAMEOBJECT_FLAGS
+[[gameobject]] # GAMEOBJECT_FLAGS (9) -> FIELD_GAMEOBJECT_FLAGS (9)
 from = 9
 to = 9
 
-[[gameobject]] # GAMEOBJECT_PARENTROTATION 0..3 -> FIELD_GAMEOBJECT_ROTATION
+[[gameobject]] # GAMEOBJECT_PARENTROTATION[0..4] (10..14) -> FIELD_GAMEOBJECT_ROTATION[0..4] (10..14)
 from = 10
 to = 10
 count = 4
 
-[[gameobject]] # GAMEOBJECT_BYTES_1 byte 0 (state) -> GAMEOBJECT_STATE
+[[gameobject]] # GAMEOBJECT_BYTES_1 byte 0 (state, 17) -> FIELD_GAMEOBJECT_STATE (14)
 from = 17
 to = 14
 mask = 0xFF
 
-[[gameobject]] # GAMEOBJECT_BYTES_1 byte 1 (type) -> GAMEOBJECT_TYPE_ID
+[[gameobject]] # GAMEOBJECT_BYTES_1 byte 1 (type, 17) -> FIELD_GAMEOBJECT_TYPE_ID (21)
 from = 17
 to = 21
 shift = 8
 mask = 0xFF
 
-[[gameobject]] # GAMEOBJECT_BYTES_1 byte 2 (art kit) -> GAMEOBJECT_ARTKIT
+[[gameobject]] # GAMEOBJECT_BYTES_1 byte 2 (art kit, 17) -> GAMEOBJECT_ARTKIT (23)
 from = 17
 to = 23
 shift = 16
 mask = 0xFF
 
-[[gameobject]] # GAMEOBJECT_BYTES_1 byte 3 (anim progress) -> GAMEOBJECT_ANIMPROGRESS
+[[gameobject]] # GAMEOBJECT_BYTES_1 byte 3 (anim progress, 17) -> GAMEOBJECT_ANIMPROGRESS (24)
 from = 17
 to = 24
 shift = 24
 mask = 0xFF
 
-[[gameobject]] # GAMEOBJECT_DYNAMIC low u16 (dynamic flags) -> GAMEOBJECT_DYN_FLAGS
+[[gameobject]] # GAMEOBJECT_DYNAMIC low u16 (14) -> FIELD_GAMEOBJECT_DYN_FLAGS (19)
 from = 14
 to = 19
 mask = 0xFFFF
 
-[[gameobject]] # GAMEOBJECT_FACTION
+[[gameobject]] # GAMEOBJECT_FACTION (15) -> FIELD_GAMEOBJECT_FACTION (20)
 from = 15
 to = 20
 
-[[gameobject]] # GAMEOBJECT_LEVEL
+[[gameobject]] # GAMEOBJECT_LEVEL (16) -> FIELD_GAMEOBJECT_LEVEL (22)
 from = 16
 to = 22
 
-# CGDynamicObjectData: caster, bytes, spell, radius share the 1.12 indices. Wrath CASTTIME (11)
-# has no 1.12 slot (1.12 keeps position there).
-[[dynamicobject]]
+# CGDynamicObjectData (Wrath 6..12) -> 1.12 DynamicObject descriptor (0..16).
+# Wrath DYNAMICOBJECT_CASTTIME (11) has no 1.12 slot (donor 11..=14 hold movement position from
+# `push_dynamicobject_fields` in wrath.rs).
+[[dynamicobject]] # DYNAMICOBJECT_CASTER (6..8), BYTES (8), SPELLID (9), RADIUS (10) -> donor 6..11
 from = 6
 to = 6
 count = 5
 
-# CGCorpseData -> 1.12 corpse descriptor. Wrath carries no position words; 1.12 owner, display,
-# items and bytes sit two words later after its position block.
-[[corpse]] # CORPSE_FIELD_OWNER
+# CGCorpseData (Wrath 6..36) -> 1.12 Corpse descriptor (0..38).
+# Wrath CORPSE_FIELD_PARTY (8..10) has no 1.12 slot (donor 8..=11 hold facing + position from
+# `push_corpse_fields` in wrath.rs); CORPSE_FIELD_PAD (35) is padding.
+[[corpse]] # CORPSE_FIELD_OWNER (6..8) -> CORPSE_FIELD_OWNER (6..8)
 from = 6
 to = 6
 count = 2
 
-[[corpse]] # CORPSE_FIELD_DISPLAY_ID
+[[corpse]] # CORPSE_FIELD_DISPLAY_ID (10) -> CORPSE_FIELD_DISPLAY_ID (12)
 from = 10
 to = 12
 
-[[corpse]] # CORPSE_FIELD_ITEM 0..18: display | inventory type << 24
+[[corpse]] # CORPSE_FIELD_ITEM[0..19] (11..30) -> CORPSE_FIELD_ITEM[0..19] (13..32)
 from = 11
 to = 13
 count = 19
 
-[[corpse]] # BYTES_1, BYTES_2, GUILD, FLAGS, DYNAMIC_FLAGS
+[[corpse]] # CORPSE_FIELD_BYTES_1 (30), BYTES_2 (31), GUILD (32), FLAGS (33), DYNAMIC_FLAGS (34) -> donor 32..37
 from = 30
 to = 32
 count = 5
 
-# Unit block (Wrath 6..147) -> 1.12 unit descriptor, for creatures and players. Health, power,
-# level, faction, flags, bytes, displays, npc flags and the guid fields are projected in Rust;
-# these are the direct copies. Players already get most of them from the player projection; the
-# values are the same.
-[[unit]] # UNIT_FIELD_CHARM, UNIT_FIELD_SUMMON
+# Unit block (Wrath 6..148) -> 1.12 unit descriptor (0..188), for creatures and players. Health,
+# power, level, faction, flags, bytes, displays (including non-zero NATIVEDISPLAYID 68 -> 132),
+# npc flags and the guid fields are projected in Rust (`wrath.rs`); these are the direct copies
+# kept here so live overlays can override them.
+[[unit]] # UNIT_FIELD_CHARM (6..8), UNIT_FIELD_SUMMON (8..10) -> FIELD_UNIT_CHARM (6..8), FIELD_UNIT_SUMMON (8..10)
 from = 6
 to = 6
 count = 4
 
-[[unit]] # UNIT_FIELD_CHANNEL_OBJECT
+[[unit]] # UNIT_FIELD_CHANNEL_OBJECT (20..22) -> FIELD_UNIT_CHANNEL_OBJECT (20..22)
 from = 20
 to = 20
 count = 2
 
-[[unit]] # UNIT_CHANNEL_SPELL
+[[unit]] # UNIT_CHANNEL_SPELL (22) -> FIELD_UNIT_CHANNEL_SPELL (144)
 from = 22
 to = 144
 
-[[unit]] # AURASTATE, BASEATTACKTIME[2], RANGEDATTACKTIME, BOUNDINGRADIUS, COMBATREACH
+[[unit]] # UNIT_FIELD_AURASTATE (61), BASEATTACKTIME (62..64), RANGEDATTACKTIME (64), BOUNDINGRADIUS (65), COMBATREACH (66) -> donor 125..131
 from = 61
 to = 125
 count = 6
 
-[[unit]] # UNIT_FIELD_NATIVEDISPLAYID (the Rust projection writes DISPLAYID there first)
-from = 68
-to = 132
-
-[[unit]] # MINDAMAGE, MAXDAMAGE, MINOFFHANDDAMAGE, MAXOFFHANDDAMAGE
+[[unit]] # UNIT_FIELD_MINDAMAGE (70), MAXDAMAGE (71), MINOFFHANDDAMAGE (72), MAXOFFHANDDAMAGE (73) -> donor 134..138
 from = 70
 to = 134
 count = 4
 
-[[unit]] # PETNUMBER, PET_NAME_TIMESTAMP, PETEXPERIENCE, PETNEXTLEVELEXP
+[[unit]] # UNIT_FIELD_PETNUMBER (75), PET_NAME_TIMESTAMP (76), PETEXPERIENCE (77), PETNEXTLEVELEXP (78) -> donor 139..143
 from = 75
 to = 139
 count = 4
 
-[[unit]] # UNIT_MOD_CAST_SPEED, UNIT_CREATED_BY_SPELL
+[[unit]] # UNIT_MOD_CAST_SPEED (80), UNIT_CREATED_BY_SPELL (81) -> FIELD_UNIT_MOD_CAST_SPEED (145), FIELD_UNIT_CREATED_BY_SPELL (146)
 from = 80
 to = 145
 count = 2
 
-[[unit]] # UNIT_NPC_EMOTESTATE
+[[unit]] # UNIT_NPC_EMOTESTATE (83) -> FIELD_UNIT_NPC_EMOTESTATE (148)
 from = 83
 to = 148
 
-[[unit]] # UNIT_FIELD_STAT0..4
+[[unit]] # UNIT_FIELD_STAT0..4 (84..89) -> FIELD_UNIT_STAT0..4 (150..155)
 from = 84
 to = 150
 count = 5
 
-[[unit]] # UNIT_FIELD_RESISTANCES 0..6
+[[unit]] # UNIT_FIELD_RESISTANCES[0..7] (99..106) -> FIELD_UNIT_RESISTANCES[0..7] (155..162)
 from = 99
 to = 155
 count = 7
 
-[[unit]] # UNIT_FIELD_BASE_MANA, UNIT_FIELD_BASE_HEALTH
+[[unit]] # UNIT_FIELD_BASE_MANA (120), UNIT_FIELD_BASE_HEALTH (121) -> FIELD_UNIT_BASE_MANA (162), FIELD_UNIT_BASE_HEALTH (163)
 from = 120
 to = 162
 count = 2
 
-[[unit]] # ATTACK_POWER .. MAXRANGEDDAMAGE
+[[unit]] # UNIT_FIELD_ATTACK_POWER..MAXRANGEDDAMAGE (123..131) -> FIELD_UNIT_ATTACK_POWER..MAXRANGEDDAMAGE (165..173)
 from = 123
 to = 165
 count = 8
 
-[[unit]] # POWER_COST_MODIFIER 0..6, POWER_COST_MULTIPLIER 0..6
+[[unit]] # UNIT_FIELD_POWER_COST_MODIFIER[0..7] (131..138), POWER_COST_MULTIPLIER[0..7] (138..145) -> donor 173..187
 from = 131
 to = 173
 count = 14
+
+# Player honor block (Wrath 1225..1230) -> 1.12 player honor fields (1250..1261).
+# PLAYER_FIELD_TODAY_CONTRIBUTION (1226), PLAYER_FIELD_HONOR_CURRENCY (1277), and
+# PLAYER_FIELD_ARENA_CURRENCY (1278) have no 1.12 descriptor slot and are read directly from
+# `WrathPlayerRaw` by `ui_honor.rs`.
+[[player]] # PLAYER_FIELD_KILLS low u16 (today HK, 1225) -> FIELD_PLAYER_FIELD_SESSION_KILLS (1250)
+from = 1225
+to = 1250
+mask = 0xFFFF
+
+[[player]] # PLAYER_FIELD_KILLS high u16 (yesterday HK, 1225) -> FIELD_PLAYER_FIELD_YESTERDAY_KILLS (1251)
+from = 1225
+to = 1251
+shift = 16
+mask = 0xFFFF
+
+[[player]] # PLAYER_FIELD_YESTERDAY_CONTRIBUTION (1227) -> FIELD_PLAYER_FIELD_YESTERDAY_CONTRIBUTION (1257)
+from = 1227
+to = 1257
+
+[[player]] # PLAYER_FIELD_LIFETIME_HONORABLE_KILLS (1228) -> FIELD_PLAYER_FIELD_LIFETIME_HONORABLE_KILLS (1255)
+from = 1228
+to = 1255
+
+[[player]] # PLAYER_FIELD_BYTES2 (1229) -> FIELD_PLAYER_FIELD_BYTES2 (1260)
+from = 1229
+to = 1260
