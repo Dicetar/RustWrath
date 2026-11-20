@@ -17,8 +17,8 @@ use crate::query_cache::Ask;
 use crate::script_calls::VmWith;
 use crate::ui_script::UiClock;
 use crate::wrath::{
-    WrathPartyKill, WrathSpellDamage, WrathSpellHeal, WrathSpellMiss, WrathSwing, WrathWorldView,
-    COMBAT_LOG_NAME_RETRY_SECONDS,
+    WrathPartyKill, WrathSpellDamage, WrathSpellEnergize, WrathSpellHeal, WrathSpellMiss,
+    WrathSwing, WrathWorldView, COMBAT_LOG_NAME_RETRY_SECONDS,
 };
 
 /// Capacity loss and unresolved-name counts already reported, so each diagnostic is logged once
@@ -35,6 +35,8 @@ pub(crate) struct CombatLogMemo {
     spell_miss_unresolved: u64,
     spell_heal_dropped: u64,
     spell_heal_unresolved: u64,
+    spell_energize_dropped: u64,
+    spell_energize_unresolved: u64,
 }
 
 /// The visible marker for an endpoint whose name never resolved inside the retry window. It is
@@ -134,6 +136,20 @@ pub(crate) fn feed(
             );
         }
         memo.spell_heal_unresolved = world.spell_heal_unresolved;
+        if world.spell_energize_dropped > memo.spell_energize_dropped {
+            debug!(
+                dropped = world.spell_energize_dropped,
+                "wrath: combat-log queue capacity lost spell-energize rows"
+            );
+        }
+        memo.spell_energize_dropped = world.spell_energize_dropped;
+        if world.spell_energize_unresolved > memo.spell_energize_unresolved {
+            debug!(
+                unresolved = world.spell_energize_unresolved,
+                "wrath: combat-log spell-energize rows delivered with an unknown endpoint after name resolution timed out"
+            );
+        }
+        memo.spell_energize_unresolved = world.spell_energize_unresolved;
 
         let now = clock.as_deref().map_or(0.0, |clock| clock.ui_now);
         let ask = match net.as_deref() {
@@ -353,6 +369,59 @@ pub(crate) fn feed(
                 spell_heal_args(timestamp, &hit, &source, &target, spells.as_deref()),
             );
             world.spell_heals.remove(index);
+        }
+
+        let mut index = 0;
+        while index < world.spell_energizes.len() {
+            let hit = world.spell_energizes[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                // A row from a retired world is never delivered into the replacement chain.
+                world.spell_energizes.remove(index);
+                continue;
+            }
+            let source = endpoint_name(script, world, names.as_deref(), hit.caster, ask);
+            let target = endpoint_name(script, world, names.as_deref(), hit.target, ask);
+            let timestamp = if hit.received_at > 0.0 {
+                hit.received_at
+            } else {
+                now
+            };
+            if source.is_none() || target.is_none() {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at {
+                    now - hit.received_at
+                } else {
+                    0.0
+                };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    // The retry window is spent. Deliver the spell-energize event with a visible
+                    // unknown marker for the side(s) that did not resolve, then retire the row
+                    // so a later feed cannot replay it. The known endpoint keeps its real name.
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        spell_energize_args(
+                            timestamp,
+                            &hit,
+                            source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            spells.as_deref(),
+                        ),
+                    );
+                    world.spell_energize_unresolved =
+                        world.spell_energize_unresolved.saturating_add(1);
+                    world.spell_energizes.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let (source, target) = (source.unwrap_or_default(), target.unwrap_or_default());
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                spell_energize_args(timestamp, &hit, &source, &target, spells.as_deref()),
+            );
+            world.spell_energizes.remove(index);
         }
 
         let mut index = 0;
@@ -727,6 +796,49 @@ fn spell_heal_args(
         ScriptValue::Number(f64::from(hit.absorbed)),
         present(hit.critical),
     ]);
+    args
+}
+
+/// The thirteen values `CombatLogEntry::PushEvent` sends for a shown energize
+/// (`UnitCombatLog_C.cpp:1241-1361`, `PushEvent` 0x40 at `:1365`, `SendEnergizeEvent` at
+/// `:2045`, `UnitCombatLogEnergize` at `:1831`, `HandleSpellLogEnergizeLog` at `:1974`,
+/// `SMSG_SPELL_ENERGIZE_LOG` `0x151` in `Net/Types.h`, `Player_C.cpp:3670`): 8 header values,
+/// then spellId/spellName/spellSchoolMask (3), then the 0x40 block divided amount, powerType (2).
+/// `UnitCombatLogEnergize` returns when amount is zero. `SendEnergizeEvent` divides amount by
+/// `Spell_C_GetPowerDisplayMod(powerType)` (`benilla_protocol::messages::power_display_scale`)
+/// with integer division. Missing spell row: nil name, school 0.
+fn spell_energize_args(
+    timestamp: f64,
+    hit: &WrathSpellEnergize,
+    source_name: &str,
+    target_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+) -> Vec<ScriptValue> {
+    let mut args = combat_log_header(
+        timestamp,
+        "SPELL_ENERGIZE",
+        hit.caster,
+        source_name,
+        hit.target,
+        target_name,
+    );
+    let spell_name = spells
+        .and_then(|spells| spells.catalog.get(hit.spell_id))
+        .map(|def| def.name.clone());
+    let spell_school = spells
+        .and_then(|spells| spells.catalog.school_mask(hit.spell_id))
+        .unwrap_or(0);
+    let divisor = benilla_protocol::messages::power_display_scale(hit.power_type);
+    let divided_amount = if divisor == 0 {
+        hit.amount
+    } else {
+        hit.amount / divisor
+    };
+    args.push(ScriptValue::Int(i64::from(hit.spell_id)));
+    args.push(spell_name.map_or(ScriptValue::Nil, ScriptValue::Str));
+    args.push(ScriptValue::Int(i64::from(spell_school)));
+    args.push(ScriptValue::Number(f64::from(divided_amount)));
+    args.push(ScriptValue::Number(f64::from(hit.power_type)));
     args
 }
 
@@ -2262,5 +2374,133 @@ mod tests {
         assert_eq!(args[12], ScriptValue::Number(3.0));
         assert_eq!(args[13], ScriptValue::Number(7.0));
         assert_eq!(args[14], ScriptValue::Nil, "critical 1.0 or nil");
+    }
+
+    fn spell_energize_hit() -> crate::wrath::WrathSpellEnergize {
+        crate::wrath::WrathSpellEnergize {
+            target: 0xF130_0000_0000_0022,
+            caster: 0x0000_0000_0000_0011,
+            spell_id: 29166,
+            power_type: 0,
+            amount: 120,
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 3,
+            received_at: 1234.5,
+        }
+    }
+
+    /// `SPELL_ENERGIZE` posts 13 values: 8 header + spellId/name/schoolMask + divided amount and
+    /// powerType (`PushEvent` 0x40, `UnitCombatLog_C.cpp:1241-1361`/`:1365`, `SendEnergizeEvent`
+    /// at `:2045`, `UnitCombatLogEnergize` at `:1831`, `HandleSpellLogEnergizeLog` at `:1974`,
+    /// `SMSG_SPELL_ENERGIZE_LOG` `0x151` in `Net/Types.h`, `Player_C.cpp:3670`). Includes a power
+    /// type whose display scale is not 1 (rage 1 => amount/10) and one with scale 1.
+    #[test]
+    fn spell_energize_event_has_the_thirteen_wrath_values() {
+        let mut scope = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        scope
+            .run(
+                r#"
+                Fired = nil
+                local listener = CreateFrame("Frame", "WrathSpellEnergizeTestListener")
+                listener:SetScript("OnEvent", function(_, event, ...)
+                    Fired = { event, ... }
+                end)
+                listener:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+                "#,
+            )
+            .unwrap();
+
+        let mut hit = spell_energize_hit();
+        hit.power_type = 1; // rage: power_display_scale 10
+        hit.amount = 120;
+        scope.fire_event(
+            "COMBAT_LOG_EVENT_UNFILTERED",
+            spell_energize_args(1234.5, &hit, "Firna", "Teammate", None),
+        );
+
+        let event: String = scope.eval("return Fired[1]").unwrap();
+        let timestamp: f64 = scope.eval("return Fired[2]").unwrap();
+        let subevent: String = scope.eval("return Fired[3]").unwrap();
+        let source_guid: String = scope.eval("return Fired[4]").unwrap();
+        let source_name: String = scope.eval("return Fired[5]").unwrap();
+        let source_flags: i64 = scope.eval("return Fired[6]").unwrap();
+        let dest_guid: String = scope.eval("return Fired[7]").unwrap();
+        let dest_name: String = scope.eval("return Fired[8]").unwrap();
+        let dest_flags: i64 = scope.eval("return Fired[9]").unwrap();
+        let spell_id: i64 = scope.eval("return Fired[10]").unwrap();
+        let spell_name: Option<String> = scope.eval("return Fired[11]").unwrap();
+        let spell_school: i64 = scope.eval("return Fired[12]").unwrap();
+        let amount: f64 = scope.eval("return Fired[13]").unwrap();
+        let power_type: f64 = scope.eval("return Fired[14]").unwrap();
+        let extra: Option<f64> = scope.eval("return Fired[15]").unwrap();
+
+        assert_eq!(event, "COMBAT_LOG_EVENT_UNFILTERED");
+        assert_eq!(timestamp, 1234.5);
+        assert_eq!(subevent, "SPELL_ENERGIZE");
+        assert_eq!(source_guid, "0x0000000000000011");
+        assert_eq!(source_name, "Firna");
+        assert_eq!(source_flags, 0x400);
+        assert_eq!(dest_guid, "0xF130000000000022");
+        assert_eq!(dest_name, "Teammate");
+        assert_eq!(dest_flags, 0x800);
+        assert_eq!(spell_id, 29166);
+        assert_eq!(spell_name, None, "no catalog row: name is nil");
+        assert_eq!(spell_school, 0, "no catalog row: school mask is 0");
+        assert_eq!(amount, 12.0, "rage amount is divided by 10");
+        assert_eq!(power_type, 1.0);
+        assert_eq!(extra, None, "exactly the thirteen SPELL_ENERGIZE values");
+
+        let mut mana = spell_energize_hit();
+        mana.power_type = 0; // mana: power_display_scale 1
+        mana.amount = 77;
+        let mana_args = spell_energize_args(10.0, &mana, "Firna", "Teammate", None);
+        assert_eq!(mana_args.len(), 13);
+        assert_eq!(mana_args[11], ScriptValue::Number(77.0), "scale 1 amount");
+        assert_eq!(mana_args[12], ScriptValue::Number(0.0));
+    }
+
+    /// `UnitCombatLogEnergize` (`UnitCombatLog_C.cpp:1831`) returns when amount is zero, so the
+    /// row is dropped before it reaches the feed.
+    #[test]
+    fn spell_energize_zero_row_is_dropped() {
+        let mut world = WrathWorldView::default();
+        world.session_epoch = 1;
+        world.world_generation = 2;
+        world.apply_spell_energize(
+            crate::wrath::WrathSpellEnergize {
+                amount: 0,
+                ..spell_energize_hit()
+            },
+            1,
+            2,
+            10.0,
+        );
+        assert!(
+            world.spell_energizes.is_empty(),
+            "a zero energize row produces no combat-log entry"
+        );
+        assert_eq!(
+            world.spell_energize_revision, 0,
+            "dropping a zero row must not advance the energize revision"
+        );
+    }
+
+    /// If the spell record is missing, `PushEvent` pushes nil name and 0 school
+    /// (`UnitCombatLog_C.cpp:1241-1361`).
+    #[test]
+    fn spell_energize_missing_catalog_posts_nil_name_and_zero_school() {
+        let hit = spell_energize_hit();
+        let args = spell_energize_args(10.0, &hit, "Firna", "Teammate", None);
+        assert_eq!(args.len(), 13);
+        assert_eq!(args[8], ScriptValue::Int(29166));
+        assert_eq!(args[9], ScriptValue::Nil, "missing record: nil name");
+        assert_eq!(
+            args[10],
+            ScriptValue::Int(0),
+            "missing record: zero school mask"
+        );
+        assert_eq!(args[11], ScriptValue::Number(120.0));
+        assert_eq!(args[12], ScriptValue::Number(0.0));
     }
 }
