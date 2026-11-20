@@ -16,6 +16,7 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(test)]
 use benilla_protocol::messages::{BAG_PLAYER_INVENTORY, SLOT_BAG_FIRST, SLOT_PACK_FIRST};
 use benilla_protocol::ObjectFields;
 use benilla_protocol_wrath::fields;
@@ -35,6 +36,7 @@ pub(crate) const WRATH_KEYRING_SLOTS: u8 = 32;
 /// The 3.3.5 player-array bases; donor projections use their own bands.
 pub(crate) const WRATH_BANK_SLOT_FIRST: u8 = 39;
 pub(crate) const WRATH_BANK_BAG_SLOT_FIRST: u8 = 67;
+#[cfg(test)]
 pub(crate) const WRATH_BUYBACK_SLOT_FIRST: u8 = 74;
 pub(crate) const WRATH_KEYRING_SLOT_FIRST: u8 = 86;
 
@@ -75,14 +77,6 @@ impl WrathFieldWindow {
         Self { values, delivered }
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.values.len()
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.values.is_empty()
-    }
-
     pub(crate) fn is_delivered(&self, index: u16) -> bool {
         let index = usize::from(index);
         index < self.values.len()
@@ -110,11 +104,6 @@ impl WrathFieldWindow {
         let low = self.get(lo)?;
         let high = self.get(lo.checked_add(1)?)?;
         Some(u64::from(low) | (u64::from(high) << 32))
-    }
-
-    /// The `PLAYER_WINDOW_END` window a Wrath player digest carries.
-    pub(crate) fn player(values: Vec<u32>, delivered: Vec<u64>) -> Option<Self> {
-        (values.len() >= usize::from(PLAYER_WINDOW_END)).then(|| Self::new(values, delivered))
     }
 
     /// Build a window from a reducer object's `field`/`field_delivered` pair.
@@ -174,6 +163,7 @@ impl InventoryAddr {
     /// The 3.3.5 wire `(bag byte, slot)` for a command naming this player-array slot.
     /// Bank bags move as `CMSG_*_BANK_ITEM` with the bag byte 67..=73; the bag item itself is
     /// addressed through the player inventory (`255`) at the same slot.
+    #[cfg(test)]
     pub(crate) fn to_wire(self) -> (u8, u8) {
         match self {
             Self::Equipment(i) => (BAG_PLAYER_INVENTORY, i),
@@ -187,6 +177,7 @@ impl InventoryAddr {
     }
 
     /// The container id a bank bag's *contents* are addressed by (`CMSG_*` bag byte).
+    #[cfg(test)]
     pub(crate) fn as_bag_byte(self) -> Option<u8> {
         match self {
             Self::BagSlot(i) => Some(SLOT_BAG_FIRST + i),
@@ -196,6 +187,7 @@ impl InventoryAddr {
     }
 
     /// The Lua bag id for a bag slot (1..=4 equipped, 5..=11 bank bags).
+    #[cfg(test)]
     pub(crate) fn lua_bag_id(self) -> Option<i64> {
         match self {
             Self::BagSlot(i) => Some(i64::from(i) + 1),
@@ -208,17 +200,6 @@ impl InventoryAddr {
         matches!(self, Self::Bank(_) | Self::BankBag(_))
     }
 
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Equipment(_) => "equipment",
-            Self::BagSlot(_) => "bag",
-            Self::Backpack(_) => "backpack",
-            Self::Bank(_) => "bank",
-            Self::BankBag(_) => "bank bag",
-            Self::Buyback(_) => "buyback",
-            Self::Keyring(_) => "keyring",
-        }
-    }
 }
 
 /// Every address the owner tracks, in player-array order.
@@ -252,12 +233,6 @@ pub(crate) struct InventoryChanges {
     pub scope: (u64, u64),
 }
 
-impl InventoryChanges {
-    pub(crate) fn is_empty(&self) -> bool {
-        self.slots.is_empty() && self.bank_bags_purchased.is_none()
-    }
-}
-
 /// The authoritative app-side typed inventory for the active player.
 ///
 /// The map's value is the last delivered guid: `Some(0)` is an explicit clear, a missing key is
@@ -270,6 +245,7 @@ pub(crate) struct WrathInventory {
 }
 
 impl WrathInventory {
+    #[cfg(test)]
     pub(crate) fn scope(&self) -> (u64, u64) {
         self.scope
     }
@@ -336,6 +312,7 @@ impl WrathInventory {
         self.slots.get(&addr).copied()
     }
 
+    #[cfg(test)]
     pub(crate) fn bank_bags_purchased(&self) -> Option<u8> {
         self.bank_bags_purchased
     }
@@ -352,9 +329,6 @@ impl WrathInventory {
             .flatten()
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (InventoryAddr, Option<u64>)> + '_ {
-        self.slots.iter().map(|(&addr, &value)| (addr, value))
-    }
 }
 
 /// The donor projection's capacity, or the Wrath owner's when the selected client is Wrath.
@@ -378,14 +352,6 @@ impl<'a> PlayerInventory<'a> {
         }
     }
 
-    /// The donor descriptor, for callers that still need a 1.12-only field.
-    pub(crate) fn store(&self) -> &'a ObjectFields {
-        self.store
-    }
-
-    pub(crate) fn wrath(&self) -> Option<&'a WrathInventory> {
-        self.wrath
-    }
 
     /// The typed value when the owner observed the address. An observed clear (`Some(0)`) is a
     /// value, not a miss: it must not fall through to the donor projection, which could still
@@ -422,12 +388,6 @@ impl<'a> PlayerInventory<'a> {
     pub(crate) fn bank_bag(&self, i: u8) -> u64 {
         self.typed(InventoryAddr::BankBag(i))
             .or_else(|| self.store.player_bank_bag_slot(i))
-            .unwrap_or(0)
-    }
-
-    pub(crate) fn buyback(&self, i: u8) -> u64 {
-        self.typed(InventoryAddr::Buyback(i))
-            .or_else(|| self.store.player_buyback_slot(i))
             .unwrap_or(0)
     }
 
@@ -481,12 +441,6 @@ impl<'a> PlayerInventory<'a> {
         }
     }
 
-    pub(crate) fn bank_bags_purchased(&self) -> u8 {
-        self.wrath
-            .and_then(WrathInventory::bank_bags_purchased)
-            .or_else(|| self.store.player_bank_bag_slots_purchased())
-            .unwrap_or(0)
-    }
 }
 
 #[cfg(test)]
