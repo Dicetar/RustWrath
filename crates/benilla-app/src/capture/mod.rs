@@ -190,6 +190,9 @@ pub(crate) struct FxViewRequest {
     pub(crate) go_type: u32,
     /// `WOW_FX_SCALE`: the unit lane's wire scale.
     pub(crate) scale: f32,
+    /// `WOW_FX_MOUNT`: the unit lane's `UNIT_FIELD_MOUNTDISPLAYID`, seating the subject on the
+    /// mount child the live unit path builds for that `CreatureDisplayInfo` id.
+    pub(crate) mount: Option<u32>,
     pub(crate) age: f32,
     pub(crate) az_deg: f32,
     pub(crate) el_deg: f32,
@@ -462,6 +465,9 @@ impl Plugin for CapturePlugin {
                     go_state: knob("WOW_FX_GO_STATE", 1.0) as u32,
                     go_type: knob("WOW_FX_GO_TYPE", 6.0) as u32,
                     scale: knob("WOW_FX_SCALE", 1.0),
+                    mount: std::env::var("WOW_FX_MOUNT")
+                        .ok()
+                        .and_then(|v| v.trim().parse().ok()),
                     age: knob("WOW_FX_AGE", 1.0),
                     az_deg: knob("WOW_FX_AZ", 0.0),
                     el_deg: knob("WOW_FX_EL", 10.0),

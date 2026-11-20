@@ -64,6 +64,16 @@ pub(crate) fn drive_fx_view(
                 pos.y -= hit.distance;
             }
             pos.y += req.up;
+            let mut fields = vec![
+                (22, 100), // UNIT_FIELD_HEALTH
+                (28, 100), // UNIT_FIELD_MAXHEALTH
+                (34, 60),  // UNIT_FIELD_LEVEL
+                (35, 35),  // UNIT_FIELD_FACTIONTEMPLATE: friendly, no combat pose
+            ];
+            // `WOW_FX_MOUNT`: seated on the mount child, as a mounted streamed unit is.
+            if let Some(mount) = req.mount {
+                fields.push((benilla_protocol::field::FIELD_UNIT_MOUNTDISPLAYID, mount));
+            }
             return commands
                 .spawn((
                     crate::net::Guid(FXVIEW_UNIT_GUID),
@@ -73,12 +83,7 @@ pub(crate) fn drive_fx_view(
                         scale: req.scale,
                     },
                     crate::net::ObjectStore(benilla_protocol::messages::ObjectFields::from_pairs(
-                        &[
-                            (22, 100), // UNIT_FIELD_HEALTH
-                            (28, 100), // UNIT_FIELD_MAXHEALTH
-                            (34, 60),  // UNIT_FIELD_LEVEL
-                            (35, 35),  // UNIT_FIELD_FACTIONTEMPLATE: friendly, no combat pose
-                        ],
+                        &fields,
                     )),
                     Transform::from_translation(pos)
                         .with_rotation(Quat::from_rotation_y(req.yaw_deg.to_radians())),
