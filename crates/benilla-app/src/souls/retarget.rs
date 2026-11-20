@@ -1440,6 +1440,7 @@ pub(super) struct Retarget {
     told_missing: bool,
     /// The rig the map was built for, its bone count, and the map (or why there is none).
     map: Option<(Entity, usize, Result<RigMap, String>)>,
+    model_id: Option<AssetId<bevy::animation::graph::AnimationGraph>>,
     playing: Option<ClipKey>,
     /// The pose blended from at the last clip change, per bone; `None` blends from stock.
     from: Option<Vec<Transform>>,
@@ -1463,7 +1464,7 @@ pub(super) struct Retarget {
     /// ceremony holds the arms, 0 to 1.
     guard_upper: f32,
     ceremony: [f32; 2],
-    stance_styles: std::collections::HashMap<(u8, u8), [f32; 5]>,
+    stance: StanceCache,
     style_weight: f32,
     unstyled: Option<Vec<Transform>>,
 }
@@ -1694,43 +1695,137 @@ fn map_rig(
     )
 }
 
+// M2 bind locals have identity rotations. Project onto the same parent-space axes
+// used to apply the correction; swing on other axes is not an Euler angle contribution.
 fn stance_angles(q: Quat) -> Vec2 {
-    let (x, _, z) = q.to_euler(EulerRot::XYZ);
-    Vec2::new(x, z)
+    let q = if q.w < 0. { -q } else { q };
+    Vec2::new(2. * q.x.atan2(q.w), 2. * q.z.atan2(q.w))
 }
 
-/// Use the resident profile's stock data: the same race/sex can have different bind and
-/// animation channels in base and HD. Sample the primary variation of each cycle uniformly.
-fn stock_stance(map: &RigMap, anims: &benilla_assets::ModelAnimations) -> [f32; 5] {
-    let mut mean = [0.; 5];
-    let mut count = 0;
-    for id in [0, 4, 5] {
-        let Some((clip, pose)) = anims.find(id).and_then(|clip| {
-            let node = anims.pose.node(clip.node)?;
-            Some((clip, anims.pose.clips.get(node.clip as usize)?))
-        }) else {
-            continue;
-        };
+fn stance_offset(stock: [f32; 5], er: [f32; 5]) -> ([f32; 5], bool) {
+    let mut clamped = false;
+    let offset = std::array::from_fn(|i| {
+        let limit = if i < 2 { 12_f32 } else { 15_f32 }.to_radians();
+        let delta = stock[i] - er[i];
+        let bounded = delta.clamp(-limit, limit);
+        clamped |= bounded != delta;
+        bounded
+    });
+    (offset, clamped)
+}
+
+type StanceAngles = [f32; 5];
+
+fn measure_stance(
+    map: &RigMap,
+    parents: &[i16],
+    binds: &[Vec3],
+    clips: &ErClips,
+    mut stock_at: impl FnMut(u16, f32, &mut [Transform]) -> bool,
+) -> Option<(StanceAngles, StanceAngles)> {
+    let mut stock = [0.; 5];
+    let mut er = [0.; 5];
+    let mut work: Vec<_> = binds
+        .iter()
+        .copied()
+        .map(Transform::from_translation)
+        .collect();
+    // Common forward gaits are the reference for both local weapon banks and remote peers.
+    for (id, gait) in [(0, IDLE), (4, WALK), (5, RUN)] {
+        let clip = clips.named(gait)?;
         for frame in 0..32 {
-            let time = clip.duration * frame as f32 / 32.;
-            let row = map.measure_stance(|bone| {
-                pose.bones
-                    .iter()
-                    .find(|b| usize::from(b.bone) == bone)
-                    .and_then(|b| b.rotation.sample(time))
-                    .map_or(Vec2::ZERO, stance_angles)
-            });
-            for (value, sample) in mean.iter_mut().zip(row) {
-                *value += sample;
+            let phase = frame as f32 / 32.;
+            if !stock_at(id, phase, &mut work) {
+                return None;
             }
-            count += 1;
+            let a = map.measure_stance(|b| stance_angles(work[b].rotation));
+            map.pose(
+                &clips.sample(clip, phase * (clip.frames - 1) as f32, true),
+                parents,
+                binds,
+                &mut work,
+                true,
+            );
+            let b = map.measure_stance(|b| stance_angles(work[b].rotation));
+            for i in 0..5 {
+                stock[i] += a[i] / 96.;
+                er[i] += b[i] / 96.;
+            }
         }
     }
-    if count == 0 {
-        mean
-    } else {
-        mean.map(|angle| angle / count as f32)
+    Some((stock, er))
+}
+
+type StanceKey = (u8, u8, AssetId<bevy::animation::graph::AnimationGraph>);
+
+#[derive(Default)]
+struct StanceCache {
+    key: Option<StanceKey>,
+    offset: Option<StanceAngles>,
+}
+
+impl StanceCache {
+    fn correction(
+        &mut self,
+        identity: Option<&crate::net::ObjectStore>,
+        model: Option<&benilla_assets::ModelAnimations>,
+        map: &RigMap,
+        rig: &RigPose,
+        clips: Option<&ErClips>,
+    ) -> Option<StanceAngles> {
+        let fields = &identity?.0;
+        let (model, clips) = (model?, clips?);
+        let key = (fields.unit_race()?, fields.unit_gender()?, model.graph.id());
+        self.get_or_measure(key, || {
+            measure_stance(map, &rig.parents, rig.binds(), clips, |id, phase, work| {
+                let Some((clip, pose)) = model.find(id).and_then(|clip| {
+                    let node = model.pose.node(clip.node)?;
+                    Some((clip, model.pose.clips.get(node.clip as usize)?))
+                }) else {
+                    return false;
+                };
+                for (out, &bind) in work.iter_mut().zip(rig.binds()) {
+                    *out = Transform::from_translation(bind);
+                }
+                let time = phase * clip.duration;
+                for bone in &pose.bones {
+                    let out = &mut work[usize::from(bone.bone)];
+                    out.translation += bone.translation.sample(time).unwrap_or(Vec3::ZERO);
+                    out.rotation = bone.rotation.sample(time).unwrap_or(Quat::IDENTITY);
+                    out.scale = bone.scale.sample(time).unwrap_or(Vec3::ONE);
+                }
+                true
+            })
+        })
     }
+
+    fn get_or_measure(
+        &mut self,
+        key: StanceKey,
+        measure: impl FnOnce() -> Option<(StanceAngles, StanceAngles)>,
+    ) -> Option<StanceAngles> {
+        if self.key != Some(key) {
+            self.key = Some(key);
+            self.offset = measure().map(|(stock, er)| {
+                let (offset, clamped) = stance_offset(stock, er);
+                if clamped {
+                    warn!("souls stance: clamped stock correction for {key:?}; stock={stock:?} ER={er:?}");
+                }
+                offset
+            });
+        }
+        self.offset
+    }
+}
+
+fn stance_fade(remaining: f32) -> f32 {
+    smoothstep((remaining / (UPPER_BLEND_SECS * CLIP_FPS)).clamp(0., 1.))
+}
+
+fn stance_weight(weight: &mut f32, dt: f32, gait: bool, attack: f32) -> f32 {
+    let step = dt / UPPER_BLEND_SECS;
+    *weight = (*weight + if gait { step } else { -step }).clamp(0., 1.);
+    smoothstep(*weight) * attack
 }
 
 /// The stock evaluator can key one channel while the others still hold a post-pass write.
@@ -1864,6 +1959,11 @@ pub(super) fn drive_retarget(
 
     // The map, rebuilt for a new rig.
     let bones = rig.locals.len();
+    let model_id = anims.map(|(_, model)| model.graph.id());
+    if r.model_id != model_id {
+        r.map = None;
+        r.model_id = model_id;
+    }
     if let (Some(rest), true) = (
         r.rest.as_ref(),
         r.map
@@ -1889,7 +1989,7 @@ pub(super) fn drive_retarget(
         r.carry = None;
         r.guard_upper = 0.0;
         r.ceremony = [0.0; 2];
-        r.stance_styles.clear();
+        r.stance = StanceCache::default();
         r.unstyled = None;
         r.style_weight = 0.;
     }
@@ -1914,8 +2014,7 @@ pub(super) fn drive_retarget(
                     .map_or(0., |first| {
                         baked_frame(kit, first) - baked_frame(kit, frame)
                     });
-                attack_style =
-                    smoothstep((remaining / (UPPER_BLEND_SECS * CLIP_FPS)).clamp(0., 1.));
+                attack_style = stance_fade(remaining);
             }
             // A running action plays its own clip, or the stock one when it has none here (or the
             // switch is off); locomotion never covers it.
@@ -2066,17 +2165,18 @@ pub(super) fn drive_retarget(
             (value - step).max(0.0)
         }
     };
-    let style = store
-        .and_then(|s| s.0.unit_race().zip(s.0.unit_gender()))
-        .zip(anims)
-        .filter(|_| features.sex_stance)
-        .map(|(key, (_, model))| {
-            *r.stance_styles
-                .entry(key)
-                .or_insert_with(|| stock_stance(map, model))
-        });
-    let style_on = features.sex_stance && in_loco && !airborne;
-    r.style_weight = approach(r.style_weight, style_on);
+    let style = features
+        .sex_stance
+        .then(|| {
+            r.stance.correction(
+                store,
+                anims.map(|(_, model)| model),
+                map,
+                &rig,
+                r.clips.as_ref(),
+            )
+        })
+        .flatten();
     r.guard_upper = approach(r.guard_upper, in_loco && souls.guarding && moving);
     // The model loader assigns mask groups 0/1 to bones outside the right/left arm.
     // The stock driver can finish one arm's ceremony while the other is still playing.
@@ -2137,7 +2237,12 @@ pub(super) fn drive_retarget(
         }
     }
 
-    let weight = smoothstep(r.style_weight) * attack_style;
+    let weight = stance_weight(
+        &mut r.style_weight,
+        dt,
+        style.is_some() && in_loco && !airborne,
+        attack_style,
+    );
     let unstyled = style.filter(|_| weight > 0.).map(|style| {
         let unstyled = work.clone();
         map.apply_stance(&mut work, style, weight);
@@ -2300,6 +2405,11 @@ struct RemotePose {
     fade_at: f32,
     gait_phase: f32,
     last_pos: Vec3,
+    model_id: Option<AssetId<bevy::animation::graph::AnimationGraph>>,
+    bake_stamp: Option<SystemTime>,
+    stance: StanceCache,
+    style_weight: f32,
+    unstyled: Option<Vec<Transform>>,
 }
 
 #[derive(Resource, Default)]
@@ -2330,6 +2440,7 @@ fn drive_remote_retarget(
             Option<&AnimDriver>,
             Option<&benilla_assets::ModelAnimations>,
             Option<&crate::net::RemoteMotion>,
+            Option<&crate::net::ObjectStore>,
         ),
         Without<SelfPlayer>,
     >,
@@ -2344,7 +2455,7 @@ fn drive_remote_retarget(
     let kit_now = current_kit(&kit, &profiles);
     // Evict despawned bodies before admitting new ones.
     poses.0.retain(|entity, _| bodies.contains(*entity));
-    for (entity, rig, twist, attach, hands, action, peer, at, _, anims, _) in &bodies {
+    for (entity, rig, twist, attach, hands, action, peer, at, _, anims, _, _) in &bodies {
         if poses.0.len() >= MAX_REMOTE_BODIES {
             break;
         }
@@ -2377,11 +2488,16 @@ fn drive_remote_retarget(
                 fade_at: now,
                 gait_phase: 0.0,
                 last_pos: at.translation(),
+                model_id: anims.map(|a| a.graph.id()),
+                bake_stamp: retarget.stamp,
+                stance: StanceCache::default(),
+                style_weight: 0.,
+                unstyled: None,
             },
         );
     }
     poses.0.retain(|entity, state| {
-        let Ok((_, mut rig, twist, attach, hands, action, peer, at, driver, anims, motion)) =
+        let Ok((_, mut rig, twist, attach, hands, action, peer, at, driver, anims, motion, fields)) =
             bodies.get_mut(*entity)
         else {
             return false;
@@ -2390,7 +2506,10 @@ fn drive_remote_retarget(
         if bones > MAX_REMOTE_BONES {
             return false;
         }
-        if bones != state.stock.len() {
+        let model_id = anims.map(|a| a.graph.id());
+        if bones != state.stock.len() || state.model_id != model_id || state.bake_stamp != retarget.stamp {
+            state.model_id = model_id;
+            state.bake_stamp = retarget.stamp;
             state.map = rest.map_or_else(
                 || Err("no rest pose".into()),
                 |rest| map_rig(&rig, twist, attach, hands, anims, rest),
@@ -2400,6 +2519,9 @@ fn drive_remote_retarget(
             state.written = None;
             state.playing = None;
             state.lower.clear();
+            state.stance = StanceCache::default();
+            state.unstyled = None;
+            state.style_weight = 0.;
             state.fade_at = now;
         }
         let Ok(map) = &state.map else {
@@ -2431,8 +2553,15 @@ fn drive_remote_retarget(
         state.was_airborne = airborne;
         let mut pose_airborne = airborne;
         let mut carried = None;
+        let mut attack_style = 1.;
         let mut target = running.filter(|_| actions_on).and_then(|a| {
             let frame = (now - a.started).max(0.0) * CLIP_FPS;
+            attack_style = kit_now.and_then(|kit| {
+                kit.actions.iter().filter(|row| row.source == a.source)
+                    .flat_map(|row| row.hits.iter())
+                    .map(|hit| hit.from).min()
+                    .map(|first| stance_fade(baked_frame(kit, first) - frame))
+            }).unwrap_or(0.);
             // SWING and movement arrive separately. Latch a witnessed touchdown, while a
             // first grounded snapshot can still be corrected by a late jump flag.
             if state.action_started != Some(a.started) {
@@ -2502,7 +2631,8 @@ fn drive_remote_retarget(
         }
         let playing = target.map(|(key, ..)| key);
         if playing != state.playing {
-            state.from = state.written.clone().unwrap_or_else(|| state.stock.clone());
+            state.from = state.unstyled.take().or_else(|| state.written.clone())
+                .unwrap_or_else(|| state.stock.clone());
             state.fade_at = now;
             state.playing = playing;
         }
@@ -2542,9 +2672,21 @@ fn drive_remote_retarget(
             blend_upper(&mut work, &upper, map, &state.lower, weight);
         }
         let blend = smoothstep(((now - state.fade_at) / fade_len).clamp(0.0, 1.0));
+        let style = config.features.sex_stance.then(|| state.stance.correction(fields, anims, map, &rig, clips)).flatten();
+        let weight = stance_weight(&mut state.style_weight, dt,
+            style.is_some() && matches!(playing, Some(RemoteClip::Gait(_))) && !pose_airborne, attack_style);
         let mut written = rig.locals.clone();
+        let mut unstyled = style.filter(|_| weight > 0.).map(|row| {
+            let unstyled = work.clone();
+            map.apply_stance(&mut work, row, weight);
+            unstyled
+        });
         for b in map.bones() {
             let from = state.from[b];
+            if let Some(out) = &mut unstyled {
+                out[b].translation = from.translation.lerp(out[b].translation, blend);
+                out[b].rotation = from.rotation.slerp(out[b].rotation, blend).normalize();
+            }
             let out = Transform {
                 translation: from.translation.lerp(work[b].translation, blend),
                 rotation: from.rotation.slerp(work[b].rotation, blend).normalize(),
@@ -2570,6 +2712,7 @@ fn drive_remote_retarget(
         ) {
             rig.pose_dirty = true;
         }
+        state.unstyled = unstyled;
         state.written = Some(written);
         target.is_some() || blend < 1.0
     });
@@ -2641,6 +2784,34 @@ mod tests {
         "Draenei",
     ];
 
+    #[test]
+    fn stance_correction_only_applies_the_gap() {
+        let er = [0.25, -0.1, 0.43, 0., -0.32];
+        assert_eq!(stance_offset(er, er), ([0.; 5], false));
+        let correction = [0.1, -0.1, 0.08, 0., -0.15];
+        let stock = std::array::from_fn(|i| er[i] + correction[i]);
+        let (actual, clamped) = stance_offset(stock, er);
+        assert!(!clamped);
+        for (actual, expected) in actual.into_iter().zip(correction) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn remote_and_local_stance_caches_agree() {
+        let key = (1, 1, AssetId::default());
+        let mut local = StanceCache::default();
+        let mut remote = StanceCache::default();
+        let sample = || Some(([0.1, 0., -0.1, 0., 0.22], [0.05, 0., 0., 0., 0.1]));
+        let local_offset = local.get_or_measure(key, sample);
+        assert!(local_offset.is_some());
+        assert_eq!(remote.get_or_measure(key, sample), local_offset);
+        assert_eq!(
+            remote.get_or_measure(key, || panic!("cache miss")),
+            local_offset
+        );
+    }
+
     /// Mean signed stock rotations relative to bind: pelvis pitch/roll, bilateral
     /// outward thigh, downward clavicle and outward upper-arm roll, in degrees.
     #[test]
@@ -2650,7 +2821,8 @@ mod tests {
         use std::path::{Path, PathBuf};
         let data = PathBuf::from(std::env::var_os("WOW_DATA").unwrap());
         let bake = std::fs::read(std::env::var_os("ERAN_FILE").unwrap()).unwrap();
-        let rest = ErClips::parse(&bake).unwrap().rest().unwrap();
+        let clips = ErClips::parse(&bake).unwrap();
+        let rest = clips.rest().unwrap();
         let manifests = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/profiles");
         for profile in ["base", "wm-hd"] {
             let chain = benilla_assets::open_profile_chain(
@@ -2660,8 +2832,7 @@ mod tests {
             )
             .unwrap();
             for race in PLAYER_RACES {
-                let mut means = [[0.; 5]; 2];
-                for (mean, sex) in means.iter_mut().zip(["Male", "Female"]) {
+                for sex in ["Male", "Female"] {
                     let path = format!(r"Character\{race}\{sex}\{race}{sex}");
                     let bytes = chain.read(&format!("{path}.m2")).unwrap();
                     let skel = benilla_formats::parse_m2_skeleton(&bytes).unwrap();
@@ -2709,32 +2880,19 @@ mod tests {
                             continue;
                         }
                     };
-                    for id in [0, 4, 5] {
-                        let anim = anims.iter().find(|a| a.anim_id == id).unwrap();
-                        for frame in 0..32 {
-                            let locals =
-                                stock_pose(&binds, anim, anim.duration * frame as f32 / 32.);
-                            let rot = |bone: usize| {
-                                let (x, _, z) = locals[bone].rotation.to_euler(EulerRot::XYZ);
-                                (x.to_degrees(), z.to_degrees())
+                    let (stock, er) =
+                        measure_stance(&map, &parents, &binds, &clips, |id, phase, work| {
+                            let Some(anim) = anims.iter().find(|a| a.anim_id == id) else {
+                                return false;
                             };
-                            let (pitch, roll) = rot(map.pelvis);
-                            let thigh =
-                                (rot(map.legs[0].bones[0]).1 - rot(map.legs[1].bones[0]).1) * 0.5;
-                            let shoulder = (map.clavicles[1].map_or(0., |b| rot(b).1)
-                                - map.clavicles[0].map_or(0., |b| rot(b).1))
-                                * 0.5;
-                            let arm = (rot(map.upper_arms[0]).1 - rot(map.upper_arms[1]).1) * 0.5;
-                            for (sum, value) in
-                                mean.iter_mut().zip([pitch, roll, thigh, shoulder, arm])
-                            {
-                                *sum += value / 96.;
-                            }
-                        }
-                    }
+                            work.copy_from_slice(&stock_pose(&binds, anim, anim.duration * phase));
+                            true
+                        })
+                        .unwrap();
+                    let (offset, clamped) = stance_offset(stock, er);
+                    println!("STANCE {profile} {race}{sex} stock={:.2?} er={:.2?} offset={:.2?} clamp={clamped}",
+                        stock.map(f32::to_degrees), er.map(f32::to_degrees), offset.map(f32::to_degrees));
                 }
-                let delta = std::array::from_fn::<_, 5, _>(|i| means[1][i] - means[0][i]);
-                println!("STANCE {profile} {race} {delta:.3?}");
             }
         }
     }

@@ -34,7 +34,7 @@
 //! enemy_strikes = true # judge the server's telegraphed enemy strikes (dodge, guard, parry)
 //! retarget = true     # kit actions pose the player's rig from the Elden Ring clip each row was
 //!                     # read from (benilla-config/combat/player_anims.bin)
-//! sex_stance = true   # add the current race and sex's measured stock posture to ER gaits
+//! sex_stance = false  # correct ER gaits toward the current rig's stock posture (opt in)
 //! sheathed_stock_gait = false # use stock walk/run when the weapon is sheathed
 //! retarget_locomotion = true # idle, guard, walk, run, sprint, crouch and airborne play the
 //!                     # Elden Ring locomotion clips too
@@ -147,7 +147,7 @@ impl Default for SoulsFeatures {
             enemy_strikes: true,
             retarget: true,
             retarget_locomotion: true,
-            sex_stance: true,
+            sex_stance: false,
             sheathed_stock_gait: false,
             er_controls: true,
             free_camera: true,
