@@ -1,10 +1,10 @@
 # WMO doorway colour parity
 
-Status: ready to merge
+Status: pending CI
 Owner: Claude Opus 5.5
 Branch: jr/wmo-doorway-colour
 Issue: none
-Next: integrator reviews and lands after CI
+Next: Read CI run 44654700061 to completion; land only after green
 
 ## Reference
 
@@ -14,4 +14,4 @@ Pinned reference `D:/Projects/wow/reference/wowdecomp-reference` at `e67b6ffef23
 
 `benilla-wmo::Batch` now retains MOBA `vertex_start`/`vertex_end`. `benilla-formats` applies the Wrath load-time conversion to the MOCV split after the last transparency batch, gated by `MOHD.flags & 0x8`; the existing render-time portal attenuation remains a distinct pass. Two focused unit cases cover the conversion and empty transparency-batch boundary.
 
-`git diff --check` passes. No Cargo, CI, client or server run yet; gameplay behavior is not proven. CI run id/result: pending.
+`git diff --check` passes. CI run `44623297097` failed Linux rustfmt; the source formatting correction was pushed as `76249396`. Corrective CI run `44654700061` has passed Linux rustfmt so far and remains in progress. No local Cargo, client or server run; gameplay behavior is not proven.
