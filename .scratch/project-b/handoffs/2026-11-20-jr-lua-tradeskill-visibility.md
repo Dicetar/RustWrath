@@ -1,10 +1,10 @@
 # Lua tradeskill linking and UI visibility
 
-Status: pending CI
+Status: landed
 Owner: Claude Opus 5.5
 Branch: jr/lua-tradeskill-visibility
 Issue: none
-Next: Read CI run 44654724323 to completion; land only after green
+Next: none; landed in main
 
 Reference: Wrath 3.3.5a build 12340 decompilation at e67b6ffef23655dc7da061cb2d36b7963f6ef71a.
 
@@ -29,7 +29,7 @@ Verification:
 - `git diff --check`: passed before handoff creation.
 - Local Cargo/client/server: not run, per owner instruction.
 - Initial CI run `44652834737`: Linux rustfmt failed; Linux live-code-check passed; Windows check passed while test-build was still running. Formatting correction was pushed as `5a63bd1e`.
-- Corrective CI run `44654724323`: Linux rustfmt passed and Linux clippy was still running at last check; Windows check/test-build was still running. No landing until all required checks are green.
+- Landed through `d8d4ee20`; `89f5dad4` removed the later nil stubs that overwrote the new host-backed natives. The original focused test read nil as `i64`; the corrected test uses an optional integer shape. Without host metadata, GetTradeSkillListLink remains explicitly unsupported because the own-list `|Htrade:` bitmap is not encoded.
 
 Residual risk: no local compile or live FrameXML acceptance was performed. The owner should wire the
 future network trade-list producer to `set_trade_skill_link` when that packet path is implemented.

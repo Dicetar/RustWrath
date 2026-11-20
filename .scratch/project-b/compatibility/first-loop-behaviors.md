@@ -115,6 +115,17 @@ Paths below are relative to `D:/Projects/project-b-client` unless an absolute se
 | D05 | Accept/decline resurrection | Partial, e0be0d95 adds offer/answer/self-res/healer paths; SMSG_RESURRECT_FAILED remains silent | N actual request, answer and resource state; R stale/declined/invalid resurrector respected | T no obsolete request acceptance; P server life state restored |
 | D06 | Refuse incompatible combat/item actions while dead/ghost | Partial local donor owners; complete Wrath refusal path Unknown | N allowed ghost actions; R attack/cast/loot/equip restrictions follow server and selected UI | T override/transfer clears pending actions; P no deferred invalid commands after revival |
 
+## Death edge cases (2026-11-23)
+
+Instance-bound corpse and pet death/revive edges added for issue 27 acceptance 5. Source owners
+are the existing app owners; every behavior here is source-only and **live-only** for proof. No
+live client/server run, invented offset or visible result is claimed.
+
+| ID | Behavior | Source assessment | N and R cases | T and P cases / dependencies |
+|---|---|---|---|---|
+| D07 | Instance-bound corpse: the corpse map differs from the display map | Partial — source owner OpenCode (`death/net.rs::on_corpse_query` / `corpse_query`, `death/mod.rs` corpse-run range gate); proof live-only | N `on_corpse_query` reads the `MSG_CORPSE_QUERY` answer's `found`, `display_map`, `position`, `corpse_map` and `corpse_query` latches a `CorpsePoint` with those fields; the `death/mod.rs` range gate compares `display_map == corpse_map` and fires `CORPSE_IN_INSTANCE` at a dungeon entrance when they differ | R `on_corpse_not_in_instance` raises `ERR_CORPSE_IS_NOT_IN_INSTANCE` on the instance entrance's refusal (`SMSG_AREA_TRIGGER_NO_CORPSE`) | T `display_map` routes to the entrance while `corpse_map` is kept unadjusted for the marker | P live-only: accepting the marker/route needs a live ghost whose corpse lies on a different map; static source only |
+| D08 | Pet death and revive | Partial for dead-pet gating/refusals, Missing for the Revive Pet command — source owner OpenCode (`ui_pet/usable.rs::actions_usable`, `ui_action/cast_fail.rs`, `spell/cast_target.rs`); proof live-only | N `actions_usable` reads the pet's stun/confuse/flee flags and never its health (`ui_pet/usable_tests.rs::a_dead_pet_is_still_usable`); dead-pet assist leg in `spell/cast_target.rs` | R `ERR_PET_SPELL_DEAD` / `ERR_PET_SPELL_TARGETS_DEAD` in `ui_action/cast_fail.rs`; `SMSG_PET_TAME_FAILURE` decoded as `PetTameFailure` (`events.rs`) is the only decoded refusal | T no `CMSG_STABLE_REVIVE_PET` verb (`messages/stable.rs`) and no PetRevive `ClientCommand` in `ui_pet` — the revive command is not wired | P live-only: accepting any dead-pet revive outcome needs a live client+server; no live proof |
+
 ## Logout, transfer and re-entry — issues 24/26/27 and operational gate
 
 | ID | Behavior | Source assessment | N and R cases | T and P cases / dependencies |
