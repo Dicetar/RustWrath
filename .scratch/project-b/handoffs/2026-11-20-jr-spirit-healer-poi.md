@@ -1,10 +1,10 @@
 # Spirit-healer minimap POI
 
-Status: ready to merge
+Status: blocked pending CI diagnosis
 Owner: Claude Opus 5.5
 Branch: jr/spirit-healer-poi
 Issue: none
-Next: Read CI for the pushed branch, then land after green
+Next: Obtain Linux clippy diagnostics for run 44654270369, fix the finding, and rerun CI
 
 Reference: Wrath 3.3.5a build 12340 decompilation at e67b6ffef23655dc7da061cb2d36b7963f6ef71a.
 `CGGameUI::SetDeathReleaseLocation` forwards a valid active-map release position to
@@ -23,7 +23,8 @@ Implemented:
 
 Verification:
 - `git diff --check`: passed.
-- Initial CI run `44652774628`: failed rustfmt and Linux/Windows compilation; source follow-up snapshots the release location before entering the VM callback and rustfmt-formats the changed Rust files. Corrective CI run pending.
+- Initial CI run `44652774628`: failed rustfmt and Linux/Windows compilation. Follow-up snapshots the release location before entering the VM callback and formats the changed Rust files.
+- Corrective CI run `44654270369`: Linux `fmt` passed, `clippy` failed, and test-build/test were skipped; Windows job was still running at last check. Public logs expose only exit code 101, not the clippy diagnostic. Branch is blocked; no merge.
 - Local Cargo/client/server: not run, per owner instruction.
 
 Residual risk: no live client gameplay acceptance was performed. The marker is sourced from the
