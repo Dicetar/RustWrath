@@ -927,7 +927,6 @@ pub(crate) enum DomainEvent {
     LoginProgress,
     RealmList,
     WorldAuthenticated,
-    Roster,
     RosterFailed,
     LoginQueued,
     LoginFailed,
@@ -1406,10 +1405,7 @@ pub(crate) struct UiDispatchToken {
     pub reload_generation: u64,
     pub button: UiButton,
     pub target: UiTarget,
-    pub consumed: bool,
     pub visible: Option<bool>,
-    pub clipped: bool,
-    pub handler_invoked: bool,
     /// Bounded capture-time hit and handler facts for this edge.
     pub witness: UiHitEvidence,
 }
@@ -1898,7 +1894,6 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
                 DomainEvent::LoginProgress
                 | DomainEvent::RealmList
                 | DomainEvent::WorldAuthenticated
-                | DomainEvent::Roster
                 | DomainEvent::RosterFailed
                 | DomainEvent::LoginQueued
                 | DomainEvent::LoginFailed
@@ -2070,10 +2065,6 @@ impl Source {
 
     pub(crate) fn update_packets_seen(&self) -> u64 {
         self.0.update_packets_seen.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn update_packets_sampled_out(&self) -> u64 {
-        self.0.update_packets_sampled_out.load(Ordering::Relaxed)
     }
 
     pub(crate) fn movement_coalesced(&self) -> u64 {
@@ -2361,10 +2352,7 @@ impl Source {
             reload_generation,
             button,
             target,
-            consumed,
             visible: witness.legacy_visible(),
-            clipped: witness.legacy_clipped(),
-            handler_invoked: witness.legacy_handler_invoked(),
             witness,
         };
         if let Ok(mut guard) = self.0.ui_dispatches.lock() {
@@ -2414,10 +2402,7 @@ impl Source {
             reload_generation,
             button,
             target,
-            consumed,
             visible,
-            clipped,
-            handler_invoked,
             witness,
         };
         if let Ok(mut guard) = self.0.ui_dispatches.lock() {
@@ -2490,7 +2475,7 @@ impl Source {
             .iter()
             .filter(|t| t.witness.edge == UiEdge::Release)
         {
-            let mut presses = eligible.iter().filter(|t| same_physical_click(*t, release));
+            let mut presses = eligible.iter().filter(|t| same_physical_click(t, release));
             if let (Some(press), None) = (presses.next(), presses.next()) {
                 paired_presses.push(press.id);
             }
@@ -2584,15 +2569,15 @@ struct EvidenceNote {
     #[serde(default)]
     synthetic: bool,
     /// Stable provenance label: `observed` or `recovered`.
-    #[serde(default = "default_evidence_note_source")]
+    #[serde(default = "EvidenceNote::default_evidence_note_source")]
     source: &'static str,
 }
 
-fn default_evidence_note_source() -> &'static str {
-    "observed"
-}
-
 impl EvidenceNote {
+    fn default_evidence_note_source() -> &'static str {
+        "observed"
+    }
+
     fn from_event(seq: u64, event: &Event) -> Self {
         Self {
             seq,
@@ -2648,15 +2633,17 @@ struct Incident {
     telemetry_gap: bool,
     /// Additive provenance for the incident's opening evidence: `observed`,
     /// `recovered_from_start_metadata`, or `unavailable`.
-    #[serde(default = "default_opening_note_source")]
+    #[serde(default = "Incident::default_opening_note_source")]
     opening_note_source: &'static str,
     /// Additive boolean form of `opening_note_source == "recovered_from_start_metadata"`.
     #[serde(default)]
     opening_recovered: bool,
 }
 
-fn default_opening_note_source() -> &'static str {
-    "unavailable"
+impl Incident {
+    fn default_opening_note_source() -> &'static str {
+        "unavailable"
+    }
 }
 
 /// The bounded evidence chain for one incident.
@@ -2671,7 +2658,6 @@ enum IncidentOutcome {
     LocalRefusal,
     WriteUnconfirmed,
     ServerReportedFailure,
-    JournalMismatch,
     AmbiguousServerOutcome,
     ObservedFailure,
     TelemetryGap,
@@ -2979,6 +2965,9 @@ pub(crate) struct InspectorSnapshot {
 /// Each field stores the originating sequence number alongside the bounded enum/numeric payload so
 /// the inspector and export can distinguish a milestone whose row is still in the ring from one
 /// preserved in bounded session state after ring eviction.
+type RetainedTransfer = (u64, Option<(u64, u64)>, Option<(u64, u64)>, Option<u32>, u64, u64);
+type RetainedReload = (u64, Option<u64>, Option<u64>, Option<u64>);
+
 #[derive(Clone, Copy, Debug, Default)]
 struct RetainedSessionState {
     login_milestone: Option<(u64, Option<u64>, LoginMilestone)>,
@@ -2986,15 +2975,8 @@ struct RetainedSessionState {
     highest_scope: Option<(u64, (u64, u64))>,
     last_failure: Option<(u64, &'static str, Option<u64>)>,
     last_session_end: Option<(u64, (u64, u64), SessionEndKind)>,
-    last_transfer: Option<(
-        u64,
-        Option<(u64, u64)>,
-        Option<(u64, u64)>,
-        Option<u32>,
-        u64,
-        u64,
-    )>,
-    last_reload: Option<(u64, Option<u64>, Option<u64>, Option<u64>)>,
+    last_transfer: Option<RetainedTransfer>,
+    last_reload: Option<RetainedReload>,
     last_reload_loaded: Option<(u64, Option<u64>, Option<u64>)>,
 }
 
@@ -3130,7 +3112,7 @@ impl History {
         let mut oldest: Option<(EvidenceClass, u64)> = None;
         for class in [EvidenceClass::Action, EvidenceClass::Unclassified] {
             if let Some(&seq) = self.class_sequences[class.index()].iter().next() {
-                if oldest.map_or(true, |(_, candidate)| seq < candidate) {
+                if oldest.is_none_or(|(_, candidate)| seq < candidate) {
                     oldest = Some((class, seq));
                 }
             }
@@ -3584,14 +3566,13 @@ impl History {
                     wire_cast_count = count;
                 }
                 match edge {
-                    CastEdge::Requested => {
-                        if !started_from_request {
-                            started_seq = *prior_seq;
-                            started_elapsed_ms = prior.elapsed_ms;
-                            started_from_request = true;
-                            started_from_admission = false;
-                        }
+                    CastEdge::Requested if !started_from_request => {
+                        started_seq = *prior_seq;
+                        started_elapsed_ms = prior.elapsed_ms;
+                        started_from_request = true;
+                        started_from_admission = false;
                     }
+                    CastEdge::Requested => {}
                     CastEdge::Admitted => {
                         if !started_from_request && !started_from_admission {
                             started_seq = *prior_seq;
@@ -4340,7 +4321,7 @@ impl History {
                 let has_native = !native_events.is_empty();
                 let attributions: Vec<CastAttribution> = native_events
                     .iter()
-                    .map(|event| self.cast_attribution(*event, true))
+                    .map(|event| self.cast_attribution(event, true))
                     .collect();
                 let mut considered: Vec<u64> = attributions
                     .iter()
@@ -4763,7 +4744,7 @@ impl History {
                 let mut pointers = 0usize;
                 let mut antecedents = 0usize;
                 let mut local_errors: Vec<u64> = Vec::new();
-                for (_, earlier) in self.entries.iter() {
+                for earlier in self.entries.values() {
                     if earlier.subject.scope != event.subject.scope
                         || earlier.elapsed_ms > event.elapsed_ms
                         || event.elapsed_ms.saturating_sub(earlier.elapsed_ms) > 2_000
@@ -4932,7 +4913,7 @@ impl History {
         // (VM, message row). This keeps the per-click attachment cheap, and lets a line say
         // whether the message pre-dates the click.
         let mut errors: Vec<(u64, u64, u64, u64)> = Vec::new();
-        for (_, event) in self.entries.iter() {
+        for event in self.entries.values() {
             let (vm_session, row_seq) = match event.stage {
                 Stage::ScriptError {
                     vm_session,
@@ -4956,7 +4937,7 @@ impl History {
         // should have run); the release row's `NotRegistered` gate must not read as the whole
         // story. A press with no handler is still included so its nil-handler verdict is visible.
         let mut press_edges: Vec<(u64, EdgeKey, UiHitEvidence)> = Vec::new();
-        for (_, event) in self.entries.iter() {
+        for event in self.entries.values() {
             if let Stage::UiPress {
                 ui_dispatch_id,
                 witness,
@@ -5462,8 +5443,8 @@ impl History {
                 let quest = event.subject.quest;
                 let candidates: Vec<_> = self
                     .entries
-                    .iter()
-                    .filter_map(|(_, candidate)| {
+                    .values()
+                    .filter_map(|candidate| {
                         let written =
                             matches!(candidate.stage, Stage::Delivery(CommandDelivery::Written));
                         let within_window = candidate.subject.scope == Some(scope)
@@ -5597,8 +5578,7 @@ impl History {
             });
         let native: Vec<&Event> = self
             .entries
-            .iter()
-            .map(|(_, candidate)| candidate)
+            .values()
             .filter(|candidate| {
                 candidate.subject.interaction == 0
                     && candidate.subject.scope == event.subject.scope
@@ -6283,8 +6263,8 @@ impl History {
         }
         let ring_scope = self
             .entries
-            .iter()
-            .filter_map(|(_, event)| event.subject.scope)
+            .values()
+            .filter_map(|event| event.subject.scope)
             .max();
         match (ring_scope, self.session_state.highest_scope) {
             (Some(scope), Some((_, highest))) if highest > scope => out.push(format!(
@@ -6348,8 +6328,8 @@ impl History {
         }
         let last_end = self
             .entries
-            .iter()
-            .filter_map(|(_, event)| match event.stage {
+            .values()
+            .filter_map(|event| match event.stage {
                 Stage::SessionEnded { kind } => Some((event.subject.scope.unwrap_or((0, 0)), kind)),
                 _ => None,
             })
@@ -6366,8 +6346,8 @@ impl History {
 
         let transfer = self
             .entries
-            .iter()
-            .filter_map(|(_, event)| match event.stage {
+            .values()
+            .filter_map(|event| match event.stage {
                 Stage::WorldTransfer {
                     map_id,
                     from,
@@ -6508,29 +6488,6 @@ impl History {
         (self.received, self.evicted, dropped)
     }
 
-    /// Delivery counts across retained entries (admitted, written, rejected, write-failed).
-    pub(crate) fn delivery_counts(&self) -> (u64, u64, u64, u64) {
-        let mut admitted = 0u64;
-        let mut written = 0u64;
-        let mut rejected = 0u64;
-        let mut failed = 0u64;
-        for (_, event) in &self.entries {
-            if let Stage::Delivery(delivery) = event.stage {
-                match delivery {
-                    crate::net::CommandDelivery::OutboxAdmitted => {
-                        admitted = admitted.saturating_add(1)
-                    }
-                    crate::net::CommandDelivery::Written => written = written.saturating_add(1),
-                    crate::net::CommandDelivery::Rejected(_) => {
-                        rejected = rejected.saturating_add(1)
-                    }
-                    crate::net::CommandDelivery::WriteFailed => failed = failed.saturating_add(1),
-                }
-            }
-        }
-        (admitted, written, rejected, failed)
-    }
-
     /// Additive per-vector evidence summary derived from the same bounded snapshot that
     /// supplies the exported event rows.  Classification goes through `vector_for_stage`
     /// so both export paths agree.
@@ -6540,11 +6497,7 @@ impl History {
         let update_packets_seen = self.update_packets_seen();
         let mut out = Vec::with_capacity(DIAGNOSTIC_VECTOR_NAMES.len());
         for &vector in DIAGNOSTIC_VECTOR_NAMES {
-            let available = if vector == "hotpatch" {
-                cfg!(feature = "hotpatch")
-            } else {
-                true
-            };
+            let available = vector != "hotpatch" || cfg!(feature = "hotpatch");
             let mut retained_observations = 0u64;
             let mut latest_retained_sequence = None;
             let mut source_specific_loss = false;
@@ -6684,7 +6637,7 @@ impl History {
         );
 
         let mut retained_by_vector = [0u64; DIAGNOSTIC_VECTOR_COUNT];
-        for (_, event) in &self.entries {
+        for event in self.entries.values() {
             let vector = vector_for_stage(&event.stage).unwrap_or("unclassified");
             let index = diagnostic_vector_index(vector);
             retained_by_vector[index] = retained_by_vector[index].saturating_add(1);
@@ -6783,12 +6736,6 @@ impl History {
             .take(8)
             .collect()
     }
-    pub(crate) fn one_second_movement_pressure(&self) -> Vec<String> {
-        self.movement_pressure()
-    }
-    pub(crate) fn movement_pressure_events(&self) -> Vec<String> {
-        self.movement_pressure()
-    }
 
     /// Movement correction attribution. Unambiguous only when a single movement write followed
     /// the previous correction; otherwise the attribution is ambiguous.
@@ -6808,9 +6755,6 @@ impl History {
             })
             .take(8)
             .collect()
-    }
-    pub(crate) fn movement_corrections(&self) -> Vec<String> {
-        self.movement_correction_attribution()
     }
 
     /// Recent audio output health windows (bounded). `cycles == 0` means no stream, not health.
@@ -6837,9 +6781,6 @@ impl History {
             .take(8)
             .collect()
     }
-    pub(crate) fn audio_output(&self) -> Vec<String> {
-        self.audio_output_health()
-    }
 
     /// Recent asset per-window summaries (bounded).
     pub(crate) fn asset_window_summary(&self) -> Vec<String> {
@@ -6854,9 +6795,6 @@ impl History {
             })
             .take(8)
             .collect()
-    }
-    pub(crate) fn asset_window(&self) -> Vec<String> {
-        self.asset_window_summary()
     }
 
     #[cfg(feature = "hotpatch")]
@@ -7097,7 +7035,7 @@ impl History {
             }
             let quest = event.subject.quest?;
             let scope = event.subject.scope?;
-            let candidates: Vec<_> = self.entries.iter().filter_map(|(_, candidate)| {
+            let candidates: Vec<_> = self.entries.values().filter_map(|candidate| {
                 (candidate.subject.operation == Operation::Accept
                     && candidate.subject.scope == Some(scope)
                     && candidate.subject.quest == Some(quest)
@@ -7212,8 +7150,8 @@ impl History {
                 let scope = event.subject.scope?;
                 let candidates: Vec<_> = self
                     .entries
-                    .iter()
-                    .filter_map(|(_, candidate)| {
+                    .values()
+                    .filter_map(|candidate| {
                         (candidate.subject.operation == Operation::ChooseReward
                             && candidate.subject.scope == Some(scope)
                             && candidate.subject.quest == Some(quest)
@@ -7885,12 +7823,14 @@ fn poll_scene(
     }
 }
 
+type MovementPollSnapshot = (u64, u64, u64, u64, u64, u64);
+
 fn poll_movement(
     source: Res<Source>,
     view: Option<Res<crate::wrath::WrathWorldView>>,
     input: Option<Res<crate::wrath::WrathInput>>,
     time: Res<Time>,
-    mut last: Local<Option<(u64, u64, u64, u64, u64, u64)>>,
+    mut last: Local<Option<MovementPollSnapshot>>,
     mut next_poll: Local<f64>,
 ) {
     let now = time.elapsed_secs_f64();
@@ -7975,12 +7915,14 @@ fn poll_movement(
     }
 }
 
+type AudioPollSnapshot = (bool, u32, u64, u64, u64);
+
 fn poll_audio(
     source: Res<Source>,
     output: Option<NonSend<crate::sound::SoundOutput>>,
     view: Option<Res<crate::wrath::WrathWorldView>>,
     time: Res<Time>,
-    mut last: Local<Option<(bool, u32, u64, u64, u64)>>,
+    mut last: Local<Option<AudioPollSnapshot>>,
     mut next_poll: Local<f64>,
 ) {
     let now = time.elapsed_secs_f64();
@@ -8291,7 +8233,7 @@ pub(crate) fn drain_history(history: &mut History) {
             if history
                 .session_state
                 .highest_scope
-                .map_or(true, |(_, highest)| scope >= highest)
+                .is_none_or(|(_, highest)| scope >= highest)
             {
                 history.session_state.highest_scope = Some((seq, scope));
             }
@@ -8323,7 +8265,7 @@ pub(crate) fn drain_history(history: &mut History) {
                 if history
                     .session_state
                     .last_session_end
-                    .map_or(true, |(_, prev_scope, _)| scope >= prev_scope)
+                    .is_none_or(|(_, prev_scope, _)| scope >= prev_scope)
                 {
                     history.session_state.last_session_end = Some((seq, scope, kind));
                 }
@@ -8343,7 +8285,7 @@ pub(crate) fn drain_history(history: &mut History) {
                 if history
                     .session_state
                     .last_transfer
-                    .map_or(true, |(_, _, prev_to, _, _, _)| {
+                    .is_none_or(|(_, _, prev_to, _, _, _)| {
                         to_key >= prev_to.unwrap_or((0, 0))
                     })
                 {
@@ -8859,8 +8801,8 @@ pub(crate) fn drain_history(history: &mut History) {
                 let candidates: Vec<Subject> = match operation {
                     Some(operation) => history
                         .entries
-                        .iter()
-                        .filter_map(|(_, candidate)| {
+                        .values()
+                        .filter_map(|candidate| {
                             let written = matches!(
                                 candidate.stage,
                                 Stage::Delivery(CommandDelivery::Written)
@@ -8878,8 +8820,8 @@ pub(crate) fn drain_history(history: &mut History) {
                         .collect(),
                     None => history
                         .entries
-                        .iter()
-                        .filter_map(|(_, candidate)| {
+                        .values()
+                        .filter_map(|candidate| {
                             let written = matches!(
                                 candidate.stage,
                                 Stage::Delivery(CommandDelivery::Written)
