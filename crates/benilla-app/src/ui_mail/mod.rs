@@ -122,6 +122,9 @@ pub(crate) struct MailOpen {
     /// Each auction notice's subject cell (`[rec+0x14]`) as the list parse left it, by mail id; the
     /// row keeps the raw triplet, the copy (`[rec+0x150]`) every parse reads.
     pub(crate) auction_subjects: HashMap<u32, ListedSubject>,
+    /// The mail an `AutoLootMailItem` is still emptying (12340 `m_autoLooting`): set while a take
+    /// is out and another attachment waits, cleared by a failed take and by the close.
+    pub(crate) autoloot: Option<u32>,
 }
 
 /// An auction notice's shown subject after the list parse (`0x4ad580`-`0x4ad5b2`): rewritten
@@ -173,6 +176,36 @@ impl MailOpen {
     pub(crate) fn clear(&mut self) {
         self.mailbox = None;
         self.show_requested = false;
+        // `CloseMail` drops the auto-loot (`m_autoLooting = 0`).
+        self.autoloot = None;
+    }
+
+    /// `ProcessAutoLootAttachments`' item leg (`0x570270`) for `mail_id`: the first attachment
+    /// still held goes out as `CMSG_MAIL_TAKE_ITEM`, and the mail stays the auto-loot while
+    /// another waits behind it. `false` when the mail holds no attachment.
+    pub(crate) fn autoloot_next(&mut self, mail_id: u32, commands: &NetCommands) -> bool {
+        self.autoloot = None;
+        let Some(mailbox) = self.mailbox else {
+            return false;
+        };
+        let Some(entry) = self.mails.iter().find(|e| e.message_id == mail_id) else {
+            return false;
+        };
+        let mut items = entry.attachments.iter().filter(|a| a.entry != 0);
+        let Some(first) = items.next() else {
+            return false;
+        };
+        let item_guid_low = first.guid_low;
+        let more = items.next().is_some();
+        let _ = commands.0.send(ClientCommand::MailTakeItem {
+            mailbox,
+            mail_id,
+            item_guid_low,
+        });
+        if more {
+            self.autoloot = Some(mail_id);
+        }
+        true
     }
 
     /// The world-enter init (`0x4acb10`) and a disconnect: no mailbox and no rows. The bodies

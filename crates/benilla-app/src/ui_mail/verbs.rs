@@ -123,6 +123,23 @@ impl MailVerbs<'_> {
         };
         let command = match call {
             MailCall::Open { .. } | MailCall::ReadBody { .. } | MailCall::Close => return,
+            MailCall::AutoLoot {
+                mail_id,
+                take_money,
+                take_items,
+            } => {
+                if take_money {
+                    let _ = commands
+                        .0
+                        .send(ClientCommand::MailTakeMoney { mailbox, mail_id });
+                }
+                // The VM took the lock for the item leg; with no attachment held after all, it
+                // goes back.
+                if take_items && !mail.autoloot_next(mail_id, commands) {
+                    script.mail_request_resolved();
+                }
+                return;
+            }
             MailCall::CheckInbox => ClientCommand::GetMailList { mailbox },
             MailCall::Row {
                 verb,

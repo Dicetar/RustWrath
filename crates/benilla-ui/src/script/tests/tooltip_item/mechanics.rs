@@ -691,6 +691,97 @@ fn an_enchanted_instance_renders_its_enchant_line_before_durability() {
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 
+/// 12340's `levelOk`: an enchant whose `RequiredLevel` is above the player's prints red, followed
+/// by a red `ENCHANT_ITEM_REQ_LEVEL`, as the server applies none of it yet. Reached live: a
+/// random-enchanted shirt rolled "+16 Stamina and +100 Armor" (2716, level 60) at level 10.
+#[test]
+fn an_enchant_above_the_players_level_reds_and_names_its_level() {
+    let mut s = script();
+    s.set_player_req_state(PlayerReqState {
+        level: 10,
+        ..Default::default()
+    });
+    let mut slots = HashMap::new();
+    slots.insert(
+        1,
+        ContainerSlot {
+            count: 1,
+            quality: Some(1),
+            item_id: 4344,
+            enchants: vec![
+                EnchantView {
+                    slot: 0,
+                    name: "+16 Stamina and +100 Armor".into(),
+                    min_level: 60,
+                    ..Default::default()
+                },
+                EnchantView {
+                    slot: 1,
+                    name: "+5 Spirit".into(),
+                    min_level: 10,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
+    );
+    s.set_container(
+        0,
+        Some(ContainerState {
+            name: None,
+            num_slots: 16,
+            slots,
+        }),
+    );
+    s.set_item_template(
+        4344,
+        ItemTemplateView {
+            name: "Brown Linen Shirt".into(),
+            quality: 1,
+            class: 4,
+            ..Default::default()
+        },
+    );
+    s.run(
+        r#"
+        ENCHANT_ITEM_REQ_LEVEL = "Enchantment Requires Level %d"
+        local a = CreateFrame("Button", "Slot"); a:SetPoint("CENTER", 0, 0); a:SetWidth(10); a:SetHeight(10)
+        local tt = CreateFrame("GameTooltip", "TT", nil, "TestTooltipTemplate")
+        tt:SetOwner(Slot, "ANCHOR_RIGHT")
+        tt:SetBagItem(0, 1)
+    "#,
+    )
+    .unwrap();
+    assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
+    let lines = super::lines_of(&mut s);
+    let at = |needle: &str| {
+        lines
+            .iter()
+            .position(|(t, _)| t == needle)
+            .unwrap_or_else(|| panic!("no {needle} line in {lines:?}"))
+    };
+    // The requirement red `ffff2020`, not the negative enchant's pure red.
+    let red = [1.0, 32.0 / 255.0, 32.0 / 255.0, 1.0];
+    let enchant = at("+16 Stamina and +100 Armor");
+    assert_eq!(lines[enchant].1, red, "the unmet enchant is red");
+    assert_eq!(
+        at("Enchantment Requires Level 60"),
+        enchant + 1,
+        "its requirement follows it: {lines:?}"
+    );
+    assert_eq!(lines[enchant + 1].1, red);
+    assert_eq!(
+        lines[at("+5 Spirit")].1,
+        [0.0, 1.0, 0.0, 1.0],
+        "a met level stays green"
+    );
+    assert_eq!(
+        lines.iter().filter(|(t, _)| t.starts_with("Enchantment Requires")).count(),
+        1,
+        "only the unmet enchant names its level: {lines:?}"
+    );
+}
+
 /// Enchant colour goes by slot (`0x52ca29`): slots 0 and 1 are green for a positive id and pure
 /// red (`0xc0d398`, `ffff0000`, not the requirement `ffff2020`) for a negative one; 2..6 are white.
 #[test]

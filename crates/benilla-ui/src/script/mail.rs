@@ -242,6 +242,15 @@ pub enum MailCall {
         template_id: u32,
         item_guid_low: u32,
     },
+    /// `AutoLootMailItem(index)` past its guards (12340 `CGMailInfo::AutoLoot`, `0x570410`): the
+    /// money's `CMSG_MAIL_TAKE_MONEY` when `take_money`, then, when `take_items`, the first
+    /// attachment's `CMSG_MAIL_TAKE_ITEM`. Each later attachment goes out as the previous take's
+    /// result lands (`0x5717b0`), with the request lock held.
+    AutoLoot {
+        mail_id: u32,
+        take_money: bool,
+        take_items: bool,
+    },
     /// `SendMail` past its guards: `CMSG_SEND_MAIL` (`0x4aea6c`).
     Send(MailSendRequest),
     /// `CloseMail()` (`0x4aded0`): the close core's ordinary arm, `0x4acd50` with `cl = 0`.
@@ -848,6 +857,56 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             })?,
         )?;
     }
+
+    // AutoLootMailItem(index), the inbox row's shift-click (`InboxFrame_OnModifiedClick`, the
+    // `MAILAUTOLOOTTOGGLE` modifier): 12340 `Script_AutoLootMailItem` (`0x571450`). It runs only with
+    // no request in flight and a mailbox open, then `AutoLoot(index - 1)` (`0x570410`): the money
+    // goes out unlocked, and the item leg (`0x570270`) refuses a COD the purse cannot pay with
+    // `ERR_NOT_ENOUGH_MONEY`, else takes the first attachment and the request lock.
+    g.set(
+        "AutoLootMailItem",
+        lua.create_function(|lua, index: Value| {
+            let n = super::binding_abi::number_arg(lua, index, "Usage: AutoLootMailItem(index)")?;
+            let (call, refusal) = {
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                if !mail_ready(&model) {
+                    return Ok(());
+                }
+                let Some(row) = u32::try_from(n)
+                    .ok()
+                    .filter(|&i| i >= 1)
+                    .and_then(|i| row_at(&model, i as usize))
+                else {
+                    return Ok(());
+                };
+                let take_money = row.money != 0;
+                let player = model.units_by_lower.contains_key("player");
+                let can_pay = player && model.money >= u64::from(row.cod);
+                let has_item = if row.attachments.is_empty() {
+                    row.item_id != 0
+                } else {
+                    row.attachments.iter().any(|a| a.entry != 0)
+                };
+                let take_items = can_pay && has_item;
+                if take_items {
+                    model.mail_busy = true;
+                }
+                let call = (take_money || take_items).then_some(MailCall::AutoLoot {
+                    mail_id: row.mail_id,
+                    take_money,
+                    take_items,
+                });
+                (call, (!can_pay).then_some("ERR_NOT_ENOUGH_MONEY"))
+            };
+            if let Some(call) = call {
+                submit(lua, call)?;
+            }
+            match refusal {
+                Some(key) => super::calls::display_error(lua, key),
+                None => Ok(()),
+            }
+        })?,
+    )?;
 
     g.set(
         "GetInboxItemLink",

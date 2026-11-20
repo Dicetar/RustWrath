@@ -61,6 +61,10 @@ pub struct EnchantCatalog {
     names: HashMap<u32, String>,
     /// `Flags` for every row, 0 included, so its keys are the reference's `enchantTable[id] != 0`.
     flags: HashMap<u32, u32>,
+    /// Wrath's `RequiredLevel` (field 37), only where nonzero: below it the server applies none
+    /// of the enchant (AzerothCore `Player::ApplyEnchantment`), and the tooltip reds its line
+    /// and adds `ENCHANT_ITEM_REQ_LEVEL` (`Tooltip.cpp` `levelOk`).
+    min_levels: HashMap<u32, u32>,
 }
 
 /// `Flags & 0x1`: applying the enchant binds the item. It is the only gate on the bind confirm,
@@ -102,6 +106,18 @@ impl EnchantCatalog {
             .then(|| self.name(enchant_id).unwrap_or(""))
     }
 
+    /// The character level the enchant needs to take effect; 0 for none, an unknown id, or a
+    /// 1.12 table, which carries no such column.
+    pub fn min_level(&self, enchant_id: u32) -> u32 {
+        self.min_levels.get(&enchant_id).copied().unwrap_or(0)
+    }
+
+    /// Set the required levels, for tests; [`Self::from_rows`] builds none.
+    pub fn with_min_levels(mut self, min_levels: HashMap<u32, u32>) -> Self {
+        self.min_levels = min_levels;
+        self
+    }
+
     fn flag(&self, enchant_id: u32, bit: u32) -> bool {
         self.flags.get(&enchant_id).is_some_and(|f| f & bit != 0)
     }
@@ -122,6 +138,7 @@ impl EnchantCatalog {
             visuals,
             names,
             flags,
+            min_levels: HashMap::new(),
         }
     }
 
@@ -255,8 +272,15 @@ pub fn load_enchant_catalog(chain: &mut Chain) -> Result<EnchantCatalog> {
     let mut visuals = HashMap::new();
     let mut names = HashMap::new();
     let mut flags = HashMap::with_capacity(rs.records().len());
+    let mut min_levels = HashMap::new();
     for r in rs.records() {
         let Some(id) = u32_at(r, 0) else { continue };
+        if wrath {
+            let min_level = u32_at(r, 37).unwrap_or(0);
+            if min_level != 0 {
+                min_levels.insert(id, min_level);
+            }
+        }
         // Every row, `Flags == 0` included: the keys are the row set.
         flags.insert(id, u32_at(r, if wrath { 32 } else { 23 }).unwrap_or(0));
         let visual = u32_at(r, if wrath { 31 } else { 22 }).unwrap_or(0) as i32;
@@ -278,6 +302,7 @@ pub fn load_enchant_catalog(chain: &mut Chain) -> Result<EnchantCatalog> {
         visuals,
         names,
         flags,
+        min_levels,
     })
 }
 

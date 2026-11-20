@@ -397,6 +397,13 @@ pub(super) fn souls_input(
     let flags = held_flags(&bindings, locked, er.free_camera && !locked);
     let moving = flags != 0;
     let now = playback.ticks_at();
+    // Mounted, the body rides: no swing, roll, guard, sprint or crouch. A kit action would pose
+    // the rider standing in the saddle, and the server refuses a mounted swing
+    // (`Unit::Attack`).
+    let mounted = critical
+        .1
+        .me_store()
+        .is_some_and(|store| store.0.unit_mount_display_id() != 0);
 
     // Guarded hits since last frame: each costs stamina; an empty bar breaks the guard.
     let guarded = std::mem::take(&mut playback.guarded_hits);
@@ -464,7 +471,8 @@ pub(super) fn souls_input(
         && input.down(binds.guard)
         && t >= souls.guard_broken_until
         && idle
-        && !souls.sprinting;
+        && !souls.sprinting
+        && !mounted;
     if guard && !souls.guarding && !features.retarget_locomotion {
         play_clip(ANIM_SHIELD_BLOCK, entity, &mut play_seq, &mut actions);
     }
@@ -490,6 +498,7 @@ pub(super) fn souls_input(
     let moving_now = moving || t - souls.last_moving_at < SPRINT_NEUTRAL_GRACE_SECONDS;
     if !souls.sprinting
         && features.sprint
+        && !mounted
         && dodge_held
         && moving
         && held_for >= SPRINT_AFTER_SECONDS
@@ -499,7 +508,7 @@ pub(super) fn souls_input(
         souls.sprinting = true;
         souls.dodge_sprinted = true;
     }
-    if souls.sprinting && (!dodge_held || !moving_now || !features.sprint) {
+    if souls.sprinting && (!dodge_held || !moving_now || !features.sprint || mounted) {
         info!(
             "souls: sprint ends (dodge held {dodge_held}, moving {moving_now}, on {})",
             features.sprint
@@ -581,7 +590,7 @@ pub(super) fn souls_input(
     }
 
     // The crouch: its key toggles it; a dodge, a sprint or any accepted action stands back up.
-    if !features.crouch || dodge_press || souls.sprinting {
+    if !features.crouch || dodge_press || souls.sprinting || mounted {
         souls.crouched = false;
     } else if input.just_pressed(binds.crouch) {
         souls.crouched = !souls.crouched;
@@ -594,7 +603,7 @@ pub(super) fn souls_input(
     let airborne = player.airborne();
     let landed = souls.was_airborne && !airborne;
     souls.was_airborne = airborne;
-    let jumping = features.jump_attacks && airborne;
+    let jumping = features.jump_attacks && airborne && !mounted;
     // Keep one press per jump. A landing row is pending; an air row records that the engine
     // already accepted the press, even if the action finishes before touchdown.
     let landing = if jumping {
@@ -617,7 +626,9 @@ pub(super) fn souls_input(
     let mut air_row = None;
     let (units, relations, mut link) = critical;
     let mut crit = None;
-    let request = if let Some(row) = landing {
+    let request = if mounted {
+        None
+    } else if let Some(row) = landing {
         kit_now.and_then(|kit| kit_row(kit, row))
     } else if jumping {
         if souls.air_attack.is_none() {

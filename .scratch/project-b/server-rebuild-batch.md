@@ -66,6 +66,125 @@ rebuild, no restart.
   the flag and resumes `MoveChase`.
 - Item 1 (deployed) stays: it fixed stock melee, which every non-Souls player still uses.
 
+### 5. Random enchants roll any tier, level-60 enchants included (bug, needs rebuild)
+
+- **Symptom (owner, 2026-11-20):** Firna's crafted Brown Linen Shirt shows "+16 Stamina and +100
+  Armor" in its tooltip, but her stats and armor are the same with and without it.
+- **Why the stats are missing:** the roll gave enchant **2716** (Fortitude of the Scourge,
+  `SpellItemEnchantment.RequiredLevel` 60). `Player::ApplyEnchantment` (`PlayerStorage.cpp:4418`)
+  applies nothing below the enchant's level, which is stock behavior. The enchant will apply at 60.
+- **Root cause:** `modules/mod-random-enchants/src/random_enchants.cpp`, `getRandEnchantment`.
+  Its query reads ``WHERE `tier`={} AND `exclusiveSubClass`=NULL AND exclusiveSubClass='{}' OR
+  `class`='{}' OR `class`='ANY'``. `=NULL` is never true, and `AND` binds before `OR`, so the
+  query is effectively `class='ARMOR' OR class='ANY'`. **The tier is ignored**: a white item
+  draws from the whole table. Nothing checks the enchant's level either.
+- **Fix:**
+  1. Correct the query: ``WHERE `tier`={} AND (`exclusiveSubClass` IS NULL OR
+     `exclusiveSubClass`={}) AND (`class`='{}' OR `class`='ANY') ORDER BY RAND()``. Drop the
+     `LIMIT 1`.
+  2. Pass the `Player*` in. Walk the shuffled rows and return the first whose
+     `sSpellItemEnchantmentStore.LookupEntry(id)` exists and has
+     `requiredLevel <= std::max<uint32>(player->GetLevel(), proto->RequiredLevel)`. With no such
+     row, return `-1`, not `0`; the caller already skips `-1`.
+  3. Check the table's tiers once, since tier 1 should hold low-level enchants:
+     `SELECT tier, COUNT(*) FROM item_enchantment_random_tiers GROUP BY tier`. That is a world-DB
+     read for the owner. The filter in step 2 keeps it safe either way.
+- **Existing items** keep their rolls, so the shirt keeps 2716 and works from level 60. Re-rolling
+  them is the owner's call.
+- **Client, landed 2026-11-20:** the tooltip now prints an enchant above the player's level in
+  requirement red, followed by "Enchantment Requires Level 60", as 12340 does (`Tooltip.cpp`
+  `levelOk`). It used to show it green, which made the enchant look active.
+
+### 6. Crafting while moving (feature, needs rebuild and client change)
+
+Owner request 2026-11-20: tradeskill casts keep going while the player moves.
+
+- **Server:** add one rule in `SpellMgr::LoadSpellInfoCorrections`
+  (`src/server/game/Spells/SpellInfoCorrections.cpp`), at its end. For every `SpellInfo` with
+  `HasAttribute(SPELL_ATTR0_IS_TRADESKILL)` (0x20, the recipe-list flag), clear
+  `SPELL_INTERRUPT_FLAG_MOVEMENT` from `InterruptFlags`. Both server gates read that flag: the
+  start check `Spell.cpp:3517` (`SPELL_FAILED_MOVING`) and the in-flight cancel `Spell.cpp:4375`.
+  One rule covers every profession, enchanting included. The spell only, not
+  `AuraInterruptFlags`.
+- **Client, land together with the rebuild:** the 12340 client reads its own `Spell.dbc`. The
+  same rule goes where `SpellDisplay` is built (`benilla-formats` `spells/display.rs`): mask
+  `interrupt_flags & !0x1` when `attributes & 0x20`. That one place feeds both client gates,
+  `spell/inflight.rs:583` (the move cancel) and `spell/validator.rs:254` (the start refusal).
+  Landed earlier, the client would start casts that the old server then refuses.
+- **Check:** start a Linen Bandage or Brown Linen Shirt and run. The bar should keep filling and
+  the item should arrive.
+
+### 7. Disenchanting a random-enchanted item keeps its enchant (feature, ALE: no rebuild)
+
+Owner request 2026-11-20: disenchanting a good roll should not waste it.
+
+- **Design:** disenchanting an item that carries a random-enchant roll (slots PERM 0, TEMP 1, BONUS
+  5, the slots `mod-random-enchants` writes) also gives one **Bottled Enchantment** per rolled
+  enchant. The normal disenchant loot is unchanged. The bottle holds the enchant id in its own
+  `PERM_ENCHANTMENT_SLOT`, so every tooltip shows the enchant's name in green with no client work.
+  Using it on a weapon or armor piece moves that enchant onto the item. It goes into the target's
+  PERM slot, or into BONUS when PERM is taken. The same requirements apply, so a level-60 enchant
+  still needs level 60.
+- **Pieces:**
+  1. A world-DB `item_template` row: a custom entry in the custom range (e.g. 910001), class 0,
+     subclass 8, quality 2, stack 1, an existing scroll display id, and an on-use spell with an
+     item target. Reuse a stock item-targeting dummy, or add a `spell_dbc` row. Pick the spell
+     when the row is written.
+  2. ALE Lua `integrations/ale/rustwrath_bottled_enchants.lua`:
+     - `PLAYER_EVENT_ON_SPELL_CAST` filtered to Disenchant (13262). Read the target item's enchant
+       ids in slots 0/1/5. For each that is nonzero, `AddItem` a bottle and
+       `SetEnchantment(id, 0)` on it.
+     - `RegisterItemEvent(bottle, ITEM_EVENT_ON_USE)`: check that the target item is weapon or
+       armor and belongs to the player, write the enchant, then consume the bottle.
+     - Hot-reloads like item 2, with no rebuild. The `item_template` row needs a world-DB insert
+       and a restart, or `.reload item_template`, which AC does not support, so a restart.
+- **Open questions for the owner:** whether a bottle binds (BoP or BoE), whether it can override
+  an existing PERM enchant, and whether temporary-slot rolls count.
+- **Check:** disenchant a random-enchanted green. The normal dust/essence should drop, plus one
+  bottle per rolled enchant, and using a bottle on a fresh item should show the enchant there.
+
+### 8. Souls hits count as the auto-attack (procs, Heroic Strike queue; needs rebuild)
+
+- **Symptom:** a Warrior gains no rage from Souls hits (owner 2026-11-20). More broadly, nothing
+  that keys on the auto-attack fires on them: weapon procs (Crusader, Fiery, Windfury), seals,
+  Flurry, Deep Wounds, Unbridled Wrath, a queued Heroic Strike or Cleave, weapon skill-ups.
+- **Cause:** `rustwrath_souls.lua` lands each hit with ALE `Unit:DealDamage`
+  (`mod-ale/.../UnitMethods.h:2498`), which calls `Unit::DealDamage` with no `CleanDamage` and
+  no `ProcSkillsAndAuras`. AC grants melee rage only through the `CleanDamage` of
+  `DealMeleeDamage` (`Unit.cpp:1316`), and procs only through `AttackerStateUpdate`'s tail.
+- **Live now (ALE, deployed 2026-11-20, no rebuild):** `reward_rage` in the script grants
+  AC's `RewardRage` formula once per swing (backstab and riposte as criticals), with
+  `Rate.Rage.Income` 2 and Endless Rage. That fixes rage only.
+- **Fix:** a new ALE method `Unit:SoulsMeleeHit(target, damage[, critical])`, added to
+  `UnitMethods.h` and registered beside `DealDamage` in `LuaFunctions.cpp`. It is one
+  main-hand auto-attack swing whose outcome and damage the caller has already decided:
+  - **Queued melee spell:** if `GetCurrentSpell(CURRENT_MELEE_SPELL)` passes
+    `CheckCast(false)`, call `cast(true)` and return; the queued strike replaces the swing.
+    `SPELL_FAILED_NO_POWER` falls through to a plain swing. This is `AttackerStateUpdate`,
+    `Unit.cpp:2975-2999`.
+  - **Swing info:** fill a `CalcDamageInfo` the way `CalculateMeleeDamage` does
+    (`Unit.cpp:1858`): attacker and target; `damages[0]` = `damage`, school
+    `GetMeleeDamageSchoolMask(BASE_ATTACK, 0)`; the rest 0; `attackType` BASE_ATTACK;
+    `procAttacker` `DONE_MELEE_AUTO_ATTACK | DONE_MAINHAND_ATTACK`; `procVictim`
+    `TAKEN_MELEE_AUTO_ATTACK | TAKEN_DAMAGE`; `hitOutCome` NORMAL or CRIT; `TargetState`
+    VICTIMSTATE_HIT; `HitInfo` AFFECTS_VICTIM, plus CRITICALHIT. Skip the stock hit table,
+    armour and crit doubling: the client decided the hit, and the script already applied the
+    Elden Ring defense curve.
+  - **Absorb:** take absorb and resist via `DamageInfo(info, 0)` + `Unit::CalcAbsorbResist`,
+    as `Unit.cpp:2150-2168` does.
+  - **The swing:** then run `AttackerStateUpdate`'s tail (`Unit.cpp:3001-3024`), in order:
+    `AtTargetAttacked(victim, true)`, `RemoveAurasWithInterruptFlags(MELEE_ATTACK)`,
+    `DealDamageMods`, `SendAttackStateUpdate(&info)`, `DealMeleeDamage(&info, true)` (the rage,
+    durability and block/parry rage) and `ProcSkillsAndAuras(... &dmgInfo)` (the procs and
+    weapon skill).
+- **Lua switch, same session as the rebuild:** in `on_hit` and `on_critical`, replace
+  `player:DealDamage(unit, damage, true)` with `player:SoulsMeleeHit(unit, damage, false)`
+  (true for backstab and riposte), and delete `reward_rage` and its three calls. Otherwise
+  rage is granted twice. A cleave's extra targets should keep `DealDamage`: one swing, one
+  proc pass, on the nearest unit.
+- **Check after deploy:** a Warrior at 0 rage gains rage per Souls hit. A queued Heroic Strike
+  fires on the next Souls hit and spends its rage. A Crusader-enchanted weapon procs.
+
 ### 3. Spellmaking submit shim (live rules)
 
 `docs/live-rules/B-001B-1-contract.md` §5 (a): an exported `SpellmakingV3::SubmitCommand(Player*,

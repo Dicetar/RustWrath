@@ -642,7 +642,12 @@ pub(super) fn render_view_flagged(
             keyed("ITEM_RANDOM_ENCHANT", &[], GREEN, false)?;
         }
         for e in enchant_slots {
+            // 12340's `levelOk` (`Tooltip.cpp`): an enchant above the player's level paints its
+            // line in slots 0..6 the requirement red (`s_tooltipRedColor`, `ffff2020`) and adds
+            // `ENCHANT_ITEM_REQ_LEVEL` after it; the server applies none of it until then.
+            let level_short = e.min_level > req.level && e.slot < 7;
             let color = match (e.slot < 2, e.negative) {
+                _ if level_short => RED,
                 (true, false) => GREEN,
                 (true, true) => ENCHANT_RED,
                 (false, _) => WHITE,
@@ -670,6 +675,14 @@ pub(super) fn render_view_flagged(
                 text.push_str(&format!(" ({charges})"));
             }
             add((text, color))?;
+            if level_short {
+                keyed(
+                    "ENCHANT_ITEM_REQ_LEVEL",
+                    &[Arg::D(e.min_level.into())],
+                    RED,
+                    false,
+                )?;
+            }
         }
         // The proposed enchantment ends the slot arm (`0x52cb72`..`0x52cc2c`), never the
         // placeholder's: `ITEM_PROPOSED_ENCHANT` with the spell's name in green, then

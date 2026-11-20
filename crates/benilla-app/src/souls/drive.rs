@@ -7,6 +7,7 @@
 //!   predicted body where the animation puts it without a teleport, so the server sees ordinary
 //!   movement. Until the action's movement cancel, with no debt, the axes are held at zero: the
 //!   body does not walk out of an attack. Held movement past the cancel releases the action.
+//!   Airborne frames owe nothing: the jump arc, not the action, moves the body there.
 //!   A roll is driven at its debt's own pace ([`SoulsDrive::speed`]): the frame covers what the
 //!   clip moved, so the roll carries its whole distance while it plays.
 //! - **Unit collision** (`unit_collision`, ER controls on). WoW has no unit-to-unit collision, so
@@ -245,6 +246,13 @@ pub(super) fn drive_controller(
     track.debt += Vec2::new(step(0), step(2));
     track.last_motion = motion;
     track.last_pos = player.pos;
+    if player.airborne() {
+        // In the air the jump's arc carries the body and the controller cannot steer it. Its
+        // momentum is not the action's root motion: counted against the debt, a jump attack
+        // owed yards backward and walked the body back after touchdown. The clip's own motion
+        // over the arc is forfeit too, so the landing starts square.
+        track.debt = Vec2::ZERO;
+    }
     if features.root_motion && !released && roll {
         // A roll moves at the pace its clip moves, from the first frame: this frame's whole debt,
         // so the distance is covered inside the roll (fast out of the tuck, easing into the

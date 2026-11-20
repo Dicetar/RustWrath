@@ -278,9 +278,19 @@ pub(super) fn send_mail_result(
     commands: &NetCommands,
 ) {
     // Wrath ITEM_TAKEN identifies the collected attachment by guid, not its list position.
-    // Every result lifts the request lock at the handler's
-    // common tail (`0x4ad164`), whatever its action.
-    mail.resolve_request();
+    // Every result lifts the request lock at the handler's common tail (`0x4ad164`), whatever
+    // its action, except a good take while an `AutoLootMailItem` still has an attachment
+    // waiting: 12340 sends the next take there and keeps the lock (`0x5717b0`). A failed take
+    // ends the auto-loot.
+    let autoloot = mail.autoloot.filter(|&id| id == mail_id);
+    if action == mail_action::ITEM_TAKEN && error != mail_error::OK {
+        mail.autoloot = None;
+    }
+    let continues =
+        action == mail_action::ITEM_TAKEN && error == mail_error::OK && autoloot.is_some();
+    if !continues {
+        mail.resolve_request();
+    }
     // Every result owes the feed its tail `MAIL_FAILED`, whatever its action (`0x4ad15f`).
     let mut result = MailResult::default();
     if action == mail_action::SEND {
@@ -352,6 +362,11 @@ pub(super) fn send_mail_result(
             ))
         }
         other => result.line = Some(mail_refusal(other)),
+    }
+    // The next attachment of the mail being auto-looted, off the rows the take just edited; with
+    // none left (or the mail gone), the lock lifts after all.
+    if continues && !mail.autoloot_next(mail_id, commands) {
+        mail.resolve_request();
     }
     mail.results.push(result);
 }

@@ -399,6 +399,7 @@ fn enchant_lines_quiet(
                 negative: id < 0,
                 charges,
                 remaining_ms,
+                min_level: enchants.0.min_level(id.unsigned_abs()),
             })
         })
         .collect();

@@ -538,3 +538,58 @@ fn a_nested_get_inbox_text_leaves_the_outer_body_masked() {
     let bodies: (String, String) = h.eval("local outer = GetInboxText(1) return outer, INNER");
     assert_eq!(bodies, ("%^&* mail".to_string(), "!@#$ mail".to_string()));
 }
+
+/// `AutoLootMailItem` (`0x570410`) takes the money, then the first attachment, and holds the
+/// request lock; each good take of the chained mail sends the next attachment's take
+/// (`0x5717b0`), and the last take lifts the lock.
+#[test]
+fn auto_loot_takes_the_money_then_each_attachment_in_turn() {
+    use benilla_protocol::messages::{mail_action, mail_error};
+    let mut bags = entry(5, 0);
+    let (mut first, mut second) = (linen(), linen());
+    (first.guid_low, second.guid_low, second.index) = (7, 8, 1);
+    (bags.money, bags.item, bags.attachments) = (50, Some(first), vec![first, second]);
+    let mut h = Mailbox::new(vec![bags]);
+    h.run("AutoLootMailItem(1)");
+    let take = |guid: u32| {
+        format!("MailTakeItem {{ mailbox: {MAILBOX}, mail_id: 5, item_guid_low: {guid} }}")
+    };
+    assert_eq!(
+        h.sent(),
+        [
+            format!("MailTakeMoney {{ mailbox: {MAILBOX}, mail_id: 5 }}"),
+            take(7)
+        ]
+    );
+    let result = |h: &mut Mailbox, action: u32, item: Option<(u32, u32)>| {
+        let world = h.app.world_mut();
+        let commands = NetCommands(world.resource::<NetCommands>().0.clone());
+        let mut mail = world.resource_mut::<MailOpen>();
+        mail.request_resolved = false;
+        super::net::send_mail_result(5, action, mail_error::OK, None, item, &mut mail, &commands);
+        (mail.autoloot, mail.request_resolved)
+    };
+    // The money's own result lifts the lock, as the reference's does; the chain rides on.
+    assert_eq!(
+        result(&mut h, mail_action::MONEY_TAKEN, None),
+        (Some(5), true)
+    );
+    assert_eq!(h.sent(), Vec::<String>::new());
+    // The first take sends the second, the lock held; with none after it, the chain's flag
+    // drops, as `m_autoLooting` does.
+    assert_eq!(
+        result(&mut h, mail_action::ITEM_TAKEN, Some((7, 2589))),
+        (None, false)
+    );
+    assert_eq!(h.sent(), [take(8)]);
+    // The last take ends the chain and lifts the lock.
+    assert_eq!(
+        result(&mut h, mail_action::ITEM_TAKEN, Some((8, 2589))),
+        (None, true)
+    );
+    let sent = h.sent();
+    assert!(
+        sent.iter().all(|s| !s.starts_with("MailTakeItem")),
+        "{sent:?}"
+    );
+}

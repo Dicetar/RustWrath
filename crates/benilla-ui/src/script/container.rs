@@ -216,6 +216,9 @@ pub struct EnchantView {
     /// Ms left on a temporary enchant, from `SMSG_ITEM_ENCHANT_TIME_UPDATE`, never the item's own
     /// duration field; `Some` prints the countdown form.
     pub remaining_ms: Option<u64>,
+    /// The `SpellItemEnchantment` row's `RequiredLevel`, 0 for none. Above the player's level the
+    /// server applies none of it, and slots 0..6 print red with `ENCHANT_ITEM_REQ_LEVEL` after.
+    pub min_level: u32,
 }
 
 /// One `ItemRandomProperties` row, an item's random-suffix roll. The app pushes the whole table at

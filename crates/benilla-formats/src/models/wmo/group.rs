@@ -506,10 +506,18 @@ fn fixed_colors(group: &WmoGroup, group_bytes: &[u8], root: &WmoRoot) -> Option<
     // `MOHD.flags & 0x8` skips the load-time MOCV fix-up (`MapObjRead.cpp:323`); Stormwind's
     // root sets it, and its corridors' colours are final as authored.
     if !root.skips_color_fix() {
-        let trans_n = find_wmo_chunk(group_bytes, b"PGOM")
-            .filter(|m| m.len() >= 0x2a)
-            .map_or(0, |m| u16::from_le_bytes([m[0x28], m[0x29]]) as usize);
-        fix_color_vertex_alpha(&mut colors, &group.render_batches, trans_n);
+        // Only the unified shader takes MOCV at the reference's converted scale (it adds MOCV
+        // to the light, `static_gx.wgsl`'s WORD_UNIFIED arm). The classic shader and the doorway
+        // fade below take raw MOCV and fold the conversion into their own algebra: the INT term
+        // `tex·MOCV·(1 + 4·MOCV.a)` is 2·tex·converted, and the fade keys on authored alpha 0.
+        // Converting here as well boosted Goldshire's inn twice over and, forcing alpha to 255,
+        // left its near-black doorway corridors unfaded.
+        if root.unified_ambient().is_some() {
+            let trans_n = find_wmo_chunk(group_bytes, b"PGOM")
+                .filter(|m| m.len() >= 0x2a)
+                .map_or(0, |m| u16::from_le_bytes([m[0x28], m[0x29]]) as usize);
+            fix_color_vertex_alpha(&mut colors, &group.render_batches, trans_n);
+        }
         let refs = wmo_group_header(group_bytes)
             .map_or((0, 0), |h| (h.portal_ref_start, h.portal_ref_count));
         attenuate_transparent_vertices(&mut colors, group, root, refs);

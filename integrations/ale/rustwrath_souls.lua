@@ -182,6 +182,34 @@ local function weapon_roll(unit)
     return lo + math.random() * (hi - lo)
 end
 
+-- A Souls swing replaces the stock auto-attack, so it earns the auto-attack's rage: AC's
+-- `Unit::RewardRage(damage, weaponSpeedHitFactor, true)` (Unit.cpp), with the speed factor
+-- `DealMeleeDamage` gives a main-hand hit (attack time in s x 3.5, doubled on a critical).
+-- `Unit:DealDamage` passes no CleanDamage, so AC itself grants none for these hits.
+local POWER_RAGE = 1
+local RAGE_INCOME_RATE = 2           -- worldserver.conf Rate.Rage.Income
+local ENDLESS_RAGE = 29623           -- the one SPELL_AURA_MOD_RAGE_FROM_DAMAGE_DEALT talent, +25 %
+local function reward_rage(player, damage, critical)
+    if damage <= 0 or player:GetPowerType() ~= POWER_RAGE then
+        return
+    end
+    local level = player:GetLevel()
+    local conversion = 0.0091107836 * level * level + 3.225598133 * level + 4.2652911
+    if level > 70 then
+        conversion = conversion + 13.27 * (level - 70)
+    end
+    local speed = math.floor((player:GetUInt32Value(UNIT_FIELD_BASEATTACKTIME) or 2000) / 1000 * 3.5)
+    if critical then
+        speed = speed * 2
+    end
+    local from_damage = damage / conversion * 7.5
+    local rage = math.min((from_damage + speed) / 2, from_damage * 2)
+    if player:HasAura(ENDLESS_RAGE) then
+        rage = rage * 1.25
+    end
+    player:ModifyPower(math.floor(rage * RAGE_INCOME_RATE * 10), POWER_RAGE)
+end
+
 -- The unit's main-hand roll range midpoint: the size of a 100 % motion value hit.
 local function weapon_mean(unit)
     local lo = unit:GetFloatValue(UNIT_FIELD_MINDAMAGE) or 0
@@ -460,6 +488,7 @@ local function on_hit(player, state, fields)
     -- Elden Ring's per-hit damage on top: the grip, a counter hit on a creature mid-windup, a
     -- riposte, then the victim's armour through the defense curve (heavy hits lose less of it).
     local roll = weapon_roll(player)
+    local dealt = 0
     for i, unit in ipairs(units) do
         local m = managed[key(unit:GetGUID())]
         local riposte = m and m.parried_until and now < m.parried_until
@@ -474,6 +503,7 @@ local function on_hit(player, state, fields)
             key(unit:GetGUID()), roll, mv, grip, counter, riposte and " x riposte" or "", attack, through,
             share[i], damage)
         player:DealDamage(unit, damage, true)
+        dealt = dealt + damage
         if m and not m.broken_until and unit:IsAlive() then
             local cost = STANCE_PER_MOTION * mv * share[i] * (riposte and RIPOSTE_MULTIPLIER or 1)
             if m.stance_refill_at and now >= m.stance_refill_at then
@@ -488,6 +518,8 @@ local function on_hit(player, state, fields)
             end
         end
     end
+    -- One swing, one auto-attack's rage, on all it dealt (a cleave is still one swing).
+    reward_rage(player, dealt, false)
 end
 
 local function on_swing(player, fields)
@@ -814,6 +846,7 @@ on_critical = function(player, state, guid, back)
                     state.next_backstab = now + 1000
                     local damage = defended(player, creature, weapon_roll(player) * CRITICAL_MULTIPLIER)
                     player:DealDamage(creature, math.max(1, math.floor(damage + 0.5)), true)
+                    reward_rage(player, math.max(1, math.floor(damage + 0.5)), true)
                     trace("backstab %s: %.1f damage", guid, damage)
                 end
                 return
@@ -839,6 +872,7 @@ on_critical = function(player, state, guid, back)
     end
     local damage = defended(player, creature, weapon_roll(player) * CRITICAL_MULTIPLIER)
     player:DealDamage(creature, math.max(1, math.floor(damage + 0.5)), true)
+    reward_rage(player, math.max(1, math.floor(damage + 0.5)), true)
     trace("critical %s: %.1f damage", guid, damage)
 end
 
