@@ -83,6 +83,7 @@ pub(crate) struct ControlRestore;
 // itself before it.
 pub(crate) use camera::apply_self_model_fade;
 use controller::control;
+#[cfg(feature = "hotpatch")]
 pub(crate) use controller::{
     MovementBaseline, MovementCorrection, MovementIntentRejection, MovementIntentVerdict,
     MovementProcessor, MovementProcessorOutcome, MovementProcessorRefusal, MovementProcessorState,

@@ -556,18 +556,16 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 let index = usize::try_from(i64::from(i) - 1).ok();
                 let tab = index.and_then(|n| model.spellbook.tabs.get(n)).cloned();
                 let wrath = model.target == super::UiTarget::Wrath335;
-                let (offset, count) = if wrath && tab.is_some() {
-                    let index = index.expect("resolved tab index");
-                    let offset: usize = model.spellbook.tabs[..index]
-                        .iter()
-                        .map(|t| highest_rank_slots(&model.spellbook, t).len())
-                        .sum();
-                    (
-                        offset,
-                        highest_rank_slots(&model.spellbook, tab.as_ref().unwrap()).len(),
-                    )
-                } else {
-                    (0, 0)
+                let (offset, count) = match tab.as_ref() {
+                    Some(tab) if wrath => {
+                        let index = index.expect("resolved tab index");
+                        let offset: usize = model.spellbook.tabs[..index]
+                            .iter()
+                            .map(|t| highest_rank_slots(&model.spellbook, t).len())
+                            .sum();
+                        (offset, highest_rank_slots(&model.spellbook, tab).len())
+                    }
+                    _ => (0, 0),
                 };
                 (tab, wrath, offset, count)
             };

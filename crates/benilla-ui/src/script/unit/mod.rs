@@ -587,14 +587,6 @@ impl super::UiScript {
 
 use resolve::token_recognised_for;
 
-/// The resolver's token check: an unrecognised token raises `Unknown unit name`, as `0x515970`
-/// ends in `luaL_error`; `""`, an absent token and a recognised one naming nothing pass. Whether
-/// nil arrives is per binding: of the 83 in the table at `0x850438`, 53 raise `Usage:` first and
-/// 13 unit-token bindings take nil with no gate.
-pub(crate) fn check_unit_token(token: &Option<String>) -> mlua::Result<()> {
-    check_unit_token_for(token, false)
-}
-
 /// [`check_unit_token_for`] with the VM's own target contract: the selected 3.3.5 host admits
 /// `focus`, `vehicle` and `bossN`, a vanilla host keeps raising them.
 pub(crate) fn check_unit_token_in(lua: &Lua, token: &Option<String>) -> mlua::Result<()> {
