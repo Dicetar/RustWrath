@@ -2241,13 +2241,14 @@ pub enum ServerEvent {
         unit: u64,
         kit_id: u32,
     },
-    /// `SMSG_SPELLNONMELEEDAMAGELOG` without the 12340-only overkill word. `school` is 12340's
-    /// mask; the app seam turns it into the 1.12 index.
+    /// `SMSG_SPELLNONMELEEDAMAGELOG`. `school` is 12340's raw mask byte; the app seam turns it
+    /// into the 1.12 index for the vanilla chat translation.
     SpellDamage {
         target: u64,
         attacker: u64,
         spell_id: u32,
         damage: u32,
+        overkill: u32,
         school: u8,
         absorb: u32,
         resist: i32,
@@ -3827,7 +3828,7 @@ fn read_spell_damage(b: &[u8]) -> Result<ServerEvent> {
     let attacker = r.packed_guid()?;
     let spell_id = r.u32()?;
     let damage = r.u32()?;
-    let _overkill = r.u32()?;
+    let overkill = r.u32()?;
     let school = r.u8()?;
     let absorb = r.u32()?;
     let resist = r.u32()? as i32;
@@ -3841,6 +3842,7 @@ fn read_spell_damage(b: &[u8]) -> Result<ServerEvent> {
         attacker,
         spell_id,
         damage,
+        overkill,
         school,
         absorb,
         resist,
