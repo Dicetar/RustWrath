@@ -321,7 +321,7 @@ fn rank_of_with_wrath(t: &Talent, known: &BTreeSet<u32>, wrath: Option<&WrathTal
 
 pub(crate) fn build_wrath_talent_groups(
     catalog: &TalentCatalog,
-    known: &BTreeSet<u32>,
+    _: &BTreeSet<u32>,
     wrath: Option<&WrathTalentState>,
     spells: &benilla_formats::SpellCatalog,
     race: u8,
