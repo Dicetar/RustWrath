@@ -59,6 +59,7 @@ pub(super) const ICON_PREFIX: &str = "Interface\\Icons\\";
 /// (`0x4f09d3`), where the body is stored (`0x4f09e4`): a record the file ends inside keeps an
 /// empty body. The table that takes the records skips what the scope cannot hold and any id it
 /// has, and gives an id below its base the base (`MacroState::from_scopes`).
+#[cfg(test)]
 pub(super) fn parse(text: &str, per_character: bool) -> Vec<MacroView> {
     parse_with_cap(text, per_character, MAX_MACROS)
 }
