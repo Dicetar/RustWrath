@@ -448,7 +448,7 @@ fn resolve_row(
                 index: att.index,
                 guid_low: att.guid_low,
                 entry: att.entry,
-                count: u32::from(att.count),
+                count: att.count,
                 random_property_id: att.random_prop_id,
                 charges: att.charges as i32,
                 durability: (att.durability, att.durability_max),
@@ -473,7 +473,7 @@ fn resolve_row(
             (
                 att.entry,
                 att.random_prop_id,
-                u32::from(att.count),
+                att.count,
                 name,
                 texture,
                 quality,

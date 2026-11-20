@@ -688,7 +688,7 @@ fn spell_book(
     }
     actions.dirty = true;
     for cd in &initial_cooldowns {
-        let spell_id = u32::from(cd.spell_id);
+        let spell_id = cd.spell_id;
         let spell = spells.and_then(|s| s.catalog.get(spell_id));
         // `0x6e2c60` reads the item's record with no callback (`0x6e2ce0`) and takes its first
         // slot naming the spell (`0x6e2cf4`).

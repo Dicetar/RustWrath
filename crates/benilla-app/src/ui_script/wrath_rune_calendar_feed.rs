@@ -11,6 +11,7 @@ use crate::script_calls::VmWith;
 use crate::ui_script::UiClock;
 use crate::wrath::{WrathVehicleSeats, WrathWorldView};
 
+#[allow(clippy::type_complexity)]
 pub(crate) fn feed(
     mut vm: VmWith<(
         Option<Res<'static, WrathWorldView>>,

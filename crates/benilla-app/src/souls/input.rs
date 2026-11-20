@@ -297,13 +297,10 @@ pub(super) fn in_parry_window(kit: &Kit, playback: &CombatPlaybackState) -> bool
     })
 }
 
-/// The Souls presses, the guard, the sprint and the charge release. Off, the state resets and the
-/// playback's defense goes back to the stock rule.
-#[allow(clippy::too_many_arguments)]
 /// The grip key: hold a one-handed weapon in both hands, or back in one. As in Elden Ring the
 /// switch waits for the hands to be free: nothing running, not guarding. The kit swaps to the
 /// weapon's two-handed moveset on the spot (the profiles recompile from the new generation).
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn grip_toggle(
     raw: (
         Res<ButtonInput<KeyCode>>,
@@ -338,6 +335,9 @@ pub(super) fn grip_toggle(
     }
 }
 
+/// The Souls presses, the guard, the sprint and the charge release. Off, the state resets and the
+/// playback's defense goes back to the stock rule.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn souls_input(
     raw: (
         Res<ButtonInput<KeyCode>>,

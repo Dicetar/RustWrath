@@ -3585,12 +3585,10 @@ impl History {
                         started_from_admission = false;
                     }
                     CastEdge::Requested => {}
-                    CastEdge::Admitted => {
-                        if !started_from_request && !started_from_admission {
-                            started_seq = *prior_seq;
-                            started_elapsed_ms = prior.elapsed_ms;
-                            started_from_admission = true;
-                        }
+                    CastEdge::Admitted if !started_from_request && !started_from_admission => {
+                        started_seq = *prior_seq;
+                        started_elapsed_ms = prior.elapsed_ms;
+                        started_from_admission = true;
                     }
                     _ => {}
                 }

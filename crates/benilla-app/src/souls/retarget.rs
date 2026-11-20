@@ -313,8 +313,10 @@ impl ErClips {
             let floats = frames.checked_mul(stride).ok_or("a clip is too long")?;
             let raw = r.take(floats.checked_mul(4).ok_or("a clip is too long")?)?;
             let data: Vec<f32> = raw
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
                 .collect();
             if frames > 0 && data.iter().all(|v| v.is_finite()) {
                 clips.insert(

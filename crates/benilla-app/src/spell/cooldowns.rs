@@ -753,7 +753,7 @@ impl Cooldowns {
         };
         self.start_cooldown(
             StartCooldown {
-                spell_id: u32::from(cd.spell_id),
+                spell_id: cd.spell_id,
                 item_id: u32::from(cd.item_id),
                 category: u32::from(cd.category),
                 recovery_ms: cd.spell_cd_ms as i32,
