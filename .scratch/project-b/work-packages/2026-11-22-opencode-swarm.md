@@ -13,14 +13,16 @@ the landed branches carry the per-ticket detail. No local Cargo, client or serve
    absent amounts. The other families (miss, heal, energize, periodic, aura applied/removed, cast
    start/success/failed) were not started; they share the same three files and had to follow this
    slice. Not proven: a live 12340 row in the stock combat-log frame.
-2. **`player-clippy`: not green; general clippy is green.** Landing eight one-file tickets made
-   the main run 44670987041 pass `fmt` and the `clippy` step for the first time; its `test` step
-   then failed on four tests. One was this swarm's zero-based argument-index test, fixed in
-   bb1d3474. The other three are outside the swarm's files and came from the merged agent work
-   `cf992aa0`: `GetAuctionSellItemInfo()` answers 9 values where the gate wants 6, and two
-   `ui_quest_log` world-entry tests assert an empty send queue. Because `test` failed first, the
-   dedicated `player-clippy` step was skipped, so its remaining count is unmeasured; the previous
-   ~55-finding debt is reduced by the eight files below. No run has gone green.
+2. **`player-clippy`: not green; general fmt and clippy are green.** Landing eight one-file
+   tickets and the rustfmt repair 607136b6 made the main run 44670987041 pass `fmt` and the
+   `clippy` step for the first time. Its `test` step caught this swarm's zero-based
+   argument-index test, fixed in bb1d3474. The final main run 44673299445 then passed `fmt` and
+   `clippy` and ran 6860 tests; the only three failures are outside the swarm's files and came
+   from the merged agent work `cf992aa0`: `GetAuctionSellItemInfo()` answers 9 values where the
+   gate wants 6, and two `ui_quest_log` world-entry tests assert an empty send queue. Because
+   `test` failed first, the dedicated `player-clippy` step was skipped, so its remaining count is
+   unmeasured; the previous ~55-finding debt is reduced by the eight files below. No run has gone
+   green.
 3. **`UNIT_*`/`PLAYER_*` coverage audit: landed in this note.** Of the admitted Wrath
    `UNIT_*`/`PLAYER_*` names, all are raised except four:
 
