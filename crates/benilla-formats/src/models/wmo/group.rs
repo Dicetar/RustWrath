@@ -779,9 +779,24 @@ mod tests {
     #[test]
     fn fix_color_vertex_alpha_matches_wrath_batch_boundary() {
         let mut colors = vec![
-            Color { b: 0x40, g: 0x80, r: 0xc0, a: 0x20 },
-            Color { b: 0x20, g: 0x60, r: 0xa0, a: 0x80 },
-            Color { b: 0x10, g: 0x30, r: 0x50, a: 0x00 },
+            Color {
+                b: 0x40,
+                g: 0x80,
+                r: 0xc0,
+                a: 0x20,
+            },
+            Color {
+                b: 0x20,
+                g: 0x60,
+                r: 0xa0,
+                a: 0x80,
+            },
+            Color {
+                b: 0x10,
+                g: 0x30,
+                r: 0x50,
+                a: 0x00,
+            },
         ];
         let batches = vec![benilla_wmo::Batch {
             start_index: 0,
@@ -793,16 +808,53 @@ mod tests {
 
         fix_color_vertex_alpha(&mut colors, &batches, 1);
 
-        assert_eq!(colors[0], Color { b: 0x20, g: 0x40, r: 0x60, a: 0x20 });
-        assert_eq!(colors[1], Color { b: 0x10, g: 0x30, r: 0x50, a: 0x80 });
-        assert_eq!(colors[2], Color { b: 0x08, g: 0x18, r: 0x28, a: 0xff });
+        assert_eq!(
+            colors[0],
+            Color {
+                b: 0x20,
+                g: 0x40,
+                r: 0x60,
+                a: 0x20
+            }
+        );
+        assert_eq!(
+            colors[1],
+            Color {
+                b: 0x10,
+                g: 0x30,
+                r: 0x50,
+                a: 0x80
+            }
+        );
+        assert_eq!(
+            colors[2],
+            Color {
+                b: 0x08,
+                g: 0x18,
+                r: 0x28,
+                a: 0xff
+            }
+        );
     }
 
     #[test]
     fn no_transparency_batches_put_all_vertices_in_the_exterior_range() {
-        let mut colors = vec![Color { b: 0x10, g: 0x20, r: 0x30, a: 0x40 }];
+        let mut colors = vec![Color {
+            b: 0x10,
+            g: 0x20,
+            r: 0x30,
+            a: 0x40,
+        }];
         fix_color_vertex_alpha(&mut colors, &[], 0);
-        assert_eq!(colors[0], Color { b: 0x10, g: 0x20, r: 0x30, a: 0xff });
+        assert_eq!(
+            colors[0],
+            Color {
+                b: 0x10,
+                g: 0x20,
+                r: 0x30,
+                a: 0xff
+            }
+        );
     }
 
     #[test]
