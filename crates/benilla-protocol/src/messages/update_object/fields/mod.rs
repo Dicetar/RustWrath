@@ -564,7 +564,9 @@ impl ObjectFields {
         Some(u64::from(lo) | (u64::from(hi) << 32))
     }
 
-    fn get_u32(&self, index: u16) -> Option<u32> {
+    /// Raw dword at `index`: an absent field reads 0 inside the created descriptor, as the
+    /// client's mirror does. Field-audit tests read the narrowed view through this.
+    pub fn get_u32(&self, index: u16) -> Option<u32> {
         self.get_raw(index)
             .or((index < self.descriptor_end).then_some(0))
     }
