@@ -372,6 +372,16 @@ pub(crate) struct AutoRepeatActive(pub Option<u32>);
 /// autorun; not turn or pitch) and `Script::Jump 0x513bd0` likewise, both calling `AbortCast`
 /// for event 0x152 `SPELLCAST_STOP` and `CMSG_CANCEL_CAST`.
 pub(crate) const SPELL_INTERRUPT_MOVEMENT: u32 = 0x1; // SpellRec+0x54 InterruptFlags (SPELL_INTERRUPT_FLAG_MOVEMENT)
+
+/// Whether moving stops this spell's cast: its `InterruptFlags` movement bit. Project B owner
+/// rule (2026-11-20): crafting keeps going on the move, so a tradeskill spell
+/// (`SPELL_ATTR_IS_TRADESKILL`) never has it. The server half, `rustwrath_crafting.lua`, clears
+/// the same bit on the live `SpellInfo`. Both client gates read this: the start refusal
+/// (`validator.rs`) and the in-flight cancel ([`local_self_cancel`]).
+pub(crate) fn movement_interrupts(d: &benilla_formats::SpellDisplay) -> bool {
+    d.interrupt_flags & SPELL_INTERRUPT_MOVEMENT != 0
+        && d.attributes & benilla_formats::SPELL_ATTR_IS_TRADESKILL == 0
+}
 const CHANNEL_INTERRUPT_MOVING: u32 = 0x8; // SpellRec+0x5c ChannelInterruptFlags (AURA_INTERRUPT_MOVING_CANCELS)
 
 /// This frame's cancelling press, set by `player::control` and consumed by
@@ -578,11 +588,7 @@ impl SelfCancel<'_> {
             // while the word is up (`0x5150fd`, and `Script::Jump`).
             if esc
                 || (!self.ground.active()
-                    && flags_open(
-                        &self.spells,
-                        |d| d.interrupt_flags & SPELL_INTERRUPT_MOVEMENT != 0,
-                        spell_id,
-                    ))
+                    && flags_open(&self.spells, movement_interrupts, spell_id))
             {
                 // `SpellStopCasting` (`0x6e6ebd`) and the move cancels pass `failed` 0: STOP.
                 self.cancel_inflight(false, if esc { "esc" } else { "moved" });

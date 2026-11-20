@@ -251,7 +251,7 @@ pub(super) fn cast_moving_refusal(
     // `0x200f`: ANY_MOVE (0xf) | FALLING (0x2000), the wire layout.
     const MOVING_MASK: u32 = move_flags::ANY_MOVE | move_flags::FALLING;
     let Some(d) = spell else { return false };
-    d.interrupt_flags & crate::spell::SPELL_INTERRUPT_MOVEMENT != 0
+    crate::spell::movement_interrupts(d)
         && move_flags_word & MOVING_MASK != 0
         && !d.auto_repeat()
         && (cast_time_ms != 0

@@ -1,8 +1,10 @@
-# Server rebuild batch
+# Server changes (live only)
 
-The owner's rule: **never rebuild the server for a single change.** Server fixes collect here
-until the owner schedules one coordinated worldserver rebuild and restart. Add an item when a
-fix needs the server; tick it off when the rebuild that carried it has run.
+The owner's rule (2026-11-20): **server changes are hotpatches only — no rebuild, no restart.**
+A server fix is ALE Lua in `run\lua_scripts` (auto-reload, or `.reload ALE`), a module config
+line plus `.reload config`, or a world-DB row a running server re-reads. A fix that can only be
+done in C++ is written down here as **not live**, with what it would take, and is not scheduled;
+the owner decides. Items 1 and 4 below predate this rule.
 
 Server source: `D:\WOW\WM_BridgeLab\src\azerothcore` (mod-playerbots fork, branch `Playerbot`,
 HEAD `5e741c3`). It carries many uncommitted local edits, including `Unit.cpp` (+217 lines).
@@ -66,7 +68,7 @@ rebuild, no restart.
   the flag and resumes `MoveChase`.
 - Item 1 (deployed) stays: it fixed stock melee, which every non-Souls player still uses.
 
-### 5. Random enchants roll any tier, level-60 enchants included (bug, needs rebuild)
+### 5. Random enchants roll any tier, level-60 enchants included (bug; live fix in ALE)
 
 - **Symptom (owner, 2026-11-20):** Firna's crafted Brown Linen Shirt shows "+16 Stamina and +100
   Armor" in its tooltip, but her stats and armor are the same with and without it.
@@ -78,39 +80,43 @@ rebuild, no restart.
   `class`='{}' OR `class`='ANY'``. `=NULL` is never true, and `AND` binds before `OR`, so the
   query is effectively `class='ARMOR' OR class='ANY'`. **The tier is ignored**: a white item
   draws from the whole table. Nothing checks the enchant's level either.
-- **Fix:**
-  1. Correct the query: ``WHERE `tier`={} AND (`exclusiveSubClass` IS NULL OR
-     `exclusiveSubClass`={}) AND (`class`='{}' OR `class`='ANY') ORDER BY RAND()``. Drop the
-     `LIMIT 1`.
-  2. Pass the `Player*` in. Walk the shuffled rows and return the first whose
-     `sSpellItemEnchantmentStore.LookupEntry(id)` exists and has
-     `requiredLevel <= std::max<uint32>(player->GetLevel(), proto->RequiredLevel)`. With no such
-     row, return `-1`, not `0`; the caller already skips `-1`.
-  3. Check the table's tiers once, since tier 1 should hold low-level enchants:
-     `SELECT tier, COUNT(*) FROM item_enchantment_random_tiers GROUP BY tier`. That is a world-DB
-     read for the owner. The filter in step 2 keeps it safe either way.
+- **Live fix (2026-11-20):** `integrations/ale/rustwrath_random_enchants.lua` takes over the
+  roll. It keeps the module's events, chances, quality-to-tier roll, slots and chat line, runs
+  the corrected query ``WHERE `tier`={} AND (`exclusiveSubClass` IS NULL OR
+  `exclusiveSubClass`={}) AND (`class`='{}' OR `class`='ANY') ORDER BY RAND()``, and takes the
+  first row whose `SpellItemEnchantment.RequiredLevel` (read once from the server's
+  `<DataDir>\dbc\SpellItemEnchantment.dbc`) is at most `max(player level, item RequiredLevel)`.
+  - **Switch-over (owner step):** set `RandomEnchants.Enable = 0` in
+    `run\configs\modules\random_enchants.conf`, then `.reload config`. The module reads the
+    switch on every roll. Until then the script stays idle, so nothing is rolled twice. Its
+    load line in the console says which state it is in.
+  - The module SQL's tiers: tiers 1-2 hold no level-gated enchants; tier 3 has four level-60,
+    tier 4 two level-50 and two level-60 (2716 is tier 4 ARMOR), tier 5 one level-50. The level
+    filter keeps every tier safe.
+- **Not run:** no item has been rolled through the script yet.
 - **Existing items** keep their rolls, so the shirt keeps 2716 and works from level 60. Re-rolling
   them is the owner's call.
 - **Client, landed 2026-11-20:** the tooltip now prints an enchant above the player's level in
   requirement red, followed by "Enchantment Requires Level 60", as 12340 does (`Tooltip.cpp`
   `levelOk`). It used to show it green, which made the enchant look active.
 
-### 6. Crafting while moving (feature, needs rebuild and client change)
+### 6. Crafting while moving (feature; live in ALE and client live code)
 
 Owner request 2026-11-20: tradeskill casts keep going while the player moves.
 
-- **Server:** add one rule in `SpellMgr::LoadSpellInfoCorrections`
-  (`src/server/game/Spells/SpellInfoCorrections.cpp`), at its end. For every `SpellInfo` with
-  `HasAttribute(SPELL_ATTR0_IS_TRADESKILL)` (0x20, the recipe-list flag), clear
-  `SPELL_INTERRUPT_FLAG_MOVEMENT` from `InterruptFlags`. Both server gates read that flag: the
-  start check `Spell.cpp:3517` (`SPELL_FAILED_MOVING`) and the in-flight cancel `Spell.cpp:4375`.
-  One rule covers every profession, enchanting included. The spell only, not
-  `AuraInterruptFlags`.
-- **Client, land together with the rebuild:** the 12340 client reads its own `Spell.dbc`. The
-  same rule goes where `SpellDisplay` is built (`benilla-formats` `spells/display.rs`): mask
-  `interrupt_flags & !0x1` when `attributes & 0x20`. That one place feeds both client gates,
-  `spell/inflight.rs:583` (the move cancel) and `spell/validator.rs:254` (the start refusal).
-  Landed earlier, the client would start casts that the old server then refuses.
+- **Server (live):** `integrations/ale/rustwrath_crafting.lua`. On load it walks Spell ids
+  1-100000 and, for every spell with `SPELL_ATTR0_IS_TRADESKILL` (0x20, the recipe-list flag),
+  clears `SPELL_INTERRUPT_FLAG_MOVEMENT` (0x1) with `SpellEntry:SetInterruptFlags`, which writes
+  the `Spell.dbc` store and the live `SpellInfo`. Both server gates read that flag: the start
+  check `Spell.cpp:3517` (`SPELL_FAILED_MOVING`) and the in-flight cancel `Spell.cpp:4375`. One
+  rule covers every profession, enchanting included. `AuraInterruptFlags` are untouched.
+  Removing the script does not restore the bits; a server restart does.
+- **Client (live code):** `spell::movement_interrupts` (`spell/inflight.rs`) applies the same
+  rule at both client gates, the in-flight move cancel and the start refusal
+  (`spell/validator.rs`). It sits in function bodies, so `-LiveCode` patches it in. The decode in
+  `benilla-formats` would only change at load, so it stays as it is.
+- Deploy the Lua before or with the client patch: a patched client against an unpatched server
+  starts casts the server then refuses.
 - **Check:** start a Linen Bandage or Brown Linen Shirt and run. The bar should keep filling and
   the item should arrive.
 
@@ -136,14 +142,16 @@ Owner request 2026-11-20: disenchanting a good roll should not waste it.
        `SetEnchantment(id, 0)` on it.
      - `RegisterItemEvent(bottle, ITEM_EVENT_ON_USE)`: check that the target item is weapon or
        armor and belongs to the player, write the enchant, then consume the bottle.
-     - Hot-reloads like item 2, with no rebuild. The `item_template` row needs a world-DB insert
-       and a restart, or `.reload item_template`, which AC does not support, so a restart.
+     - Hot-reloads like item 2, with no rebuild. A new `item_template` row is **not live**: AC
+       loads item templates once at startup and has no `.reload item_template`. To stay live,
+       the bottle must reuse an existing item entry (an unused stock scroll/trinket with an
+       item-targeting on-use spell), chosen when the owner answers the questions below.
 - **Open questions for the owner:** whether a bottle binds (BoP or BoE), whether it can override
   an existing PERM enchant, and whether temporary-slot rolls count.
 - **Check:** disenchant a random-enchanted green. The normal dust/essence should drop, plus one
   bottle per rolled enchant, and using a bottle on a fresh item should show the enchant there.
 
-### 8. Souls hits count as the auto-attack (procs, Heroic Strike queue; needs rebuild)
+### 8. Souls hits count as the auto-attack (rage and Heroic Strike queue live; procs not live)
 
 - **Symptom:** a Warrior gains no rage from Souls hits (owner 2026-11-20). More broadly, nothing
   that keys on the auto-attack fires on them: weapon procs (Crusader, Fiery, Windfury), seals,
@@ -155,7 +163,17 @@ Owner request 2026-11-20: disenchanting a good roll should not waste it.
 - **Live now (ALE, deployed 2026-11-20, no rebuild):** `reward_rage` in the script grants
   AC's `RewardRage` formula once per swing (backstab and riposte as criticals), with
   `Rate.Rage.Income` 2 and Endless Rage. That fixes rage only.
-- **Fix:** a new ALE method `Unit:SoulsMeleeHit(target, damage[, critical])`, added to
+- **Live 2026-11-20 (ALE):** `queued_strike_replaces_swing` in `on_hit`. If the player has a
+  queued melee spell (`GetCurrentSpell(CURRENT_MELEE_SPELL)`: Heroic Strike, Cleave, Maul,
+  Raptor Strike), the hit casts it (`Spell:Cast(false)`, the same CheckCast and failure path as
+  `AttackerStateUpdate`) and the plain hit is skipped, so the strike replaces the swing. Short of
+  power, it falls back to the plain hit, as `SPELL_FAILED_NO_POWER` does in core. Backstab and
+  riposte are untouched.
+- **Still not live:** weapon and talent procs (Crusader, Fiery, Windfury, seals, Flurry, Deep
+  Wounds, Unbridled Wrath) and weapon skill-ups. They come only from `ProcSkillsAndAuras` with a
+  melee `DamageInfo`, and no ALE method reaches it. The C++ method below is the only route found;
+  it is written down, not scheduled, under the live-only rule.
+- **C++ route (not live):** a new ALE method `Unit:SoulsMeleeHit(target, damage[, critical])`, added to
   `UnitMethods.h` and registered beside `DealDamage` in `LuaFunctions.cpp`. It is one
   main-hand auto-attack swing whose outcome and damage the caller has already decided:
   - **Queued melee spell:** if `GetCurrentSpell(CURRENT_MELEE_SPELL)` passes
@@ -177,13 +195,10 @@ Owner request 2026-11-20: disenchanting a good roll should not waste it.
     `DealDamageMods`, `SendAttackStateUpdate(&info)`, `DealMeleeDamage(&info, true)` (the rage,
     durability and block/parry rage) and `ProcSkillsAndAuras(... &dmgInfo)` (the procs and
     weapon skill).
-- **Lua switch, same session as the rebuild:** in `on_hit` and `on_critical`, replace
-  `player:DealDamage(unit, damage, true)` with `player:SoulsMeleeHit(unit, damage, false)`
-  (true for backstab and riposte), and delete `reward_rage` and its three calls. Otherwise
-  rage is granted twice. A cleave's extra targets should keep `DealDamage`: one swing, one
-  proc pass, on the nearest unit.
-- **Check after deploy:** a Warrior at 0 rage gains rage per Souls hit. A queued Heroic Strike
-  fires on the next Souls hit and spends its rage. A Crusader-enchanted weapon procs.
+  If it were ever built, the Lua would swap `DealDamage` for it on the nearest unit and drop
+  `reward_rage` and `queued_strike_replaces_swing`, or rage and the strike would happen twice.
+- **Check now (live):** a Warrior at 0 rage gains rage per Souls hit. A queued Heroic Strike
+  fires on the next Souls hit and spends its rage; with too little rage the hit lands plainly.
 
 ### 3. Spellmaking submit shim (live rules)
 

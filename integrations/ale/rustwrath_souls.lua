@@ -210,6 +210,27 @@ local function reward_rage(player, damage, critical)
     player:ModifyPower(math.floor(rage * RAGE_INCOME_RATE * 10), POWER_RAGE)
 end
 
+-- A queued on-next-swing strike (Heroic Strike, Cleave, Maul, Raptor Strike) replaces the swing,
+-- as in `Unit::AttackerStateUpdate` (Unit.cpp). Souls mode swallows CMSG_ATTACKSWING, so the
+-- server's own swing never comes to fire it. `Spell:Cast(false)` runs the same `CheckCast` and the
+-- same failure handling (cast result, interrupt, finish). With too little power the strike drops
+-- and the swing lands as a plain hit (`SPELL_FAILED_NO_POWER`); any other failure takes the swing
+-- with it. Returns true when the swing was replaced.
+local CURRENT_MELEE_SPELL = 0
+local function queued_strike_replaces_swing(player)
+    local spell = player:GetCurrentSpell(CURRENT_MELEE_SPELL)
+    if not spell then
+        return false
+    end
+    local id = spell:GetEntry()
+    local entry = LookupEntry("Spell", id)
+    local power = entry and entry:GetPowerType() or player:GetPowerType()
+    local short = player:GetPower(power) < spell:GetPowerCost()
+    spell:Cast(false)
+    trace("queued strike %d: %s", id, short and "no power, plain swing" or "cast")
+    return not short
+end
+
 -- The unit's main-hand roll range midpoint: the size of a 100 % motion value hit.
 local function weapon_mean(unit)
     local lo = unit:GetFloatValue(UNIT_FIELD_MINDAMAGE) or 0
@@ -473,6 +494,9 @@ local function on_hit(player, state, fields)
         end
     end
     if #units == 0 then
+        return
+    end
+    if queued_strike_replaces_swing(player) then
         return
     end
     table.sort(units, function(a, b)

@@ -36,8 +36,8 @@ pub(crate) use cast_send::{
 pub(crate) use cast_target::AutoSelfCast;
 pub(crate) use cooldowns::Cooldowns;
 pub(crate) use inflight::{
-    ActiveChannel, AutoRepeatActive, CastState, LocalMoveStart, PendingCast, QueuedMeleeSpell,
-    SelfCancel, SPELL_INTERRUPT_MOVEMENT,
+    movement_interrupts, ActiveChannel, AutoRepeatActive, CastState, LocalMoveStart, PendingCast,
+    QueuedMeleeSpell, SelfCancel,
 };
 pub(crate) use mods::{
     CategoryPad, ModsDiff, SpellModifiers, OP_CAST_TIME, OP_COST, OP_GCD, OP_RADIUS,
