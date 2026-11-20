@@ -215,19 +215,7 @@ impl BagCache {
         }
     }
 
-    /// The rescan `0x4f91a0` over the active player's bag seats: a bag whose guid differs from the
-    /// cache fires `BAG_CLOSED` when the old one was not zero (`0x4f9245`, `0x4f92b5`), is stored
-    /// (`0x4f92c7`) with its slots watched over the count `lookup` finds (`0x4f92fd`), and fires
-    /// `BAG_UPDATE` when the new one is not zero (`0x4f92cc`, `0x4f9343`), bag by bag.
-    fn rescan<'a>(
-        &mut self,
-        player: &ObjectFields,
-        lookup: &dyn Fn(u64) -> Option<&'a ObjectFields>,
-    ) -> Vec<BagEvent> {
-        self.rescan_with(10, &|n| Self::seat_of(player, n), lookup)
-    }
-
-    /// [`Self::rescan`] with the caller's bag-seat lookup and bag count. Wrath passes 11 so bag 11
+    /// The scan with the caller's bag-seat lookup and bag count: Wrath passes 11 so bag 11
     /// (player-array seat 73) is covered; the donor path passes 10.
     pub(crate) fn rescan_with<'a>(
         &mut self,
