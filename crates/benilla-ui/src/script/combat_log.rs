@@ -1011,6 +1011,6 @@ mod tests {
             script.eval::<String>("return Filtered[2]").unwrap(),
             "SPELL_HEAL"
         );
-        assert_eq!(script.eval::<i64>("return Filtered[12]").unwrap(), 50);
+        assert_eq!(script.eval::<i64>("return Filtered[11]").unwrap(), 50);
     }
 }
