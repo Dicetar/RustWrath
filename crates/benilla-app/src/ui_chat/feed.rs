@@ -521,6 +521,7 @@ impl ChatLog {
     /// Queue an inbound addon line for its sender's name. The text splits on its first tab, and
     /// with none it is all prefix (`0x49a8d0`); `distribution` names PARTY, RAID, GUILD and
     /// BATTLEGROUND, any other type `"UNKNOWN"` (`0x49aff4`).
+    #[cfg(test)]
     pub(crate) fn push_addon(&self, text: &str, chat_type: u8, guid: u64) {
         self.push_addon_for_client(text, chat_type, guid, false);
     }
