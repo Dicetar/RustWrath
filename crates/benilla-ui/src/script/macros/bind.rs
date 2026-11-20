@@ -11,7 +11,9 @@
 //! spell, which the action bar then reads through the pet's legs.
 
 use super::MacroBinding;
-use crate::script::{PetBookState, SpellBookState};
+use crate::script::PetBookState;
+#[cfg(test)]
+use crate::script::SpellBookState;
 
 /// Arm B's literal (`0x84cab0`), searched case-sensitively anywhere in the line (`0x4efed5`).
 const CAST_BY_NAME_CALL: &str = "CastSpellByName(";
@@ -95,6 +97,10 @@ fn quoted_call_argument(line: &str) -> Option<String> {
 /// The macro's cast, derived again (`0x4efe00`) from `was`: [`cast_name`] resolved as
 /// `CastSpellByName` resolves a name ([`resolve_spell_in_books`]), so the cooldown swirl and the
 /// press agree on the rank. A match writes the book it came from; a miss leaves the selector.
+///
+/// The selector-derived form is used by the test suite only; live callers resolve against the
+/// all-learned list through [`derive_with_slots`].
+#[cfg(test)]
 pub(crate) fn derive(
     aliases: &[String],
     body: &str,
