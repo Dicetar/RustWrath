@@ -58,3 +58,5 @@ All rows: 10,429 baked heavy frames checked, zero helper skin and wrist-space St
 | wm-hd | BloodElfMale | 31.5 | 25, 24 |
 | wm-hd | DraeneiFemale | 94.7 | 31, 34 |
 | wm-hd | DraeneiMale | 17.1 | 29, 28 |
+
+The follow-up at f68c6fd4f passed the expanded fixture on all 40 rigs. The first contact revision cleared the lifted-left 27110:14 outliers but exposed a 77.7° shin error on wm-hd Gnome male Run 20100:0. Excluding sideways hip spacers and toe-down soles resolved it without rig-specific exceptions. The corrected per-rig results and limits are in the combined stance handoff. Final branch CI [44806194708](https://github.com/Dicetar/RustWrath/actions/runs/44806194708) passed Windows; the failure log shows only the existing `benilla-ui` `player-clippy` errors. Local check and nine scoped retarget tests passed; local Clippy stopped at E0514 (`flate2` toolchain metadata mismatch).
