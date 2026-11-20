@@ -1063,9 +1063,9 @@ fn the_wrath_map_opens_with_its_controls_and_no_script_errors() {
         &s,
         &[&[
             r"Interface\FrameXML\GlobalStrings.lua",
-            // `WorldMapFrame_Update` loops to `NUM_WORLDMAP_DETAIL_TILES`.
-            r"Interface\FrameXML\Constants.lua",
             r"Interface\FrameXML\Fonts.xml",
+            // The check boxes' and dropdowns' text inherits its `GameFont*` objects.
+            r"Interface\FrameXML\FontStyles.xml",
             r"Interface\FrameXML\Localization.xml",
             r"Interface\FrameXML\BasicControls.xml",
             r"Interface\FrameXML\LocaleProperties.lua",
@@ -1084,6 +1084,8 @@ fn the_wrath_map_opens_with_its_controls_and_no_script_errors() {
             r"Interface\FrameXML\PartyMemberFrame.lua",
             r"Interface\FrameXML\RaidFrame.lua",
             r"Interface\FrameXML\QuestPOI.xml",
+            // The map's OnLoad seats `WatchFrame.showObjectives` (WorldMapFrame.lua:124).
+            r"Interface\FrameXML\WatchFrame.xml",
             r"Interface\FrameXML\WorldMapFrame.xml",
         ]],
         r"Interface\FrameXML\WorldMapFrame.xml",
@@ -1102,8 +1104,19 @@ fn the_wrath_map_opens_with_its_controls_and_no_script_errors() {
         ..Default::default()
     }]);
     s.set_world_map_feed(Some((1, 1)), None, 0.0, None, Vec::new(), Vec::new());
+    // The map's verbs (RequestBattlefieldPositions and kin) are kept, not applied: no host here.
+    s.keep_calls();
+    // Outside the kit: the micro bar (FrameXML.toc:54), which the map's OnShow refreshes, and the
+    // LFR browser and BN toast, which UIParent's OnUpdate ticks (UIParent.xml:28-29).
+    s.run(
+        "UpdateMicroButtons = function() end \
+         LFRBrowseFrame_OnUpdateAlways = function() end \
+         BNToastFrame_OnUpdate = function() end",
+    )
+    .unwrap();
     s.tick(0.01);
-    s.run("ToggleWorldMap()").unwrap();
+    // Wrath's TOGGLEWORLDMAP binding (Bindings.xml:668); `ToggleWorldMap` is 1.12's.
+    s.run("ToggleFrame(WorldMapFrame)").unwrap();
     for _ in 0..3 {
         s.tick(0.05);
     }

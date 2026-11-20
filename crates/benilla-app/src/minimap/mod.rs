@@ -352,8 +352,8 @@ fn emit_minimap(
     wmos: Res<Assets<WmoModel>>,
     world: benilla_world::world_point::WorldPoint,
     asset_server: Res<AssetServer>,
-    corpse: Res<MinimapCorpse>,
-    spirit_healer: Res<MinimapSpiritHealer>,
+    // One parameter for the static blips: a system takes at most 16.
+    (corpse, spirit_healer): (Res<MinimapCorpse>, Res<MinimapSpiritHealer>),
     blip_inputs: blips::BlipInputs,
     mut composite: ResMut<composite::MinimapComposite>,
     rig: Option<Res<composite::CompositeRig>>,
@@ -906,17 +906,19 @@ fn feed_minimap_arrows(
             corpse.0 =
                 dead.map(|p| blips::corpse_landmark(p, map.0, script.global_text("CORPSE_RED")));
         }
-        let healer = release
+        // As the corpse: rebuilt only when the release point or map changes.
+        let release_at = release
             .filter(|release| release.map_id == map.0 as i32)
-            .map(|release| {
+            .map(|release| release.position);
+        let healer_named = spirit_healer.0.as_ref().map(|h| (h.pos, h.continent_id));
+        if release_at.map(|p| (p, map.0)) != healer_named {
+            spirit_healer.0 = release_at.map(|p| {
                 blips::spirit_healer_landmark(
-                    release.position,
+                    p,
                     map.0,
                     script.global_text("SPIRIT_HEALER_RELEASE_RED"),
                 )
             });
-        if spirit_healer.0.as_ref() != healer.as_ref() {
-            spirit_healer.0 = healer;
         }
         if assets.tex(MinimapArtSlot::Mask).is_none() || !player.active {
             return;
