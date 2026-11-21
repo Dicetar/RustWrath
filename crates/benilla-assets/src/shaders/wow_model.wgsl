@@ -864,6 +864,10 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
             c_u = mix(c_amb, c_lit, trans_a);
         }
         lit_rgb = clamp(2.0 * wmo_texel * m.tint.rgb * c_u, vec3<f32>(0.0), vec3<f32>(1.0));
+        // Unified lighting mode 0 is the reference's unlit MOCV pass, not fullbright texture.
+        if (is_emissive) {
+            lit_rgb = clamp(2.0 * wmo_texel * vc_u, vec3<f32>(0.0), vec3<f32>(1.0));
+        }
     }
     // The unlit path: an M2's unlit program outputs `c28 + c29` (`0x70c663`-`0x70c693` fold the
     // tint·M2Color term into `c29` beside the highlight), so the texel modulates
@@ -882,6 +886,11 @@ fn fragment(in: WowVsOut, @builtin(front_facing) is_front: bool) -> WowFragOut {
         unlit_rgb = unlit_tex * clamp(unlit_sum, vec3<f32>(0.0), vec3<f32>(1.0));
     }
     var rgb = select(lit_rgb, unlit_rgb, is_emissive);
+    // Unified mode 0 is its own MapObjU MOCV pass; do not replace it with the generic M2
+    // fullbright override above.
+    if (is_wmo && m.stage1.w > 0.5) {
+        rgb = lit_rgb;
+    }
     // An M2 Mod or Mod2x batch draws the bare texel: the reference zeroes its tint·M2Color term and
     // forces the primary colour to the blend identity (`0x70c507`/`0x70c5b8`), so neither the
     // animated M2Color nor the body tint reaches it. Its alpha still does, through the lerp below.
