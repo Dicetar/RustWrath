@@ -100,6 +100,7 @@ pub fn load_currency_type_catalog(chain: &mut Chain) -> Result<CurrencyTypeCatal
     let records = parse(&bytes, currency_types_schema(), "CurrencyTypes.dbc")?;
     let rows: Vec<_> = records
         .records()
+        .iter()
         .filter_map(|record| {
             Some(CurrencyType {
                 id: u32_at(record, 0)?,
@@ -150,6 +151,7 @@ pub fn load_currency_category_catalog(chain: &mut Chain) -> Result<CurrencyCateg
     let locale = chain.locale().wrath_index();
     let rows = records
         .records()
+        .iter()
         .filter_map(|record| {
             Some(CurrencyCategory {
                 id: u32_at(record, 0)?,

@@ -20,7 +20,7 @@ use mlua::{Lua, MultiValue, Value};
 
 use super::binding_abi::{number_arg, string_arg};
 use super::unit::{check_unit_token_in, is_civilian_kill};
-use super::Model;
+use super::{Model, WrathCurrencyState};
 
 /// The local player's honor snapshot, decoded by the app from the private honor descriptor
 /// fields. Kill counts are halves of `TWO_SHORT` fields, low honorable and high dishonorable.
