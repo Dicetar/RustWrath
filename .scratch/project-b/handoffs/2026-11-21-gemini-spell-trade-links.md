@@ -105,7 +105,8 @@ Toolchain 1.98.1, sccache wrapper, `CARGO_TARGET_DIR=D:\Projects\project-b-clien
     `ui_tradeskill::tests::trade_skill_link_without_owner_traits_asks_once_then_opens` and the
     existing `ui_tradeskill` link tests that now run through `own_link_source`.
   - Clippy on test targets.
-- CI: not run yet when this note was written.
+- CI 44930247435 on 05f155c63: compiles; tests pass, including the `benilla-app` tests not run
+  locally.
 
 ## What is not proven in game
 
