@@ -3585,12 +3585,10 @@ impl History {
                         started_from_admission = false;
                     }
                     CastEdge::Requested => {}
-                    CastEdge::Admitted => {
-                        if !started_from_request && !started_from_admission {
-                            started_seq = *prior_seq;
-                            started_elapsed_ms = prior.elapsed_ms;
-                            started_from_admission = true;
-                        }
+                    CastEdge::Admitted if !started_from_request && !started_from_admission => {
+                        started_seq = *prior_seq;
+                        started_elapsed_ms = prior.elapsed_ms;
+                        started_from_admission = true;
                     }
                     _ => {}
                 }
@@ -9082,6 +9080,8 @@ mod tests {
         }
     }
 
+    // `History::counters` exists only with the `dev` feature.
+    #[cfg(feature = "dev")]
     #[test]
     fn full_ingress_drops_excess_without_blocking_gameplay_and_marks_gaps() {
         let (source, mut history) = new_pair();
@@ -9318,6 +9318,8 @@ mod tests {
         }));
     }
 
+    // The snapshot export reader (`serde_json`, `validate_snapshot_header`) is dev-only.
+    #[cfg(feature = "dev")]
     #[test]
     fn npc_aliases_and_redacted_snapshot_export_omit_raw_guids_and_reject_unknown_versions() {
         let (source, mut history) = new_pair();

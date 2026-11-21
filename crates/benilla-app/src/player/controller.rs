@@ -845,7 +845,7 @@ pub(super) fn control(
             };
             match tick {
                 MovementProcessorTick::Corrected(correction) => {
-                    if apply_movement_correction(&mut *player, &correction) {
+                    if apply_movement_correction(&mut player, &correction) {
                         Some(correction)
                     } else {
                         // A non-finite application is refused before it reaches the transform: the

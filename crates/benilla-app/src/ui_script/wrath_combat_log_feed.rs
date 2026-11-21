@@ -43,6 +43,7 @@ pub(crate) struct CombatLogMemo {
 /// the client's own unknown-object spelling, never a guessed player or creature name.
 const UNKNOWN_OBJECT_NAME: &str = "UNKNOWNOBJECT";
 
+#[allow(clippy::type_complexity)]
 pub(crate) fn feed(
     mut vm: VmWith<(
         Option<ResMut<'static, WrathWorldView>>,
@@ -829,11 +830,7 @@ fn spell_energize_args(
         .and_then(|spells| spells.catalog.school_mask(hit.spell_id))
         .unwrap_or(0);
     let divisor = benilla_protocol::messages::power_display_scale(hit.power_type);
-    let divided_amount = if divisor == 0 {
-        hit.amount
-    } else {
-        hit.amount / divisor
-    };
+    let divided_amount = hit.amount.checked_div(divisor).unwrap_or(hit.amount);
     args.push(ScriptValue::Int(i64::from(hit.spell_id)));
     args.push(spell_name.map_or(ScriptValue::Nil, ScriptValue::Str));
     args.push(ScriptValue::Int(i64::from(spell_school)));

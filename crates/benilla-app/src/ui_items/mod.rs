@@ -1146,7 +1146,7 @@ pub(crate) fn object_link_numbers_item(
 /// (`GetInventoryItemLink`, `0x4c8ce2`) and our own trade slot's (`GetTradePlayerItemLink`,
 /// `0x4c06bc`). With no record the link is white (`0x52aec5`) and nameless (`0x5d8b40`), and the
 /// record's flags read 0 (`0x5da2a0`), so the enchant goes in.
-
+///
 /// [`object_link_item`] over the typed item read.
 pub(crate) fn object_link_item(
     read: crate::wrath_item::ItemRead<'_>,
