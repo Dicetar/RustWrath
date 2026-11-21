@@ -505,9 +505,10 @@ fn row_at(model: &Model, index: usize) -> Option<MailInboxRow> {
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();
 
-    // GetInboxNumItems(): the rows held, then the server's total (`0x56d6d0`, two returns). The
-    // 3.3.5 `InboxFrame_Update` compares the two before it draws a row (`MailFrame.lua:141`), so
-    // a missing total errors there and the inbox stays empty; 1.12 reads the first only.
+    // GetInboxNumItems(): on Wrath the rows held, then the server's total (`0x56d6d0`, two
+    // returns). The 3.3.5 `InboxFrame_Update` compares the two before it draws a row
+    // (`MailFrame.lua:141`), so a missing total errors there and the inbox stays empty. 1.12
+    // answers the rows held alone (`0x4aeb90`, one return).
     // Deviation: the total is the rows held. The reference keeps the list's `real_count`
     // (`0x571c50`), which only differs past the server's 50-row cap, where the stock
     // `InboxTooMuchMail` notice shows; that count is not carried to the VM yet.
@@ -515,8 +516,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "GetInboxNumItems",
         lua.create_function(|lua, ()| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let shown = model.mail.as_ref().map_or(0, |m| m.inbox.len()) as i64;
-            Ok((shown, shown))
+            let shown = Value::Number(model.mail.as_ref().map_or(0, |m| m.inbox.len()) as f64);
+            Ok(if model.target == super::UiTarget::Wrath335 {
+                MultiValue::from_vec(vec![shown.clone(), shown])
+            } else {
+                MultiValue::from_vec(vec![shown])
+            })
         })?,
     )?;
 
@@ -1684,6 +1689,17 @@ mod tests {
     }
 
     #[test]
+    fn wrath_inbox_count_answers_shown_then_total() {
+        let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        s.set_mail(Some(state()));
+        // The 3.3.5 inbox compares the second return before drawing any row.
+        assert_eq!(
+            s.eval::<(i64, i64)>("return GetInboxNumItems()").unwrap(),
+            (2, 2)
+        );
+    }
+
+    #[test]
     fn inbox_header_reads_the_reference_tuple() {
         let mut s = kept();
         assert_eq!(s.eval::<i64>("return GetInboxNumItems()").unwrap(), 0);
@@ -1693,13 +1709,9 @@ mod tests {
 
         s.set_mail(Some(state()));
         assert_eq!(s.eval::<i64>("return GetInboxNumItems()").unwrap(), 2);
-        // The 3.3.5 inbox compares the second return before drawing any row.
-        assert_eq!(
-            s.eval::<(i64, i64)>("return GetInboxNumItems()").unwrap(),
-            (2, 2)
-        );
+        // 1.12 answers one value (`0x4aeb90`).
         assert!(s
-            .eval::<bool>("local n, t = GetInboxNumItems() return t > n == false")
+            .eval::<bool>("local n, t = GetInboxNumItems() return t == nil")
             .unwrap());
 
         let (pkg, sta, sender, subject, money, cod, days): (
