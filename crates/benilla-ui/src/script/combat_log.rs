@@ -942,7 +942,7 @@ mod tests {
     fn cursor_walks_newest_first_and_applies_source_and_dest_filters() {
         let mut script = wrath();
         script
-            .run(r#"CombatLogAddFilter("SPELL_HEAL", 17681, 2048)"#)
+            .run(r#"CombatLogAddFilter("SPELL_HEAL", "0x11", "0x22")"#)
             .unwrap();
         script.fire_event(
             "COMBAT_LOG_EVENT_UNFILTERED",
@@ -990,7 +990,7 @@ mod tests {
         script
             .run(
                 r#"
-                CombatLogAddFilter("SPELL_HEAL", 17681, 2048)
+                CombatLogAddFilter("SPELL_HEAL", "0x11", "0x22")
                 local listener = CreateFrame("Frame", "CombatLogHistoryHealListener")
                 listener:RegisterEvent("COMBAT_LOG_EVENT")
                 listener:SetScript("OnEvent", function(_, _, ...) Filtered = {...} end)
