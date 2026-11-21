@@ -302,6 +302,7 @@ pub struct SpellCatalog {
     spells: HashMap<u32, SpellDisplay>,
     school_masks: HashMap<u32, u32>,
     family_flags_high: HashMap<u32, u32>,
+    attributes_ex_g: HashMap<u32, u32>,
     learned_spell: HashMap<u32, u32>,
     /// Learn effects in slot order, for spells that have any.
     learn_effects: HashMap<u32, Vec<LearnEffect>>,
@@ -363,6 +364,7 @@ impl SpellCatalog {
             spells,
             school_masks: HashMap::new(),
             family_flags_high: HashMap::new(),
+            attributes_ex_g: HashMap::new(),
             learned_spell,
             learn_effects,
             declared_language: HashMap::new(),
@@ -396,6 +398,10 @@ impl SpellCatalog {
             self.get(id)
                 .and_then(|spell| 1u32.checked_shl(spell.school))
         })
+    }
+
+    pub fn attributes_ex_g(&self, id: u32) -> u32 {
+        self.attributes_ex_g.get(&id).copied().unwrap_or(0)
     }
 
     /// All three WotLK family-flag words, low first; vanilla has only the first two.
@@ -545,6 +551,7 @@ pub fn load_spell_catalog(chain: &mut Chain) -> Result<SpellCatalog> {
     let mut spells: HashMap<u32, SpellDisplay> = HashMap::new();
     let mut school_masks = HashMap::new();
     let mut family_flags_high = HashMap::new();
+    let mut attributes_ex_g = HashMap::new();
     let mut learned_spell: HashMap<u32, u32> = HashMap::new();
     let mut learn_effects: HashMap<u32, Vec<LearnEffect>> = HashMap::new();
     let mut declared_language: HashMap<u32, u32> = HashMap::new();
@@ -558,6 +565,10 @@ pub fn load_spell_catalog(chain: &mut Chain) -> Result<SpellCatalog> {
         let high = layout.family_flags_high(r);
         if high != 0 {
             family_flags_high.insert(id, high);
+        }
+        let ex_g = layout.attributes_ex_g(r);
+        if ex_g != 0 {
+            attributes_ex_g.insert(id, ex_g);
         }
         // The learn-spell hop: the first LEARN_SPELL effect's trigger is the taught ability.
         // 12340 skips a slot aimed at the pet (`ImplicitTargetA == 5`), so a pet-teaching slot
@@ -774,6 +785,7 @@ pub fn load_spell_catalog(chain: &mut Chain) -> Result<SpellCatalog> {
         spells,
         school_masks,
         family_flags_high,
+        attributes_ex_g,
         learned_spell,
         learn_effects,
         declared_language,
