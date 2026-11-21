@@ -50,6 +50,8 @@
 //! - `:709-764` walks the history with `CombatLogGetNumEntries()`,
 //!   `CombatLogSetCurrentEntry(0)`, `CombatLogGetCurrentEntry()` and `CombatLogAdvanceEntry(-1)`.
 
+use std::collections::VecDeque;
+
 use mlua::{Lua, MultiValue, Value};
 
 use super::Model;
@@ -78,13 +80,23 @@ pub(crate) enum FilterSelector {
     Guid(String),
 }
 
-/// The filter list (`s_filters`) and the fallback `combatLogRetentionTime` value used when no such
-/// CVar row is registered. The reference default is `"300"` seconds
-/// (`WoW/Source/Ui/GameUI_CVar.cpp:633`); no raw-entry ring exists beside it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A raw event retained by the combat-log history. The producer passes the same tuple that the
+/// `COMBAT_LOG_EVENT_UNFILTERED` handler receives; the event name itself is not part of the
+/// `CombatLogGetCurrentEntry` return, matching `CombatLogEntry::PushEvent`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CombatLogEntry {
+    pub(crate) timestamp: f64,
+    pub(crate) args: Vec<super::ScriptValue>,
+}
+
+/// The filter list and the raw event history. The reference prunes entries by the
+/// `combatLogRetentionTime` CVar during its send pass (`UnitCombatLog_C.cpp:813-819`).
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CombatLogState {
     pub(crate) filters: Vec<CombatLogFilter>,
     pub(crate) retention_seconds: i32,
+    pub(crate) entries: VecDeque<CombatLogEntry>,
+    pub(crate) current_entry: Option<usize>,
     active_text_unit: Option<u64>,
 }
 
@@ -93,6 +105,8 @@ impl Default for CombatLogState {
         Self {
             filters: Vec::new(),
             retention_seconds: 300,
+            entries: VecDeque::new(),
+            current_entry: None,
             active_text_unit: None,
         }
     }
@@ -142,6 +156,112 @@ fn selector(value: &Value, field: &str) -> mlua::Result<FilterSelector> {
     }
 }
 
+fn parse_guid(value: &str) -> Option<u64> {
+    value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+}
+
+/// Match one selector against the entry's unit: a guid selector reads the guid argument, a mask
+/// selector reads the unit-flags argument.
+fn selector_matches(
+    selector: &FilterSelector,
+    guid: &super::ScriptValue,
+    flags: &super::ScriptValue,
+) -> bool {
+    match selector {
+        FilterSelector::All => true,
+        FilterSelector::Mask(mask) => match flags {
+            super::ScriptValue::Int(flags) => {
+                let matched = *mask & *flags as u32;
+                matched & 0xFFFF_0000 != 0
+                    || (matched & 0xF != 0
+                        && matched & 0xF0 != 0
+                        && matched & 0x300 != 0
+                        && matched & 0xFC00 != 0)
+            }
+            _ => false,
+        },
+        FilterSelector::Guid(wanted) => match guid {
+            super::ScriptValue::Str(actual) => {
+                parse_guid(actual).is_some() && parse_guid(actual) == parse_guid(wanted)
+            }
+            _ => false,
+        },
+    }
+}
+
+fn event_matches(filter: &CombatLogFilter, entry: &CombatLogEntry) -> bool {
+    let event = match entry.args.get(1) {
+        Some(super::ScriptValue::Str(event)) => event,
+        _ => return false,
+    };
+    let event_selected = filter.events.as_deref().is_none_or(|events| {
+        events
+            .split(|c: char| c.is_ascii_whitespace() || c == ',')
+            .any(|candidate| candidate.eq_ignore_ascii_case(event))
+    });
+    let arg = |index: usize| entry.args.get(index).unwrap_or(&super::ScriptValue::Nil);
+    // COMBAT_LOG_EVENT_UNFILTERED: timestamp, event, srcGUID, srcName, srcFlags, dstGUID,
+    // dstName, dstFlags, ...
+    event_selected
+        && selector_matches(&filter.source, arg(2), arg(4))
+        && selector_matches(&filter.dest, arg(5), arg(7))
+}
+
+fn matches_filter(state: &CombatLogState, entry: &CombatLogEntry) -> bool {
+    state.filters.is_empty()
+        || state
+            .filters
+            .iter()
+            .any(|filter| event_matches(filter, entry))
+}
+
+fn lua_bool(value: Option<&Value>) -> bool {
+    !matches!(value, None | Some(Value::Nil) | Some(Value::Boolean(false)))
+}
+
+fn prune_entries(state: &mut CombatLogState, newest: f64, retention_seconds: i32) {
+    let cutoff = newest - f64::from(retention_seconds.max(0));
+    let mut removed = 0usize;
+    while state
+        .entries
+        .front()
+        .is_some_and(|entry| entry.timestamp < cutoff)
+    {
+        state.entries.pop_front();
+        removed += 1;
+    }
+    state.current_entry = state
+        .current_entry
+        .and_then(|index| index.checked_sub(removed));
+}
+
+/// Record one unfiltered combat-log dispatch and return whether the filtered event should fire.
+/// `fire_event_into` calls this before walking listeners, so producers need no parallel history
+/// hook. The reference queues every `CombatLogEntry`, even when no addon listens.
+pub(super) fn record_unfiltered(lua: &Lua, args: &[super::ScriptValue]) -> bool {
+    let Some(super::ScriptValue::Number(timestamp)) = args.first() else {
+        return false;
+    };
+    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+    let entry = CombatLogEntry {
+        timestamp: *timestamp,
+        args: args.to_vec(),
+    };
+    let retention = model
+        .cvars
+        .get("combatlogretentiontime")
+        .map(|slot| crate::script::binding_abi::s_str_to_int(&slot.value))
+        .unwrap_or(model.combat_log.retention_seconds);
+    model.combat_log.entries.push_back(entry);
+    prune_entries(&mut model.combat_log, *timestamp, retention);
+    let Some(entry) = model.combat_log.entries.back() else {
+        return false;
+    };
+    matches_filter(&model.combat_log, entry)
+}
 fn number_arg(lua: &Lua, args: &MultiValue) -> mlua::Result<Option<f64>> {
     lua.coerce_number(args.front().cloned().unwrap_or(Value::Nil))
 }
@@ -206,6 +326,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let events = lua.coerce_string(events)?.map(|s| s.to_string_lossy());
             let source = selector(&source, "srcMask")?;
             let dest = selector(&dest, "dstMask")?;
+            let events = events.filter(|events| !events.trim().is_empty());
             lua.app_data_mut::<Model>()
                 .expect("model app_data")
                 .combat_log
@@ -222,45 +343,124 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `0x0074FA70`: one integer. With no producer it is always 0; `all` does not change that.
     globals.set(
         "CombatLogGetNumEntries",
-        lua.create_function(|_, _: MultiValue| Ok(0i64))?,
+        lua.create_function(|lua, args: MultiValue| {
+            let all = lua_bool(args.front());
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let count = model
+                .combat_log
+                .entries
+                .iter()
+                .filter(|entry| all || matches_filter(&model.combat_log, entry))
+                .count();
+            Ok(count as i64)
+        })?,
     )?;
 
     // `0x0074FAE0`: one nil, after the reference's numeric-index check.
     globals.set(
         "CombatLogSetCurrentEntry",
         lua.create_function(|lua, args: MultiValue| {
-            if number_arg(lua, &args)?.is_none() {
+            let Some(index) = number_arg(lua, &args)? else {
                 return Err(mlua::Error::runtime(
                     "Usage: CombatLogSetCurrentEntry(index [,ignoreFilter])",
                 ));
-            }
-            Ok(Value::Nil)
+            };
+            let all = lua_bool(args.get(1));
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let entries = &model.combat_log.entries;
+            let selected = if index <= 0.0 {
+                entries
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .filter(|(_, entry)| all || matches_filter(&model.combat_log, entry))
+                    .nth((-index as i64) as usize)
+                    .map(|(index, _)| index)
+            } else {
+                entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, entry)| all || matches_filter(&model.combat_log, entry))
+                    .nth(index as usize - 1)
+                    .map(|(index, _)| index)
+            };
+            model.combat_log.current_entry = selected;
+            Ok(if selected.is_some() {
+                Value::Number(1.0)
+            } else {
+                Value::Nil
+            })
         })?,
     )?;
 
     // `0x0074F2B0`: no values while no entry is current.
     globals.set(
         "CombatLogGetCurrentEntry",
-        lua.create_function(|_, _: MultiValue| Ok(MultiValue::new()))?,
+        lua.create_function(|lua, _: MultiValue| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let Some(index) = model.combat_log.current_entry else {
+                return Ok(MultiValue::new());
+            };
+            let Some(entry) = model.combat_log.entries.get(index) else {
+                return Ok(MultiValue::new());
+            };
+            entry
+                .args
+                .iter()
+                .cloned()
+                .map(|value| value.into_lua(lua))
+                .collect::<mlua::Result<Vec<_>>>()
+                .map(MultiValue::from_vec)
+        })?,
     )?;
 
     // `0x0074FC20`: one nil, after the reference's numeric-count check.
     globals.set(
         "CombatLogAdvanceEntry",
         lua.create_function(|lua, args: MultiValue| {
-            if number_arg(lua, &args)?.is_none() {
+            let Some(count) = number_arg(lua, &args)? else {
                 return Err(mlua::Error::runtime(
                     "Usage: CombatLogAdvanceEntry(count [,ignoreFilter])",
                 ));
-            }
-            Ok(Value::Nil)
+            };
+            let all = lua_bool(args.get(1));
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let current = model.combat_log.current_entry;
+            let selected = current.and_then(|current| {
+                let entries = &model.combat_log.entries;
+                let direction = if count <= 0.0 { -1isize } else { 1isize };
+                let mut remaining = count.abs() as i64;
+                let mut cursor = current as isize;
+                while remaining > 0 {
+                    cursor += direction;
+                    if cursor < 0 || cursor >= entries.len() as isize {
+                        return None;
+                    }
+                    let entry = &entries[cursor as usize];
+                    if all || matches_filter(&model.combat_log, entry) {
+                        remaining -= 1;
+                    }
+                }
+                Some(cursor as usize)
+            });
+            model.combat_log.current_entry = selected;
+            Ok(if selected.is_some() {
+                Value::Number(1.0)
+            } else {
+                Value::Nil
+            })
         })?,
     )?;
 
     // `0x00751120`: no raw entries to recycle, so no values.
     globals.set(
         "CombatLogClearEntries",
-        lua.create_function(|_, ()| Ok(()))?,
+        lua.create_function(|lua, ()| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            model.combat_log.entries.clear();
+            model.combat_log.current_entry = None;
+            Ok(())
+        })?,
     )?;
 
     // `0x0074D9E0`: `g_combatLogRetentionTimeCVar->m_intValue`, Storm's `SStrToInt` of the row's
@@ -684,5 +884,159 @@ mod tests {
             300,
             "the row owns the value; the refused write leaves the fallback behind"
         );
+    }
+
+    fn entry(
+        timestamp: f64,
+        event: &str,
+        source: &str,
+        source_flags: i64,
+        dest: &str,
+        dest_flags: i64,
+    ) -> Vec<super::super::ScriptValue> {
+        vec![
+            super::super::ScriptValue::Number(timestamp),
+            super::super::ScriptValue::Str(event.into()),
+            super::super::ScriptValue::Str(source.into()),
+            super::super::ScriptValue::Str("Firna".into()),
+            super::super::ScriptValue::Int(source_flags),
+            super::super::ScriptValue::Str(dest.into()),
+            super::super::ScriptValue::Str("Target".into()),
+            super::super::ScriptValue::Int(dest_flags),
+            super::super::ScriptValue::Int(123),
+            super::super::ScriptValue::Str("Test Heal".into()),
+            super::super::ScriptValue::Int(2),
+            super::super::ScriptValue::Int(50),
+            super::super::ScriptValue::Int(0),
+            super::super::ScriptValue::Int(0),
+            super::super::ScriptValue::Int(0),
+            super::super::ScriptValue::Nil,
+        ]
+    }
+
+    #[test]
+    fn ring_prunes_old_events_and_clear_resets_cursor() {
+        let mut script = wrath();
+        script.run("CombatLogSetRetentionTime(2)").unwrap();
+        script.fire_event(
+            "COMBAT_LOG_EVENT_UNFILTERED",
+            entry(10.0, "SPELL_HEAL", "0x11", 0x4511, "0x22", 0x800),
+        );
+        script.fire_event(
+            "COMBAT_LOG_EVENT_UNFILTERED",
+            entry(13.0, "SPELL_HEAL", "0x11", 0x4511, "0x22", 0x800),
+        );
+        assert_eq!(
+            script
+                .eval::<i64>("return CombatLogGetNumEntries(true)")
+                .unwrap(),
+            1
+        );
+        script.run("CombatLogSetCurrentEntry(0, true)").unwrap();
+        script.run("CombatLogClearEntries()").unwrap();
+        assert_eq!(
+            script
+                .eval::<i64>("return CombatLogGetNumEntries(true)")
+                .unwrap(),
+            0
+        );
+        assert_eq!(script.arity("CombatLogGetCurrentEntry()").unwrap(), 0);
+    }
+
+    #[test]
+    fn cursor_walks_newest_first_and_applies_source_and_dest_filters() {
+        let mut script = wrath();
+        script
+            .run(r#"CombatLogAddFilter("SPELL_HEAL", "0x11", "0x22")"#)
+            .unwrap();
+        script.fire_event(
+            "COMBAT_LOG_EVENT_UNFILTERED",
+            entry(1.0, "SPELL_DAMAGE", "0x11", 0x4511, "0x22", 0x800),
+        );
+        script.fire_event(
+            "COMBAT_LOG_EVENT_UNFILTERED",
+            entry(2.0, "SPELL_HEAL", "0x11", 0x4511, "0x22", 0x800),
+        );
+        script.fire_event(
+            "COMBAT_LOG_EVENT_UNFILTERED",
+            entry(3.0, "SPELL_HEAL", "0x33", 0x800, "0x22", 0x800),
+        );
+        assert_eq!(
+            script
+                .eval::<i64>("return CombatLogGetNumEntries()")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            script
+                .eval::<i64>("return CombatLogGetNumEntries(true)")
+                .unwrap(),
+            3
+        );
+        script.run("CombatLogSetCurrentEntry(0)").unwrap();
+        assert_eq!(
+            script
+                .eval::<String>("local _,e=CombatLogGetCurrentEntry(); return e")
+                .unwrap(),
+            "SPELL_HEAL"
+        );
+        // `0x0074FC20`: a filtered step back finds no older match, so the cursor is cleared.
+        assert_eq!(
+            script
+                .eval::<Option<f64>>("return CombatLogAdvanceEntry(-1)")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            script
+                .eval::<i64>("return select('#', CombatLogGetCurrentEntry())")
+                .unwrap(),
+            0
+        );
+        // Ignoring the filter steps onto the older unmatched damage entry.
+        script.run("CombatLogSetCurrentEntry(0)").unwrap();
+        assert_eq!(
+            script
+                .eval::<Option<f64>>("return CombatLogAdvanceEntry(-1, true)")
+                .unwrap(),
+            Some(1.0)
+        );
+        assert_eq!(
+            script
+                .eval::<f64>("return (CombatLogGetCurrentEntry())")
+                .unwrap(),
+            1.0
+        );
+    }
+
+    #[test]
+    fn unfiltered_heal_reaches_history_and_filtered_listeners() {
+        let mut script = wrath();
+        script
+            .run(
+                r#"
+                CombatLogAddFilter("SPELL_HEAL", "0x11", "0x22")
+                local listener = CreateFrame("Frame", "CombatLogHistoryHealListener")
+                listener:RegisterEvent("COMBAT_LOG_EVENT")
+                listener:SetScript("OnEvent", function(_, _, ...) Filtered = {...} end)
+                "#,
+            )
+            .unwrap();
+        script.fire_event(
+            "COMBAT_LOG_EVENT_UNFILTERED",
+            entry(42.0, "SPELL_HEAL", "0x11", 0x4511, "0x22", 0x800),
+        );
+        assert_eq!(
+            script
+                .eval::<i64>("return CombatLogGetNumEntries()")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            script.eval::<String>("return Filtered[2]").unwrap(),
+            "SPELL_HEAL"
+        );
+        // OnEvent receives (self, event, timestamp, subevent, ...): the amount is the 12th vararg.
+        assert_eq!(script.eval::<i64>("return Filtered[12]").unwrap(), 50);
     }
 }

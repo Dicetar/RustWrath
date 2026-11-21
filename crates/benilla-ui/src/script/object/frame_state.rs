@@ -436,12 +436,15 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 )));
             }
             let lvl = level.min(i64::from(u16::MAX)) as u16;
-            // A script level change moves no children: `0x774560` calls `set_frame_level 0x76a4f0`
-            // with `propagate = 0`, which stock `BonusActionButtonTemplate` relies on.
-            lua.app_data_mut::<Model>()
-                .expect("model")
-                .arena
-                .set_frame_level(h, lvl, false);
+            // 1.12: a script level change moves no children: `0x774560` calls `set_frame_level
+            // 0x76a4f0` with `propagate = 0`, which stock `BonusActionButtonTemplate` relies on.
+            // 3.3.5 moves the same-strata children by the same delta (`Script_SetFrameLevel` calls
+            // `CSimpleFrame::SetFrameLevel(level, 1)`, CSimpleFrame_Scripts.cpp:394), so a frame
+            // that raises itself keeps its children above its backdrop: the tooltip's money line,
+            // a bag addon's item buttons.
+            let mut model = lua.app_data_mut::<Model>().expect("model");
+            let wrath = model.target == crate::script::UiTarget::Wrath335;
+            model.arena.set_frame_level(h, lvl, wrath);
             Ok(())
         })?,
     )?;

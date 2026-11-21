@@ -25,11 +25,13 @@ Spending charges (equipped items only, random-pool enchants only)
 Tiers go past the item's window up to 5 on any item. Results never use an enchant whose
 required level is above the player's level, since the core applies nothing below it.
 
-Opening the bottle: use the bottle item, or type `.bottle` (gives you the bottle if you have
-none, then opens the menu). The bottle reuses stock item 44625 "Bottle of Aged Dalaran Red"
-(new item_template rows load only at server start); dummy pool item 800000 is registered too for
-after the next start. Using it opens the menu instead of drinking it, so it is never consumed.
-Out of combat only (the stock drink spell is not usable in combat).
+Opening the bottle: the RustWrath client opens its own bottle panel when the bottle item is used
+(or on `/bottle`); the panel talks to this script over addon whispers to oneself under the prefix
+RWBOTTLE (see "The RustWrath panel" below). The stock item's spell is a ground-targeted "set out
+a bottle", so a stock client shows a placement cursor instead of using it: stock clients type
+`.bottle` (gives you the bottle if you have none, then opens a gossip menu). The bottle reuses
+stock item 44625 "Bottle of Aged Dalaran Red" (new item_template rows load only at server
+start); dummy pool item 800000 is registered too for after the next start.
 
 Storage: characters DB table `rustwrath_enchant_bottle` (created on load if missing).
 ]]
@@ -63,6 +65,11 @@ local TIER_VALUE = { 1, 2, 4, 8, 16 }
 local TIER_STEPS = { { 0, 50 }, { 1, 30 }, { 2, 15 }, { 3, 5 } } -- same window as the loot roller
 
 local TAG = "|cff66ccff[Bottle]|r "
+
+-- The RustWrath client's panel channel (`crates/benilla-app/assets/ui/EnchantBottle.xml`).
+local PREFIX = "RWBOTTLE"
+local ADDON_EVENT_ON_MESSAGE = 30
+local CHAT_MSG_WHISPER = 7
 
 -- Gossip senders and actions.
 local S_ROOT, S_ITEM, S_SLOT, S_ACT, S_ABSORB_LIST, S_ABSORB, S_CLOSE = 1, 2, 3, 4, 5, 6, 7
@@ -216,8 +223,16 @@ local function save(player, s)
         player:GetGUIDLow(), s.charges, s.stored))
 end
 
+-- One line to the RustWrath bottle panel: an addon whisper to oneself (see "The RustWrath panel").
+local function panel(player, line)
+    player:SendAddonMessage(PREFIX, line, CHAT_MSG_WHISPER, player)
+end
+
 local function say(player, text)
     player:SendBroadcastMessage(TAG .. text)
+    -- The panel's status line: links and colours stripped, cut to the 255-byte chat cap.
+    local plain = text:gsub("|H.-|h(.-)|h", "%1"):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+    panel(player, "MSG\t" .. plain:sub(1, 230))
 end
 
 -- Fills the bottle from an item's random enchants. Returns the charges gained.
@@ -444,7 +459,7 @@ local function act(player, intid)
     local equip_slot, si = math.floor(code / 8), code % 8
     local item, slot = equipped(player, equip_slot), SLOTS[si]
     if not item or not slot then
-        return show_root(player)
+        return "root"
     end
     local s = state(player)
     local current = item:GetEnchantmentId(slot) or 0
@@ -452,7 +467,7 @@ local function act(player, intid)
 
     if action == A_REROLL or action == A_GAMBLE or action == A_EMPOWER then
         if not tier then
-            return show_item(player, equip_slot)
+            return "item", equip_slot
         end
         local target, cost, want = tier, TIER_VALUE[tier], nil
         if action == A_GAMBLE then
@@ -461,7 +476,7 @@ local function act(player, intid)
         elseif action == A_EMPOWER then
             target, cost, want = tier + 1, 2 * TIER_VALUE[math.min(tier + 1, MAX_TIER)], ENCHANTS[current].family
             if target > MAX_TIER then
-                return show_slot(player, code)
+                return "slot", code
             end
         end
         local id = pick(target, item, player, current, want)
@@ -469,24 +484,24 @@ local function act(player, intid)
             say(player, action == A_EMPOWER
                 and string.format("%s has no T%d version for this item.", enchant_name(current), target)
                 or string.format("No other T%d enchant fits this item.", target))
-            return show_slot(player, code)
+            return "slot", code
         end
         if pay(player, s, cost) then
             apply(player, item, slot, id, s, cost,
                 (action == A_REROLL and "Rerolled") or (action == A_GAMBLE and "Gambled") or "Empowered")
         end
-        return show_item(player, equip_slot)
+        return "item", equip_slot
     end
 
     if current ~= 0 then
         say(player, "That slot is no longer empty.")
-        return show_item(player, equip_slot)
+        return "item", equip_slot
     end
 
     if action == A_AWAKEN then
         if s.charges < awaken_cost(1) then
             pay(player, s, awaken_cost(1))
-            return show_item(player, equip_slot)
+            return "item", equip_slot
         end
         local target = roll_window_tier(item:GetQuality())
         while target > 1 and awaken_cost(target) > s.charges do
@@ -495,45 +510,128 @@ local function act(player, intid)
         local id = pick(target, item, player)
         if not id then
             say(player, string.format("No T%d enchant fits this item.", target))
-            return show_item(player, equip_slot)
+            return "item", equip_slot
         end
         local cost = awaken_cost(target)
         if pay(player, s, cost) then
             apply(player, item, slot, id, s, cost, "Awakened")
         end
-        return show_item(player, equip_slot)
+        return "item", equip_slot
     end
 
     if action == A_POUR then
         local id = s.stored
         if id == 0 or not tier_of(id) then
-            return show_item(player, equip_slot)
+            return "item", equip_slot
         end
         if not fits(id, item, player) then
             say(player, string.format("%s does not fit %s%s.", enchant_name(id), item:GetName(),
                 ENCHANTS[id].level > player:GetLevel()
                     and string.format(" (needs level %d)", ENCHANTS[id].level) or ""))
-            return show_item(player, equip_slot)
+            return "item", equip_slot
         end
         local cost = 2 * TIER_VALUE[tier_of(id)]
         if pay(player, s, cost) then
             s.stored = 0
             apply(player, item, slot, id, s, cost, "Poured into")
         end
-        return show_item(player, equip_slot)
+        return "item", equip_slot
     end
-    return show_root(player)
+    return "root"
 end
 
-local function absorb(player, intid)
-    local bag, slot = math.floor(intid / 256), intid % 256
+local function absorb(player, bag, slot)
     local item = player:GetItemByPos(bag, slot)
     if item and class_name(item) and not item:IsEquipped() then
         if harvest(player, item) > 0 then
             player:RemoveItem(item, 1)
         end
     end
-    show_absorb_list(player)
+end
+
+-- The RustWrath panel ---------------------------------------------------------------------
+-- The client's own panel, fed over addon whispers to oneself under PREFIX, TAB-separated.
+-- Client to server:
+--   OPEN                              the panel opened or wants a refresh
+--   ACT <action> <equip slot> <1-3>   A_REROLL..A_POUR on one enchant slot of an equipped item
+--   ABSORB <bag> <slot>               a bag position from an ABS line (server numbering)
+-- Server to client, a refresh being BEGIN, ITEM and ABS lines, then END:
+--   BEGIN <charges> <stored id> <stored tier> <pour cost> <awaken cost> <stored name>
+--   ITEM <equip slot> <entry> then, for enchant slots 1-3, <id> <tier> <reroll cost>
+--        <empower cost> <name> (id 0: empty; tier 0: not a random enchant; cost 0: none)
+--   ABS <bag> <slot> <entry> <charges> <name>
+--   MSG <text>                        the last result, also said in chat
+-- The server stays authoritative: every ACT and ABSORB is checked again here.
+
+local function send_state(player)
+    local s = state(player)
+    local stored_tier = tier_of(s.stored) or 0
+    panel(player, table.concat({ "BEGIN", s.charges, s.stored, stored_tier,
+        stored_tier > 0 and 2 * TIER_VALUE[stored_tier] or 0, awaken_cost(1),
+        s.stored ~= 0 and enchant_name(s.stored) or "" }, "\t"))
+    for equip_slot = 0, 18 do
+        local item = equipped(player, equip_slot)
+        if item then
+            local fields = { "ITEM", equip_slot, item:GetEntry() }
+            for _, slot in ipairs(SLOTS) do
+                local id = item:GetEnchantmentId(slot) or 0
+                local tier = tier_of(id) or 0
+                fields[#fields + 1] = id
+                fields[#fields + 1] = tier
+                fields[#fields + 1] = tier > 0 and TIER_VALUE[tier] or 0
+                fields[#fields + 1] = (tier > 0 and tier < MAX_TIER) and 2 * TIER_VALUE[tier + 1] or 0
+                fields[#fields + 1] = id ~= 0 and enchant_name(id):sub(1, 40) or ""
+            end
+            panel(player, table.concat(fields, "\t"))
+        end
+    end
+    for i, entry in ipairs(bag_items(player)) do
+        if i > 24 then
+            break
+        end
+        panel(player, table.concat({ "ABS", entry.bag, entry.slot, entry.item:GetEntry(), entry.value,
+            entry.item:GetName():sub(1, 60) }, "\t"))
+    end
+    panel(player, "END")
+end
+
+local function split(text)
+    local fields = {}
+    for field in (text .. "\t"):gmatch("([^\t]*)\t") do
+        fields[#fields + 1] = field
+    end
+    return fields
+end
+
+local function on_addon(_, sender, msg_type, prefix, msg, target)
+    if prefix ~= PREFIX then
+        return
+    end
+    -- Only a whisper to oneself is ours; anything else with the prefix is dropped.
+    if msg_type ~= CHAT_MSG_WHISPER or not target or not sender
+        or target:GetGUIDLow() ~= sender:GetGUIDLow() then
+        return false
+    end
+    local fields = split(msg or "")
+    local verb = fields[1]
+    if verb == "ACT" then
+        local action, equip_slot, si = tonumber(fields[2]), tonumber(fields[3]), tonumber(fields[4])
+        if action and equip_slot and si and action >= A_REROLL and action <= A_POUR
+            and equip_slot >= 0 and equip_slot <= 18 and SLOTS[si] then
+            act(sender, action * 256 + equip_slot * 8 + si)
+        end
+        send_state(sender)
+    elseif verb == "ABSORB" then
+        local bag, slot = tonumber(fields[2]), tonumber(fields[3])
+        if bag and slot then
+            absorb(sender, bag, slot)
+        end
+        send_state(sender)
+    elseif verb == "OPEN" then
+        send_state(sender)
+    end
+    -- Our own requests never come back to the client as whispers.
+    return false
 end
 
 -- Hooks -----------------------------------------------------------------------------------
@@ -546,11 +644,19 @@ local function on_select(_, player, _, sender, intid)
     elseif sender == S_SLOT then
         show_slot(player, intid)
     elseif sender == S_ACT then
-        act(player, intid)
+        local view, arg = act(player, intid)
+        if view == "slot" then
+            show_slot(player, arg)
+        elseif view == "item" then
+            show_item(player, arg)
+        else
+            show_root(player)
+        end
     elseif sender == S_ABSORB_LIST then
         show_absorb_list(player)
     elseif sender == S_ABSORB then
-        absorb(player, intid)
+        absorb(player, math.floor(intid / 256), intid % 256)
+        show_absorb_list(player)
     else
         show_root(player)
     end
@@ -590,6 +696,7 @@ if ENCHANTS then
     RegisterPlayerGossipEvent(MENU_ID, GOSSIP_EVENT_ON_SELECT, on_select)
     RegisterPlayerEvent(PLAYER_EVENT_ON_SPELL_CAST, on_spell_cast)
     RegisterPlayerEvent(PLAYER_EVENT_ON_COMMAND, on_command)
+    RegisterServerEvent(ADDON_EVENT_ON_MESSAGE, on_addon)
 end
 
 local pooled = 0
