@@ -139,14 +139,18 @@ impl FocusWorld<'_, '_> {
 
 /// Follow the focus's object once the net stage has applied the objects that streamed in and out:
 /// adopt the VM's focus, then end it where `BreakTarget` would, signalling `PLAYER_FOCUS_CHANGED`
-/// through the VM's `SetFocusTarget`. No in-game VM is no focus.
-pub(crate) fn follow_focus(mut hosted_vm: crate::script_calls::HostedVm, mut world: FocusWorld) {
-    hosted_vm.run(|script| {
-        let Some(script) = script else {
+/// through the VM's `SetFocusTarget`. No in-game VM is no focus. [`FocusWorld`] and the host are
+/// a disjoint pair ([`crate::script_calls::VmWith`]): the host's own token resolver reads
+/// [`FocusTarget`], so this never holds both at once.
+pub(crate) fn follow_focus(mut vm: crate::script_calls::VmWith<FocusWorld<'static, 'static>>) {
+    let vm_focus = vm.run(|script| script.map(|script| script.focus_guid()));
+    let breaks = {
+        let mut world = vm.own();
+        let Some(vm_focus) = vm_focus else {
             *world.focus = FocusTarget::default();
             return;
         };
-        world.adopt(script.focus_guid());
+        world.adopt(vm_focus);
         let Some(guid) = world.focus.guid else {
             return;
         };
@@ -158,33 +162,48 @@ pub(crate) fn follow_focus(mut hosted_vm: crate::script_calls::HostedVm, mut wor
             unselectable,
         );
         let member = object == FocusObject::Deactivated && world.member_or_pet(guid);
-        if focus_breaks(object, member) {
-            script.set_focus_target(0);
+        let breaks = focus_breaks(object, member);
+        if breaks {
             *world.focus = FocusTarget::default();
         } else {
             world.focus.held = now;
             world.focus.unselectable = unselectable;
         }
-    })
+        breaks
+    };
+    if breaks {
+        vm.run(|script| {
+            if let Some(script) = script {
+                script.set_focus_target(0);
+            }
+        });
+    }
 }
 
 /// `CGGameUI::LeaveWorld` (`0x528C30`): a focus that is not a raid member or pet is cleared
 /// (`GameUI.cpp` `0x528C30`, after the selection, before `PLAYER_LEAVING_WORLD`), signalled. The
 /// logout's `Shutdown` (`0x528F00`) clears it whatever it is, which the VM's end does here.
 pub(crate) fn clear_focus_on_leave_world(
-    mut hosted_vm: crate::script_calls::HostedVm,
-    mut world: FocusWorld,
+    mut vm: crate::script_calls::VmWith<FocusWorld<'static, 'static>>,
 ) {
-    hosted_vm.run(|script| {
-        let Some(script) = script else {
-            return;
-        };
-        let guid = script.focus_guid();
-        if guid != 0 && !world.member_or_pet(guid) {
-            script.set_focus_target(0);
+    let Some(guid) = vm.run(|script| script.map(|script| script.focus_guid())) else {
+        return;
+    };
+    let clears = {
+        let mut world = vm.own();
+        let clears = guid != 0 && !world.member_or_pet(guid);
+        if clears {
             *world.focus = FocusTarget::default();
         }
-    })
+        clears
+    };
+    if clears {
+        vm.run(|script| {
+            if let Some(script) = script {
+                script.set_focus_target(0);
+            }
+        });
+    }
 }
 
 #[cfg(test)]

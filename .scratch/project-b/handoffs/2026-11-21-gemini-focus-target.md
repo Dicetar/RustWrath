@@ -114,7 +114,8 @@ Pin e67b6ffe, `D:/Projects/wow/reference/wowdecomp-reference`.
 
 ## Local checks run, and what was not run
 
-Toolchain 1.98.1, sccache wrapper, `CARGO_TARGET_DIR=D:\Projects\project-b-client\target`.
+Toolchain 1.98.1, sccache wrapper. First pass: `CARGO_TARGET_DIR=D:\Projects\project-b-client\target`;
+the follow-up: this worktree's own `target/` (see the CI line below).
 
 - Run:
   - `cargo check -p benilla-ui -p benilla-app`: passed.
@@ -130,7 +131,17 @@ Toolchain 1.98.1, sccache wrapper, `CARGO_TARGET_DIR=D:\Projects\project-b-clien
     (`target::focus::tests::the_focus_breaks_where_break_target_runs`, the despawn rule). The test
     binary was not built.
   - Clippy on test targets.
-- CI: not run yet when this note was written.
+- CI run 44928950573 on 3029f93cc failed. Nearly every `benilla-app` test panicked with Bevy
+  B0002: `follow_focus` and `clear_focus_on_leave_world` held `ResMut<FocusTarget>` beside
+  `HostedVm`, whose call host reads `Res<FocusTarget>` through `UnitTokens`. The follow-up
+  commit moves both systems to `VmWith<FocusWorld>`, the disjoint pair `follow_selection_object`
+  uses. CI on that commit is pending.
+- The first local checks shared `CARGO_TARGET_DIR` with the other task's worktree, and cargo then
+  reported this worktree's edits as fresh: a deliberate `compile_error!` probe passed. The
+  follow-up was re-checked with this worktree's own `target/`, where the probe failed as it
+  should, and passed `check`, `clippy -D warnings`, `fmt --check` and the 35 `benilla-ui`
+  tests above. A B0002 conflict is a runtime schedule check, so only the `benilla-app` tests (CI)
+  can prove the fix.
 
 ## What is not proven in game
 
