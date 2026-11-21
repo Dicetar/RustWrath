@@ -17,7 +17,8 @@ Client -> server
   HELLO                       -> HELLO <version>
   MODE <1|0>                  -> MODE <1|0>   (also the client's keepalive)
   SPRINT <1|0>                   raise / restore the run speed
-  CROUCH <1|0>                   lower / restore the run speed; the crouch pose for others
+  CROUCH <1|0>                   lower / restore the run speed; the crouch pose for others; out of
+                                combat, crouch stealth (see "Crouch stealth" below)
   ROLL <rate>                    run (forward and back) at <rate> times the run for a roll; 0 ends it
   HIT <mv%> <guid,guid,...> [hands]   one hit window's struck units, nearest first; Elden Ring
                                 damage with cleave (hands 2: a one-handed weapon held in both)
@@ -30,6 +31,8 @@ Server -> client
   PARRIED <creature guid> <riposte ms>
   BROKEN <creature guid> <riposte ms>   its stance broke (to every Souls player nearby)
   SWING <player guid> <action>
+  EYE <0 standing|1 hidden|2 crouched, seen> <suspicion 0-100> <creature guid|0>   the eye meter
+  SNEAK <creature guid>          a sneak attack landed on it
 
 ESTIMATE values are marked; tune them in play.
 ]]
@@ -373,6 +376,28 @@ local function shares(units, c)
     return share
 end
 
+-- A rogue's Stealth, highest rank first. Its 30 % slow never applies in Souls mode (owner,
+-- 2026-11-21): the run rate seen without it (`free_rate`, kept by the tick) is held instead.
+local ROGUE_STEALTH = { 1787, 1786, 1785, 1784 }
+local CLASS_ROGUE = 4
+
+local function rogue_stealth_aura(player)
+    for _, id in ipairs(ROGUE_STEALTH) do
+        if player:HasAura(id) then
+            return id
+        end
+    end
+    return nil
+end
+
+-- The run rate to scale a stance from: the current one, or under Stealth the one without its slow.
+local function natural_rate(player, state)
+    if state.free_rate and rogue_stealth_aura(player) then
+        return state.free_rate
+    end
+    return player:GetSpeed(MOVE_RUN) / BASE_RUN_SPEED
+end
+
 local function restore_back(player, state)
     if state.back_rate then
         player:SetSpeed(MOVE_RUN_BACK, state.back_rate, true)
@@ -397,7 +422,7 @@ local function apply_speed(player, state)
         return
     end
     if not state.sprint_rate then
-        state.sprint_rate = player:GetSpeed(MOVE_RUN) / BASE_RUN_SPEED
+        state.sprint_rate = natural_rate(player, state)
     end
     player:SetSpeed(MOVE_RUN, state.sprint_rate * factor, true)
     -- A roll back carries as fast as one forward.
@@ -428,8 +453,306 @@ local function set_creep(player, state, on)
     end
 end
 
+-- Crouch stealth (owner decisions 2026-11-21) ----------------------------------------------------
+-- A crouched Souls player out of combat hides: stock stealth (HIDE_SPELL, refreshed while they
+-- stay hidden, so it lapses by itself if this script stops) keeps the core from seeing them past
+-- a creature's own combat reach. Whether a creature notices them is decided here. Each hostile
+-- creature nearby builds suspicion from sight (its view cone, in line of sight, the range shrunk
+-- by darkness, a roof and holding still, stretched by plate) and from noise (all round, from
+-- moving, more in armour heavier than leather). At NOTICE it stops and looks, at INVESTIGATE it
+-- walks to where it last placed the player, at SPOTTED it attacks and the stealth breaks.
+-- The stealth also breaks when one of the player's attacks lands, on damage taken, in combat,
+-- sprinting, rolling or mounted, and comes back STEALTH_COOLDOWN_MS later if they still crouch.
+-- A rogue's own Stealth rides along (its openers work) without its slow, and creatures notice a
+-- rogue at half: half the view cone, half the noise, half the suspicion from what they see.
+-- The first hit landed from hiding on an unaware creature is a sneak attack.
+local HIDE_SPELL = 16122            -- "Phasing": aura 16 at 99999, 4 s, broken by damage taken
+local HIDE_REFRESH_MS = 2500        -- refresh the aura's 4 s once it has less than this left
+local STEALTH_COOLDOWN_MS = 4000    -- owner: about 4 s after a break
+local SNEAK_MULTIPLIER = 2.5        -- ESTIMATE: a sneak attack's damage before armour
+local STEALTH_EVERY_MS = 200        -- suspicion is worked this often
+local SUSPECT_SCAN_YARDS = 30
+local SIGHT_YARDS = 20              -- ESTIMATE: a level-matched creature sees a crouched player moving in daylight this far
+local SIGHT_HALF_ARC = math.pi / 3  -- ESTIMATE: a 120 degree view cone
+local SIGHT_STILL = 0.55            -- ESTIMATE: holding still shrinks the sight range to this share
+local SIGHT_RATE = 90               -- ESTIMATE: suspicion a second at point-blank sight...
+local SIGHT_FLOOR = 0.25            -- ...falling to this share of it at the range's edge
+local NOISE_MOVE_YARDS = 5          -- ESTIMATE: moving is heard this far in cloth or leather...
+local NOISE_ARMOR_YARDS = 10        -- ...and this much farther in full plate (full mail half)
+local NOISE_RATE = 45               -- ESTIMATE: suspicion a second from noise at point blank
+local ARMOR_SHINE = 0.25            -- ESTIMATE: full plate is seen this much farther
+local SUSPICION_DECAY = 12          -- a second, while nothing is seen or heard
+local NOTICE, INVESTIGATE, SPOTTED = 30, 65, 100
+local LEVEL_STEP = 0.06             -- each level the creature has over the player (five at most) stretches its ranges this much
+local NIGHT_SIGHT, DUSK_SIGHT, INDOOR_SIGHT = 0.6, 0.8, 0.75
+local ROOF_PROBE_YARDS = 30         -- no line of sight this far straight up: under a roof
+local ROGUE_SHARE = 0.5             -- owner: rogues are noticed at half
+local INVESTIGATE_REPATH_MS = 1500
+local INVESTIGATE_POINT_ID = 920800
+local EMOTE_ONESHOT_QUESTION = 6
+local EYE_STEP = 5                  -- the eye meter is sent in steps of this much suspicion
+-- Armour weight past leather per armour slot (the load's eight; weapons, shields, back, jewellery
+-- do not count): mail 1, plate 2. Full leather weighs nothing; full plate weighs 1.
+local WEIGHT_BY_ARMOR = { [3] = 1, [4] = 2 }
+local WEIGHT_MAX = 2 * #LOAD_ARMOR_SLOTS
+
+local function armor_weight(player)
+    local weight = 0
+    for _, slot in ipairs(LOAD_ARMOR_SLOTS) do
+        local item = player:GetEquippedItemBySlot(slot)
+        if item and item:GetClass() == ITEM_CLASS_ARMOR then
+            weight = weight + (WEIGHT_BY_ARMOR[item:GetSubClass()] or 0)
+        end
+    end
+    return weight / WEIGHT_MAX
+end
+
+-- How far creatures see by the light: night and dusk outdoors (server time), any dungeon or a roof
+-- overhead. Worked once a second.
+local function light_share(player, state, now)
+    if state.light and now < state.light_at then
+        return state.light
+    end
+    local share = 1
+    local map = player:GetMap()
+    if (map and map:IsDungeon())
+        or not player:IsWithinLoS(player:GetX(), player:GetY(), player:GetZ() + ROOF_PROBE_YARDS) then
+        share = INDOOR_SIGHT
+    else
+        local hour = tonumber(os.date("%H", GetGameTime()))
+        if hour and (hour >= 22 or hour < 5) then
+            share = NIGHT_SIGHT
+        elseif hour and (hour >= 20 or hour < 7) then
+            share = DUSK_SIGHT
+        end
+    end
+    state.light, state.light_at = share, now + 1000
+    return share
+end
+
+local function rogue_rank(player)
+    if player:GetClass() ~= CLASS_ROGUE then
+        return nil
+    end
+    for _, id in ipairs(ROGUE_STEALTH) do
+        if player:HasSpell(id) then
+            return id
+        end
+    end
+    return nil
+end
+
+-- The eye meter: 0 standing, 1 hidden, 2 crouched but seen (cooldown or combat); the highest
+-- suspicion around and the creature holding it. Sent when any of it changes.
+local function send_eye(player, state, mode, level, ck)
+    level = math.floor(level / EYE_STEP + 0.5) * EYE_STEP
+    local text = string.format("EYE\t%d\t%d\t%s", mode, level, ck or "0")
+    if state.eye_sent ~= text then
+        state.eye_sent = text
+        send(player, text)
+    end
+end
+
+local function hide(player, state)
+    local aura = player:AddAura(HIDE_SPELL, player)
+    if not aura then
+        return
+    end
+    state.hidden = true
+    local rank = rogue_rank(player)
+    if rank and not rogue_stealth_aura(player) and player:AddAura(rank, player) then
+        state.rogue_added = rank
+    end
+    -- Stealth's speed aura reset the run speed: the crouch rate again, from the unslowed one.
+    apply_speed(player, state)
+    set_creep(player, state, state.crouch == true)
+end
+
+-- Leave hiding; `cooldown` holds the next hide off.
+local function unhide(player, state, cooldown)
+    local now = now_ms()
+    if state.hidden then
+        state.hidden = nil
+        state.unhid_at = now
+        player:RemoveAura(HIDE_SPELL)
+        if state.rogue_added then
+            player:RemoveAura(state.rogue_added)
+            state.rogue_added = nil
+        end
+        -- The last stealth aura took the crouch pose and the crouch speed with it.
+        set_creep(player, state, state.crouch == true)
+        apply_speed(player, state)
+    end
+    if cooldown then
+        state.hide_after = now + STEALTH_COOLDOWN_MS
+    end
+end
+
+-- A creature that was walked off to investigate goes home.
+local function calm(player, s)
+    if s.moved then
+        local map = player:GetMap()
+        local creature = map and map:GetWorldObject(s.guid)
+        if creature and creature:IsAlive() and not creature:IsInCombat() then
+            creature:MoveHome()
+        end
+    end
+end
+
+local function forget_suspects(player, state)
+    for _, s in pairs(state.suspects or {}) do
+        calm(player, s)
+    end
+    state.suspects = nil
+end
+
+-- A creature's reaction to its suspicion; returns true when it spotted the player.
+local function react(creature, s, player, now)
+    if s.v >= SPOTTED then
+        return true
+    end
+    if s.v >= INVESTIGATE then
+        if now >= (s.path_at or 0) and not creature:IsRooted() then
+            s.path_at = now + INVESTIGATE_REPATH_MS
+            s.moved = true
+            creature:MoveTo(INVESTIGATE_POINT_ID, s.x, s.y, s.z)
+        end
+    elseif s.v >= NOTICE and not s.moved then
+        if not s.noticed then
+            s.noticed = true
+            creature:PerformEmote(EMOTE_ONESHOT_QUESTION)
+        end
+        if now >= (s.face_at or 0) then
+            s.face_at = now + 1000
+            creature:SetFacingToObject(player)
+        end
+    end
+    return false
+end
+
+-- A creature has not caught on: out of combat and not yet investigating.
+local function unaware(state, unit)
+    local s = state.suspects and state.suspects[key(unit:GetGUID())]
+    return not unit:IsInCombat() and (not s or s.v < INVESTIGATE)
+end
+
+-- The suspicion of every hostile creature around a hidden player; decay for the rest.
+local function work_suspicion(player, state, now)
+    local dt = (now - (state.suspect_at or now)) / 1000
+    if dt <= 0 or dt > 1 then
+        dt = STEALTH_EVERY_MS / 1000
+    end
+    state.suspect_at = now
+    state.suspects = state.suspects or {}
+    local suspects = state.suspects
+    local heard_or_seen = {}
+    if state.hidden then
+        local share = player:GetClass() == CLASS_ROGUE and ROGUE_SHARE or 1
+        local moving = player:IsMoving()
+        local weight = armor_weight(player)
+        local sight_base = SIGHT_YARDS * light_share(player, state, now) * (moving and 1 or SIGHT_STILL)
+            * (1 + ARMOR_SHINE * weight)
+        local noise_base = moving and (NOISE_MOVE_YARDS + NOISE_ARMOR_YARDS * weight) * share or 0
+        local arc = 2 * SIGHT_HALF_ARC * share
+        local level = player:GetLevel()
+        for _, creature in ipairs(player:GetCreaturesInRange(SUSPECT_SCAN_YARDS, 0, 1, 1) or {}) do
+            if not creature:IsInCombat() then
+                local lv = math.max(-5, math.min(5, creature:GetLevel() - level))
+                local stretch = 1 + LEVEL_STEP * lv
+                local d = creature:GetDistance(player)
+                local gain = 0
+                local sight = sight_base * stretch
+                if d < sight and creature:IsInFront(player, arc) and creature:IsWithinLoS(player) then
+                    gain = gain + SIGHT_RATE * share * (SIGHT_FLOOR + (1 - SIGHT_FLOOR) * (1 - d / sight))
+                end
+                local heard = noise_base * stretch
+                if d < heard then
+                    gain = gain + NOISE_RATE * (1 - d / heard)
+                end
+                if gain > 0 then
+                    local ck = key(creature:GetGUID())
+                    heard_or_seen[ck] = true
+                    local s = suspects[ck] or { guid = creature:GetGUID(), v = 0 }
+                    suspects[ck] = s
+                    s.v = math.min(SPOTTED, s.v + gain * dt)
+                    s.x, s.y, s.z = player:GetX(), player:GetY(), player:GetZ()
+                    if react(creature, s, player, now) then
+                        suspects[ck] = nil
+                        trace("spotted by %s (entry %d)", ck, creature:GetEntry())
+                        unhide(player, state, true)
+                        creature:AttackStart(player)
+                        send_eye(player, state, 2, SPOTTED, ck)
+                        return
+                    end
+                end
+            end
+        end
+    end
+    local top, top_key = 0, nil
+    for ck, s in pairs(suspects) do
+        if not heard_or_seen[ck] then
+            s.v = s.v - SUSPICION_DECAY * dt
+        end
+        if s.v <= 0 then
+            calm(player, s)
+            suspects[ck] = nil
+        elseif s.v > top then
+            top, top_key = s.v, ck
+        end
+    end
+    send_eye(player, state, state.hidden and 1 or (state.crouch and 2 or 0), top, top_key)
+end
+
+-- Hide, refresh or break, then the suspicion; every tick, worked every STEALTH_EVERY_MS.
+local function stealth_tick(player, state, now)
+    local want = state.crouch and not state.sprint and not state.roll and player:IsAlive()
+        and not player:IsInCombat() and not player:IsMounted()
+    if state.hidden then
+        local aura = player:GetAura(HIDE_SPELL)
+        if not want or not aura or (state.rogue_added and not player:HasAura(state.rogue_added)) then
+            -- Damage taken, combat, a cast that ended the rogue's Stealth, sprint, roll, mount.
+            -- Standing up alone (CROUCH 0) unhides before this, with no cooldown.
+            unhide(player, state, true)
+        elseif aura:GetDuration() < HIDE_REFRESH_MS then
+            aura:SetDuration(4000)
+        end
+    elseif want and now >= (state.hide_after or 0) then
+        hide(player, state)
+    end
+    if now >= (state.stealth_at or 0) then
+        state.stealth_at = now + STEALTH_EVERY_MS
+        if state.hidden or state.suspects then
+            work_suspicion(player, state, now)
+        else
+            send_eye(player, state, state.crouch and 2 or 0, 0, nil)
+        end
+    end
+end
+
+-- Hold a rogue's run speed against Stealth's slow, and learn the unslowed rate while not stealthed.
+local function keep_speed(player, state)
+    if not rogue_stealth_aura(player) then
+        if not state.sprint_rate then
+            state.free_rate = player:GetSpeed(MOVE_RUN) / BASE_RUN_SPEED
+        end
+        return
+    end
+    local want
+    if state.sprint_rate then
+        local factor = state.roll or (state.sprint and SPRINT_RATE) or (state.crouch and CROUCH_RATE) or 1
+        want = state.sprint_rate * factor
+    else
+        want = state.free_rate
+    end
+    if want and math.abs(player:GetSpeed(MOVE_RUN) - want * BASE_RUN_SPEED) > 0.05 then
+        player:SetSpeed(MOVE_RUN, want, true)
+    end
+end
+
 local function restore_stance(player, state)
     state.sprint, state.crouch, state.roll = nil, nil, nil
+    unhide(player, state, false)
+    forget_suspects(player, state)
     restore_speed(player, state)
     set_creep(player, state, false)
 end
@@ -513,11 +836,19 @@ local function on_hit(player, state, fields)
     -- riposte, then the victim's armour through the defense curve (heavy hits lose less of it).
     local roll = weapon_roll(player)
     local dealt = 0
+    local hidden = state.hidden
     for i, unit in ipairs(units) do
         local m = managed[key(unit:GetGUID())]
         local riposte = m and m.parried_until and now < m.parried_until
         local counter = (m and m.strike) and COUNTER_BONUS or 1
+        -- A sneak attack: landed from hiding on a creature that has not caught on.
+        local sneak = hidden and unaware(state, unit)
         local attack = roll * mv * grip * counter * (riposte and RIPOSTE_MULTIPLIER or 1)
+            * (sneak and SNEAK_MULTIPLIER or 1)
+        if sneak then
+            send(player, "SNEAK\t" .. key(unit:GetGUID()))
+            trace("sneak attack on %s", key(unit:GetGUID()))
+        end
         local landed, through = defended(player, unit, attack)
         local damage = math.max(1, math.floor(landed * share[i] + 0.5))
         if riposte then
@@ -544,6 +875,8 @@ local function on_hit(player, state, fields)
     end
     -- One swing, one auto-attack's rage, on all it dealt (a cleave is still one swing).
     reward_rage(player, dealt, false)
+    -- The attack landed: out of hiding (a swing that struck nothing never gets here).
+    unhide(player, state, true)
 end
 
 local function on_swing(player, fields)
@@ -626,6 +959,15 @@ local function send_load(player, state, force)
     end
 end
 
+-- A sprint or a roll breaks hiding with the cooldown. The client stands up for either, and its
+-- CROUCH 0 may arrive first (no cooldown), so a hide ended just before counts too.
+local BROKE_COVER_MS = 500
+local function broke_cover(player, state)
+    if state.hidden or now_ms() - (state.unhid_at or -BROKE_COVER_MS) < BROKE_COVER_MS then
+        unhide(player, state, true)
+    end
+end
+
 local function on_addon(event, sender, msg_type, prefix, msg, target)
     if prefix ~= PREFIX then
         return
@@ -655,14 +997,23 @@ local function on_addon(event, sender, msg_type, prefix, msg, target)
         end
     elseif state and verb == "SPRINT" then
         state.sprint = fields[2] == "1" or nil
+        if state.sprint then
+            broke_cover(sender, state)
+        end
         apply_speed(sender, state)
         announce_peer(sender, state)
     elseif state and verb == "ROLL" then
         local rate = tonumber(fields[2]) or 0
         state.roll = rate > 0 and math.min(math.max(rate, ROLL_RATE_MIN), ROLL_RATE_MAX) or nil
+        if state.roll then
+            broke_cover(sender, state)
+        end
         apply_speed(sender, state)
     elseif state and verb == "CROUCH" then
         state.crouch = fields[2] == "1" or nil
+        if not state.crouch then
+            unhide(sender, state, false)
+        end
         apply_speed(sender, state)
         set_creep(sender, state, state.crouch == true)
     elseif state and verb == "HIT" then
@@ -871,6 +1222,7 @@ on_critical = function(player, state, guid, back)
                     local damage = defended(player, creature, weapon_roll(player) * CRITICAL_MULTIPLIER)
                     player:DealDamage(creature, math.max(1, math.floor(damage + 0.5)), true)
                     reward_rage(player, math.max(1, math.floor(damage + 0.5)), true)
+                    unhide(player, state, true)
                     trace("backstab %s: %.1f damage", guid, damage)
                 end
                 return
@@ -930,6 +1282,8 @@ local function tick()
             souls[k] = nil
         else
             send_load(player, state, false)
+            keep_speed(player, state)
+            stealth_tick(player, state, now)
         end
         if player and souls[k] and player:IsInCombat() then
             -- Hostile and neutral alike (0): a neutral creature fights back once struck.

@@ -10,11 +10,16 @@
 //! where the zone starts mark the dodge window: a roll pressed once the fill passes the tick covers
 //! the strike. The fill is the strike's kind colour (orange, blue for a thrust, purple for a
 //! slam) and turns near-white inside the zone; dimmed for a strike on someone else.
+//!
+//! While crouched, the eye meter sits over the bar ([`super::server::Eye`]): a dark track (red
+//! while the stealth is broken) filled with the highest suspicion around, pale while unnoticed,
+//! yellow once a creature looks, orange once it comes to investigate, red when it spots us; a
+//! dot of the same colour hangs over that creature. A sneak attack flashes the meter white.
 
 use benilla_world::view::WorldCamera;
 use bevy::prelude::*;
 
-use super::server::{SoulsLink, StrikeKind};
+use super::server::{Eye, EyeMode, SoulsLink, StrikeKind};
 use super::{current_kit, souls_on, SoulsConfig, SoulsState};
 use crate::combat_kit::PlayerKit;
 use crate::combat_mode::CombatModeView;
@@ -41,6 +46,13 @@ const STRIKE_HEIGHT: f32 = 8.0;
 const STRIKE_TICK: f32 = 2.0;
 const STRIKE_TICK_OVERHANG: f32 = 3.0;
 const STRIKE_GAP: f32 = 3.0;
+/// The eye meter: its size and its gap over the stamina bar, px.
+const EYE_WIDTH: f32 = 96.0;
+const EYE_HEIGHT: f32 = 6.0;
+const EYE_GAP: f32 = 8.0;
+/// The dot over the watching creature: its size, px, and its height over the feet, yards.
+const EYE_MARK: f32 = 8.0;
+const EYE_MARK_HEIGHT_YARDS: f32 = 2.4;
 
 /// One HUD quad.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
@@ -57,6 +69,11 @@ pub(super) enum HudPart {
     StrikeFill(u8),
     /// The tick where the dodge zone starts.
     StrikeTick(u8),
+    /// The eye meter's track; the fill is its child.
+    Eye,
+    EyeFill,
+    /// The dot over the creature holding the suspicion.
+    EyeMark,
 }
 
 /// Spawn the quads once, parked hidden.
@@ -178,6 +195,63 @@ pub(super) fn spawn_hud(mut commands: Commands) {
                     BackgroundColor(Color::WHITE),
                 ));
             });
+    }
+    commands
+        .spawn((
+            HudPart::Eye,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(50.0),
+                bottom: Val::Px(BAR_BOTTOM + BAR_HEIGHT + EYE_GAP),
+                width: Val::Px(EYE_WIDTH),
+                height: Val::Px(EYE_HEIGHT),
+                margin: UiRect {
+                    left: Val::Px(-EYE_WIDTH / 2.0),
+                    ..default()
+                },
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.05, 0.08, 0.12, 0.75)),
+            GlobalZIndex(900),
+            Visibility::Hidden,
+        ))
+        .with_children(|track| {
+            track.spawn((
+                HudPart::EyeFill,
+                Node {
+                    width: Val::Percent(0.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                BackgroundColor(eye_fill(0)),
+                Visibility::Inherited,
+            ));
+        });
+    commands.spawn((
+        HudPart::EyeMark,
+        Node {
+            position_type: PositionType::Absolute,
+            width: Val::Px(EYE_MARK),
+            height: Val::Px(EYE_MARK),
+            ..default()
+        },
+        BackgroundColor(eye_fill(0)),
+        GlobalZIndex(900),
+        Visibility::Hidden,
+    ));
+}
+
+/// The eye meter's colour for a suspicion: pale, yellow from a look, orange from an
+/// investigation, red when spotted.
+fn eye_fill(suspicion: u8) -> Color {
+    if suspicion >= 100 {
+        Color::srgb(0.9, 0.15, 0.1)
+    } else if suspicion >= Eye::INVESTIGATE {
+        Color::srgb(0.95, 0.5, 0.1)
+    } else if suspicion >= Eye::NOTICE {
+        Color::srgb(0.95, 0.8, 0.2)
+    } else {
+        Color::srgb(0.7, 0.75, 0.8)
     }
 }
 
@@ -342,6 +416,24 @@ pub(super) fn drive_hud(
         .and_then(|entity| targets.get(entity).ok())
         .and_then(|at| project(at.translation() + Vec3::Y * MARKER_HEIGHT_YARDS));
 
+    // The eye meter, while crouched: the track's colour by the stealth (white for a sneak
+    // attack's flash), the fill by the suspicion, and the dot over the creature holding it.
+    let eye = link.eye.filter(|eye| on && eye.mode != EyeMode::Standing);
+    let flash = on && link.sneak.is_some();
+    let eye_track = if flash {
+        Color::WHITE
+    } else if eye.is_some_and(|eye| eye.mode == EyeMode::Seen) {
+        Color::srgba(0.35, 0.05, 0.05, 0.75)
+    } else {
+        Color::srgba(0.05, 0.08, 0.12, 0.75)
+    };
+    let suspicion = eye.map_or(0, |eye| eye.suspicion);
+    let eye_mark = eye
+        .filter(|eye| eye.suspicion > 0 && eye.creature != 0)
+        .and_then(|eye| index.0.get(&eye.creature).copied())
+        .and_then(|entity| targets.get(entity).ok())
+        .and_then(|at| project(at.translation() + Vec3::Y * EYE_MARK_HEIGHT_YARDS));
+
     for (part, mut node, mut color, mut visibility) in &mut parts {
         let (visible, wanted) = match part {
             HudPart::Bar => (on && engine.is_some(), None),
@@ -358,6 +450,9 @@ pub(super) fn drive_hud(
             HudPart::StrikeTick(index) => {
                 (true, strikes.get(usize::from(*index)).map(StrikeBar::tick))
             }
+            HudPart::Eye => (eye.is_some() || flash, Some(eye_track)),
+            HudPart::EyeFill => (true, Some(eye_fill(suspicion))),
+            HudPart::EyeMark => (eye_mark.is_some(), Some(eye_fill(suspicion))),
         };
         let child = matches!(
             part,
@@ -365,6 +460,7 @@ pub(super) fn drive_hud(
                 | HudPart::StrikeZone(_)
                 | HudPart::StrikeFill(_)
                 | HudPart::StrikeTick(_)
+                | HudPart::EyeFill
         );
         let visible = if child {
             Visibility::Inherited
@@ -433,7 +529,25 @@ pub(super) fn drive_hud(
                     }
                 }
             }
-            HudPart::Bar | HudPart::Chip => {}
+            HudPart::EyeFill => {
+                let width = Val::Percent(f32::from(suspicion.min(100)));
+                if node.width != width {
+                    node.width = width;
+                }
+            }
+            HudPart::EyeMark => {
+                if let Some(at) = eye_mark {
+                    let (left, top) = (
+                        Val::Px(at.x - EYE_MARK / 2.0),
+                        Val::Px(at.y - EYE_MARK / 2.0),
+                    );
+                    if node.left != left || node.top != top {
+                        node.left = left;
+                        node.top = top;
+                    }
+                }
+            }
+            HudPart::Bar | HudPart::Chip | HudPart::Eye => {}
         }
     }
 }
