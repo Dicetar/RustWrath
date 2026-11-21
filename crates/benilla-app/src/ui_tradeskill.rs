@@ -2659,18 +2659,34 @@ mod tests {
         (app, rx)
     }
 
-    /// Run a Lua snippet through `HostedVm` so `ScriptCall` (including `GameTooltip:SetHyperlink`,
-    /// `CloseTradeSkill`, and `DoTradeSkill`) dispatches through the real `script_calls` host.
+    /// Run a Lua snippet with a host lent that applies the profession calls inside their verbs,
+    /// as the app's host does ([`crate::script_calls::ScriptCallHost`]): a `trade:` link's
+    /// `SetHyperlink` stages it and `CloseTradeSkill` closes. This harness has none of the cast's
+    /// state, so a `DoTradeSkill` that reaches the host, which a linked list never sends, fails
+    /// the test; other calls go nowhere.
     fn run_hosted_lua(app: &mut App, lua: &str) {
-        use bevy::ecs::system::RunSystemOnce;
-        let code = lua.to_string();
-        app.world_mut()
-            .run_system_once(move |mut vm: crate::script_calls::HostedVm| {
-                vm.run(|script| {
-                    script.expect("UiScript").run(&code).unwrap();
+        use benilla_ui::script::{ScriptCall, TradeSkillCall};
+        use bevy::ecs::system::SystemState;
+        let world = app.world_mut();
+        let mut script = world.remove_non_send_resource::<UiScript>().expect("a VM");
+        let mut state = SystemState::<TradeSkillSteps>::new(world);
+        let ran = {
+            let mut host =
+                crate::script_calls::FnHost(|_: &mut UiScript, call: ScriptCall| match call {
+                    ScriptCall::TradeSkill(TradeSkillCall::OpenLink(link)) => {
+                        state.get_mut(world).open_link(link);
+                    }
+                    ScriptCall::TradeSkill(TradeSkillCall::Close) => state.get_mut(world).close(),
+                    ScriptCall::TradeSkill(TradeSkillCall::Do { spell_id, count }) => {
+                        panic!("DoTradeSkill sent a cast of {spell_id} x{count}")
+                    }
+                    _ => {}
                 });
-            })
-            .unwrap();
+            script.hosted(&mut host, |s| s.run(lua))
+        };
+        state.apply(world);
+        world.insert_non_send_resource(script);
+        ran.expect("the chunk runs");
     }
 
     /// Part A: opening the player's own profession supplies the DBC rows, opener spell, rank,
