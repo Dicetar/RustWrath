@@ -1,10 +1,10 @@
 # Spellcast interruptibility edges
 
-Status: ready for CI
+Status: landed
 Owner: ClaudeJr / Claude Opus 5.5
 Branch: jr/spellcast-interruptibility
 Issue: none
-Next: Read CI for the pushed commit, then land after validation.
+Next: Owner in-game check: target a caster with a non-interruptible cast and confirm the target-frame shield; project non-player special masks and cast immunities if needed.
 
 ## Reference conclusion
 
@@ -36,5 +36,5 @@ interruptibility packet in this path.
 
 - `git diff --check`: pass.
 - Local Cargo, client launch and server launch: not run per ticket rules.
-- CI: pending for the pushed commit.
+- CI: 44838235825 player-clippy flagged `expect()` on an always-Some value (wrath.rs:10023), fixed in the follow-up commit. Run 44843662834 on 36693dc5c (merged with origin/main f82c180f3): windows success; gates first lost its hosted runner, then passed on rerun. Landed with `git push origin HEAD:main`.
 - In-game verification: not proven.
