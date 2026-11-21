@@ -630,6 +630,13 @@ pub enum WrathFeedEvent {
         session_epoch: u64,
         world_generation: u64,
     },
+    /// One of the three equipment-set packets (`EquipmentManager.cpp`), for
+    /// [`crate::wrath_equipment::EquipmentManager`].
+    EquipmentSet {
+        packet: crate::wrath_equipment::EquipmentSetPacket,
+        session_epoch: u64,
+        world_generation: u64,
+    },
     /// `SMSG_RESYNC_RUNES`: the class's full rune layout and each 0..255 cooldown fraction.
     RuneState {
         runes: Vec<gameplay::wrath_systems::RuneSlot>,
@@ -3622,6 +3629,12 @@ impl Plugin for WrathNetPlugin {
                 Update,
                 wrath_rune_calendar_feed::feed.in_set(crate::ui_script::UiFeed),
             );
+            // The equipment manager's sets, copied into the VM, and the swap result's signals.
+            app.init_resource::<crate::wrath_equipment::EquipmentManager>()
+                .add_systems(
+                    Update,
+                    crate::wrath_equipment::feed.in_set(crate::ui_script::UiFeed),
+                );
             app.add_systems(
                 Update,
                 wrath_combat_log_feed::feed.in_set(crate::ui_script::UiFeed),
@@ -6131,7 +6144,10 @@ fn translate_gameplay(
         | WrathGameplayEvent::CalendarCommandResult(_)
         | WrathGameplayEvent::RuneConvert(_)
         | WrathGameplayEvent::RuneState(_)
-        | WrathGameplayEvent::RunePower(_) => Vec::new(),
+        | WrathGameplayEvent::RunePower(_)
+        | WrathGameplayEvent::EquipmentSetList(_)
+        | WrathGameplayEvent::EquipmentSetSaved(_)
+        | WrathGameplayEvent::EquipmentSetUseResult(_) => Vec::new(),
         WrathGameplayEvent::XpGain {
             victim,
             total_xp,
@@ -7463,6 +7479,18 @@ fn wrath_tap_commands(
             ClientCommand::QueryTime => Some((
                 benilla_protocol_wrath::opcode::CMSG_QUERY_TIME,
                 gameplay::query_time(),
+            )),
+            ClientCommand::EquipmentSetSave(set) => Some((
+                benilla_protocol_wrath::opcode::CMSG_SAVE_EQUIPMENT_SET,
+                gameplay::equipment_set::encode_save_equipment_set(&set),
+            )),
+            ClientCommand::EquipmentSetDelete { set_guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_EQUIPMENT_SET_DELETE,
+                gameplay::equipment_set::encode_equipment_set_delete(set_guid),
+            )),
+            ClientCommand::EquipmentSetUse(slots) => Some((
+                benilla_protocol_wrath::opcode::CMSG_EQUIPMENT_SET_USE,
+                gameplay::equipment_set::encode_equipment_set_use(&slots),
             )),
             ClientCommand::OpenCalendar {
                 session_epoch,
@@ -9577,6 +9605,7 @@ fn wrath_net_drain(
     mut item_text_events: MessageWriter<crate::wrath_native::WrathItemText>,
     clock: Option<Res<crate::ui_script::UiClock>>,
     trace: Option<Res<crate::quest_trace::Source>>,
+    mut equipment: Option<ResMut<crate::wrath_equipment::EquipmentManager>>,
 ) {
     let ui_now_seconds = clock.as_ref().map(|clock| clock.ui_now);
     let (native, native_dropped) = control
@@ -9754,6 +9783,10 @@ fn wrath_net_drain(
                 world_generation,
                 map_id,
             } => {
+                // `CGEquipmentManager::EnterWorld` (`0x5AD690`): no swap is pending in a new world.
+                if let Some(equipment) = equipment.as_deref_mut() {
+                    equipment.enter_world();
+                }
                 // Same-frame teardown: old-scope entities are gone before Input runs. Everything
                 // the retired world could still answer is retired at one barrier: an intent
                 // admitted against it becomes Unknown and is never replayed, a receipt that never
@@ -9854,6 +9887,22 @@ fn wrath_net_drain(
                         level,
                         trigger_script_event,
                     });
+                }
+            }
+            WrathFeedEvent::EquipmentSet {
+                packet,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    if let Some(equipment) = equipment.as_deref_mut() {
+                        equipment.apply_packet(packet);
+                    }
                 }
             }
             WrathFeedEvent::RuneState {
@@ -10330,6 +10379,10 @@ fn wrath_net_drain(
                 session_epoch: _,
                 world_generation: _,
             } => {
+                // `CGEquipmentManager::ShutdownGame` (`0x5AE1B0`): the session's sets go.
+                if let Some(equipment) = equipment.as_deref_mut() {
+                    equipment.clear();
+                }
                 control.ended = true;
                 control.terminal_ready = true;
                 // Whether this link served the select screen is decided before the barrier: the
@@ -14973,6 +15026,29 @@ pub fn run_session_with_cancel(
                                     push_session_event(&events_out, &session, event);
                                 }
                             }
+                        }
+                        Ok(WrathGameplayEvent::EquipmentSetList(sets)) => {
+                            feed.push_event(WrathFeedEvent::EquipmentSet {
+                                packet: crate::wrath_equipment::EquipmentSetPacket::List(sets),
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                        }
+                        Ok(WrathGameplayEvent::EquipmentSetSaved(saved)) => {
+                            feed.push_event(WrathFeedEvent::EquipmentSet {
+                                packet: crate::wrath_equipment::EquipmentSetPacket::Saved(saved),
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                        }
+                        Ok(WrathGameplayEvent::EquipmentSetUseResult(result)) => {
+                            feed.push_event(WrathFeedEvent::EquipmentSet {
+                                packet: crate::wrath_equipment::EquipmentSetPacket::UseResult(
+                                    result,
+                                ),
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
                         }
                         Ok(WrathGameplayEvent::RuneState(state)) => {
                             feed.push_event(WrathFeedEvent::RuneState {

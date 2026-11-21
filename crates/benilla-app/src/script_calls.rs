@@ -128,6 +128,8 @@ disjoint::disjoint_set! {
         aura: crate::ui_aura::AuraSteps<'static, 'static>,
         minimap: crate::minimap::MinimapSteps<'static>,
         pet_unlearn: crate::ui_dialog_verbs::PetUnlearnSteps<'static, 'static>,
+        /// The equipment manager's sets and swaps.
+        equipment: crate::wrath_equipment::EquipmentSteps<'static, 'static>,
     }
 }
 
@@ -574,6 +576,12 @@ impl CallHost for ScriptCallHost<'_, '_> {
         self.appliers.spell_queries().unit_cast(guid, channel)
     }
 
+    fn equipment_item(&mut self, guid: u64) -> Option<benilla_ui::script::EquipmentItemView> {
+        self.appliers
+            .equipment()
+            .item(guid, crate::wrath::selected_from_env())
+    }
+
     fn unit_auras(&mut self, guid: u64) -> Option<Vec<benilla_ui::script::WrathAuraView>> {
         self.appliers.spell_queries().unit_auras(guid)
     }
@@ -824,6 +832,7 @@ impl CallHost for ScriptCallHost<'_, '_> {
             ScriptCall::Posture(PostureCall::SitOrStand) => self.sit_or_stand(),
             ScriptCall::Posture(PostureCall::StopAttack) => self.appliers.attack().stop_attack(),
             ScriptCall::ConfirmPetUnlearn => appliers.pet_unlearn().confirm(script),
+            ScriptCall::EquipmentSet(call) => appliers.equipment().apply(script, call),
         }
         self.settle_selection(script, &mut at, owed);
         let appliers = &mut self.appliers;

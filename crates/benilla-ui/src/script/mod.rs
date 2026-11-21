@@ -225,6 +225,7 @@ mod ui_scale;
 mod update_walk;
 pub use tooltip_studied::{PetAbility, StudiedCreature};
 pub use tooltip_unit::{OwnerTitle, OwnerTitleKind, PartyRecord, TooltipTint, UnitTooltipFacts};
+mod equipment;
 mod trade;
 mod tradeskill;
 mod trainer;
@@ -343,6 +344,10 @@ pub use worldmap_arrow::ARROW_MODEL;
 
 pub(crate) use button::{refresh_label_lua, state_font_lua, LabelFont};
 pub use companions::CompanionView;
+pub use equipment::{
+    EquipmentItemPlace, EquipmentItemView, EquipmentSetCall, EquipmentSetIcon, EquipmentSetView,
+    EquipmentSetsState, DEFAULT_SET_ICON, EQUIPMENT_SET_SLOTS,
+};
 pub(crate) use font_block::{face_loads, own_font_lua, SAME_FONT_HEIGHT};
 pub use inspect::{InspectCall, UnitReach};
 pub use instance::{InstanceCall, InstanceInfo};
@@ -884,6 +889,8 @@ fn install_in_game(lua: &Lua) -> mlua::Result<()> {
         wrath_spell::install(lua)?;
         wrath_unit::install(lua)?;
         wrath_aura::install(lua)?;
+        // `EquipmentManager_Scripts.cpp`: the gear-set list and the paper doll's set verbs.
+        equipment::install(lua)?;
         // The DEATH and RESURRECT dialogs' own 3.3.5 natives (StaticPopup.lua).
         death::install_wrath(lua)?;
     }
