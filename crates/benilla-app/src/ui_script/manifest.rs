@@ -283,12 +283,26 @@ pub(crate) fn load_stock_bindings(script: &mut UiScript) {
 /// Every [`LAYER_MANIFEST`] entry, in order, after the whole core: the layer loads as more of the
 /// stock load, with no `ADDON_LOADED` and no registry row, as FrameXML does (`0x48ffed`).
 fn load_layer(script: &UiScript) -> Vec<String> {
-    if script.target() == benilla_ui::script::UiTarget::Wrath335 {
-        return Vec::new();
-    }
     let layer = Addon::layer();
+    if script.target() == benilla_ui::script::UiTarget::Wrath335 {
+        // The 3.3.5a interface has its own options, key bindings, menus and fixes, so the layer's
+        // 1.12 adapters stay off it; a RustWrath server feature's own window loads on both.
+        let files: Vec<String> = layer
+            .toc
+            .files
+            .iter()
+            .filter(|f| WRATH_LAYER.contains(&f.as_str()))
+            .cloned()
+            .collect();
+        return layer.load_files(script, &files);
+    }
     layer.load_files(script, &layer.toc.files)
 }
+
+/// The [`LAYER_MANIFEST`] entries the Wrath target loads: windows for RustWrath's own server
+/// features, which the stock 3.3.5a interface has no counterpart for. Each is written in closures
+/// that read neither `this` nor `self`, so it runs in either dialect.
+pub(super) const WRATH_LAYER: &[&str] = &["EnchantBottle.xml"];
 
 /// The in-game UI, the core, then the layer unless [`layer_enabled`] says no, then every
 /// third-party addon, on entering the world. The reference loads both in `CGGameUI::Initialize`
@@ -338,6 +352,20 @@ pub(super) fn load_ingame_ui_with(
 mod tests {
     use super::*;
     use crate::ui_script::reference_ui::fixture;
+
+    /// The Wrath target's share of the layer is the bottle panel, and every name in it is a
+    /// `layer.toc` row, so a rename cannot drop it from the Wrath load silently.
+    #[test]
+    fn wrath_layer_is_the_bottle_panel_and_in_the_manifest() {
+        assert_eq!(WRATH_LAYER, ["EnchantBottle.xml"]);
+        let files = Addon::layer().toc.files;
+        for name in WRATH_LAYER {
+            assert!(
+                files.iter().any(|f| f == name),
+                "{name} is not in layer.toc"
+            );
+        }
+    }
 
     /// A chain whose `FrameXML.toc` lists `rows`, each a `.lua` that appends its own letter to
     /// `LOAD_LOG`, and one `.xml` whose `<Script file=>` does the same.
