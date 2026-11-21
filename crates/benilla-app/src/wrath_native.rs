@@ -126,6 +126,10 @@ pub struct WrathActiveCast {
     /// 12340 START cast flags, preserved for the consumer.
     pub cast_flags: u32,
     pub ammo_display_id: Option<u32>,
+    /// `SMSG_SPELL_START`'s `m_castSchoolImmunities`, when the immunity tail is present.
+    pub cast_school_immunities: u32,
+    /// `SMSG_SPELL_START`'s `m_castImmunities`, when the immunity tail is present.
+    pub cast_immunities: u32,
     /// Producer packet-arrival wall clock in ms since the Unix epoch.
     pub observed_at_unix_ms: i64,
     /// `GetTime()` seconds when the app drained the START. This is the cast's timeline origin;
@@ -252,6 +256,8 @@ pub enum WrathNativeUpdate {
         remaining_ms: Option<u32>,
         cast_flags: u32,
         ammo_display_id: Option<u32>,
+        cast_school_immunities: u32,
+        cast_immunities: u32,
         observed_at_unix_ms: i64,
     },
     CastDelayed {
@@ -433,6 +439,8 @@ impl NativeCastState {
                 remaining_ms,
                 cast_flags,
                 ammo_display_id,
+                cast_school_immunities,
+                cast_immunities,
                 observed_at_unix_ms,
             } => {
                 let attempt_serial = self.next_cast_serial;
@@ -454,6 +462,8 @@ impl NativeCastState {
                         start_remaining_ms: remaining_ms,
                         cast_flags,
                         ammo_display_id,
+                        cast_school_immunities,
+                        cast_immunities,
                         observed_at_unix_ms,
                         start_ui_now_seconds: None,
                         last_update_ui_now_seconds: None,
@@ -831,6 +841,8 @@ pub(crate) fn update_from_gameplay(
             cast_time_ms,
             targets,
             ammo_display_id,
+            cast_school_immunities,
+            cast_immunities,
         } => WrathNativeUpdate::CastStart {
             scope,
             caster: *caster,
@@ -842,6 +854,8 @@ pub(crate) fn update_from_gameplay(
             remaining_ms: (*cast_time_ms >= 0).then_some(*cast_time_ms as u32),
             cast_flags: *cast_flags,
             ammo_display_id: *ammo_display_id,
+            cast_school_immunities: *cast_school_immunities,
+            cast_immunities: *cast_immunities,
             observed_at_unix_ms,
         },
         WrathGameplayEvent::SpellDelayed { caster, delay_ms } => WrathNativeUpdate::CastDelayed {
@@ -1101,6 +1115,8 @@ mod tests {
             remaining_ms: Some(1_500),
             cast_flags: 0x100,
             ammo_display_id: None,
+            cast_school_immunities: 0,
+            cast_immunities: 0,
             observed_at_unix_ms: 10_000,
         }
     }

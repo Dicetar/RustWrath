@@ -133,4 +133,11 @@ impl SpellLayout {
             Self::Wrath => dbc::u32_at(record, 211).unwrap_or(0),
         }
     }
+
+    pub(super) fn attributes_ex_g(self, record: &Record) -> u32 {
+        match self {
+            Self::Vanilla => 0,
+            Self::Wrath => dbc::u32_at(record, 11).unwrap_or(0),
+        }
+    }
 }

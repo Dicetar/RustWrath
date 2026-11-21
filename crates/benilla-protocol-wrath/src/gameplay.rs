@@ -2147,6 +2147,10 @@ pub enum ServerEvent {
         cast_time_ms: i32,
         targets: SpellTargets,
         ammo_display_id: Option<u32>,
+        /// `m_castSchoolImmunities`, present with `CAST_FLAG_IMMUNITIES`.
+        cast_school_immunities: u32,
+        /// `m_castImmunities`, present with `CAST_FLAG_IMMUNITIES`.
+        cast_immunities: u32,
     },
     SpellGo {
         caster: u64,
@@ -4116,6 +4120,7 @@ const CAST_FLAG_ADJUST_MISSILE: u32 = 0x0002_0000;
 const CAST_FLAG_VISUAL_CHAIN: u32 = 0x0008_0000;
 const CAST_FLAG_RUNE_LIST: u32 = 0x0020_0000;
 const CAST_FLAG_UNKNOWN_23: u32 = 0x0040_0000;
+const CAST_FLAG_IMMUNITIES: u32 = 0x0400_0000;
 
 /// `WriteAmmoToPacket` (`Spell.cpp:4880-4960`): display id then inventory type, the latter dropped.
 fn read_ammo(r: &mut Reader<'_>) -> Result<u32> {
@@ -4126,7 +4131,10 @@ fn read_ammo(r: &mut Reader<'_>) -> Result<u32> {
 
 /// START's payloads in `SendSpellStart`'s order (`Spell.cpp:4731-4741`): power, ammo, the
 /// UNKNOWN_23 pair. The power is consumed, not carried: the 1.12 start event has no power.
-fn read_spell_start_payloads(r: &mut Reader<'_>, cast_flags: u32) -> Result<Option<u32>> {
+fn read_spell_start_payloads(
+    r: &mut Reader<'_>,
+    cast_flags: u32,
+) -> Result<(Option<u32>, u32, u32)> {
     if cast_flags & CAST_FLAG_POWER_LEFT_SELF != 0 {
         let _power = r.u32()?;
     }
@@ -4139,7 +4147,12 @@ fn read_spell_start_payloads(r: &mut Reader<'_>, cast_flags: u32) -> Result<Opti
         let _a = r.u32()?;
         let _b = r.u32()?;
     }
-    Ok(ammo)
+    let (cast_school_immunities, cast_immunities) = if cast_flags & CAST_FLAG_IMMUNITIES != 0 {
+        (r.u32()?, r.u32()?)
+    } else {
+        (0, 0)
+    };
+    Ok((ammo, cast_school_immunities, cast_immunities))
 }
 
 /// GO's payloads in `SendSpellGo`'s order (`Spell.cpp:4832-4875`): power, the rune list, the
@@ -4188,7 +4201,8 @@ fn read_spell_start(b: &[u8]) -> Result<ServerEvent> {
     let cast_flags = r.u32()?;
     let cast_time_ms = r.i32()?;
     let targets = read_spell_targets(&mut r)?;
-    let ammo_display_id = read_spell_start_payloads(&mut r, cast_flags)?;
+    let (ammo_display_id, cast_school_immunities, cast_immunities) =
+        read_spell_start_payloads(&mut r, cast_flags)?;
     Ok(ServerEvent::SpellStart {
         caster,
         spell_id,
@@ -4198,6 +4212,8 @@ fn read_spell_start(b: &[u8]) -> Result<ServerEvent> {
         cast_time_ms,
         targets,
         ammo_display_id,
+        cast_school_immunities,
+        cast_immunities,
     })
 }
 
