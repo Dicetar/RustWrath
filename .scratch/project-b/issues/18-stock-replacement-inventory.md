@@ -349,9 +349,49 @@ Smallest remaining runtime checks:
    `oc/economy-ui-coverage`.
 
 Not ticketed tonight: the bank 28-slot/7-bag proof needs an owned character with items in those
-slots (`Blocked: needs owner run`); the world-map quest POI feed, the combat-log entry ring and
-`CombatLogGetNumEntries` are real but larger than one sitting and are named under "Next" in the
-area notes; the GameObject quest-marker `BROKEN` row is not a gap, because the 12340 answer
-handler at `0x5dca2f` drops a GameObject's questgiver status, so neither client renders a marker
-over one.
+slots (`Blocked: needs owner run`); the GameObject quest-marker `BROKEN` row is not a gap, because
+the 12340 answer handler at `0x5dca2f` drops a GameObject's questgiver status, so neither client
+renders a marker over one.
+
+## Class combat compatibility ledger (2026-11-24)
+
+This section extends issue 18's stock replacement inventory with the nine requested Wrath classes.
+It records mechanics that have a current source seam, then separates class-specific server/live
+behavior that the repository does not prove. `PARTIAL` means the shared resource, usability, or
+UI seam is source-backed; `UNKNOWN` means the class-specific outcome, talent/proc interaction,
+server acceptance, or rendered result still needs evidence. No row below claims a live character
+run.
+
+The shared owner paths are:
+
+- `crates/benilla-app/src/spell/usable.rs:371-496` (`spell_usable`) and `:622-636`
+  (`can_afford`) implement the common dead/control/reagent/equipment/ammo/combo/form/stealth/
+  combat/aura/power gates. `crates/benilla-app/src/spell/cast_send.rs:912-918` keeps the
+  rogue-specific no-combo refusal selection, while `:1082-1090` applies the same power read to
+  the send path.
+- `crates/benilla-ui/src/script/wrath_unit.rs:5-43` and `:85-105` expose Wrath `UnitPower`,
+  `UnitPowerMax`, and `UnitPowerType`; `crates/benilla-app/src/ui_unit.rs:1841-1848` projects
+  the combo count and banked target. `crates/benilla-ui/src/script/shapeshift.rs:37-65` owns
+  the form list, cooldowns, and `CastShapeshiftForm` calls.
+- `crates/benilla-app/src/wrath.rs:2215-2221`, `:2525-2534`, and `:2560-2588` retain unit
+  resources and rune slots; `:9242-9271` applies rune resync, conversion, and power updates.
+  The corresponding 12340 packet dispatch is `Player_C.cpp:9811-9826`.
+
+| Class | 3.3.5 mechanics in scope | Repo owner / file lines | 12340 reference addresses | Evidence status |
+|---|---|---|---|---|
+| Warrior | Rage power (type 1), weapon/equipment and ammo gates, combo-point style finisher gate, and stance/form action-bar usability. Warrior-specific stance changes are represented through the shared form/bar path. | `benilla-app/src/spell/usable.rs:371-496,622-636`; `benilla-app/src/spell/cast_send.rs:912-918`; `benilla-ui/src/script/action.rs:603-607`; `benilla-ui/src/script/shapeshift.rs:37-65` | `Spell_C_IsUsableAction` `0x0080B5D0`; `Spell_C_GetPowerCost` `0x008012F0`; `CGUnit_C::GetShapeshiftForm` `0x0071AF70`; `SpellRec::UsableInShapeshift` `0x007FE850`; `ActionBarFrame.cpp:394`; `ActionBarFrame_Scripts.cpp:268` | PARTIAL shared gates/source; UNKNOWN warrior spell formulas, stance/talent interactions, rage generation/spend outcomes, and live server/UI behavior. |
+| Rogue | Energy power (type 3), combo points, stealth-only gating, weapon requirements, and finisher usability. The repo explicitly keeps the rogue no-combo refusal reason. | `benilla-app/src/spell/usable.rs:419-426,622-636`; `benilla-app/src/spell/cast_send.rs:912-918,2233-2258`; `benilla-ui/src/script/unit/bindings.rs:846-872` | `CGGameUI::GetComboPoints` `0x00513920`; `Script_GetComboPoints` `0x00611670`; `Spell_C_IsUsableAction` `0x0080B5D0`; `Spell_C_GetPowerCost` `0x008012F0` | PARTIAL combo/energy/stealth source; UNKNOWN combo-point production/consumption timing, poison/proc/talent behavior, server outcomes, and live result. |
+| Mage | Mana power (type 0), spell power-cost and control/dead-state usability gates. No mage-only formula or spell-result implementation is identified by this ledger. | `benilla-app/src/spell/usable.rs:371-496,622-636`; `benilla-ui/src/script/wrath_unit.rs:5-43,85-105`; `benilla-app/src/spell/cast_send.rs:1082-1090` | `Spell_C_GetPowerCost` `0x008012F0`; `Spell_C_IsUsableAction` `0x0080B5D0`; `CGUnit_C::GetPredictedPower` `0x0071C2E0`; `Spell_C_GetPowerDisplayMod` `0x007FDE00` | PARTIAL generic mana/source; UNKNOWN mage spell coefficients, proc/talent interactions, cast outcomes, and live acceptance. |
+| Priest | Mana power (type 0), generic spell usability, aura-state/control checks, and cast-failure text plumbing. | `benilla-app/src/spell/usable.rs:371-496,622-636`; `benilla-app/src/ui_action/cast_fail.rs:179-191,450-464`; `benilla-ui/src/script/wrath_unit.rs:5-43,85-105` | `Spell_C_IsUsableAction` `0x0080B5D0`; `Spell_C_GetPowerCost` `0x008012F0`; `CGUnit_C::GetPredictedPower` `0x0071C2E0`; `Spell_C_GetPowerDisplayMod` `0x007FDE00` | PARTIAL generic mana/refusal source; UNKNOWN priest-specific shadow/holy resource rules, talents, procs, dispels, server outcomes, and live behavior. |
+| Warlock | Mana power (type 0), generic spell usability, reagent/totem checks, and the shared dead/control/aura/power gates. Soul-shard inventory/consumption and class spell outcomes are not evidenced here. | `benilla-app/src/spell/usable.rs:371-496,622-636`; `benilla-app/src/spell/cast_send.rs:1082-1090`; `benilla-app/src/ui_action/cast_fail.rs:450-464` | `Spell_C_IsUsableAction` `0x0080B5D0`; `Spell_C_GetPowerCost` `0x008012F0`; `CGUnit_C::GetPredictedPower` `0x0071C2E0` | PARTIAL generic mana/source; UNKNOWN soul shards, demon/talent/proc behavior, fear/control outcomes, server outcomes, and live behavior. |
+| Hunter | Focus power (type 2), weapon/ammo requirements, ranged action usability, and pet-related target/control plumbing. The common ammo gate is source-backed; hunter-specific shot and pet outcomes are not. | `benilla-app/src/spell/usable.rs:162-200,371-496`; `benilla-app/src/ui_pet/usable.rs:1-160`; `benilla-app/src/spell/cast_target.rs:1-120` | `Spell_C_IsUsableAction` `0x0080B5D0`; `Spell_C_GetPowerCost` `0x008012F0`; `Spell_C_GetPowerDisplayMod` `0x007FDE00`; `PetInfo.cpp:238` | PARTIAL focus/ammo/pet source; UNKNOWN shot coefficients, ammo consumption, pet ability/talent behavior, server outcomes, and live behavior. |
+| Druid | Mana (type 0), rage (type 1), energy (type 3), shapeshift form masks, stance action-bar projection, and form-dependent usability. | `benilla-app/src/spell/usable.rs:419-426,502-636`; `benilla-app/src/ui_shapeshift.rs:167-270`; `benilla-ui/src/script/shapeshift.rs:37-65`; `benilla-ui/src/script/action.rs:603-607` | `CGUnit_C::GetShapeshiftForm` `0x0071AF70`; `SpellRec::UsableInShapeshift` `0x007FE850`; `SpellRec::NotUsableInShapeshiftForm` `0x007FE890`; `Spell_C_IsUsableAction` `0x0080B5D0` | PARTIAL form/resource/UI source; UNKNOWN druid form transitions, resource conversion, talents/procs, server outcomes, and live behavior. |
+| Paladin | Mana power (type 0), generic spell usability, equipped-item checks, and aura/control/refusal plumbing. Holy power is not a 3.3.5/12340 power type in the reference's seven-token table. | `benilla-app/src/spell/usable.rs:371-496,622-636`; `benilla-ui/src/script/wrath_unit.rs:5-43,85-105`; `benilla-app/src/ui_action/cast_fail.rs:179-191` | `GetPowerString` `0x007FE4B0` exposes only MANA/RAGE/FOCUS/ENERGY/HAPPINESS/RUNES/RUNIC_POWER; `Spell_C_IsUsableAction` `0x0080B5D0`; `Spell_C_GetPowerCost` `0x008012F0` | PARTIAL generic mana/source; UNKNOWN paladin seal/judgement/aura/talent/proc behavior, server outcomes, and live behavior; no holy-power claim is made. |
+| Death knight | Runes and runic power (types 5 and 6), rune-type conversion, resync/recharge state, and generic spell power gates; the current repo retains rune state but does not prove the complete rune-aware affordability/cooldown consumer. | `benilla-app/src/wrath.rs:2215-2221,2560-2588,9242-9271`; `benilla-app/src/wrath_native.rs:102-115`; `benilla-app/src/spell/usable.rs:371-496,622-636` | `CGRuneInfo::HasRunesForSpell` `0x005EE5B0`; `CGRuneInfo::ComputeRuneSpellCooldown` `0x005EE7E0`; `CGRuneInfo::ConvertRune` `0x005EE020`; `CGRuneInfo::ResyncRunes` `0x005EE440`; `CGRuneInfo::AddRunePower` `0x005EE520`; `Spell_C_IsUsableAction` `0x0080B5D0` | PARTIAL rune packet/state and generic power source; UNKNOWN complete rune affordability integration, runic-power spend/generation, diseases/presence/talents/procs, server outcomes, and live behavior. |
+
+The ledger deliberately leaves these cross-class questions UNKNOWN: exact spell coefficients and
+rank selection, talent and glyph effects, proc/aura ordering, resource gains and spends as observed
+by the server, combat-log correctness for each class, cooldown behavior under real combat, and
+visible stock-frame behavior. No class-specific row is promoted to WORKING from generic spell
+plumbing alone.
 
