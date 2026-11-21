@@ -66,6 +66,14 @@ pub trait CallHost {
         None
     }
 
+    /// What `CGTradeSkillInfo::GetTradeSkillListLink(spellId)` (`0x5DB060`) encodes for the
+    /// active player's profession `spell_id`, whether or not its window is open: `None` where the
+    /// reference answers false (no player, no record, `Effect[0]` not `SPELL_EFFECT_TRADE_SKILL`,
+    /// no skill line, `m_canLink` 0, no link rows) or with no owner behind this host.
+    fn trade_skill_link_source(&mut self, _spell_id: u32) -> Option<super::TradeSkillLinkSource> {
+        None
+    }
+
     /// Existing cooldown-owner projection: GetTime start in milliseconds, duration, enabled.
     /// None means unavailable; a known cold read is Some((0, 0, true)).
     fn spell_cooldown(&mut self, _id: u32, _pet: bool) -> Option<(i64, u32, bool)> {
