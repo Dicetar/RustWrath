@@ -163,10 +163,16 @@ fn parse_guid(value: &str) -> Option<u64> {
         .and_then(|hex| u64::from_str_radix(hex, 16).ok())
 }
 
-fn selector_matches(selector: &FilterSelector, value: &super::ScriptValue) -> bool {
+/// Match one selector against the entry's unit: a guid selector reads the guid argument, a mask
+/// selector reads the unit-flags argument.
+fn selector_matches(
+    selector: &FilterSelector,
+    guid: &super::ScriptValue,
+    flags: &super::ScriptValue,
+) -> bool {
     match selector {
         FilterSelector::All => true,
-        FilterSelector::Mask(mask) => match value {
+        FilterSelector::Mask(mask) => match flags {
             super::ScriptValue::Int(flags) => {
                 let matched = *mask & *flags as u32;
                 matched & 0xFFFF_0000 != 0
@@ -177,8 +183,10 @@ fn selector_matches(selector: &FilterSelector, value: &super::ScriptValue) -> bo
             }
             _ => false,
         },
-        FilterSelector::Guid(guid) => match value {
-            super::ScriptValue::Str(actual) => parse_guid(actual) == parse_guid(guid),
+        FilterSelector::Guid(wanted) => match guid {
+            super::ScriptValue::Str(actual) => {
+                parse_guid(actual).is_some() && parse_guid(actual) == parse_guid(wanted)
+            }
             _ => false,
         },
     }
@@ -194,15 +202,12 @@ fn event_matches(filter: &CombatLogFilter, entry: &CombatLogEntry) -> bool {
             .split(|c: char| c.is_ascii_whitespace() || c == ',')
             .any(|candidate| candidate.eq_ignore_ascii_case(event))
     });
+    let arg = |index: usize| entry.args.get(index).unwrap_or(&super::ScriptValue::Nil);
+    // COMBAT_LOG_EVENT_UNFILTERED: timestamp, event, srcGUID, srcName, srcFlags, dstGUID,
+    // dstName, dstFlags, ...
     event_selected
-        && selector_matches(
-            &filter.source,
-            entry.args.get(4).unwrap_or(&super::ScriptValue::Nil),
-        )
-        && selector_matches(
-            &filter.dest,
-            entry.args.get(7).unwrap_or(&super::ScriptValue::Nil),
-        )
+        && selector_matches(&filter.source, arg(2), arg(4))
+        && selector_matches(&filter.dest, arg(5), arg(7))
 }
 
 fn matches_filter(state: &CombatLogState, entry: &CombatLogEntry) -> bool {
@@ -975,12 +980,32 @@ mod tests {
                 .unwrap(),
             "SPELL_HEAL"
         );
-        script.run("CombatLogAdvanceEntry(-1)").unwrap();
+        // `0x0074FC20`: a filtered step back finds no older match, so the cursor is cleared.
         assert_eq!(
             script
-                .eval::<i64>("return select(1, CombatLogGetCurrentEntry())")
+                .eval::<Option<f64>>("return CombatLogAdvanceEntry(-1)")
                 .unwrap(),
-            2
+            None
+        );
+        assert_eq!(
+            script
+                .eval::<i64>("return select('#', CombatLogGetCurrentEntry())")
+                .unwrap(),
+            0
+        );
+        // Ignoring the filter steps onto the older unmatched damage entry.
+        script.run("CombatLogSetCurrentEntry(0)").unwrap();
+        assert_eq!(
+            script
+                .eval::<Option<f64>>("return CombatLogAdvanceEntry(-1, true)")
+                .unwrap(),
+            Some(1.0)
+        );
+        assert_eq!(
+            script
+                .eval::<f64>("return (CombatLogGetCurrentEntry())")
+                .unwrap(),
+            1.0
         );
     }
 
@@ -1011,6 +1036,7 @@ mod tests {
             script.eval::<String>("return Filtered[2]").unwrap(),
             "SPELL_HEAL"
         );
-        assert_eq!(script.eval::<i64>("return Filtered[11]").unwrap(), 50);
+        // OnEvent receives (self, event, timestamp, subevent, ...): the amount is the 12th vararg.
+        assert_eq!(script.eval::<i64>("return Filtered[12]").unwrap(), 50);
     }
 }
