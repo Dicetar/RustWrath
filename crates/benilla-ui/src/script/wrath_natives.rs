@@ -36,6 +36,33 @@ fn local_vehicle_unit(model: &Model, token: Option<&str>) -> bool {
     })
 }
 
+/// `CGGameUI::SetFocusTarget` (`0x51FF20`), the one writer of the focus `[m_focusTarget]`: the
+/// same guid is a no-op (checked before the taint), tainted code is refused with the blocked-action
+/// feedback (`ShowBlockedActionFeedback(nullptr, 0)`, `0x513530`), and otherwise the guid is stored
+/// and `PLAYER_FOCUS_CHANGED` signalled with no arguments. The focused unit's script registration
+/// (`RegisterScript(0x2000)`) is [`super::UnitGuids::has_field_watchers`]'s focus arm. 0 is no
+/// focus. `function` names the verb for the feedback. Whether it changed the focus.
+pub(crate) fn set_focus_target(lua: &Lua, guid: u64, function: &str) -> bool {
+    if lua
+        .app_data_ref::<Model>()
+        .expect("model app_data")
+        .unit_guids
+        .focus
+        == guid
+    {
+        return false;
+    }
+    if super::protected::forbid_tainted(lua, function) {
+        return false;
+    }
+    lua.app_data_mut::<Model>()
+        .expect("model app_data")
+        .unit_guids
+        .focus = guid;
+    super::tick::fire_event_into(lua, "PLAYER_FOCUS_CHANGED", Vec::new());
+    true
+}
+
 fn lua_seat_permission(allowed: bool) -> Value {
     if allowed {
         Value::Number(1.0)
@@ -1186,15 +1213,34 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok((0, 0, 0, 0))
         })?,
     )?;
+    // `FocusUnit([unit])` (`Script_FocusUnit`, `0x522480`): the token through
+    // `Script_GetGUIDFromToken(token, guid, defaultToTarget = 1)` (`0x60ABF0`), then
+    // `CGGameUI::SetFocusTarget` (`0x51FF20`). No usage error: `lua_tolstring` reads the first
+    // argument, a missing or non-string one is no text, and no text names the target (`0x60AC09`).
+    // A token the resolver does not know sets nothing, where the reference would try it as a unit
+    // name (`Script_GetGUIDFromString`, unsupported here); a known token naming nobody clears it.
+    lua.globals().set(
+        "FocusUnit",
+        lua.create_function(|lua, token: Value| {
+            let token = lua.coerce_string(token)?.map(|s| s.to_string_lossy());
+            let guid = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                match token.as_deref().filter(|t| !t.is_empty()) {
+                    None => Some(model.unit_guids.target),
+                    Some(token) => model.unit_guids.resolve(token).ok().map(|g| g.unwrap_or(0)),
+                }
+            };
+            if let Some(guid) = guid {
+                set_focus_target(lua, guid, "FocusUnit");
+            }
+            Ok(())
+        })?,
+    )?;
+    // `ClearFocus()` (`Script_ClearFocus`, `0x5225E0`): `SetFocusTarget` with no guid.
     lua.globals().set(
         "ClearFocus",
         lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .record_unsupported_native_once(
-                    "ClearFocus",
-                    "protected focus target mutation has no CMSG/selection target consumer yet",
-                );
+            set_focus_target(lua, 0, "ClearFocus");
             Ok(())
         })?,
     )?;
@@ -2250,6 +2296,20 @@ pub(super) fn install_frame_fallbacks(lua: &Lua) -> mlua::Result<()> {
 /// case-insensitive match against `CRITTER` (0) and `MOUNT` (1). A non-string or an unknown
 /// token is the binding's usage error.
 impl super::UiScript {
+    /// The focus guid `[m_focusTarget]`, 0 for none. The VM owns it, as the reference's game UI
+    /// does: a `/reload`'s shutdown clears it (`CGGameUI::Shutdown`, `0x528F00`), so a fresh VM
+    /// starts with none, and the app's feeds read it from here.
+    pub fn focus_guid(&self) -> u64 {
+        self.model_ref().unit_guids.focus
+    }
+
+    /// The engine's `SetFocusTarget` (`0x51FF20`): a despawn's `BreakTarget` (`0x524350`), an
+    /// unselectable flag's (`0x73C330`) or the leave-world clear (`0x528C30`). Fires
+    /// `PLAYER_FOCUS_CHANGED` when it changed the focus, and says so.
+    pub fn set_focus_target(&mut self, guid: u64) -> bool {
+        set_focus_target(self.lua(), guid, "SetFocusTarget")
+    }
+
     /// Seed `GetNumTitles`: `CharTitles.dbc`'s record-id ceiling plus one, as
     /// `g_charTitlesDB.m_maxID + 1` (`0x005165E0`).
     pub fn set_title_count(&mut self, count: u32) {
@@ -4636,5 +4696,193 @@ mod tests {
             }),
         );
         assert!((s.eval::<f64>("return GetCombatRatingBonus(1)").unwrap() - 4.0).abs() < 1e-6);
+    }
+}
+
+/// The focus (`CGGameUI::SetFocusTarget`, `0x51FF20`) through its natives, its resolver base and
+/// its unit-event fan-out, on synthetic guids.
+#[cfg(test)]
+mod focus_tests {
+    use std::collections::HashMap;
+
+    use crate::script::{UiScript, UiTarget, UnitGuids};
+
+    const ME: u64 = 0x10;
+    const MOB: u64 = 0xF130_0000_0000_0042;
+    const OTHER: u64 = 0xF130_0000_0000_0043;
+    const P1: u64 = 0x20;
+
+    /// A Wrath VM targeting `MOB`, which targets `P1`; `OTHER` is held and targets nobody.
+    fn wrath_vm() -> UiScript {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_unit_guids(&UnitGuids {
+            player: ME,
+            target: MOB,
+            party: [P1, 0, 0, 0],
+            held: HashMap::from([(ME, 0), (MOB, P1), (OTHER, 0)]),
+            ..Default::default()
+        });
+        s.run(
+            r#"FOCUS_SEEN = 0
+            local f = CreateFrame("Frame")
+            f:RegisterEvent("PLAYER_FOCUS_CHANGED")
+            f:SetScript("OnEvent", function()
+                FOCUS_SEEN = FOCUS_SEEN + 1
+                FOCUS_AT_EVENT = UnitGUID("focus") or "none"
+            end)"#,
+        )
+        .unwrap();
+        s
+    }
+
+    fn seen(s: &UiScript) -> i64 {
+        s.eval::<i64>("return FOCUS_SEEN").unwrap()
+    }
+
+    fn hex(guid: u64) -> String {
+        format!("0x{guid:016X}")
+    }
+
+    /// `FocusUnit` stores the guid and signals `PLAYER_FOCUS_CHANGED` with the new focus already
+    /// readable; the same guid again, from any token, is no edge; `ClearFocus` clears once.
+    #[test]
+    fn focus_set_and_clear_signal_only_on_change() {
+        let s = wrath_vm();
+        s.run(r#"FocusUnit("target")"#).unwrap();
+        assert_eq!(s.focus_guid(), MOB);
+        assert_eq!(seen(&s), 1);
+        assert_eq!(s.eval::<String>("return FOCUS_AT_EVENT").unwrap(), hex(MOB));
+        // No text names the target (`0x60AC09`): still MOB, so no edge.
+        s.run("FocusUnit() FocusUnit('TARGET') FocusUnit('focus')")
+            .unwrap();
+        assert_eq!(seen(&s), 1, "the same guid is no change");
+        s.run("ClearFocus()").unwrap();
+        assert_eq!(s.focus_guid(), 0);
+        assert_eq!(seen(&s), 2);
+        assert_eq!(s.eval::<String>("return FOCUS_AT_EVENT").unwrap(), "none");
+        s.run("ClearFocus()").unwrap();
+        assert_eq!(seen(&s), 2, "clearing no focus is no edge");
+    }
+
+    /// An unknown token sets nothing and raises nothing; a known token naming nobody clears.
+    #[test]
+    fn focus_unit_on_unknown_and_empty_tokens() {
+        let s = wrath_vm();
+        s.run(r#"FocusUnit("targettarget")"#).unwrap();
+        assert_eq!(s.focus_guid(), P1);
+        s.run(r#"FocusUnit("bogus")"#).unwrap();
+        assert_eq!(s.focus_guid(), P1, "an unknown token leaves the focus");
+        s.run(r#"FocusUnit("party3")"#).unwrap();
+        assert_eq!(s.focus_guid(), 0, "a known token naming nobody clears it");
+        assert_eq!(seen(&s), 2);
+    }
+
+    /// `focus` and `focustarget` resolve wherever `target` does once the focus is set.
+    #[test]
+    fn focus_and_focustarget_resolve() {
+        let s = wrath_vm();
+        assert!(s
+            .eval::<bool>(r#"return UnitExists("focus") == nil"#)
+            .unwrap());
+        s.run(r#"FocusUnit("target")"#).unwrap();
+        assert_eq!(
+            s.eval::<String>(r#"return UnitGUID("focus")"#).unwrap(),
+            hex(MOB)
+        );
+        assert_eq!(
+            s.eval::<String>(r#"return UnitGUID("focustarget")"#)
+                .unwrap(),
+            hex(P1)
+        );
+        // Each token resolves through the same resolver `target` does (`0x60ABF0`).
+        assert!(s
+            .eval::<bool>(r#"return UnitGUID("focus") == UnitGUID("target")"#)
+            .unwrap());
+        assert!(s
+            .eval::<bool>(r#"return UnitGUID("FocusTarget") == UnitGUID("party1")"#)
+            .unwrap());
+    }
+
+    /// A secure action button of `type="focus"`, run as `SecureTemplates.lua`'s `focus` action runs
+    /// it (`FocusUnit` on the button's `unit` attribute), focuses on a click from client code.
+    #[test]
+    fn focus_secure_button_type_focus_click() {
+        let s = wrath_vm();
+        s.run(
+            r#"local b = CreateFrame("Button", "FocusTestButton", UIParent, "SecureActionButtonTemplate")
+            b:SetAttribute("type", "focus")
+            b:SetAttribute("unit", "target")
+            b:SetScript("OnClick", function(self)
+                if self:GetAttribute("type") == "focus" then
+                    FocusUnit(self:GetAttribute("unit"))
+                end
+            end)
+            b:Click()"#,
+        )
+        .unwrap();
+        assert_eq!(s.focus_guid(), MOB);
+        assert_eq!(seen(&s), 1);
+    }
+
+    /// A `RunScript` chunk is tainted: `SetFocusTarget` refuses it with the blocked-action feedback
+    /// (`0x513530`, type 0) and leaves the focus.
+    #[test]
+    fn focus_from_a_macro_chunk_is_forbidden() {
+        let s = wrath_vm();
+        s.run(
+            r#"FORBIDDEN = "" local f = CreateFrame("Frame")
+            f:RegisterEvent("MACRO_ACTION_FORBIDDEN")
+            f:SetScript("OnEvent", function(_, _, what) FORBIDDEN = FORBIDDEN .. tostring(what) end)
+            RunScript("FocusUnit('target')")"#,
+        )
+        .unwrap();
+        assert_eq!(s.focus_guid(), 0);
+        assert_eq!(seen(&s), 0);
+        assert_eq!(s.eval::<String>("return FORBIDDEN").unwrap(), "FocusUnit()");
+    }
+
+    /// The engine's clear (a despawn's `BreakTarget`, `0x524350`) signals once, then is no edge.
+    #[test]
+    fn focus_engine_clear_on_despawn_signals_once() {
+        let mut s = wrath_vm();
+        s.run(r#"FocusUnit("target")"#).unwrap();
+        assert!(s.set_focus_target(0));
+        assert!(!s.set_focus_target(0));
+        assert_eq!(seen(&s), 2);
+        assert!(s
+            .eval::<bool>(r#"return UnitExists("focus") == nil"#)
+            .unwrap());
+    }
+
+    /// The focus registers its unit for the field watchers and names it, so a health change of a
+    /// unit nothing else names reaches `UNIT_HEALTH` as `"focus"`, and its snapshot is a guid entry.
+    #[test]
+    fn focus_unit_health_reaches_the_focus_token() {
+        let mut s = wrath_vm();
+        assert!(!s.unit_has_field_watchers(OTHER));
+        let mut g = s.unit_guids_view();
+        g.target = OTHER;
+        s.set_unit_guids(&g);
+        s.run(r#"FocusUnit("target")"#).unwrap();
+        // The target moves on; the focus stays on OTHER, as the app's feed reads it back.
+        g.target = MOB;
+        g.focus = s.focus_guid();
+        s.set_unit_guids(&g);
+        assert!(s.unit_has_field_watchers(OTHER));
+        assert_eq!(s.unit_tokens_of(OTHER), ["focus"]);
+        assert!(s.chain_end_guids().contains(&OTHER));
+        s.run(
+            r#"HEALTH = "" local f = CreateFrame("Frame")
+            f:RegisterEvent("UNIT_HEALTH")
+            f:SetScript("OnEvent", function(_, _, unit) HEALTH = HEALTH .. unit end)"#,
+        )
+        .unwrap();
+        // The field bridge's fan-out (`0x515e50`): one signal per token naming the unit.
+        for token in s.unit_tokens_of(OTHER) {
+            s.fire_event("UNIT_HEALTH", vec![crate::script::ScriptValue::Str(token)]);
+        }
+        assert_eq!(s.eval::<String>("return HEALTH").unwrap(), "focus");
+        let vanilla = UnitGuids { wrath: false, ..g };
+        assert!(!vanilla.has_field_watchers(OTHER), "1.12 has no focus");
     }
 }

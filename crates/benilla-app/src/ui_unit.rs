@@ -741,11 +741,11 @@ pub(crate) fn pet_token_guid(me: Option<&ObjectStore>) -> u64 {
 
 /// Wrath-only unit identities for the target/assist resolver. These are client or encounter
 /// state, not object-store snapshots; zero is nobody. The live vehicle comes from the Wrath
-/// world view; the fallback here lets standalone resolver harnesses supply it.
+/// world view; the fallback here lets standalone resolver harnesses supply it. The focus is the
+/// target owner's ([`crate::target::FocusTarget`]).
 #[derive(Resource, Default, Clone, Copy, Debug)]
 pub(crate) struct WrathUnitTokens {
     pub(crate) active: bool,
-    pub(crate) focus: u64,
     pub(crate) vehicle: u64,
     pub(crate) boss: [u64; 4],
 }
@@ -763,6 +763,8 @@ pub(crate) struct UnitTokens<'w, 's> {
     group: Res<'w, crate::ui_party::GroupState>,
     wrath: Option<Res<'w, WrathUnitTokens>>,
     wrath_world: Option<Res<'w, crate::wrath::WrathWorldView>>,
+    /// The focus `[m_focusTarget]`, `"focus"`'s base (`0x60ABF0`, `CGGameUI::m_focusTarget`).
+    focus: Option<Res<'w, crate::target::FocusTarget>>,
     /// The stores as of the drain's place, so a verb a listener calls reads its packet's.
     pub(crate) stores: views::ViewStores<'w, 's>,
     me: Query<'w, 's, (Entity, &'static Guid), With<SelfPlayer>>,
@@ -835,7 +837,10 @@ impl UnitTokens<'_, '_> {
             UnitBase::Party(row) => self.party_member(row),
             // The interaction NPC's guid, `[0xb4e2d0]` (`0x515c00`).
             UnitBase::Npc => self.interact.as_ref()?.1,
-            UnitBase::Focus => wrath.and_then(|w| (w.focus != 0).then_some(w.focus)),
+            UnitBase::Focus => {
+                wrath?;
+                self.focus.as_ref()?.guid
+            }
             UnitBase::Vehicle => {
                 let wrath = wrath?;
                 match self.wrath_world.as_deref() {
@@ -2053,9 +2058,9 @@ mod tests {
 
         let mut app = App::new();
         app.init_resource::<crate::ui_party::GroupState>()
+            .insert_resource(crate::target::FocusTarget::seated(FOCUS))
             .insert_resource(WrathUnitTokens {
                 active: true,
-                focus: FOCUS,
                 vehicle: VEHICLE,
                 boss: [BOSS, 0, 0, 0],
             });

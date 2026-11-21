@@ -51,6 +51,9 @@ pub(crate) struct TradeSkillOpens(pub(crate) Vec<u32>);
 pub(crate) struct LinkedTradeSkill {
     pub(crate) parsed: ParsedTradeLink,
     pub(crate) raw_link: String,
+    /// A name query was sent for the owner's race and class while this link waited
+    /// ([`feed_trade_skill`]): the cached name had none.
+    pub(crate) traits_asked: bool,
 }
 
 /// The open book's skill line (`[0xbde040]`). An opener of it, the Lua close and the session end
@@ -275,6 +278,56 @@ fn skill_rank(store: &ObjectStore, skill_id: u32) -> (u32, u32) {
         v => v + bonus,
     };
     (with_bonus(s.value), with_bonus(s.max))
+}
+
+/// The inputs `CGTradeSkillInfo::GetTradeSkillListLink(spellId)` (`0x5DB060`) encodes for our own
+/// profession `spell_id`, open or not: the record with `Effect[0]` `SPELL_EFFECT_TRADE_SKILL`,
+/// its line through `GetSkillLineRec` (`0x5DA5F0`: the race and class `SpellTableLookupAbility`
+/// takes, which for ourselves is our descriptor's), `m_canLink`, the line's link rows
+/// (`SpellTableGetSkillLineLinkInfo`, `0x8104A0`), the slot's value and maximum and our known spells.
+/// `None` wherever the reference returns false. The window's own `GetTradeSkillListLink()` and
+/// `GetSpellLink`'s second value both come from here, so they post the same text.
+pub(crate) fn own_link_source(
+    spell_id: u32,
+    spells: &Spells,
+    skill_lines: &SkillLines,
+    store: &ObjectStore,
+    player_guid: u64,
+    known: &std::collections::HashSet<u32>,
+) -> Option<TradeSkillLinkSource> {
+    if player_guid == 0 {
+        return None;
+    }
+    let spell = spells.catalog.get(spell_id)?;
+    if spell.effects[0] != SPELL_EFFECT_TRADE_SKILL {
+        return None;
+    }
+    let (race, class) = store.race_class();
+    let line = skill_lines.catalog.spell_to_line(spell_id, race, class)?;
+    if !skill_lines.catalog.can_link(line) {
+        return None;
+    }
+    let rows = skill_lines.catalog.link_abilities(line)?;
+    let (cur_rank, max_rank) = skill_rank(store, line);
+    Some(TradeSkillLinkSource {
+        spell_id,
+        spell_name: spell.name.clone(),
+        can_link: true,
+        cur_rank,
+        max_rank,
+        player_guid,
+        player_race: race,
+        player_class: class,
+        ability_rows: rows
+            .iter()
+            .map(|r| TradeSkillLinkRow {
+                spell_id: r.spell_id,
+                race_mask: r.race_mask,
+                class_mask: r.class_mask,
+            })
+            .collect(),
+        known_spells: known.clone(),
+    })
 }
 
 /// The slot's raw value, which the recipe colours band on (`0x4fcc31`-`0x4fcc41`).
@@ -743,22 +796,34 @@ fn feed_trade_skill(
                     .resolve_player(guid, Ask::New(&commands))
                     .is_some()
                 {
-                    if let Some(skill_lines) = skill_lines.as_deref() {
-                        let traits = names_cache
-                            .player_traits(guid)
-                            .map(|(r, c, _)| (r, c))
-                            .or_else(|| {
-                                (guid == self_guid_val)
-                                    .then(|| self_entry.map(|(s, _)| s.race_class()))
-                                    .flatten()
-                            });
-                        let line =
-                            match traits {
-                                Some((r, c)) if r != 0 && c != 0 => skill_lines
-                                    .catalog
-                                    .spell_to_line(pending.parsed.spell_id, r, c),
-                                _ => skill_lines.catalog.first_line(pending.parsed.spell_id),
-                            };
+                    let traits = names_cache
+                        .player_traits(guid)
+                        .map(|(r, c, _)| (r, c))
+                        .or_else(|| {
+                            (guid == self_guid_val)
+                                .then(|| self_entry.map(|(s, _)| s.race_class()))
+                                .flatten()
+                        })
+                        .filter(|&(r, c)| r != 0 && c != 0);
+                    if traits.is_none() {
+                        // `GetSkillLineRec` (`0x5DA5F0`) reads race and class off the name
+                        // record, which in the reference is always a name query's answer. A name
+                        // we learned some other way carries none, so ask the query once and wait
+                        // for its answer, as `SetLink` waits on its callback (`0x5D9F50`).
+                        if !pending.traits_asked {
+                            let _ = commands
+                                .0
+                                .send(crate::net::ClientCommand::NameQuery { guid });
+                            if let Some(p) = open.pending_link.as_mut() {
+                                p.traits_asked = true;
+                            }
+                        }
+                    } else if let Some(skill_lines) = skill_lines.as_deref() {
+                        let line = traits.and_then(|(r, c)| {
+                            skill_lines
+                                .catalog
+                                .spell_to_line(pending.parsed.spell_id, r, c)
+                        });
                         let valid_line = line.filter(|&l| {
                             skill_lines.catalog.can_link(l)
                                 && skill_lines.catalog.link_abilities(l).is_some_and(|rows| {
@@ -932,35 +997,11 @@ fn feed_trade_skill(
                         )
                     })
                     .collect();
-                // Supply `benilla-ui` with the inputs it needs to encode `GetTradeSkillListLink()`
-                // (`0x005DB060`): opener spell from `TradeSkillOpen` + `Spells`, `m_canLink` and
-                // raw-order `SkillLineAbility.dbc` rows from `SkillLines`, rank/maxRank/race/class
-                // from `ObjectStore`, player GUID from `SelfGuid`, known spells from `PlayerActions`.
+                // `GetTradeSkillListLink()` encodes `m_spellID`, the opener (`0x005DC0B0` →
+                // `0x005DB060`), through the one builder `GetSpellLink` also asks.
                 let own_source = open.opener_spell_id.and_then(|opener_id| {
-                    let opener = spells.catalog.get(opener_id)?;
-                    if opener.effects[0] != SPELL_EFFECT_TRADE_SKILL {
-                        return None;
-                    }
-                    let rows = skill_lines.catalog.link_abilities(line)?;
-                    Some(TradeSkillLinkSource {
-                        spell_id: opener_id,
-                        spell_name: opener.name.clone(),
-                        can_link: skill_lines.catalog.can_link(line),
-                        cur_rank: line_rank,
-                        max_rank,
-                        player_guid: self_guid_val,
-                        player_race: race,
-                        player_class: class,
-                        ability_rows: rows
-                            .iter()
-                            .map(|r| TradeSkillLinkRow {
-                                spell_id: r.spell_id,
-                                race_mask: r.race_mask,
-                                class_mask: r.class_mask,
-                            })
-                            .collect(),
-                        known_spells: actions.spells.iter().copied().collect(),
-                    })
+                    let known = actions.spells.iter().copied().collect();
+                    own_link_source(opener_id, spells, skill_lines, store, self_guid_val, &known)
                 });
                 // No sort here: the engine orders the book (`0x4fd180`).
                 Some((
@@ -1186,7 +1227,11 @@ impl TradeSkillSteps<'_> {
             "ui_tradeskill: staging trade link spell={} rank={}/{} owner={:X}",
             parsed.spell_id, parsed.rank, parsed.max_rank, parsed.owner_guid
         );
-        open.pending_link = Some(LinkedTradeSkill { parsed, raw_link });
+        open.pending_link = Some(LinkedTradeSkill {
+            parsed,
+            raw_link,
+            traits_asked: false,
+        });
     }
 }
 
@@ -2840,6 +2885,43 @@ mod tests {
                 .unwrap(),
             "Bolt of Linen Cloth"
         );
+    }
+
+    /// A cached owner name with no race and class (learned outside `SMSG_NAME_QUERY_RESPONSE`)
+    /// cannot place the spell on a line (`GetSkillLineRec`, `0x5DA5F0`): the link sends one name
+    /// query, waits, and opens when the answer brings the traits, never guessing a line.
+    #[test]
+    fn trade_skill_link_without_owner_traits_asks_once_then_opens() {
+        let (mut app, rx) = link_test_app();
+        const REMOTE_GUID: u64 = 0x0000_0000_0000_CAFE;
+        app.world_mut().resource_mut::<NameCache>().insert_player(
+            REMOTE_GUID,
+            "Aldric".into(),
+            None,
+        );
+        run_hosted_lua(
+            &mut app,
+            r#"
+            local tip = CreateFrame("GameTooltip", "TraitlessLinkTip")
+            tip:SetHyperlink("trade:3908:60:75:CAFE:C")
+            "#,
+        );
+        assert!(heard(&mut app).is_empty(), "no line without traits");
+        assert!(heard(&mut app).is_empty(), "still waiting");
+        let queries: Vec<_> = rx
+            .try_iter()
+            .filter_map(|cmd| match cmd {
+                crate::net::ClientCommand::NameQuery { guid } => Some(guid),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(queries, vec![REMOTE_GUID], "asked once");
+        app.world_mut().resource_mut::<NameCache>().insert_player(
+            REMOTE_GUID,
+            "Aldric".into(),
+            Some((1, 8, 0)),
+        );
+        assert_eq!(heard(&mut app), ["TRADE_SKILL_UPDATE", "TRADE_SKILL_SHOW"]);
     }
 
     /// Part C end-to-end round trip: open own profession, call `GetTradeSkillListLink()`, close,

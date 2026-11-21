@@ -211,14 +211,25 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             )
         })?,
     )?;
+    // `GetSpellLink(spell)` (`Script_GetSpellLink`, `0x5408E0`): the spell link, then the trade link
+    // `CGTradeSkillInfo::GetTradeSkillListLink(spellId)` (`0x5DB060`) writes for a profession
+    // opener, else nil (`SpellBookFrame_Scripts.cpp:1185`). The same encoder answers
+    // `GetTradeSkillListLink()` for the open window, so the spellbook's shift-click and the window's
+    // link button post the same `|Htrade:` text.
     globals.set(
         "GetSpellLink",
         lua.create_function(|lua, args: MultiValue| {
             let Some((id, view)) = query(lua, &args)? else {
-                return Ok(Value::Nil);
+                return Ok(MultiValue::from_vec(vec![Value::Nil]));
             };
             let link = format!("|cff71d5ff|Hspell:{id}|h[{}]|h|r", view.name);
-            string(lua, Some(&link))
+            let trade = host::with_host(lua, |host| host.trade_skill_link_source(id))
+                .flatten()
+                .and_then(|source| super::tradeskill::encode_trade_skill_link(&source));
+            Ok(MultiValue::from_vec(vec![
+                string(lua, Some(&link))?,
+                string(lua, trade.as_deref())?,
+            ]))
         })?,
     )?;
     Ok(())

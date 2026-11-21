@@ -3,7 +3,7 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use benilla_ui::script::{SpellInfoView, UnitCastView, WrathAuraView};
+use benilla_ui::script::{SpellInfoView, TradeSkillLinkSource, UnitCastView, WrathAuraView};
 
 #[derive(SystemParam)]
 pub(crate) struct SpellQueries<'w, 's> {
@@ -12,7 +12,15 @@ pub(crate) struct SpellQueries<'w, 's> {
     pet: Option<Res<'w, crate::ui_pet::PetBar>>,
     world: Option<Res<'w, crate::wrath::WrathWorldView>>,
     aura_anchors: Option<Res<'w, crate::wrath::WrathAuraAnchors>>,
-    player: Query<'w, 's, &'static crate::net::ObjectStore, With<crate::net::SelfPlayer>>,
+    player: Query<
+        'w,
+        's,
+        (
+            &'static crate::net::ObjectStore,
+            Option<&'static crate::net::Guid>,
+        ),
+        With<crate::net::SelfPlayer>,
+    >,
     modifiers: Res<'w, crate::spell::SpellModifiers>,
     lines: Option<Res<'w, crate::ui_spellbook::SkillLines>>,
     items: Res<'w, crate::items::Items>,
@@ -230,10 +238,25 @@ impl SpellQueries<'_, '_> {
         }
     }
 
+    /// `GetTradeSkillListLink(spellId)` (`0x5DB060`)'s inputs for our profession `id`, from the
+    /// owners the open window reads ([`crate::ui_tradeskill::own_link_source`]).
+    pub(crate) fn trade_skill_link_source(&self, id: u32) -> Option<TradeSkillLinkSource> {
+        let (store, guid) = self.player.single().ok()?;
+        let known = self.known.as_deref()?.spells.iter().copied().collect();
+        crate::ui_tradeskill::own_link_source(
+            id,
+            self.spells.as_deref()?,
+            self.lines.as_deref()?,
+            store,
+            guid?.0,
+            &known,
+        )
+    }
+
     pub(crate) fn info(&self, id: u32) -> Option<SpellInfoView> {
         let spells = self.spells.as_deref()?;
         let definition = spells.catalog.get(id)?;
-        let player = self.player.single().ok();
+        let player = self.player.single().ok().map(|(store, _)| store);
         let skills = crate::spell::PlayerSkills {
             lines: self.lines.as_deref().map(|lines| &lines.catalog),
             spells: Some(&spells.catalog),

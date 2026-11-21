@@ -1926,3 +1926,122 @@ fn trade_skill_link_set_hyperlink_dispatches_open_link_without_showing_tooltip()
         vec![bare.to_string(), full.to_string()]
     );
 }
+
+/// A host that answers `GetSpellLink`'s two queries for synthetic spells: every listed id has a
+/// record, and `trade` is the one profession opener with a link source.
+struct SpellLinkHost {
+    names: Vec<(u32, &'static str)>,
+    trade: Option<TradeSkillLinkSource>,
+}
+
+impl crate::script::CallHost for SpellLinkHost {
+    fn apply(
+        &mut self,
+        _script: &mut UiScript,
+        _call: crate::script::ScriptCall,
+    ) -> Option<crate::script::CallTail> {
+        None
+    }
+
+    fn spell_info(&mut self, id: u32) -> Option<crate::script::SpellInfoView> {
+        let name = self.names.iter().find(|(n, _)| *n == id)?.1;
+        Some(crate::script::SpellInfoView {
+            name: name.into(),
+            rank: None,
+            icon: None,
+            cost: None,
+            channeled: false,
+            power_type: 0,
+            cast_time_ms: 0,
+            min_range: None,
+            max_range: None,
+        })
+    }
+
+    fn trade_skill_link_source(&mut self, id: u32) -> Option<TradeSkillLinkSource> {
+        self.trade.clone().filter(|s| s.spell_id == id)
+    }
+}
+
+/// The Tailoring opener's source over three link rows, two of them known.
+fn tailoring_source() -> TradeSkillLinkSource {
+    TradeSkillLinkSource {
+        spell_id: 3908,
+        spell_name: "Tailoring".into(),
+        can_link: true,
+        cur_rank: 57,
+        max_rank: 75,
+        player_guid: 0x0000_0000_00AB_CD01,
+        player_race: 1,
+        player_class: 8,
+        ability_rows: [3908, 2963, 3919]
+            .map(|spell_id| TradeSkillLinkRow {
+                spell_id,
+                race_mask: 0,
+                class_mask: 0,
+            })
+            .to_vec(),
+        known_spells: [3908, 3919].into(),
+    }
+}
+
+/// `GetSpellLink` on a profession opener (`0x5408E0`) answers the spell link, then the trade link
+/// `GetTradeSkillListLink(spellId)` (`0x5DB060`) writes, which is the open window's
+/// `GetTradeSkillListLink()` for the same state: the spellbook's shift-click and the window's link
+/// button post the same text.
+#[test]
+fn spell_trade_link_matches_the_open_windows_list_link() {
+    let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    s.keep_calls();
+    s.set_trade_skill(Some(two_recipe_state()));
+    s.set_trade_skill_link_source(Some(tailoring_source()));
+    let mut host = SpellLinkHost {
+        names: vec![(3908, "Tailoring")],
+        trade: Some(tailoring_source()),
+    };
+    let (spell, trade, window) = crate::script::host::lend(s.lua(), &mut host, || {
+        s.eval::<(String, Option<String>, Option<String>)>(
+            "local spell, trade = GetSpellLink(3908) return spell, trade, GetTradeSkillListLink()",
+        )
+        .unwrap()
+    });
+    assert_eq!(spell, "|cff71d5ff|Hspell:3908|h[Tailoring]|h|r");
+    assert_eq!(
+        trade.as_deref(),
+        Some("|cffffd000|Htrade:3908:57:75:ABCD01:F|h[Tailoring]|h|r")
+    );
+    assert_eq!(trade, window, "one encoder for both");
+
+    // With the window closed the spellbook still links the profession (`0x5DB060` reads no window).
+    s.run("CloseTradeSkill()").unwrap();
+    let closed = crate::script::host::lend(s.lua(), &mut host, || {
+        s.eval::<Option<String>>("return select(2, GetSpellLink(3908))")
+            .unwrap()
+    });
+    assert_eq!(closed, trade);
+}
+
+/// A spell that is no profession opener, or a profession that cannot be linked, answers the spell
+/// link and a nil second value (`0x5408E0` pushes nil when `0x5DB060` returns false).
+#[test]
+fn spell_trade_link_is_nil_for_a_non_profession_spell() {
+    let s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    let mut host = SpellLinkHost {
+        names: vec![(133, "Fireball"), (3908, "Tailoring")],
+        trade: None,
+    };
+    let (count, spell, trade) = crate::script::host::lend(s.lua(), &mut host, || {
+        s.eval::<(i64, String, Option<String>)>(
+            "return select('#', GetSpellLink(133)), GetSpellLink(133)",
+        )
+        .unwrap()
+    });
+    assert_eq!(count, 2);
+    assert_eq!(spell, "|cff71d5ff|Hspell:133|h[Fireball]|h|r");
+    assert_eq!(trade, None);
+    let unlinkable = crate::script::host::lend(s.lua(), &mut host, || {
+        s.eval::<Option<String>>("return select(2, GetSpellLink(3908))")
+            .unwrap()
+    });
+    assert_eq!(unlinkable, None, "no source, no trade link");
+}

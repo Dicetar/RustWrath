@@ -6,7 +6,7 @@
 use bevy::prelude::*;
 
 use crate::net::{ClientCommand, Guid, NetCommands, ObjectStore, SelfPlayer};
-use crate::ui_script::InspectMode;
+use crate::ui_script::{InspectMode, SweepApp};
 use benilla_assets::AssetSet;
 use benilla_world::interact::{WorldClick, WorldRightClick};
 use benilla_world::schedule::WorldStage;
@@ -18,6 +18,7 @@ pub(crate) mod click;
 pub(crate) mod cursor_mode;
 mod died;
 mod flash;
+mod focus;
 mod front;
 #[cfg(test)]
 mod front_tests;
@@ -59,6 +60,8 @@ pub(crate) use died::drop_parked_deaths;
 #[cfg(test)]
 pub(crate) use died::Deaths;
 pub(crate) use flash::CombatFlash;
+// The focus beside the selection: the app's copy of the VM's, and its engine-side clears.
+pub(crate) use focus::FocusTarget;
 // The discount `0x612b80` the repair cost and the taxi fare take off their DBC prices.
 pub(crate) use price_discount::vendor_price_discount;
 #[cfg(test)]
@@ -308,6 +311,7 @@ impl Plugin for TargetPlugin {
         app.add_observer(on_cvar);
         died::register(app);
         app.init_resource::<Selection>()
+            .init_resource::<FocusTarget>()
             .init_resource::<ClickConfig>()
             .init_resource::<AssistAttack>()
             .init_resource::<Hovered>()
@@ -419,10 +423,16 @@ impl Plugin for TargetPlugin {
             // the host lent, as a feed of the frame's packets.
             .add_systems(
                 Update,
-                track::follow_selection_object
+                (track::follow_selection_object, focus::follow_focus)
+                    .chain()
                     .in_set(crate::ui_script::UiFeed)
                     .after(WorldStage::Net)
                     .before(WorldStage::Input),
+            )
+            // `CGGameUI::LeaveWorld`'s focus clear (`0x528C30`), before `PLAYER_LEAVING_WORLD`.
+            .add_sweep_leg(
+                crate::ui_script::SweepLeg::Focus,
+                focus::clear_focus_on_leave_world,
             )
             // PostUpdate: the brighten sets MeshTag bit 31 after every Update writer that
             // overwrites the whole tag.
