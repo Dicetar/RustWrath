@@ -9956,8 +9956,11 @@ fn cast_interruptible(
     }
     let mut interrupt = interrupt_mask;
     let mut silence = silence_mask;
-    let mut interrupt_special = (!is_player).then_some(interrupt_special_mask).unwrap_or(0);
-    let mut silence_special = (!is_player).then_some(silence_special_mask).unwrap_or(0);
+    let (mut interrupt_special, mut silence_special) = if is_player {
+        (0, 0)
+    } else {
+        (interrupt_special_mask, silence_special_mask)
+    };
 
     if cast_immunities & 0x0400_0000 != 0 {
         interrupt = 0;
