@@ -1,10 +1,10 @@
 # Spirit-healer POI follow-through
 
-Status: ready for CI
+Status: landed
 Owner: ClaudeJr / Claude Opus 5.5
 Branch: jr/spirit-healer-followthrough
 Issue: none
-Next: Read CI for the pushed commit, then land after validation.
+Next: Owner in-game check: die, confirm the spirit-healer blip, release and follow it.
 
 ## Verification
 
@@ -20,5 +20,6 @@ Next: Read CI for the pushed commit, then land after validation.
   is respected.
 - The existing `minimap::blips` tests cover spirit-healer landmark/rim-arrow selection.
 - Branch was fast-forwarded to current `origin/main`; no source diff was required.
+- CI: run 44843666172 on 48ed1118f (branch merged with origin/main f82c180f3): windows and gates both success.
 - Local Cargo, client launch and server launch: not run per ticket rules.
 - In-game verification: not proven.
