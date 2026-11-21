@@ -8,15 +8,26 @@
 use std::collections::HashSet;
 
 mod api;
+mod link;
+
+pub use link::{
+    bitmap_char_len, decode_bitmap, decode_bitmap_indices, encode_bitmap, encode_trade_skill_link,
+    format_trade_link, match_race_class, parse_trade_link, ParsedTradeLink, TradeSkillLinkRow,
+    TradeSkillLinkSource,
+};
 
 /// A profession window verb the host applies inside its call ([`super::ScriptCall::TradeSkill`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TradeSkillCall {
     /// `DoTradeSkill(index, count)` past its gate (`0x500280`): the recipe's cast (`0x500314` →
     /// `TryCastSpell 0x6e5a90`), `count` the clamped repeat it armed.
     Do { spell_id: u32, count: u32 },
     /// `CloseTradeSkill()` (`0x4fd7f0` → `0x4fc870`): the open marker `[0xbde040]` zeroed.
     Close,
+    /// `GameTooltip:SetHyperlink` on a `trade:` link (`0x0062DAE0` →
+    /// `CGTradeSkillInfo::SetLink 0x005DE300`): the host opens the linked list; the raw link as
+    /// given, bare payload or full chat link.
+    OpenLink(String),
 }
 
 /// Hand `call` to the host, which applies it before this returns ([`super::calls::submit`]).
@@ -179,8 +190,23 @@ pub struct TradeSkillState {
 impl super::UiScript {
     /// Set the remote player name and serialized list link supplied by the host's trade-list packet.
     /// Local lists leave this unset because no link-data producer exists in the UI crate.
+    ///
+    /// A link marks the held list as someone else's, which `DoTradeSkill` refuses to craft from,
+    /// even after a close, until an own list replaces it ([`Self::set_trade_skill`]). Clearing the
+    /// link while the window is open hands the list back to the player.
     pub fn set_trade_skill_link(&mut self, link: Option<(String, String)>) {
-        self.model_mut().trade_skill_link = link;
+        let mut model = self.model_mut();
+        if link.is_some() || model.trade_skill_open {
+            model.trade_skill_held_linked = link.is_some();
+        }
+        model.trade_skill_link = link;
+    }
+
+    /// The player's own open profession as `GetTradeSkillListLink` encodes it (`0x005DB060`):
+    /// opener spell, ranks, guid, race/class and the line's `SkillLineAbility` rows with the known
+    /// spells. `None` leaves the own link unanswered.
+    pub fn set_trade_skill_link_source(&mut self, source: Option<TradeSkillLinkSource>) {
+        self.model_mut().trade_skill_link_source = source;
     }
 
     /// Pushes the open window's snapshot, or `None` on close; the app re-pushes on any change.
@@ -227,6 +253,8 @@ impl super::UiScript {
                     .as_ref()
                     .is_none_or(|t| spells(&t.recipes) != spells(&s.recipes));
                 model.trade_skill = Some(s);
+                // An own list (no link pushed) replaces a linked one and may be crafted again.
+                model.trade_skill_held_linked = model.trade_skill_link.is_some();
                 if !model.trade_skill_unbuilt {
                     view::build(&mut model, remake);
                 }
@@ -329,6 +357,14 @@ impl super::UiScript {
             _ => None,
         })
         .len()
+    }
+
+    /// The `trade:` links `GameTooltip:SetHyperlink` handed a harness's VM ([`Self::keep_calls`]).
+    pub fn take_trade_skill_open_links(&mut self) -> Vec<String> {
+        self.take_calls_where(|call| match call {
+            super::ScriptCall::TradeSkill(TradeSkillCall::OpenLink(link)) => Some(link.clone()),
+            _ => None,
+        })
     }
 
     /// Whether the VM holds the window open: `CloseTradeSkill` closes it in the verb, so a feed

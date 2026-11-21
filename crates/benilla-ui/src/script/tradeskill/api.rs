@@ -84,9 +84,9 @@ fn opt_str(lua: &Lua, s: Option<&String>) -> mlua::Result<Value> {
 pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();
 
-    // IsTradeSkillLinked(): (1, player name) only when the host supplied remote-list metadata;
-    // otherwise the reference returns two nils. The current app has no packet producer for that
-    // metadata, so local lists correctly take the unsupported branch instead of fabricating one.
+    // IsTradeSkillLinked() (`0x005DA310`): (1, owner name) while the window shows a linked list
+    // the host opened from a `trade:` link ([`super::TradeSkillCall::OpenLink`]); two nils for an
+    // own list.
     g.set(
         "IsTradeSkillLinked",
         lua.create_function(|lua, ()| {
@@ -101,29 +101,28 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // GetTradeSkillListLink(): the serialized link is host-owned and nil until a trade-list
-    // producer calls `UiScript::set_trade_skill_link`. Unsupported branch: the player's own
-    // `|Htrade:` link over the known-recipe bitmap (`SkillLineAbility` order per line) is not
-    // encoded, so without host metadata it answers nil and the stock frame hides its link button.
+    // GetTradeSkillListLink() (`0x005DC0B0` → `0x005DB060`): a linked list answers the link it
+    // was opened from; the player's own open profession answers
+    // `|cffffd000|Htrade:<spell>:<rank>:<max>:<guid hex>:<bitmap>|h[<name>]|h|r` over its
+    // known-recipe bitmap ([`super::encode_trade_skill_link`]); a closed window, a profession that
+    // cannot be linked (`m_canLink`) or no host source answers nil.
     g.set(
         "GetTradeSkillListLink",
         lua.create_function(|lua, ()| {
-            let link = lua
-                .app_data_ref::<Model>()
-                .expect("model app_data")
-                .trade_skill_link
-                .as_ref()
-                .map(|(_, link)| link.clone());
-            let Some(link) = link else {
-                lua.app_data_mut::<Model>()
-                    .expect("model app_data")
-                    .record_unsupported_native_once(
-                        "GetTradeSkillListLink",
-                        "the trade link's known-recipe bitmap is not encoded",
-                    );
-                return Ok(Value::Nil);
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let link = match model.trade_skill_link.as_ref() {
+                Some((_, link)) => Some(link.clone()),
+                None if model.trade_skill_open && !model.trade_skill_held_linked => model
+                    .trade_skill_link_source
+                    .as_ref()
+                    .and_then(super::encode_trade_skill_link),
+                None => None,
             };
-            Ok(Value::String(lua.create_string(link)?))
+            drop(model);
+            match link {
+                Some(link) => Ok(Value::String(lua.create_string(link)?)),
+                None => Ok(Value::Nil),
+            }
         })?,
     )?;
 
@@ -535,6 +534,15 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
             // `is-number` else `Usage: DoTradeSkill(index [, repeat])` (`0x84e93c`, `0x500291`).
             let index =
                 binding_abi::index_arg(lua, index, "Usage: DoTradeSkill(index [, repeat])")?;
+            // A linked list is someone else's recipes: nothing is cast or armed from it, even after
+            // its window closes, until an own list replaces it.
+            if lua
+                .app_data_ref::<Model>()
+                .expect("model app_data")
+                .trade_skill_held_linked
+            {
+                return Ok(());
+            }
             // A count that is no number reads as 1 (`0x5002c5`-`0x5002cc`).
             let count = count
                 .and_then(|v| lua.coerce_number(v).ok().flatten())
@@ -576,6 +584,9 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
             super::submit(lua, TradeSkillCall::Close)?;
             crate::script::tick::verb(lua, |model| {
                 model.trade_skill_open = false;
+                // The linked view ends with the window (`0x005DA8B0`); the held list stays
+                // uncraftable ([`Model::trade_skill_held_linked`]).
+                model.trade_skill_link = None;
                 super::disarm_repeat(model);
                 model.raise("TRADE_SKILL_CLOSE", Vec::new());
             });

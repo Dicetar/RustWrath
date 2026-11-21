@@ -1117,6 +1117,11 @@ pub(crate) struct Model {
     /// Linked-tradeskill metadata supplied by the host when a remote list is opened:
     /// `(player name, list link)`. Absent for local lists or until the host has a producer.
     pub(crate) trade_skill_link: Option<(String, String)>,
+    /// The held list came from a link, so `DoTradeSkill` crafts nothing from it; cleared when an
+    /// own list replaces it, kept across a close.
+    pub(crate) trade_skill_held_linked: bool,
+    /// What `GetTradeSkillListLink` encodes the player's own open profession from.
+    pub(crate) trade_skill_link_source: Option<super::tradeskill::TradeSkillLinkSource>,
 
     /// The craft window's recipes, kept past a close as the reference's list (`[0xbdcfc8]`) is,
     /// until the next open rebuilds it.
@@ -2009,6 +2014,8 @@ impl Model {
             trade_skill_repeat_spell: 0,
             trade_skill_repeat_count: 0,
             trade_skill_link: None,
+            trade_skill_held_linked: false,
+            trade_skill_link_source: None,
             craft: None,
             craft_open: false,
             craft_selection: 0,
