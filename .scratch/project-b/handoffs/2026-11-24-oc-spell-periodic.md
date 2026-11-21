@@ -28,7 +28,7 @@ Next: integrator review; CI should compile and run the named periodic tests
 - `spell_periodic_drain_and_leech_split_on_the_multiplier` (feed)
 - `spell_periodic_zero_amount_rows_are_dropped` (feed)
 
-CI: not run yet
+CI: run 44928577145 failed `fmt` only; the overseer applied `rustfmt`, made the periodic-miss amount an integer like `PushEvent` 0x2000/0x4000/0x8000, made a zero divided drain extra nil, and read crit from `hitInfo` bit 1 as well as the crit byte. Re-run pending.
 
 ## Scope
 
@@ -65,7 +65,7 @@ Do not edit `crates/benilla-ui/src/script/combat_log.rs`.
   school mask, resisted or nil, blocked or nil (always 0/nil from this packet), absorbed or
   nil, critical 1.0/nil, glancing nil, crushing nil. 20 values.
 - Damage == 0: absorbed != 0 -> event 33 with miss string `ABSORB` and the absorbed amount;
-  else resisted != 0 -> `RESIST` and the resisted amount; else no entry. 12 values.
+  else resisted != 0 -> `RESIST` and the resisted amount; else no entry. 13 values.
 - Heal: event 35, 0x20 block amount, overheal, absorbed, critical 1.0/nil. Drop the tick when
   all three amounts are zero. 15 values.
 - Energize: event 36, 0x40 block `amount / power_display_scale(power_type)` (integer) and

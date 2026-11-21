@@ -2924,8 +2924,7 @@ impl WrathWorldView {
         world_generation: u64,
         received_at: f64,
     ) {
-        self.spell_periodic_damage_revision =
-            self.spell_periodic_damage_revision.saturating_add(1);
+        self.spell_periodic_damage_revision = self.spell_periodic_damage_revision.saturating_add(1);
         if self.spell_periodic_damages.len() >= SPELL_LOG_CAPACITY {
             self.spell_periodic_damages.pop_front();
             self.spell_periodic_damage_dropped =
@@ -2948,12 +2947,10 @@ impl WrathWorldView {
         world_generation: u64,
         received_at: f64,
     ) {
-        self.spell_periodic_miss_revision =
-            self.spell_periodic_miss_revision.saturating_add(1);
+        self.spell_periodic_miss_revision = self.spell_periodic_miss_revision.saturating_add(1);
         if self.spell_periodic_misses.len() >= SPELL_LOG_CAPACITY {
             self.spell_periodic_misses.pop_front();
-            self.spell_periodic_miss_dropped =
-                self.spell_periodic_miss_dropped.saturating_add(1);
+            self.spell_periodic_miss_dropped = self.spell_periodic_miss_dropped.saturating_add(1);
         }
         self.spell_periodic_misses
             .push_back(WrathSpellPeriodicMiss {
@@ -2977,21 +2974,18 @@ impl WrathWorldView {
         if hit.amount == 0 && hit.overheal == 0 && hit.absorbed == 0 {
             return;
         }
-        self.spell_periodic_heal_revision =
-            self.spell_periodic_heal_revision.saturating_add(1);
+        self.spell_periodic_heal_revision = self.spell_periodic_heal_revision.saturating_add(1);
         if self.spell_periodic_heals.len() >= SPELL_LOG_CAPACITY {
             self.spell_periodic_heals.pop_front();
-            self.spell_periodic_heal_dropped =
-                self.spell_periodic_heal_dropped.saturating_add(1);
+            self.spell_periodic_heal_dropped = self.spell_periodic_heal_dropped.saturating_add(1);
         }
-        self.spell_periodic_heals
-            .push_back(WrathSpellPeriodicHeal {
-                session_epoch,
-                world_generation,
-                revision: self.spell_periodic_heal_revision,
-                received_at,
-                ..hit
-            });
+        self.spell_periodic_heals.push_back(WrathSpellPeriodicHeal {
+            session_epoch,
+            world_generation,
+            revision: self.spell_periodic_heal_revision,
+            received_at,
+            ..hit
+        });
     }
 
     /// `UnitCombatLogEnergize` returns when amount is zero; periodic energize uses the same rule.
@@ -3033,12 +3027,10 @@ impl WrathWorldView {
         if hit.amount == 0 || hit.power_type == 5 {
             return;
         }
-        self.spell_periodic_drain_revision =
-            self.spell_periodic_drain_revision.saturating_add(1);
+        self.spell_periodic_drain_revision = self.spell_periodic_drain_revision.saturating_add(1);
         if self.spell_periodic_drains.len() >= SPELL_LOG_CAPACITY {
             self.spell_periodic_drains.pop_front();
-            self.spell_periodic_drain_dropped =
-                self.spell_periodic_drain_dropped.saturating_add(1);
+            self.spell_periodic_drain_dropped = self.spell_periodic_drain_dropped.saturating_add(1);
         }
         self.spell_periodic_drains
             .push_back(WrathSpellPeriodicDrain {
@@ -14571,6 +14563,7 @@ pub fn run_session_with_cancel(
                                         absorb,
                                         resist,
                                         critical,
+                                        hit_info,
                                         ..
                                     } => {
                                         if amount != 0 {
@@ -14584,7 +14577,7 @@ pub fn run_session_with_cancel(
                                                     school,
                                                     absorb,
                                                     resist,
-                                                    critical,
+                                                    critical: critical || (hit_info & 0x2 != 0),
                                                     session_epoch,
                                                     world_generation,
                                                     revision: 0,

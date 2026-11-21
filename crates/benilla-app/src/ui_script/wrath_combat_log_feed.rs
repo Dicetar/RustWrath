@@ -1189,7 +1189,8 @@ fn spell_periodic_miss_args(
         spell_miss_string(hit.miss_type).to_owned(),
     ));
     if matches!(hit.miss_type, 2 | 5 | 10) {
-        args.push(ScriptValue::Number(f64::from(hit.amount)));
+        // `PushEvent` 0x2000/0x4000/0x8000 push the amount with `lua_pushinteger`, not a number.
+        args.push(ScriptValue::Int(i64::from(hit.amount)));
     }
     args
 }
@@ -1293,7 +1294,8 @@ fn spell_periodic_drain_args(
     args.push(ScriptValue::Int(i64::from(spell_school)));
     args.push(ScriptValue::Number(f64::from(divided_amount)));
     args.push(ScriptValue::Number(f64::from(hit.power_type)));
-    if extra != 0 {
+    // `PushEvent` 0x80 pushes nil for a zero `values[2]`; a nonzero extra can still divide to 0.
+    if divided_extra != 0 {
         args.push(ScriptValue::Number(f64::from(divided_extra)));
     } else {
         args.push(ScriptValue::Nil);
@@ -3031,7 +3033,10 @@ mod tests {
         assert_eq!(critical, Some(1.0));
         assert_eq!(glancing, None);
         assert_eq!(crushing, None);
-        assert_eq!(extra, None, "exactly the twenty SPELL_PERIODIC_DAMAGE values");
+        assert_eq!(
+            extra, None,
+            "exactly the twenty SPELL_PERIODIC_DAMAGE values"
+        );
     }
 
     #[test]
@@ -3047,10 +3052,14 @@ mod tests {
             revision: 1,
             received_at: 1.0,
         };
-        let absorb_args = spell_periodic_miss_args(1.0, &absorb_hit, "Firna", "Kobold Vermin", None);
-        assert_eq!(absorb_args[1], ScriptValue::Str("SPELL_PERIODIC_MISSED".to_owned()));
+        let absorb_args =
+            spell_periodic_miss_args(1.0, &absorb_hit, "Firna", "Kobold Vermin", None);
+        assert_eq!(
+            absorb_args[1],
+            ScriptValue::Str("SPELL_PERIODIC_MISSED".to_owned())
+        );
         assert_eq!(absorb_args[11], ScriptValue::Str("ABSORB".to_owned()));
-        assert_eq!(absorb_args[12], ScriptValue::Number(9.0));
+        assert_eq!(absorb_args[12], ScriptValue::Int(9));
         assert_eq!(absorb_args.len(), 13);
 
         let resist_hit = crate::wrath::WrathSpellPeriodicMiss {
@@ -3058,9 +3067,10 @@ mod tests {
             amount: 7,
             ..absorb_hit
         };
-        let resist_args = spell_periodic_miss_args(1.0, &resist_hit, "Firna", "Kobold Vermin", None);
+        let resist_args =
+            spell_periodic_miss_args(1.0, &resist_hit, "Firna", "Kobold Vermin", None);
         assert_eq!(resist_args[11], ScriptValue::Str("RESIST".to_owned()));
-        assert_eq!(resist_args[12], ScriptValue::Number(7.0));
+        assert_eq!(resist_args[12], ScriptValue::Int(7));
 
         // damage == 0 with no absorb/resist produces no entry - dispatch classification covers it;
         // the periodic damage apply path never enqueues such rows.
@@ -3088,7 +3098,10 @@ mod tests {
             received_at: 1.0,
         };
         let heal_args = spell_periodic_heal_args(1.0, &heal, "Firna", "Teammate", None);
-        assert_eq!(heal_args[1], ScriptValue::Str("SPELL_PERIODIC_HEAL".to_owned()));
+        assert_eq!(
+            heal_args[1],
+            ScriptValue::Str("SPELL_PERIODIC_HEAL".to_owned())
+        );
         assert_eq!(heal_args.len(), 15);
         assert_eq!(heal_args[11], ScriptValue::Number(42.0));
         assert_eq!(heal_args[12], ScriptValue::Number(3.0));
@@ -3106,8 +3119,7 @@ mod tests {
             revision: 1,
             received_at: 1.0,
         };
-        let energize_args =
-            spell_periodic_energize_args(1.0, &energize, "Firna", "Teammate", None);
+        let energize_args = spell_periodic_energize_args(1.0, &energize, "Firna", "Teammate", None);
         assert_eq!(
             energize_args[1],
             ScriptValue::Str("SPELL_PERIODIC_ENERGIZE".to_owned())
@@ -3132,11 +3144,18 @@ mod tests {
             received_at: 1.0,
         };
         let drain_args = spell_periodic_drain_args(1.0, &drain, "Firna", "Kobold Vermin", None);
-        assert_eq!(drain_args[1], ScriptValue::Str("SPELL_PERIODIC_DRAIN".to_owned()));
+        assert_eq!(
+            drain_args[1],
+            ScriptValue::Str("SPELL_PERIODIC_DRAIN".to_owned())
+        );
         assert_eq!(drain_args.len(), 14);
         assert_eq!(drain_args[11], ScriptValue::Number(100.0));
         assert_eq!(drain_args[12], ScriptValue::Number(0.0));
-        assert_eq!(drain_args[13], ScriptValue::Nil, "no extra when multiplier yields 0");
+        assert_eq!(
+            drain_args[13],
+            ScriptValue::Nil,
+            "no extra when multiplier yields 0"
+        );
 
         let leech = crate::wrath::WrathSpellPeriodicDrain {
             amount: 100,
@@ -3144,7 +3163,10 @@ mod tests {
             ..drain
         };
         let leech_args = spell_periodic_drain_args(1.0, &leech, "Firna", "Kobold Vermin", None);
-        assert_eq!(leech_args[1], ScriptValue::Str("SPELL_PERIODIC_LEECH".to_owned()));
+        assert_eq!(
+            leech_args[1],
+            ScriptValue::Str("SPELL_PERIODIC_LEECH".to_owned())
+        );
         assert_eq!(leech_args.len(), 14);
         assert_eq!(leech_args[11], ScriptValue::Number(100.0));
         assert_eq!(leech_args[12], ScriptValue::Number(0.0));
@@ -3235,4 +3257,3 @@ mod tests {
         assert_eq!(world.spell_periodic_drain_revision, 0);
     }
 }
-
