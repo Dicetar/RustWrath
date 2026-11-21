@@ -1,10 +1,10 @@
 # Gap table refresh
 
-Status: ready to land
+Status: ready to land; synchronized with `origin/main` at `98bacdd50`
 Owner: Pi
 Branch: pi/gap-table-refresh
 Issue: 25, 26, 27 and issue-18 referenced rows
-Next: Merge latest `origin/main`, push `HEAD:main`, delete the remote topic branch, and record the landing result.
+Next: Push `HEAD:main`, record the resulting landing commit, and delete the remote topic branch.
 
 What changed: Refreshed issue 25's combat-log coverage and history rows using landed commits
 `f902a884c`, `7e4628ca1`, `519095eb3`, `9b8ba646c`, `cd95c37d9`, `bdf7391cd`, `681426a2b`, and
