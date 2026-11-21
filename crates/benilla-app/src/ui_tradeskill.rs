@@ -2877,9 +2877,9 @@ mod tests {
             .unwrap();
         assert_eq!(own_recipes, vec!["Bolt of Linen Cloth".to_string()]);
 
-        // Close own window, then click the emitted chat link.
+        // Close own window, which signals its close in the verb, then click the emitted chat link.
         run_hosted_lua(&mut app, "CloseTradeSkill()");
-        app.update();
+        assert_eq!(heard(&mut app), ["TRADE_SKILL_CLOSE"]);
         run_hosted_lua(
             &mut app,
             &format!(
