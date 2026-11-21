@@ -9939,9 +9939,75 @@ fn wrath_net_drain(
     );
 }
 
+fn cast_interruptible(
+    definition: &benilla_formats::SpellDisplay,
+    attributes_ex_g: u32,
+    is_player: bool,
+    interrupt_mask: u32,
+    silence_mask: u32,
+    interrupt_special_mask: u32,
+    silence_special_mask: u32,
+    cast_school_immunities: u32,
+    cast_immunities: u32,
+    aura_effects: &[(u32, i32)],
+) -> bool {
+    if attributes_ex_g & 0x2000 != 0 || definition.prevention_type != 1 {
+        return true;
+    }
+    let mut interrupt = interrupt_mask;
+    let mut silence = silence_mask;
+    let mut interrupt_special = (!is_player).then_some(interrupt_special_mask).unwrap_or(0);
+    let mut silence_special = (!is_player).then_some(silence_special_mask).unwrap_or(0);
+
+    if cast_immunities & 0x0400_0000 != 0 {
+        interrupt = 0;
+        interrupt_special = 0;
+    } else {
+        interrupt &= !cast_school_immunities;
+        interrupt_special &= !cast_school_immunities;
+    }
+    if cast_immunities & 0x200 != 0 {
+        silence = 0;
+        silence_special = 0;
+    } else {
+        silence &= !cast_school_immunities;
+        silence_special &= !cast_school_immunities;
+    }
+    for &(kind, misc) in aura_effects {
+        match kind {
+            37 if misc == 68 => {
+                interrupt = 0;
+                interrupt_special = 0;
+            }
+            38 if misc == 27 => {
+                silence = 0;
+                silence_special = 0;
+            }
+            39 => {
+                let mask = u32::try_from(misc).unwrap_or(u32::MAX);
+                interrupt &= !mask;
+                interrupt_special &= !mask;
+                silence &= !mask;
+                silence_special &= !mask;
+            }
+            77 if misc == 9 => {
+                silence = 0;
+                silence_special = 0;
+            }
+            77 if misc == 26 => {
+                interrupt = 0;
+                interrupt_special = 0;
+            }
+            _ => {}
+        }
+    }
+    interrupt != 0 || interrupt_special != 0 || silence != 0 || silence_special != 0
+}
+
 /// Recompute the 12340 cast-bar interruptibility predicate after aura/spellbook state changes.
 /// START/GO do not carry this bit; the reference derives it from PreventionType, the known
-/// interrupt/silence school masks, and immunity aura effects.
+/// interrupt/silence school masks, non-player special masks, START cast-immunity words, and aura
+/// immunity effects.
 fn refresh_cast_interruptibility(
     view: &mut WrathWorldView,
     known: Option<&crate::ui_action::PlayerActions>,
@@ -9953,6 +10019,8 @@ fn refresh_cast_interruptibility(
     };
     let mut interrupt_mask = 0u32;
     let mut silence_mask = 0u32;
+    let mut interrupt_special_mask = 0u32;
+    let mut silence_special_mask = 0u32;
     for &id in &known.spells {
         let Some(spell) = spells.catalog.get(id) else {
             continue;
@@ -9969,6 +10037,12 @@ fn refresh_cast_interruptibility(
         if spell.effects.contains(&68) {
             interrupt_mask |= school;
         }
+        if spells.catalog.attributes_ex_g(id) & 0x800 != 0 {
+            interrupt_special_mask |= school;
+        }
+        if spells.catalog.attributes_ex_g(id) & 0x1000 != 0 {
+            silence_special_mask |= school;
+        }
     }
     let aura_spell_ids: BTreeMap<u64, Vec<u32>> = view
         .entities
@@ -9980,34 +10054,33 @@ fn refresh_cast_interruptibility(
             continue;
         };
         let previous = cast.interruptible;
-        let mut interrupt = interrupt_mask;
-        let mut silence = silence_mask;
-        if definition.prevention_type == 1 {
-            for spell_id in aura_spell_ids.get(caster).into_iter().flatten() {
-                let Some(aura_spell) = spells.catalog.get(*spell_id) else {
-                    continue;
-                };
-                for (&kind, &misc) in aura_spell
-                    .effect_apply_aura
-                    .iter()
-                    .zip(aura_spell.effect_misc_value.iter())
-                {
-                    match kind {
-                        37 if misc == 68 => interrupt = 0,
-                        38 if misc == 27 => silence = 0,
-                        39 => {
-                            let mask = u32::try_from(misc).unwrap_or(u32::MAX);
-                            interrupt &= !mask;
-                            silence &= !mask;
-                        }
-                        77 if misc == 9 => silence = 0,
-                        77 if misc == 26 => interrupt = 0,
-                        _ => {}
-                    }
-                }
-            }
-        }
-        let interruptible = definition.prevention_type != 1 || interrupt != 0 || silence != 0;
+        let aura_effects: Vec<(u32, i32)> = aura_spell_ids
+            .get(caster)
+            .into_iter()
+            .flatten()
+            .filter_map(|spell_id| spells.catalog.get(*spell_id))
+            .flat_map(|aura| {
+                aura.effect_apply_aura
+                    .into_iter()
+                    .zip(aura.effect_misc_value)
+            })
+            .collect();
+        let is_player = view
+            .entities
+            .get(caster)
+            .is_some_and(|unit| unit.type_id == benilla_protocol_wrath::updates::type_id::PLAYER);
+        let interruptible = cast_interruptible(
+            definition,
+            spells.catalog.attributes_ex_g(cast.identity.spell_id),
+            is_player,
+            interrupt_mask,
+            silence_mask,
+            interrupt_special_mask,
+            silence_special_mask,
+            cast.cast_school_immunities,
+            cast.cast_immunities,
+            &aura_effects,
+        );
         cast.interruptible = Some(interruptible);
         if previous != Some(interruptible) {
             cast_events.write(crate::wrath_native::WrathCastEvent {
@@ -10024,6 +10097,308 @@ fn refresh_cast_interruptibility(
                 },
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod interruptibility_tests {
+    use super::*;
+    use crate::ui_action::{PlayerActions, Spells};
+    use crate::wrath_native::{WrathActiveCast, WrathCastIdentity, WrathScope};
+    use benilla_formats::SpellDisplay;
+    use bevy::ecs::message::Messages;
+    use bevy::ecs::system::RunSystemOnce;
+
+    fn definition(prevention_type: u32) -> SpellDisplay {
+        SpellDisplay {
+            prevention_type,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn non_silence_prevention_and_attribute_gate_are_interruptible() {
+        assert!(cast_interruptible(
+            &definition(0),
+            0,
+            false,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            &[]
+        ));
+        assert!(cast_interruptible(
+            &definition(2),
+            0,
+            false,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            &[]
+        ));
+        let bypass = definition(1);
+        assert!(cast_interruptible(
+            &bypass,
+            0x2000,
+            false,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn spell_interrupt_and_silence_masks_block_a_cast() {
+        let definition = definition(1);
+        assert!(cast_interruptible(
+            &definition,
+            0,
+            true,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            &[]
+        ));
+        assert!(cast_interruptible(
+            &definition,
+            0,
+            true,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            &[]
+        ));
+        assert!(!cast_interruptible(
+            &definition,
+            0,
+            true,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn cast_immunity_words_and_school_immunity_clear_matching_masks() {
+        let definition = definition(1);
+        assert!(!cast_interruptible(
+            &definition,
+            0,
+            true,
+            1,
+            0,
+            0,
+            0,
+            1,
+            0,
+            &[]
+        ));
+        assert!(cast_interruptible(
+            &definition,
+            0,
+            true,
+            1,
+            0,
+            0,
+            0,
+            2,
+            0,
+            &[]
+        ));
+        assert!(!cast_interruptible(
+            &definition,
+            0,
+            true,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0x0400_0000,
+            &[]
+        ));
+        assert!(!cast_interruptible(
+            &definition,
+            0,
+            true,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0x200,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn special_masks_only_apply_to_non_player_casters_and_auras_clear_them() {
+        let definition = definition(1);
+        assert!(!cast_interruptible(
+            &definition,
+            0,
+            true,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            &[]
+        ));
+        assert!(cast_interruptible(
+            &definition,
+            0,
+            false,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            &[]
+        ));
+        assert!(!cast_interruptible(
+            &definition,
+            0,
+            false,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            &[(37, 68)]
+        ));
+        assert!(!cast_interruptible(
+            &definition,
+            0,
+            false,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            &[(38, 27)]
+        ));
+    }
+
+    fn active_cast() -> WrathActiveCast {
+        WrathActiveCast {
+            scope: WrathScope {
+                session_epoch: 1,
+                world_generation: 1,
+                state_revision: 1,
+            },
+            attempt_serial: 1,
+            identity: WrathCastIdentity {
+                caster: 7,
+                spell_id: 100,
+                cast_count: Some(1),
+                cast_item: None,
+            },
+            target: None,
+            targets: gameplay::SpellTargets::default(),
+            start_remaining_ms: Some(1_000),
+            cast_flags: 0,
+            ammo_display_id: None,
+            cast_school_immunities: 0,
+            cast_immunities: 0,
+            observed_at_unix_ms: 1,
+            start_ui_now_seconds: None,
+            last_update_ui_now_seconds: None,
+            pushback_ms: 0,
+            go_server_time_ms: None,
+            cancel_requested: false,
+            interruptible: None,
+        }
+    }
+
+    #[test]
+    fn refresh_emits_one_edge_then_stays_quiet_when_state_is_unchanged() {
+        let mut displays = HashMap::new();
+        displays.insert(100, definition(0));
+        let spells = Spells {
+            catalog: benilla_formats::SpellCatalog::from_displays(displays),
+            ..Spells::empty_for_tests()
+        };
+        let known = PlayerActions::default();
+        let mut view = WrathWorldView::default();
+        view.casts.insert(7, active_cast());
+        let mut world = World::new();
+        world.insert_resource(view);
+        world.insert_resource(known);
+        world.insert_resource(spells);
+        world.init_resource::<Messages<crate::wrath_native::WrathCastEvent>>();
+        world
+            .run_system_once(
+                |mut view: ResMut<WrathWorldView>,
+                 known: Res<PlayerActions>,
+                 spells: Res<Spells>,
+                 mut events: MessageWriter<crate::wrath_native::WrathCastEvent>| {
+                    refresh_cast_interruptibility(
+                        &mut view,
+                        Some(&known),
+                        Some(&spells),
+                        &mut events,
+                    );
+                },
+            )
+            .expect("initial refresh runs");
+        assert_eq!(
+            world.resource::<WrathWorldView>().casts[&7].interruptible,
+            Some(true)
+        );
+        assert_eq!(
+            world
+                .resource::<Messages<crate::wrath_native::WrathCastEvent>>()
+                .iter_current_update_messages()
+                .count(),
+            1
+        );
+        world
+            .run_system_once(
+                |mut view: ResMut<WrathWorldView>,
+                 known: Res<PlayerActions>,
+                 spells: Res<Spells>,
+                 mut events: MessageWriter<crate::wrath_native::WrathCastEvent>| {
+                    refresh_cast_interruptibility(
+                        &mut view,
+                        Some(&known),
+                        Some(&spells),
+                        &mut events,
+                    );
+                },
+            )
+            .expect("unchanged refresh runs");
+        assert_eq!(
+            world
+                .resource::<Messages<crate::wrath_native::WrathCastEvent>>()
+                .iter_current_update_messages()
+                .count(),
+            1
+        );
     }
 }
 
