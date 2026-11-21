@@ -47,6 +47,10 @@ impl CurrencyTypeCatalog {
     pub fn len(&self) -> usize {
         self.rows.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -71,6 +75,10 @@ impl CurrencyCategoryCatalog {
 
     pub fn len(&self) -> usize {
         self.rows.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
     }
 }
 

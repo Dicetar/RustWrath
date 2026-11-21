@@ -100,7 +100,7 @@ pub fn build_currency_state(
                 ))
             })
             .collect();
-        entries.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+        entries.sort_by_key(|entry| entry.0.to_lowercase());
         let is_expanded = expanded(category.id);
         rows.push(WrathCurrencyRow {
             name: Some(category.name.clone()),
