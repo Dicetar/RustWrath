@@ -139,10 +139,12 @@ impl UnitAuras {
         // Vanilla must reject the Wrath-only tokens.
         g.wrath = script.target() == benilla_ui::script::UiTarget::Wrath335;
         g.vehicle = if g.wrath { vehicle.unwrap_or(0) } else { 0 };
+        // The focus is the VM's own (`SetFocusTarget`, `0x51FF20`): read back, never overwritten.
+        g.focus = if g.wrath { script.focus_guid() } else { 0 };
         fill_group(&mut g, group, &held);
         g.held.clear();
         walk.clear();
-        walk.extend([me, pet, target, mouseover, npc, g.vehicle].map(|g| (g, false)));
+        walk.extend([me, pet, target, mouseover, npc, g.vehicle, g.focus].map(|g| (g, false)));
         walk.extend(g.party.iter().chain(&g.party_pets).map(|&g| (g, true)));
         walk.extend(g.raid.iter().chain(&g.raid_pets).map(|&g| (g, true)));
         while let Some((guid, record_ok)) = walk.pop() {

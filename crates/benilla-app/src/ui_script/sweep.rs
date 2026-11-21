@@ -102,6 +102,9 @@ pub(crate) enum SweepLeg {
     Stable,
     /// `0x490b2f` → `0x4c9f80`.
     MeetingStone,
+    /// Wrath's `CGGameUI::LeaveWorld` (`0x528C30`) clears a focus that is no raid member or pet
+    /// (`SetFocusTarget`, `0x51FF20`) after the selection and before `PLAYER_LEAVING_WORLD`.
+    Focus,
     /// `0x490b48`/`0x490b4d`: `PLAYER_LEAVING_WORLD`, its one fire site.
     LeavingWorld,
     /// `0x490b5f` → `0x493310`: the interaction still latched. Every window's leg above
@@ -224,6 +227,7 @@ fn sweep_schedule() -> Schedule {
         .configure_sets(
             (
                 SweepLeg::MeetingStone,
+                SweepLeg::Focus,
                 SweepLeg::LeavingWorld,
                 SweepLeg::Interaction,
                 SweepLeg::Unsilence,
