@@ -1880,6 +1880,19 @@ pub(crate) enum ClientCommand {
     },
     /// `CMSG_QUERY_TIME`, answered into [`ServerWallClock`].
     QueryTime,
+    /// `CMSG_SAVE_EQUIPMENT_SET` (`CGEquipmentManager::SaveSet`, `0x5ADE50`).
+    EquipmentSetSave(Box<benilla_protocol_wrath::gameplay::equipment_set::EquipmentSet>),
+    /// `CMSG_EQUIPMENT_SET_DELETE` (`0x5AE260`): the set's server guid.
+    EquipmentSetDelete {
+        set_guid: u64,
+    },
+    /// `CMSG_EQUIPMENT_SET_USE` (`0x5ADA20`): each slot's item and where it was found.
+    EquipmentSetUse(
+        Box<
+            [benilla_protocol_wrath::gameplay::equipment_set::EquipmentSetUseSlot;
+                benilla_protocol_wrath::gameplay::equipment_set::EQUIPMENT_SET_SLOTS],
+        >,
+    ),
     /// `CMSG_CALENDAR_GET_CALENDAR`, the real `OpenCalendar()` fetch. The scope is carried so
     /// the Wrath tap refuses a request written before a session or world transfer.
     OpenCalendar {

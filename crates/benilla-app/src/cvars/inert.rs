@@ -291,11 +291,6 @@ pub(super) const INERT: &[Registered] = &[
         "GameUI_CVar.cpp:566; InterfaceOptionsPanels.lua:544",
     ),
     ours(
-        "equipmentManager",
-        "0",
-        "GameUI_CVar.cpp:468; InterfaceOptionsPanels.lua:1394",
-    ),
-    ours(
         "hidePartyInRaid",
         "0",
         "GameUI_CVar.cpp:559; InterfaceOptionsPanels.lua:1144",

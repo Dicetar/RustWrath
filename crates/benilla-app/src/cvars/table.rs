@@ -1057,6 +1057,13 @@ pub(crate) const REGISTERED: &[Registered] = &[
     // 12340 GameUI_CVar.cpp: stock options/tracker readers. Registration retains their
     // settings; it does not establish backend support for every optional display.
     ours("scriptErrors", "0", "GameUI_CVar.cpp:481"),
+    // `CGEquipmentManager::CanUseEquipmentSets` (`0x5AD6B0`) reads its integer; the VM's
+    // `CanUseEquipmentSets` and `UseEquipmentSet` gate on it (`benilla_ui` `script::equipment`).
+    ours(
+        "equipmentManager",
+        "0",
+        "GameUI_CVar.cpp:468; InterfaceOptionsPanels.lua:1394",
+    ),
     ours("fctSpellMechanicsOther", "0", "GameUI_CVar.cpp:550"),
     ours("secureAbilityToggle", "1", "GameUI_CVar.cpp:527"),
     ours("ShowClassColorInNameplate", "0", "GameUI_CVar.cpp:648"),

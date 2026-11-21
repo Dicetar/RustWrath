@@ -724,3 +724,14 @@ pub const SMSG_MOVE_GRAVITY_DISABLE: u16 = 0x4CE;
 pub const SMSG_MOVE_GRAVITY_ENABLE: u16 = 0x4D0;
 pub const SMSG_SPLINE_MOVE_GRAVITY_DISABLE: u16 = 0x4D3;
 pub const SMSG_SPLINE_MOVE_GRAVITY_ENABLE: u16 = 0x4D4;
+
+/// Equipment manager (`WoW/Source/Net/Types.h:319-1246`; AzerothCore `Opcodes.h:341-1268` names
+/// them `SMSG_EQUIPMENT_SET_SAVED`, `CMSG_DELETEEQUIPMENT_SET`, `SMSG_EQUIPMENT_SET_LIST`,
+/// `CMSG_EQUIPMENT_SET_SAVE` and `SMSG_EQUIPMENT_SET_USE_RESULT`). Bodies:
+/// [`crate::gameplay::equipment_set`].
+pub const SMSG_EQUIPMENT_SET_ID: u16 = 0x137;
+pub const CMSG_EQUIPMENT_SET_DELETE: u32 = 0x13E;
+pub const SMSG_LOAD_EQUIPMENT_SET: u16 = 0x4BC;
+pub const CMSG_SAVE_EQUIPMENT_SET: u32 = 0x4BD;
+pub const CMSG_EQUIPMENT_SET_USE: u32 = 0x4D5;
+pub const SMSG_USE_EQUIPMENT_SET_RESULT: u16 = 0x4D6;

@@ -1475,6 +1475,10 @@ pub(crate) struct Model {
     /// `LockItem` (`0x4953e0`) and cleared by `UnlockItem` (`0x495420`) and the unlock-all
     /// (`0x495460`) ([`super::cursor::lock_item`]).
     pub(crate) item_locks: std::collections::HashSet<u64>,
+    /// The app's equipment sets as the getters read them ([`super::equipment`]).
+    pub(crate) equipment_sets: super::EquipmentSetsState,
+    /// `CGEquipmentManager::m_ignoredSlots[19]` (`0xC1E908`): the slots a save marks ignored.
+    pub(crate) equipment_ignored: [bool; super::EQUIPMENT_SET_SLOTS],
     /// The last cursor position in UI space (logical px, y-up), behind `GetCursorPosition()`.
     pub(crate) cursor_pos: (f32, f32),
 
@@ -2104,6 +2108,8 @@ impl Model {
             verb_events: None,
             firing_events: 0,
             item_locks: std::collections::HashSet::new(),
+            equipment_sets: Default::default(),
+            equipment_ignored: [false; super::EQUIPMENT_SET_SLOTS],
             cursor_pos: (0.0, 0.0),
             minimap: crate::widget::MinimapStatics::default(),
             opening_cinematic_asks: 0,

@@ -96,6 +96,13 @@ pub trait CallHost {
     }
 
     /// The full native slot list, with presentation availability retained per field.
+    /// The held item `guid` a gear set names: its entry and where it is
+    /// (`GetEquipmentSetItemIDs` `0x5AEF90`, `GetEquipmentSetLocations` `0x5AE860`). `None`
+    /// for an item the object manager does not hold, or with no inventory owner behind this host.
+    fn equipment_item(&mut self, _guid: u64) -> Option<super::EquipmentItemView> {
+        None
+    }
+
     fn unit_auras(&mut self, _guid: u64) -> Option<Vec<super::WrathAuraView>> {
         None
     }

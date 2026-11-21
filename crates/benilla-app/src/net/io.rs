@@ -1954,6 +1954,9 @@ pub(super) fn writer_loop(
                         // Wrath-only verbs, consumed by `wrath_tap_commands` before this stock
                         // writer can see them. Kept exhaustive so a donor session cannot fall through.
                         ClientCommand::OpenCalendar { .. }
+                        | ClientCommand::EquipmentSetSave(_)
+                        | ClientCommand::EquipmentSetDelete { .. }
+                        | ClientCommand::EquipmentSetUse(_)
                         | ClientCommand::LfgJoin { .. }
                         | ClientCommand::LfgLeave { .. }
                         | ClientCommand::LfgProposalResult { .. }

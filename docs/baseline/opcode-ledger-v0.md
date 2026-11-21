@@ -86,3 +86,19 @@ Implication for Project B extension allocation: any new fork opcode must avoid 0
 - [ ] Full AfterAddToMap send list (conditional messages) once captures exist
 - [ ] Probe pass 2 for: SMSG_FEATURE_SYSTEM_STATUS, SMSG_LEARNED_DANCE_MOVES, SMSG_INSTANCE_DIFFICULTY, SMSG_SEND_UNLEARN_SPELLS, CMSG_MOVE_TIME_SKIPPED, CMSG_MOVE_NOT_ACTIVE_MOVER, CMSG_MOVE_FALL_RESET, CMSG_MOVE_CHNG_TRANSPORT, MSG_MOVE_SET_COLLISION_HGT, remaining MSG_MOVE family
 - [ ] addon-message channel handling (SMSG_MESSAGECHAT LANG_ADDON — the WM_FORGE2/3 transport) in the fork
+
+### Equipment manager (added 2026-11-21, `pi/equipment-manager`)
+
+Values from the client's `WoW/Source/Net/Types.h` (pin e67b6ffe); AzerothCore's `Opcodes.h` names
+in brackets. Constants: `crates/benilla-protocol-wrath/src/opcode.rs`; bodies:
+`crates/benilla-protocol-wrath/src/gameplay/equipment_set.rs`; owner:
+`crates/benilla-app/src/wrath_equipment.rs`.
+
+| Message | Direction | Client owner (decomp) | Server owner (AC) | Status |
+|---|---|---|---|---|
+| SMSG_LOAD_EQUIPMENT_SET 0x4BC [SMSG_EQUIPMENT_SET_LIST] | S→C | `Packet_SMSG_EQUIPMENT_SET_LIST` `0x5AF490` | `Player::SendEquipmentSetList` `Player.cpp:14780` | decoded |
+| SMSG_EQUIPMENT_SET_ID 0x137 [SMSG_EQUIPMENT_SET_SAVED] | S→C | `Packet_SMSG_EQUIPMENT_SET_SAVED` `0x5AF6C0` | `Player::SetEquipmentSet` | decoded |
+| SMSG_USE_EQUIPMENT_SET_RESULT 0x4D6 [SMSG_EQUIPMENT_SET_USE_RESULT] | S→C | `Packet_SMSG_EQUIPMENT_SET_USE_RESULT` `0x5AF710` | `HandleEquipmentSetUse` `CharacterHandler.cpp:1827` | decoded |
+| CMSG_SAVE_EQUIPMENT_SET 0x4BD [CMSG_EQUIPMENT_SET_SAVE] | C→S | `CGEquipmentManager::SaveSet` `0x5ADE50` | `HandleEquipmentSetSave` `CharacterHandler.cpp:1746` | encoded |
+| CMSG_EQUIPMENT_SET_DELETE 0x13E [CMSG_DELETEEQUIPMENT_SET] | C→S | `CGEquipmentManager::DeleteEquipmentSet` `0x5AE260` | `HandleEquipmentSetDelete` `CharacterHandler.cpp:1817` | encoded |
+| CMSG_EQUIPMENT_SET_USE 0x4D5 | C→S | `CGEquipmentManager::UseEquipmentSet` `0x5ADA20` | `HandleEquipmentSetUse` `CharacterHandler.cpp:1827` | encoded |
