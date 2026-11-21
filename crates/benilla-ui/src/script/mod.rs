@@ -425,7 +425,10 @@ pub use tooltip_spell::{ReputationRequirement, SpellTooltipView};
 pub use tooltip_text::{KeyedArg, TextPart, TooltipText};
 pub use trade::{TradeCall, TradeOpenItem, TradeSideState, TradeSlotItem, TradeState, TRADE_SLOTS};
 pub use tradeskill::{
-    TradeSkillCall, TradeSkillDifficulty, TradeSkillReagent, TradeSkillRecipe, TradeSkillState,
+    bitmap_char_len, decode_bitmap, decode_bitmap_indices, encode_bitmap, encode_trade_skill_link,
+    format_trade_link, match_race_class, parse_trade_link, ParsedTradeLink, TradeSkillCall,
+    TradeSkillDifficulty, TradeSkillLinkRow, TradeSkillLinkSource, TradeSkillReagent,
+    TradeSkillRecipe, TradeSkillState,
 };
 pub use trainer::{
     TrainerAbilityReq, TrainerCall, TrainerGroup, TrainerService, TrainerServiceCategory,

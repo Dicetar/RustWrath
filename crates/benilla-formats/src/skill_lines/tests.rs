@@ -422,3 +422,37 @@ fn a_spells_line_reads_its_admitted_rows_by_race_and_class() {
     // The index holds only CharBaseInfo's race and class pairs (`0x6ddb6a`), never race 0.
     assert_eq!(cat.spell_to_line(SPELL, 0, 1), None);
 }
+
+/// `SpellTableBuildSkillLineLinkInfo` (`0x00812030`) and `SpellTableGetSkillLineLinkInfo`
+/// (`0x008104A0`) retain the first contiguous raw-DBC run per linkable `SkillLine` (`m_canLink !=
+/// 0`), preserving exact file order and ignoring non-linkable lines or later disjoint runs.
+#[test]
+fn trade_skill_link_builds_first_contiguous_run_only_for_linkable_lines() {
+    let row = |spell_id| SkillLineLinkAbility {
+        spell_id,
+        race_mask: 0,
+        class_mask: 0,
+        trivial_low: 0,
+        trivial_high: 0,
+    };
+    let raw = vec![
+        (197, row(3908)),
+        (197, row(2963)),
+        (197, row(3919)),
+        // Non-linkable line interrupts 197.
+        (182, row(2366)),
+        // Later disjoint row for 197 is ignored by the first-run lookup (`0x008104A0`).
+        (197, row(9999)),
+        // Second linkable line preserves its own raw order.
+        (164, row(2018)),
+        (164, row(2660)),
+    ];
+    let runs = build_link_abilities(raw, |line| matches!(line, 197 | 164));
+    let ids = |line: u32| -> Option<Vec<u32>> {
+        runs.get(&line)
+            .map(|v| v.iter().map(|r| r.spell_id).collect())
+    };
+    assert_eq!(ids(197), Some(vec![3908, 2963, 3919]));
+    assert_eq!(ids(164), Some(vec![2018, 2660]));
+    assert_eq!(ids(182), None, "non-linkable line is excluded");
+}

@@ -620,9 +620,9 @@ const READS_FRAME_FINAL: &[(&str, &[&str])] = &[
         "net::SelfGuid", "net::reputations::Reputations", "ui_taxi::TaxiState",
         "ui_taxi::routing::TaxiRouteCache"]),
     ("::ui_taxi::feed_on_taxi", &["net::ObjectStore"]),
-    ("::ui_tradeskill::feed_trade_skill", &["items::Countdowns", "items::Items", "net::GuidIndex",
-        "net::ObjectStore", "spell::cooldowns::Cooldowns", "ui_action::PlayerActions",
-        "ui_tradeskill::TradeSkillOpen"]),
+    ("::ui_tradeskill::feed_trade_skill", &["items::Countdowns", "items::Items", "names::NameCache",
+        "net::GuidIndex", "net::ObjectStore", "net::SelfGuid", "spell::cooldowns::Cooldowns",
+        "ui_action::PlayerActions", "ui_tradeskill::TradeSkillOpen"]),
     // Beast Training reads the pet off its bar and its family off the creature record as the frame
     // left them (#2217).
     ("::ui_craft::feed_craft", &["items::Countdowns", "items::Items", "names::NameCache",

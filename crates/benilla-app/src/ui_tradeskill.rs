@@ -14,17 +14,22 @@ use std::time::Instant;
 
 use bevy::prelude::*;
 
-use benilla_formats::{SpellFocusCatalog, SPELL_ATTR_IS_TRADESKILL, SPELL_EFFECT_CREATE_ITEM};
+use benilla_formats::{
+    SpellFocusCatalog, SPELL_ATTR_IS_TRADESKILL, SPELL_EFFECT_CREATE_ITEM, SPELL_EFFECT_TRADE_SKILL,
+};
 use benilla_protocol::messages::PLAYER_SKILL_SLOTS;
 use benilla_protocol::{SessionEvent, SessionEventKind};
 use benilla_ui::script::{
-    TradeSkillDifficulty, TradeSkillReagent, TradeSkillRecipe, TradeSkillState, UiScript,
+    bitmap_char_len, decode_bitmap_indices, format_trade_link, parse_trade_link, ParsedTradeLink,
+    TradeSkillDifficulty, TradeSkillLinkRow, TradeSkillLinkSource, TradeSkillReagent,
+    TradeSkillRecipe, TradeSkillState, UiScript,
 };
 
 use crate::creature_anim::{CastEvent, CastEventKind};
 use crate::entities::ItemDisplays;
 use crate::items::Items;
-use crate::net::{NetCommands, NetHandlerApp, ObjectStore, Objects, SelfPlayer};
+use crate::names::NameCache;
+use crate::net::{Guid, NetCommands, NetHandlerApp, ObjectStore, Objects, SelfGuid, SelfPlayer};
 use crate::query_cache::Ask;
 use crate::spell::{cast_target, CastCommit, CastLadder};
 use crate::ui_action::{PlayerActions, Spells};
@@ -39,12 +44,32 @@ use benilla_assets::{AssetSet, LockRecover, WorldAssets};
 #[derive(Resource, Default)]
 pub(crate) struct TradeSkillOpens(pub(crate) Vec<u32>);
 
+/// A clicked `|Htrade:` link either waiting on `NameCache` (`SMSG_NAME_QUERY_RESPONSE`,
+/// `TradeSkillLinkNameCallback` `0x005D9F50`) or currently displayed (`CGTradeSkillInfo::m_linkData`,
+/// `0x005DE120`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LinkedTradeSkill {
+    pub(crate) parsed: ParsedTradeLink,
+    pub(crate) raw_link: String,
+}
+
 /// The open book's skill line (`[0xbde040]`). An opener of it, the Lua close and the session end
 /// clear it: a logout replaces the VM without running the old `OnHide`, so the close alone never
 /// comes. A `/reload` keeps it.
 #[derive(Resource, Default)]
 pub(crate) struct TradeSkillOpen {
     pub(crate) line: Option<u32>,
+    /// The opener spell id (`CGTradeSkillInfo::m_spellID`, `SPELL_EFFECT_TRADE_SKILL`) for the
+    /// player's own open profession, used to build `GetTradeSkillListLink()` (`0x005DB060`).
+    pub(crate) opener_spell_id: Option<u32>,
+    /// Active read-only linked profession opened from a `|Htrade:` hyperlink (`0x005DE300`).
+    pub(crate) linked: Option<LinkedTradeSkill>,
+    /// Clicked `|Htrade:` link waiting on `NameCache` (`CMSG_NAME_QUERY` /
+    /// `SMSG_NAME_QUERY_RESPONSE`, `0x005D9F50`).
+    pub(crate) pending_link: Option<LinkedTradeSkill>,
+    /// Monotonic counter bumped on opens so switching from own to linked (or between two linked
+    /// windows on the same skill line) still triggers `TRADE_SKILL_SHOW` (`0x005DE120`).
+    pub(crate) open_nonce: u64,
 }
 
 /// The repeat count (`[0xbde060]`) a dying VM left, seated in the next: the world-enter init a
@@ -145,6 +170,9 @@ fn on_session_end(
 ) {
     opens.0.clear();
     open.line = None;
+    open.opener_spell_id = None;
+    open.linked = None;
+    open.pending_link = None;
     carry.0 = 0;
 }
 
@@ -207,12 +235,20 @@ fn open_trade_skill(
                 craft_open.line = Some(line);
                 craft_open.craft_type = craft_type;
             }
-        } else if open.line == Some(line) {
+        } else if open.linked.is_none() && open.line == Some(line) {
+            // 12340 `CGTradeSkillInfo::SetTradeSkill` (`0x005DE120` line 1353): only toggle
+            // closed when neither the incoming open nor the currently open window is linked.
             debug!("ui_tradeskill: opener {spell_id} closes skill line {line}");
             open.line = None;
+            open.opener_spell_id = None;
+            open.pending_link = None;
         } else {
             debug!("ui_tradeskill: opener {spell_id} opens skill line {line}");
             open.line = Some(line);
+            open.opener_spell_id = Some(spell_id);
+            open.linked = None;
+            open.pending_link = None;
+            open.open_nonce = open.open_nonce.wrapping_add(1);
         }
     }
 }
@@ -304,6 +340,7 @@ fn recipe_icon(
 }
 
 /// Build one recipe row; names still in flight are `None` and resolve when the template lands.
+#[allow(clippy::too_many_arguments)]
 fn resolve_recipe(
     spell_id: u32,
     rank: u32,
@@ -320,17 +357,57 @@ fn resolve_recipe(
     cooldowns: &crate::spell::Cooldowns,
     // The frame's one clock pair ([`crate::ui_script::UiClock`]): a running cooldown then pushes
     // the same start every frame.
+    clock: (Instant, f64),
+) -> Option<TradeSkillRecipe> {
+    let (race, class) = store.race_class();
+    let sla = skill_lines.catalog.ability(spell_id, race, class)?;
+    resolve_recipe_with_trivial(
+        spell_id,
+        rank,
+        (sla.trivial_low, sla.trivial_high),
+        spells,
+        focus,
+        icons,
+        subclasses,
+        Some(inv),
+        objects,
+        items,
+        ask,
+        cooldowns,
+        clock,
+    )
+}
+
+/// Build one recipe row from explicit `(trivial_low, trivial_high)` thresholds: own recipes look
+/// them up via `SkillLineCatalog::ability`, while linked recipes take them directly from the
+/// decoded `SkillLineAbility.dbc` row (`0x005DD5A0` line 452) so another race/class's recipes
+/// band accurately.
+#[allow(clippy::too_many_arguments)]
+fn resolve_recipe_with_trivial(
+    spell_id: u32,
+    rank: u32,
+    (trivial_low, trivial_high): (u32, u32),
+    spells: &Spells,
+    focus: Option<&SpellFocus>,
+    icons: Option<&ItemDisplays>,
+    subclasses: Option<&crate::ui_items::ItemSubClasses>,
+    inv: Option<&crate::wrath_inventory::PlayerInventory<'_>>,
+    objects: &Objects,
+    items: &Items,
+    ask: Ask<'_>,
+    cooldowns: &crate::spell::Cooldowns,
     (anchor, ui_now): (Instant, f64),
 ) -> Option<TradeSkillRecipe> {
     let d = spells.catalog.get(spell_id)?;
-    let (race, class) = store.race_class();
-    let sla = skill_lines.catalog.ability(spell_id, race, class)?;
 
-    // Reagents: `(entry, need)` pairs off `Spell.dbc`; have is the mask-0 count (`0x622130`, `0x4fccfc`).
+    // Reagents: `(entry, need)` pairs off `Spell.dbc`; have is the mask-0 count (`0x622130`,
+    // `0x4fccfc`, 12340 `0x005DD5A0` line 487).
     let mut reagents = Vec::new();
     let mut num_available = u32::MAX;
     for &(entry, need) in d.reagents.iter().filter(|&&(e, n)| e != 0 && n != 0) {
-        let have = count_of_in_player(inv, objects, entry, InventoryScope::DEFAULT);
+        let have = inv.map_or(0, |inv| {
+            count_of_in_player(inv, objects, entry, InventoryScope::DEFAULT)
+        });
         let (name, icon) = match items.template(entry, 0, ask) {
             Some(t) => (Some(t.name.clone()), item_icon(icons, t.display_info_id)),
             None => (None, None),
@@ -392,7 +469,8 @@ fn resolve_recipe(
     }
     let mut tools_pending = Vec::new();
     for &t in d.totems.iter().filter(|&&t| t != 0) {
-        let have = count_of_in_player(inv, objects, t, InventoryScope::DEFAULT) > 0;
+        let have =
+            inv.is_some_and(|inv| count_of_in_player(inv, objects, t, InventoryScope::DEFAULT) > 0);
         match items.template(t, 0, ask) {
             Some(info) => tools.push((info.name.clone(), have)),
             None => tools_pending.push(t),
@@ -404,7 +482,7 @@ fn resolve_recipe(
         group,
         spell_id,
         name: d.name.clone(),
-        difficulty: difficulty(rank, sla.trivial_low, sla.trivial_high),
+        difficulty: difficulty(rank, trivial_low, trivial_high),
         num_available,
         icon,
         min_made,
@@ -609,19 +687,30 @@ fn on_pet_spells(In(ev): In<SessionEvent>, mut lists: ListTriggers) {
     }
 }
 
-/// Build the book: the known recipes of the open line, banded against the current rank.
+/// Read-only catalog and player-identity resources read by [`feed_trade_skill`], grouped so the
+/// system stays within Bevy's 16-parameter limit.
+#[derive(bevy::ecs::system::SystemParam)]
+struct TradeSkillFeedCtx<'w, 's> {
+    focus: Option<Res<'w, SpellFocus>>,
+    icons: Option<Res<'w, ItemDisplays>>,
+    subclasses: Option<Res<'w, crate::ui_items::ItemSubClasses>>,
+    self_store: Query<'w, 's, (&'static ObjectStore, Option<&'static Guid>), With<SelfPlayer>>,
+    self_guid: Option<Res<'w, SelfGuid>>,
+    names: Option<Res<'w, NameCache>>,
+}
+
+/// Build the book: either the player's own known recipes for the open line or a clicked `|Htrade:`
+/// link's decoded read-only recipe list (`0x005DD5A0`, `0x005DE120`, `0x005DE300`).
+#[allow(clippy::too_many_arguments)]
 fn feed_trade_skill(
     mut vm: crate::script_calls::VmWith<(
         Res<'static, crate::spell::Cooldowns>,
-        Res<'static, TradeSkillOpen>,
+        ResMut<'static, TradeSkillOpen>,
     )>,
     actions: Res<PlayerActions>,
     spells: Option<Res<Spells>>,
     skill_lines: Option<Res<SkillLines>>,
-    focus: Option<Res<SpellFocus>>,
-    icons: Option<Res<ItemDisplays>>,
-    subclasses: Option<Res<crate::ui_items::ItemSubClasses>>,
-    self_store: Query<&ObjectStore, With<SelfPlayer>>,
+    ctx: TradeSkillFeedCtx,
     objects: Objects,
     items: Res<Items>,
     commands: Res<NetCommands>,
@@ -631,79 +720,275 @@ fn feed_trade_skill(
     mut memo: Local<crate::ui_script::VmMemo<TradeMemo>>,
     mut engine: Local<TradeEngine>,
 ) {
-    vm.feed(|script, (cooldowns, open), fires| {
+    vm.feed(|script, (cooldowns, mut open), fires| {
         let Some(script) = script else {
             return;
         };
         let memo = memo.get(script);
+        let mut open_changed = open.is_changed();
+        let self_entry = ctx.self_store.single().ok();
+        let self_guid_val = ctx
+            .self_guid
+            .as_deref()
+            .and_then(|g| g.0)
+            .or_else(|| self_entry.and_then(|(_, g)| g.map(|g| g.0)))
+            .unwrap_or(0);
+
+        // Resolve any clicked `|Htrade:` link waiting on `NameCache` (`CGTradeSkillInfo::SetLink`
+        // `0x005DE300` → `TradeSkillLinkNameCallback` `0x005D9F50` → `SetTradeSkill` `0x005DE120`).
+        if let Some(pending) = open.pending_link.clone() {
+            if let Some(names_cache) = ctx.names.as_deref() {
+                let guid = pending.parsed.owner_guid;
+                if names_cache
+                    .resolve_player(guid, Ask::New(&commands))
+                    .is_some()
+                {
+                    if let Some(skill_lines) = skill_lines.as_deref() {
+                        let traits = names_cache
+                            .player_traits(guid)
+                            .map(|(r, c, _)| (r, c))
+                            .or_else(|| {
+                                (guid == self_guid_val)
+                                    .then(|| self_entry.map(|(s, _)| s.race_class()))
+                                    .flatten()
+                            });
+                        let line =
+                            match traits {
+                                Some((r, c)) if r != 0 && c != 0 => skill_lines
+                                    .catalog
+                                    .spell_to_line(pending.parsed.spell_id, r, c),
+                                _ => skill_lines.catalog.first_line(pending.parsed.spell_id),
+                            };
+                        let valid_line = line.filter(|&l| {
+                            skill_lines.catalog.can_link(l)
+                                && skill_lines.catalog.link_abilities(l).is_some_and(|rows| {
+                                    !rows.is_empty()
+                                        && pending.parsed.bitmap.len()
+                                            == bitmap_char_len(rows.len())
+                                })
+                        });
+                        if let Some(line) = valid_line {
+                            // `0x005DE120` line 1345: disarm any armed repeat before switching.
+                            script.trade_skill_disarm();
+                            open.line = Some(line);
+                            open.opener_spell_id = Some(pending.parsed.spell_id);
+                            open.linked = Some(pending);
+                            open.pending_link = None;
+                            open.open_nonce = open.open_nonce.wrapping_add(1);
+                            open_changed = true;
+                        } else {
+                            // Invalid link (unlinked profession, bad spell, wrong bitmap length):
+                            // drop without opening (`0x005DE120` lines 1318-1343).
+                            open.pending_link = None;
+                        }
+                    }
+                }
+            }
+        }
+
         // The list's build looks every record up with the callback `0x4fc8e0` (`0x4fcd4d`) at the
         // window's show; the rebuilds between read, as the getters' lookups stand for the stock
         // frame's calls (`0x4fdba8`), which the asks below make.
-        let ask = Ask::at(memo.state.is_none() || open.is_changed(), &commands);
-        let fresh = (|| -> Option<TradeSkillState> {
-            let line = open.line?;
-            let spells = spells.as_deref()?;
-            let skill_lines = skill_lines.as_deref()?;
-            let store = self_store.single().ok()?;
-            let inventory_view = crate::wrath_inventory::PlayerInventory::new(
-                &store.0,
-                inventory.as_deref(),
-                script.target() == benilla_ui::script::UiTarget::Wrath335,
-            );
-            let rank = skill_value(store, line);
-            let (line_rank, max_rank) = skill_rank(store, line);
-            let (race, class) = store.race_class();
-            let line_name = skill_lines
-                .catalog
-                .line(line)
-                .map(|l| l.name.clone())
-                .unwrap_or_else(|| format!("Skill {line}"));
-            let now = (clock.anchor, clock.ui_now);
-            // The line's list in learn order (`0x5e9d72`), which the build walks (`0x4fcbb7`).
-            let recipes: Vec<TradeSkillRecipe> = actions
-                .profession_order
-                .iter()
-                .filter(|&&s| {
-                    spells
-                        .catalog
-                        .get(s)
-                        .is_some_and(|d| d.attributes & SPELL_ATTR_IS_TRADESKILL != 0)
-                        && skill_lines.catalog.spell_to_line(s, race, class) == Some(line)
-                })
-                .filter_map(|&s| {
-                    resolve_recipe(
-                        s,
-                        rank,
-                        spells,
-                        skill_lines,
-                        focus.as_deref(),
-                        icons.as_deref(),
-                        subclasses.as_deref(),
-                        store,
-                        &inventory_view,
-                        &objects,
-                        &items,
-                        ask,
-                        &cooldowns,
-                        now,
-                    )
-                })
-                .collect();
-            // No sort here: the engine orders the book (`0x4fd180`).
-            Some(TradeSkillState {
-                line,
-                line_name,
-                rank: line_rank,
-                max_rank,
-                recipes,
-            })
-        })();
+        let ask = Ask::at(memo.state.is_none() || open_changed, &commands);
+        let wrath = script.target() == benilla_ui::script::UiTarget::Wrath335;
+        let now = (clock.anchor, clock.ui_now);
+
+        let (fresh, linked_pair, own_link_source) = if let Some(linked) = open.linked.as_ref() {
+            let built = (|| -> Option<(TradeSkillState, (String, String))> {
+                let line = open.line?;
+                let spells = spells.as_deref()?;
+                let skill_lines = skill_lines.as_deref()?;
+                let ability_rows = skill_lines.catalog.link_abilities(line)?;
+                let indices = decode_bitmap_indices(ability_rows.len(), &linked.parsed.bitmap)?;
+                let store = self_entry.map(|(s, _)| s);
+                let inventory_view = store.map(|s| {
+                    crate::wrath_inventory::PlayerInventory::new(&s.0, inventory.as_deref(), wrath)
+                });
+                // 12340 `RefreshList` (`0x005DD5A0` lines 438-442): when viewing a link of the
+                // active player, band and report against their live skill slot; otherwise use
+                // the link's carried rank/maxRank.
+                let is_self_link = self_guid_val != 0 && linked.parsed.owner_guid == self_guid_val;
+                let (band_rank, line_rank, max_rank) = match store.filter(|_| is_self_link) {
+                    Some(s) => {
+                        let (r, mx) = skill_rank(s, line);
+                        (skill_value(s, line), r, mx)
+                    }
+                    None => (
+                        linked.parsed.rank,
+                        linked.parsed.rank,
+                        linked.parsed.max_rank,
+                    ),
+                };
+                let line_name = skill_lines
+                    .catalog
+                    .line(line)
+                    .map(|l| l.name.clone())
+                    .unwrap_or_else(|| format!("Skill {line}"));
+                let owner_name = ctx
+                    .names
+                    .as_deref()
+                    .and_then(|n| n.resolve_player(linked.parsed.owner_guid, Ask::Read))
+                    .unwrap_or_default()
+                    .to_string();
+                let recipes: Vec<TradeSkillRecipe> = indices
+                    .into_iter()
+                    .filter_map(|idx| {
+                        let row = ability_rows[idx];
+                        // `0x005DD5A0` line 397: decoded link spells must carry
+                        // `SPELL_ATTR_IS_TRADESKILL` (`0x20`).
+                        let d = spells.catalog.get(row.spell_id)?;
+                        if d.attributes & SPELL_ATTR_IS_TRADESKILL == 0 {
+                            return None;
+                        }
+                        resolve_recipe_with_trivial(
+                            row.spell_id,
+                            band_rank,
+                            (row.trivial_low, row.trivial_high),
+                            spells,
+                            ctx.focus.as_deref(),
+                            ctx.icons.as_deref(),
+                            ctx.subclasses.as_deref(),
+                            inventory_view.as_ref(),
+                            &objects,
+                            &items,
+                            ask,
+                            &cooldowns,
+                            now,
+                        )
+                    })
+                    .collect();
+                let full_link =
+                    if linked.raw_link.starts_with("|c") || linked.raw_link.starts_with("|H") {
+                        linked.raw_link.clone()
+                    } else {
+                        let link_name = spells
+                            .catalog
+                            .get(linked.parsed.spell_id)
+                            .map(|d| d.name.as_str())
+                            .unwrap_or(&line_name);
+                        format_trade_link(&linked.parsed, link_name)
+                    };
+                Some((
+                    TradeSkillState {
+                        line,
+                        line_name,
+                        rank: line_rank,
+                        max_rank,
+                        recipes,
+                    },
+                    (owner_name, full_link),
+                ))
+            })();
+            match built {
+                Some((state, pair)) => (Some(state), Some(pair), None),
+                None => (None, None, None),
+            }
+        } else {
+            let built = (|| -> Option<(TradeSkillState, Option<TradeSkillLinkSource>)> {
+                let line = open.line?;
+                let spells = spells.as_deref()?;
+                let skill_lines = skill_lines.as_deref()?;
+                let (store, _) = self_entry?;
+                let inventory_view = crate::wrath_inventory::PlayerInventory::new(
+                    &store.0,
+                    inventory.as_deref(),
+                    wrath,
+                );
+                let rank = skill_value(store, line);
+                let (line_rank, max_rank) = skill_rank(store, line);
+                let (race, class) = store.race_class();
+                let line_name = skill_lines
+                    .catalog
+                    .line(line)
+                    .map(|l| l.name.clone())
+                    .unwrap_or_else(|| format!("Skill {line}"));
+                // The line's list in learn order (`0x5e9d72`), which the build walks (`0x4fcbb7`).
+                let recipes: Vec<TradeSkillRecipe> = actions
+                    .profession_order
+                    .iter()
+                    .filter(|&&s| {
+                        spells
+                            .catalog
+                            .get(s)
+                            .is_some_and(|d| d.attributes & SPELL_ATTR_IS_TRADESKILL != 0)
+                            && skill_lines.catalog.spell_to_line(s, race, class) == Some(line)
+                    })
+                    .filter_map(|&s| {
+                        resolve_recipe(
+                            s,
+                            rank,
+                            spells,
+                            skill_lines,
+                            ctx.focus.as_deref(),
+                            ctx.icons.as_deref(),
+                            ctx.subclasses.as_deref(),
+                            store,
+                            &inventory_view,
+                            &objects,
+                            &items,
+                            ask,
+                            &cooldowns,
+                            now,
+                        )
+                    })
+                    .collect();
+                // Supply `benilla-ui` with the inputs it needs to encode `GetTradeSkillListLink()`
+                // (`0x005DB060`): opener spell from `TradeSkillOpen` + `Spells`, `m_canLink` and
+                // raw-order `SkillLineAbility.dbc` rows from `SkillLines`, rank/maxRank/race/class
+                // from `ObjectStore`, player GUID from `SelfGuid`, known spells from `PlayerActions`.
+                let own_source = open.opener_spell_id.and_then(|opener_id| {
+                    let opener = spells.catalog.get(opener_id)?;
+                    if opener.effects[0] != SPELL_EFFECT_TRADE_SKILL {
+                        return None;
+                    }
+                    let rows = skill_lines.catalog.link_abilities(line)?;
+                    Some(TradeSkillLinkSource {
+                        spell_id: opener_id,
+                        spell_name: opener.name.clone(),
+                        can_link: skill_lines.catalog.can_link(line),
+                        cur_rank: line_rank,
+                        max_rank,
+                        player_guid: self_guid_val,
+                        player_race: race,
+                        player_class: class,
+                        ability_rows: rows
+                            .iter()
+                            .map(|r| TradeSkillLinkRow {
+                                spell_id: r.spell_id,
+                                race_mask: r.race_mask,
+                                class_mask: r.class_mask,
+                            })
+                            .collect(),
+                        known_spells: actions.spells.iter().copied().collect(),
+                    })
+                });
+                // No sort here: the engine orders the book (`0x4fd180`).
+                Some((
+                    TradeSkillState {
+                        line,
+                        line_name,
+                        rank: line_rank,
+                        max_rank,
+                        recipes,
+                    },
+                    own_source,
+                ))
+            })();
+            match built {
+                Some((state, source)) => (Some(state), None, source),
+                None => (None, None, None),
+            }
+        };
 
         // The line stays open while a frame cannot resolve its book (a worldport's purge of our
         // own player): only a close ends it (`0x4fc870`, `0x4fc920`).
-        let fresh = match fresh {
-            None if open.line.is_some() => memo.state.clone(),
-            f => f,
+        let (fresh, linked_pair, own_link_source) = match fresh {
+            None if open.line.is_some() => (
+                memo.state.clone(),
+                memo.linked.clone(),
+                memo.link_source.clone(),
+            ),
+            f => (f, linked_pair, own_link_source),
         };
         // `CloseTradeSkill` closes the VM's window and signals `TRADE_SKILL_CLOSE` in the verb
         // (`0x4fc884`).
@@ -715,14 +1000,17 @@ fn feed_trade_skill(
             .item_waits
             .extend(script.take_trade_skill_item_waits());
         let arrivals = landed(&mut engine.item_waits, &items);
-        // An open is the open line's change, which a `/reload` keeps (`[0xbde040]`): the new VM
-        // takes the list with no event, as its world-enter init left it.
-        let opened = fresh.as_ref().is_some_and(|f| engine.shown != Some(f.line));
+        // An open is the open line (or open nonce, for link switches) changing, which a `/reload`
+        // keeps (`[0xbde040]`): the new VM takes the list with no event, as its world-enter init
+        // left it.
+        let shown_key = fresh.as_ref().map(|f| (f.line, open.open_nonce));
+        let opened = shown_key.is_some() && engine.shown != shown_key;
         if fresh.is_some() || open.line.is_none() {
-            engine.shown = fresh.as_ref().map(|f| f.line);
+            engine.shown = shown_key;
         }
         // Every push is silent: the rebuilds signal, and the getters read the state at their call.
-        if fresh != memo.state {
+        let state_changed = fresh != memo.state;
+        if state_changed {
             script.set_trade_skill(fresh.clone());
             // The link verbs never query, as the client has every template cached by the time the
             // list shows, so the feed asks for the missing ones here.
@@ -731,6 +1019,12 @@ fn feed_trade_skill(
                     std::iter::once(r.product_item).chain(r.reagents.iter().map(|re| re.item))
                 }));
             }
+        }
+        if state_changed || linked_pair != memo.linked {
+            script.set_trade_skill_link(linked_pair.clone());
+        }
+        if state_changed || own_link_source != memo.link_source {
+            script.set_trade_skill_link_source(own_link_source.clone());
         }
         match (&memo.state, &fresh) {
             (_, Some(f)) if opened => {
@@ -773,6 +1067,8 @@ fn feed_trade_skill(
             }
         }
         memo.state = fresh;
+        memo.linked = linked_pair;
+        memo.link_source = own_link_source;
     })
 }
 
@@ -781,14 +1077,18 @@ fn feed_trade_skill(
 struct TradeMemo {
     /// The state it last pushed.
     state: Option<TradeSkillState>,
+    /// The linked `(owner, link)` pair it last pushed.
+    linked: Option<(String, String)>,
+    /// The own-link encoding inputs it last pushed.
+    link_source: Option<TradeSkillLinkSource>,
 }
 
 /// What [`feed_trade_skill`] keeps across VMs, as the engine does across a `/reload`.
 #[derive(Default)]
 struct TradeEngine {
-    /// The line whose open it signalled; a frame that finds no line open clears it, so the next
-    /// session's first open signals again.
-    shown: Option<u32>,
+    /// The `(line, open_nonce)` whose open it signalled; a frame that finds no line open clears
+    /// it, so the next session's first open signals again.
+    shown: Option<(u32, u64)>,
     /// The item records the getters' callbacks wait on in the item cache, one per call
     /// (`0x4fdc30`), which no cancel removes (`0x4fc890`).
     item_waits: Vec<u32>,
@@ -858,13 +1158,35 @@ pub(crate) struct TradeSkillSteps<'w> {
 }
 
 impl TradeSkillSteps<'_> {
-    /// `CloseTradeSkill()` (`0x4fd7f0` → `0x4fc870`): the open marker `[0xbde040]` zeroed, no
+    /// `CloseTradeSkill()` (`0x4fd7f0` → `0x4fc870`, 12340 `Script_CloseTradeSkill` `0x005DA8B0`):
+    /// the open marker `[0xbde040]` and any active/pending linked trade-skill state zeroed, no
     /// packet.
     pub(crate) fn close(&mut self) {
         if let Some(open) = self.open.as_deref_mut() {
             debug!("ui_tradeskill: client-side close (no packet)");
             open.line = None;
+            open.opener_spell_id = None;
+            open.linked = None;
+            open.pending_link = None;
         }
+    }
+
+    /// `GameTooltip:SetHyperlink` on a `trade:` link (`0x0062DAE0` → `CGTradeSkillInfo::SetLink`
+    /// `0x005DE300`): parse the link and stage it for `NameCache` lookup + bitmap decode in
+    /// [`feed_trade_skill`].
+    pub(crate) fn open_link(&mut self, raw_link: String) {
+        let Some(open) = self.open.as_deref_mut() else {
+            return;
+        };
+        let Some(parsed) = parse_trade_link(&raw_link) else {
+            debug!("ui_tradeskill: ignoring malformed trade link");
+            return;
+        };
+        debug!(
+            "ui_tradeskill: staging trade link spell={} rank={}/{} owner={:X}",
+            parsed.spell_id, parsed.rank, parsed.max_rank, parsed.owner_guid
+        );
+        open.pending_link = Some(LinkedTradeSkill { parsed, raw_link });
     }
 }
 
@@ -2208,5 +2530,435 @@ mod tests {
             .world()
             .non_send_resource::<UiScript>()
             .trade_skill_open());
+    }
+
+    /// Synthetic Tailoring fixture with 3 `SkillLineAbility.dbc` rows (opener 3908 + recipes 2963
+    /// and 3919), `m_canLink = true`, player GUID/race/class/rank, and `NameCache` wired for
+    /// end-to-end trade-skill link tests. Never reads real game data.
+    fn link_test_app() -> (App, crossbeam_channel::Receiver<crate::net::ClientCommand>) {
+        use benilla_formats::{SkillLineCatalog, SkillLineLinkAbility, SlaInfo, SpellCatalog};
+        use benilla_protocol::ObjectFields;
+
+        const SELF_GUID: u64 = 0x0000_0000_0000_1A2B;
+        const LINE_TAILORING: u32 = 197;
+        const OPENER_SPELL: u32 = 3908;
+        const RECIPE_BOLT: u32 = 2963;
+        const RECIPE_ROBE: u32 = 3919;
+        const ITEM_BOLT: u32 = 2996;
+        const ITEM_ROBE: u32 = 2585;
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut app = App::new();
+
+        let mut actions = PlayerActions::default();
+        // Player knows the opener (3908) and Bolt of Linen Cloth (2963), but NOT Simple Robe (3919).
+        actions.spells.extend([OPENER_SPELL, RECIPE_BOLT]);
+        actions.profession_order.push(RECIPE_BOLT);
+
+        let opener = SpellDisplay {
+            name: "Tailoring".into(),
+            effects: [SPELL_EFFECT_TRADE_SKILL, 0, 0],
+            ..Default::default()
+        };
+        let bolt = SpellDisplay {
+            name: "Bolt of Linen Cloth".into(),
+            attributes: SPELL_ATTR_IS_TRADESKILL,
+            effects: [SPELL_EFFECT_CREATE_ITEM, 0, 0],
+            effect_item_type: [ITEM_BOLT, 0, 0],
+            ..Default::default()
+        };
+        let robe = SpellDisplay {
+            name: "Simple Robe".into(),
+            attributes: SPELL_ATTR_IS_TRADESKILL,
+            effects: [SPELL_EFFECT_CREATE_ITEM, 0, 0],
+            effect_item_type: [ITEM_ROBE, 0, 0],
+            ..Default::default()
+        };
+        let sla = |low, high| SlaInfo {
+            skill_id: LINE_TAILORING,
+            req_skill_value: 1,
+            forward_spell_id: 0,
+            trivial_low: low,
+            trivial_high: high,
+        };
+        let catalog = SkillLineCatalog::from_abilities([
+            (OPENER_SPELL, sla(0, 0)),
+            (RECIPE_BOLT, sla(25, 50)),
+            (RECIPE_ROBE, sla(40, 70)),
+        ])
+        .with_line_names([(LINE_TAILORING, "Tailoring")])
+        .with_can_link(LINE_TAILORING, true)
+        .with_link_abilities(
+            LINE_TAILORING,
+            vec![
+                SkillLineLinkAbility {
+                    spell_id: OPENER_SPELL,
+                    race_mask: 0,
+                    class_mask: 0,
+                    trivial_low: 0,
+                    trivial_high: 0,
+                },
+                SkillLineLinkAbility {
+                    spell_id: RECIPE_BOLT,
+                    race_mask: 0,
+                    class_mask: 0,
+                    trivial_low: 25,
+                    trivial_high: 50,
+                },
+                SkillLineLinkAbility {
+                    spell_id: RECIPE_ROBE,
+                    race_mask: 0,
+                    class_mask: 0,
+                    trivial_low: 40,
+                    trivial_high: 70,
+                },
+            ],
+        );
+
+        let mut items = Items::default();
+        items.insert_template(ITEM_BOLT, Some(test_template("Bolt of Linen Cloth")));
+        items.insert_template(ITEM_ROBE, Some(test_template("Simple Robe")));
+
+        // Human (race 1) Mage (class 8) with Tailoring 57/75 in skill slot 0.
+        let fields = ObjectFields::from_pairs(&[
+            (36, (8 << 8) | 1),
+            (718, LINE_TAILORING),
+            (719, (75 << 16) | 57),
+            (720, 0),
+        ]);
+
+        app.init_resource::<TradeSkillOpen>()
+            .init_resource::<TradeSkillOpens>()
+            .init_resource::<crate::ui_craft::CraftOpen>()
+            .insert_resource(actions)
+            .init_resource::<crate::net::GuidIndex>()
+            .insert_resource(items)
+            .init_resource::<crate::spell::Cooldowns>()
+            .init_resource::<crate::ui_script::UiClock>()
+            .init_resource::<NameCache>()
+            .insert_resource(SelfGuid(Some(SELF_GUID)))
+            .insert_resource(crate::net::NetCommands(tx))
+            .insert_resource(Spells {
+                catalog: SpellCatalog::from_displays(
+                    [
+                        (OPENER_SPELL, opener),
+                        (RECIPE_BOLT, bolt),
+                        (RECIPE_ROBE, robe),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+                ..Spells::empty_for_tests()
+            })
+            .insert_resource(SkillLines { catalog });
+
+        app.world_mut()
+            .spawn((ObjectStore(fields), Guid(SELF_GUID), SelfPlayer));
+        app.insert_non_send_resource(listening());
+        app.add_systems(Update, (open_trade_skill, feed_trade_skill).chain());
+        (app, rx)
+    }
+
+    /// Run a Lua snippet through `HostedVm` so `ScriptCall` (including `GameTooltip:SetHyperlink`,
+    /// `CloseTradeSkill`, and `DoTradeSkill`) dispatches through the real `script_calls` host.
+    fn run_hosted_lua(app: &mut App, lua: &str) {
+        use bevy::ecs::system::RunSystemOnce;
+        let code = lua.to_string();
+        app.world_mut()
+            .run_system_once(move |mut vm: crate::script_calls::HostedVm| {
+                vm.run(|script| {
+                    script.expect("UiScript").run(&code).unwrap();
+                });
+            })
+            .unwrap();
+    }
+
+    /// Part A: opening the player's own profession supplies the DBC rows, opener spell, rank,
+    /// GUID, race/class and known spells so `GetTradeSkillListLink()` produces the exact 12340
+    /// chat hyperlink.
+    #[test]
+    fn trade_skill_link_own_profession_encodes_from_app_dbc_rows_and_known_spells() {
+        let (mut app, _rx) = link_test_app();
+        app.world_mut()
+            .resource_mut::<TradeSkillOpens>()
+            .0
+            .push(3908);
+        assert_eq!(heard(&mut app), ["TRADE_SKILL_UPDATE", "TRADE_SKILL_SHOW"]);
+
+        let script = app.world().non_send_resource::<UiScript>();
+        // Rows: [3908 (known, bit 0), 2963 (known, bit 1), 3919 (unknown, bit 2)]
+        // -> bits 0b011 = 3 -> 'D' in 12340 base64 alphabet (`0x00A1B640`).
+        assert_eq!(
+            script
+                .eval::<Option<String>>("return GetTradeSkillListLink()")
+                .unwrap()
+                .as_deref(),
+            Some("|cffffd000|Htrade:3908:57:75:1A2B:D|h[Tailoring]|h|r")
+        );
+        assert_eq!(
+            script
+                .eval::<(Option<i64>, Option<String>)>("return IsTradeSkillLinked()")
+                .unwrap(),
+            (None, None)
+        );
+    }
+
+    /// Part B (cached owner): clicking a `trade:` link via `GameTooltip:SetHyperlink` opens a
+    /// read-only profession window decoded locally from the bitmap (filtering out non-0x20 opener
+    /// spells), reports `(1, owner)` from `IsTradeSkillLinked()`, refuses `DoTradeSkill`, and
+    /// clears linked state on `CloseTradeSkill()`.
+    #[test]
+    fn trade_skill_link_clicking_cached_link_opens_read_only_window_and_clears_on_close() {
+        let (mut app, rx) = link_test_app();
+        const OTHER_GUID: u64 = 0x0000_0000_0000_BEEF;
+        app.world_mut().resource_mut::<NameCache>().insert_player(
+            OTHER_GUID,
+            "Firna".into(),
+            Some((1, 8, 1)),
+        );
+
+        // Bitmap 'F' = 5 = 0b101 -> rows 0 (opener 3908, non-0x20, filtered out) and 2 (Simple Robe
+        // 3919, 0x20 recipe).
+        run_hosted_lua(
+            &mut app,
+            r#"
+            local tip = CreateFrame("GameTooltip", "ChatLinkTip")
+            tip:SetHyperlink("trade:3908:110:150:BEEF:F")
+            "#,
+        );
+        assert_eq!(heard(&mut app), ["TRADE_SKILL_UPDATE", "TRADE_SKILL_SHOW"]);
+
+        let script = app.world().non_send_resource::<UiScript>();
+        assert_eq!(
+            script
+                .eval::<(Option<i64>, Option<String>)>("return IsTradeSkillLinked()")
+                .unwrap(),
+            (Some(1), Some("Firna".into()))
+        );
+        assert_eq!(
+            script
+                .eval::<(String, i64, i64)>("return GetTradeSkillLine()")
+                .unwrap(),
+            ("Tailoring".into(), 110, 150)
+        );
+        // 1 header + 1 decoded recipe (Simple Robe); the non-0x20 opener spell was filtered out.
+        assert_eq!(script.eval::<i64>("return GetNumTradeSkills()").unwrap(), 2);
+        assert_eq!(
+            script
+                .eval::<(String, String)>("local n, t = GetTradeSkillInfo(2) return n, t")
+                .unwrap(),
+            ("Simple Robe".into(), "trivial".into())
+        );
+
+        // Refuses crafting from the linked list: no `CMSG_CAST_SPELL` sent.
+        run_hosted_lua(&mut app, "DoTradeSkill(2, 3)");
+        let cmds: Vec<_> = rx.try_iter().collect();
+        assert!(
+            cmds.is_empty(),
+            "linked trade skill must send no craft packets, got {cmds:?}"
+        );
+
+        // Closing clears both app and VM linked state.
+        run_hosted_lua(&mut app, "CloseTradeSkill()");
+        app.update();
+        assert!(app.world().resource::<TradeSkillOpen>().linked.is_none());
+        assert_eq!(app.world().resource::<TradeSkillOpen>().line, None);
+        let script = app.world().non_send_resource::<UiScript>();
+        assert_eq!(
+            script
+                .eval::<(Option<i64>, Option<String>)>("return IsTradeSkillLinked()")
+                .unwrap(),
+            (None, None)
+        );
+    }
+
+    /// Part B (uncached owner): clicking a `trade:` link whose owner GUID is not yet in
+    /// `NameCache` emits `CMSG_NAME_QUERY` (`0x005DE300`), waits without opening, and opens the
+    /// decoded linked window as soon as `SMSG_NAME_QUERY_RESPONSE` populates `NameCache`
+    /// (`TradeSkillLinkNameCallback` `0x005D9F50`).
+    #[test]
+    fn trade_skill_link_clicking_uncached_link_queries_name_then_opens_on_response() {
+        let (mut app, rx) = link_test_app();
+        const REMOTE_GUID: u64 = 0x0000_0000_0000_CAFE;
+
+        run_hosted_lua(
+            &mut app,
+            r#"
+            local tip = CreateFrame("GameTooltip", "UncachedLinkTip")
+            tip:SetHyperlink("trade:3908:60:75:CAFE:C")
+            "#,
+        );
+        // Frame 1: NameCache miss -> queues CMSG_NAME_QUERY, does not open yet.
+        assert!(heard(&mut app).is_empty(), "waits for name query response");
+        let queries: Vec<_> = rx
+            .try_iter()
+            .filter_map(|cmd| match cmd {
+                crate::net::ClientCommand::NameQuery { guid } => Some(guid),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(queries, vec![REMOTE_GUID]);
+        assert!(!app
+            .world()
+            .non_send_resource::<UiScript>()
+            .trade_skill_open());
+
+        // SMSG_NAME_QUERY_RESPONSE arrives -> NameCache populated -> next frame opens the link.
+        app.world_mut().resource_mut::<NameCache>().insert_player(
+            REMOTE_GUID,
+            "Aldric".into(),
+            Some((1, 8, 0)),
+        );
+        assert_eq!(heard(&mut app), ["TRADE_SKILL_UPDATE", "TRADE_SKILL_SHOW"]);
+        let script = app.world().non_send_resource::<UiScript>();
+        assert_eq!(
+            script
+                .eval::<(Option<i64>, Option<String>)>("return IsTradeSkillLinked()")
+                .unwrap(),
+            (Some(1), Some("Aldric".into()))
+        );
+        // Bitmap 'C' = 2 = 0b010 -> row 1 = Bolt of Linen Cloth.
+        assert_eq!(
+            script
+                .eval::<String>("return (GetTradeSkillInfo(2))")
+                .unwrap(),
+            "Bolt of Linen Cloth"
+        );
+    }
+
+    /// Part C end-to-end round trip: open own profession, call `GetTradeSkillListLink()`, close,
+    /// click the generated link via `GameTooltip:SetHyperlink`, and verify the linked window
+    /// recovers the exact same known recipe set.
+    #[test]
+    fn trade_skill_link_end_to_end_round_trip_recovers_exact_known_recipes() {
+        let (mut app, _rx) = link_test_app();
+        const SELF_GUID: u64 = 0x0000_0000_0000_1A2B;
+        app.world_mut().resource_mut::<NameCache>().insert_player(
+            SELF_GUID,
+            "SelfCrafter".into(),
+            Some((1, 8, 1)),
+        );
+
+        // Open own profession and read its recipes and generated link.
+        app.world_mut()
+            .resource_mut::<TradeSkillOpens>()
+            .0
+            .push(3908);
+        assert_eq!(heard(&mut app), ["TRADE_SKILL_UPDATE", "TRADE_SKILL_SHOW"]);
+        let (own_recipes, link): (Vec<String>, String) = app
+            .world()
+            .non_send_resource::<UiScript>()
+            .eval(
+                r#"
+                local out = {}
+                for i = 1, GetNumTradeSkills() do
+                    local n, t = GetTradeSkillInfo(i)
+                    if t ~= "header" then table.insert(out, n) end
+                end
+                return out, GetTradeSkillListLink()
+                "#,
+            )
+            .unwrap();
+        assert_eq!(own_recipes, vec!["Bolt of Linen Cloth".to_string()]);
+
+        // Close own window, then click the emitted chat link.
+        run_hosted_lua(&mut app, "CloseTradeSkill()");
+        app.update();
+        run_hosted_lua(
+            &mut app,
+            &format!(
+                r#"
+                local tip = CreateFrame("GameTooltip", "RoundTripTip")
+                tip:SetHyperlink("{link}")
+                "#
+            ),
+        );
+        assert_eq!(heard(&mut app), ["TRADE_SKILL_UPDATE", "TRADE_SKILL_SHOW"]);
+
+        let (linked_recipes, is_linked, owner): (Vec<String>, Option<i64>, Option<String>) = app
+            .world()
+            .non_send_resource::<UiScript>()
+            .eval(
+                r#"
+                local out = {}
+                for i = 1, GetNumTradeSkills() do
+                    local n, t = GetTradeSkillInfo(i)
+                    if t ~= "header" then table.insert(out, n) end
+                end
+                local l, o = IsTradeSkillLinked()
+                return out, l, o
+                "#,
+            )
+            .unwrap();
+        assert_eq!(linked_recipes, own_recipes);
+        assert_eq!((is_linked, owner), (Some(1), Some("SelfCrafter".into())));
+    }
+
+    /// Malformed links, wrong-length bitmaps, and non-linkable professions (`m_canLink == false`)
+    /// are rejected without opening a window (`0x005DE120` lines 1318-1343).
+    #[test]
+    fn trade_skill_link_rejects_malformed_unlinkable_or_wrong_length_bitmap() {
+        let (mut app, _rx) = link_test_app();
+        const OTHER_GUID: u64 = 0x0000_0000_0000_BEEF;
+        app.world_mut().resource_mut::<NameCache>().insert_player(
+            OTHER_GUID,
+            "Firna".into(),
+            Some((1, 8, 1)),
+        );
+
+        // 1. Malformed payload (missing fields / bad hex GUID).
+        run_hosted_lua(
+            &mut app,
+            r#"
+            local tip = CreateFrame("GameTooltip", "RejectTip")
+            tip:SetHyperlink("trade:3908:57:75:NOTHEX:D")
+            "#,
+        );
+        assert!(heard(&mut app).is_empty());
+        assert!(app.world().resource::<TradeSkillOpen>().linked.is_none());
+
+        // 2. Wrong bitmap length (3 rows require 1 char, not 2).
+        run_hosted_lua(
+            &mut app,
+            r#"RejectTip:SetHyperlink("trade:3908:57:75:BEEF:DD")"#,
+        );
+        assert!(heard(&mut app).is_empty());
+        assert!(app.world().resource::<TradeSkillOpen>().linked.is_none());
+        assert!(app
+            .world()
+            .resource::<TradeSkillOpen>()
+            .pending_link
+            .is_none());
+
+        // 3. Non-linkable skill (`m_canLink == false`).
+        app.world_mut().insert_resource(SkillLines {
+            catalog: benilla_formats::SkillLineCatalog::from_abilities([(
+                3908,
+                benilla_formats::SlaInfo {
+                    skill_id: 197,
+                    req_skill_value: 1,
+                    forward_spell_id: 0,
+                    trivial_low: 0,
+                    trivial_high: 0,
+                },
+            )])
+            .with_link_abilities(
+                197,
+                vec![benilla_formats::SkillLineLinkAbility {
+                    spell_id: 3908,
+                    race_mask: 0,
+                    class_mask: 0,
+                    trivial_low: 0,
+                    trivial_high: 0,
+                }],
+            )
+            .with_can_link(197, false),
+        });
+        run_hosted_lua(
+            &mut app,
+            r#"RejectTip:SetHyperlink("trade:3908:57:75:BEEF:B")"#,
+        );
+        assert!(heard(&mut app).is_empty());
+        assert!(app.world().resource::<TradeSkillOpen>().linked.is_none());
     }
 }

@@ -36,6 +36,9 @@ const COL_SL_SPELL_ICON: usize = 21;
 const WRATH_SKILL_LINE_FIELDS: usize = 56;
 const WRATH_COL_SL_DESC: usize = 20;
 const WRATH_COL_SL_SPELL_ICON: usize = 37;
+/// `SkillLineRec::m_canLink` (12340 `SkillLineRec.h:22`, `SkillLineRec.cpp:82`), column 55 of
+/// the 56-column Wrath `SkillLine.dbc` row; absent in the 22-column vanilla row.
+const WRATH_COL_SL_CAN_LINK: usize = 55;
 
 const SKILL_LINE_ABILITY_FIELDS: usize = 15;
 const COL_SLA_SKILL_ID: usize = 1;
@@ -105,6 +108,9 @@ pub struct SkillLineInfo {
     /// `description_lang` (vanilla column 12, WotLK 20), read at the locale:
     /// `GetSkillLineInfo`'s 13th return.
     pub description: String,
+    /// `m_canLink` (WotLK column 55, `SkillLineRec.h:22`): whether the profession can be linked
+    /// via `|Htrade:` (`0x005DB060`, `0x005DE120`). Always false on 22-column vanilla rows.
+    pub can_link: bool,
 }
 
 /// One `SkillRaceClassInfo.dbc` row: the race and class masks, and its [`SkillRaceClass`].
@@ -233,6 +239,18 @@ pub struct LineAbility {
     pub train_points: u32,
 }
 
+/// One `SkillLineAbility.dbc` row retained in raw file order for trade-skill link bitmap
+/// encoding and decoding (`SpellTableBuildSkillLineLinkInfo` `0x00812030`,
+/// `SpellTableGetSkillLineLinkInfo` `0x008104A0`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SkillLineLinkAbility {
+    pub spell_id: u32,
+    pub race_mask: u32,
+    pub class_mask: u32,
+    pub trivial_low: u32,
+    pub trivial_high: u32,
+}
+
 /// The skill tables joined: a spell's line, a line's display, and the per-race/class routing.
 pub struct SkillLineCatalog {
     lines: HashMap<u32, SkillLineInfo>,
@@ -242,6 +260,9 @@ pub struct SkillLineCatalog {
     abilities: HashMap<u32, SlaInfo>,
     /// `(skill line, spell)` to its first row in file order, the linear scan `0x6de0d0`.
     line_abilities: HashMap<(u32, u32), LineAbility>,
+    /// First contiguous raw-DBC run of `SkillLineAbility.dbc` rows per linkable skill line
+    /// (`0x00812030`, `0x008104A0`).
+    link_abilities: HashMap<u32, Vec<SkillLineLinkAbility>>,
     /// `SkillLineCategory.dbc`: id to (name, displayOrder).
     categories: HashMap<u32, (String, u32)>,
     /// Skill line id to its `SkillRaceClassInfo` rows; empty if the DBC failed to load.
@@ -274,6 +295,7 @@ impl SkillLineCatalog {
             abilities,
             lines: HashMap::new(),
             line_abilities: HashMap::new(),
+            link_abilities: HashMap::new(),
             categories: HashMap::new(),
             race_class: HashMap::new(),
             rank_prev: HashMap::new(),
@@ -291,10 +313,40 @@ impl SkillLineCatalog {
                     category_id: 0,
                     icon: None,
                     description: String::new(),
+                    can_link: false,
                 },
             );
         }
         self
+    }
+
+    /// Set `SkillLine.dbc`'s `m_canLink` flag on a synthetic test line.
+    pub fn with_can_link(mut self, line_id: u32, can_link: bool) -> Self {
+        self.lines
+            .entry(line_id)
+            .and_modify(|info| info.can_link = can_link)
+            .or_insert_with(|| SkillLineInfo {
+                name: format!("Skill {line_id}"),
+                category_id: 0,
+                icon: None,
+                description: String::new(),
+                can_link,
+            });
+        self
+    }
+
+    /// Seat synthetic raw-order `SkillLineAbility.dbc` rows for trade-skill link tests
+    /// (`0x00812030`) and mark `line_id` linkable.
+    pub fn with_link_abilities(
+        mut self,
+        line_id: u32,
+        rows: impl IntoIterator<Item = SkillLineLinkAbility>,
+    ) -> Self {
+        let rows: Vec<SkillLineLinkAbility> = rows.into_iter().collect();
+        if !rows.is_empty() {
+            self.link_abilities.insert(line_id, rows);
+        }
+        self.with_can_link(line_id, true)
     }
 
     /// This catalog with a `SkillRaceClassInfo.dbc` row of `flags` for every race and class on
@@ -496,6 +548,7 @@ impl SkillLineCatalog {
             abilities,
             lines: HashMap::new(),
             line_abilities: HashMap::new(),
+            link_abilities: HashMap::new(),
             categories: HashMap::new(),
             race_class: HashMap::new(),
             rank_prev,
@@ -583,6 +636,18 @@ impl SkillLineCatalog {
     /// A skill line's display, by id.
     pub fn line(&self, line_id: u32) -> Option<&SkillLineInfo> {
         self.lines.get(&line_id)
+    }
+
+    /// Whether `SkillLine.dbc` marks `line_id` as linkable (`m_canLink != 0`, `0x005DB060`,
+    /// `0x005DE120`).
+    pub fn can_link(&self, line_id: u32) -> bool {
+        self.lines.get(&line_id).is_some_and(|l| l.can_link)
+    }
+
+    /// The first contiguous raw-DBC slice of `SkillLineAbility.dbc` rows for a linkable skill
+    /// line (`SpellTableGetSkillLineLinkInfo` `0x008104A0`).
+    pub fn link_abilities(&self, line_id: u32) -> Option<&[SkillLineLinkAbility]> {
+        self.link_abilities.get(&line_id).map(Vec::as_slice)
     }
 
     /// A `SkillLineCategory.dbc` row's `(name, displayOrder)`, a skills-pane header.
@@ -708,6 +773,38 @@ fn load_race_class_info(chain: &mut Chain) -> HashMap<u32, Vec<SrciRow>> {
     map
 }
 
+/// Group consecutive `SkillLineAbility.dbc` rows per linkable skill line in raw file order
+/// (`SpellTableBuildSkillLineLinkInfo` `0x00812030`). Only the first contiguous run for each
+/// skill line is kept, matching `SpellTableGetSkillLineLinkInfo` (`0x008104A0`).
+fn build_link_abilities(
+    rows: impl IntoIterator<Item = (u32, SkillLineLinkAbility)>,
+    mut can_link: impl FnMut(u32) -> bool,
+) -> HashMap<u32, Vec<SkillLineLinkAbility>> {
+    let mut link_abilities: HashMap<u32, Vec<SkillLineLinkAbility>> = HashMap::new();
+    let mut active_link_line: Option<u32> = None;
+    let mut last_skill_line: Option<u32> = None;
+
+    for (skill_id, link_row) in rows {
+        if last_skill_line == Some(skill_id) {
+            if let Some(active) = active_link_line {
+                if let Some(run) = link_abilities.get_mut(&active) {
+                    run.push(link_row);
+                }
+            }
+        } else {
+            last_skill_line = Some(skill_id);
+            if can_link(skill_id) && !link_abilities.contains_key(&skill_id) {
+                link_abilities.insert(skill_id, vec![link_row]);
+                active_link_line = Some(skill_id);
+            } else {
+                active_link_line = None;
+            }
+        }
+    }
+
+    link_abilities
+}
+
 /// Load the joined skill-line catalog off the patch chain.
 pub fn load_skill_line_catalog(chain: &mut Chain) -> Result<SkillLineCatalog> {
     let icons = crate::dbc::load_spell_icon_map(chain)?;
@@ -734,6 +831,7 @@ pub fn load_skill_line_catalog(chain: &mut Chain) -> Result<SkillLineCatalog> {
         "SkillLine.dbc",
     )?;
     let locale = chain.locale();
+    let has_can_link = columns == WRATH_SKILL_LINE_FIELDS;
     let mut lines: HashMap<u32, SkillLineInfo> = HashMap::new();
     for r in sl_set.records() {
         let Some(id) = u32_at(r, 0) else { continue };
@@ -743,6 +841,7 @@ pub fn load_skill_line_catalog(chain: &mut Chain) -> Result<SkillLineCatalog> {
             .and_then(|i| icons.get(&i).cloned());
         let category_id = u32_at(r, 1).unwrap_or(0);
         let description = loc_str(&sl_set, r, description_column, locale).unwrap_or_default();
+        let can_link = has_can_link && u32_at(r, WRATH_COL_SL_CAN_LINK).is_some_and(|v| v != 0);
         lines.insert(
             id,
             SkillLineInfo {
@@ -750,6 +849,7 @@ pub fn load_skill_line_catalog(chain: &mut Chain) -> Result<SkillLineCatalog> {
                 category_id,
                 icon,
                 description,
+                can_link,
             },
         );
     }
@@ -777,23 +877,28 @@ pub fn load_skill_line_catalog(chain: &mut Chain) -> Result<SkillLineCatalog> {
     let mut abilities: HashMap<u32, SlaInfo> = HashMap::new();
     let mut sla_rows: HashMap<u32, Vec<SlaRow>> = HashMap::new();
     let mut line_abilities: HashMap<(u32, u32), LineAbility> = HashMap::new();
+    let mut raw_link_rows: Vec<(u32, SkillLineLinkAbility)> = Vec::new();
     for r in sla_set.records() {
         if let (Some(skill_id), Some(spell_id)) =
             (u32_at(r, COL_SLA_SKILL_ID), u32_at(r, COL_SLA_SPELL_ID))
         {
             let forward_spell_id = u32_at(r, COL_SLA_FORWARD_SPELL).unwrap_or(0);
             let col = |c| u32_at(r, c).unwrap_or(0);
+            let race_mask = col(COL_SLA_RACE_MASK);
+            let class_mask = col(COL_SLA_CLASS_MASK);
+            let trivial_low = col(COL_SLA_TRIVIAL_LOW);
+            let trivial_high = col(COL_SLA_TRIVIAL_HIGH);
             let info = SlaInfo {
                 skill_id,
                 req_skill_value: col(COL_SLA_REQ_SKILL_VALUE),
                 forward_spell_id,
-                trivial_low: col(COL_SLA_TRIVIAL_LOW),
-                trivial_high: col(COL_SLA_TRIVIAL_HIGH),
+                trivial_low,
+                trivial_high,
             };
             sla_rows.entry(spell_id).or_default().push(SlaRow {
                 info,
-                race_mask: col(COL_SLA_RACE_MASK),
-                class_mask: col(COL_SLA_CLASS_MASK),
+                race_mask,
+                class_mask,
                 not_race: col(COL_SLA_NOT_RACE) != 0,
                 not_class: col(COL_SLA_NOT_CLASS) != 0,
                 any: false,
@@ -804,6 +909,16 @@ pub fn load_skill_line_catalog(chain: &mut Chain) -> Result<SkillLineCatalog> {
                     superseded_by: forward_spell_id,
                     train_points: u32_at(r, train_points_column).unwrap_or(0),
                 });
+            raw_link_rows.push((
+                skill_id,
+                SkillLineLinkAbility {
+                    spell_id,
+                    race_mask,
+                    class_mask,
+                    trivial_low,
+                    trivial_high,
+                },
+            ));
             // The first row in file order holds the rank link.
             let slot = abilities.entry(spell_id).or_insert(info);
             // Except the rank link: the first non-zero across the rows, as vmangos scans them all.
@@ -812,6 +927,9 @@ pub fn load_skill_line_catalog(chain: &mut Chain) -> Result<SkillLineCatalog> {
             }
         }
     }
+    let link_abilities = build_link_abilities(raw_link_rows, |id| {
+        lines.get(&id).is_some_and(|l| l.can_link)
+    });
     let rank_prev = abilities
         .iter()
         .filter(|(_, a)| a.forward_spell_id != 0)
@@ -826,6 +944,7 @@ pub fn load_skill_line_catalog(chain: &mut Chain) -> Result<SkillLineCatalog> {
         sla_rows,
         abilities,
         line_abilities,
+        link_abilities,
         categories,
         race_class,
         rank_prev,

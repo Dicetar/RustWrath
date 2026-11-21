@@ -752,6 +752,9 @@ impl CallHost for ScriptCallHost<'_, '_> {
                 crate::ui_tradeskill::do_trade_skill(&mut appliers.cast(), spell_id, count);
             }
             ScriptCall::TradeSkill(TradeSkillCall::Close) => appliers.trade_skill().close(),
+            ScriptCall::TradeSkill(TradeSkillCall::OpenLink(link)) => {
+                appliers.trade_skill().open_link(link);
+            }
             ScriptCall::Craft(CraftCall::Do { spell_id }) => {
                 crate::ui_craft::do_craft(&mut appliers.cast(), spell_id);
             }

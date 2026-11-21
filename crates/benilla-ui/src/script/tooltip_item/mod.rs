@@ -490,6 +490,15 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     m.set(
         "SetHyperlink",
         lua.create_function(|lua, (this, link): (Table, String)| {
+            // 12340 `Script_SetHyperlink` (`0x0062DAE0`, `Tooltip_Scripts.cpp:634`): a `trade:`
+            // link delegates directly to `CGTradeSkillInfo::SetLink(cursor + 6)` (`0x005DE300`)
+            // and shows no tooltip.
+            if link.contains("trade:") {
+                return super::calls::submit(
+                    lua,
+                    super::ScriptCall::TradeSkill(super::TradeSkillCall::OpenLink(link)),
+                );
+            }
             // The only other link it takes, the craft window's `|Henchant:<spellId>|h[name]|h`
             // (`GetCraftItemLink`): the spell's own tooltip, behind its producer's castUI gate
             // (`0x532243`).

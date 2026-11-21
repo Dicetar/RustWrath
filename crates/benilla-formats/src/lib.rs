@@ -260,7 +260,8 @@ pub use spells::{
 };
 mod skill_lines;
 pub use skill_lines::{
-    load_skill_line_catalog, LineAbility, SkillLineCatalog, SkillLineInfo, SkillRaceClass, SlaInfo,
+    load_skill_line_catalog, LineAbility, SkillLineCatalog, SkillLineInfo, SkillLineLinkAbility,
+    SkillRaceClass, SlaInfo,
 };
 mod spell_focus;
 mod spell_mechanic;

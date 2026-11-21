@@ -1642,3 +1642,287 @@ fn the_world_enter_init_empties_the_list_until_a_rebuild() {
     s.rebuild_trade_skill(&mut |_| {});
     assert_eq!(heard::take(&s), ["TRADE_SKILL_UPDATE 3"]);
 }
+
+/// 12340 `CGTradeSkillInfo::GetTradeSkillListLink` (`0x005DB060`) + `s_base64Encode`
+/// (`0x00A1B640`) + `SpellTableMatchRaceClass` (`0x00810320`): LSB-first 6-bit packing in raw
+/// `SkillLineAbility.dbc` order, trailing partial group emitted with no `=` padding, and
+/// race/class mask filtering.
+#[test]
+fn trade_skill_link_bitmap_encode_uses_12340_alphabet_lsb_order_and_race_class_filter() {
+    let row = |spell_id, race_mask, class_mask| TradeSkillLinkRow {
+        spell_id,
+        race_mask,
+        class_mask,
+    };
+    // 8 rows -> 2 base64 chars (bits 0..5 in char 0, bits 0..1 in char 1, no '=' padding).
+    let rows = vec![
+        row(100, 0, 0),    // bit 0: known -> 1
+        row(101, 0, 0),    // bit 1: unknown -> 0
+        row(102, 0x1, 0),  // bit 2: Human (race 1) only, known -> 1 for Human, 0 for Orc
+        row(103, 0x2, 0),  // bit 3: Orc (race 2) only, known -> 0 for Human, 1 for Orc
+        row(104, 0, 0x80), // bit 4: Mage (class 8, bit 7) only, known -> 1 for Mage
+        row(105, 0, 0),    // bit 5: known -> 1
+        // Second 6-bit group (partial, 2 rows):
+        row(106, 0, 0), // bit 0: known -> 1
+        row(107, 0, 0), // bit 1: known -> 1
+    ];
+    let known: std::collections::HashSet<u32> = [100, 102, 103, 104, 105, 106, 107].into();
+
+    // Human (race 1) Mage (class 8):
+    // char 0 = bits {0, 2, 4, 5} = 1 + 4 + 16 + 32 = 53 -> '1' (index 53 in A-Za-z0-9+/)
+    // char 1 = bits {0, 1} = 1 + 2 = 3 -> 'D'
+    assert_eq!(encode_bitmap(&rows, &known, 1, 8), "1D");
+
+    // Orc (race 2) Warrior (class 1):
+    // char 0 = bits {0, 3, 5} = 1 + 8 + 32 = 41 -> 'p'
+    // char 1 = bits {0, 1} = 3 -> 'D'
+    assert_eq!(encode_bitmap(&rows, &known, 2, 1), "pD");
+
+    // All 6 bits set -> index 63 -> '/' ; 62 -> '+' (exact 12340 alphabet at 0x00A1B640).
+    let six_rows: Vec<_> = (1..=6).map(|id| row(id, 0, 0)).collect();
+    assert_eq!(
+        encode_bitmap(&six_rows, &[1, 2, 3, 4, 5, 6].into(), 1, 1),
+        "/"
+    );
+    assert_eq!(encode_bitmap(&six_rows, &[2, 3, 4, 5, 6].into(), 1, 1), "+");
+    assert_eq!(encode_bitmap(&six_rows, &Default::default(), 1, 1), "A");
+}
+
+/// 12340 `CGTradeSkillInfo::SetTradeSkill` (`0x005DE120`), `RefreshList` (`0x005DD5A0`) and
+/// `s_base64Decode` (`0x00A1B688`): validates bitmap length (`count.div_ceil(6)`) and ASCII,
+/// unpacks bits LSB-first, and maps unmapped ASCII characters to 0.
+#[test]
+fn trade_skill_link_bitmap_decode_validates_length_ascii_and_table() {
+    let rows: Vec<_> = (10..18)
+        .map(|spell_id| TradeSkillLinkRow {
+            spell_id,
+            race_mask: 0,
+            class_mask: 0,
+        })
+        .collect();
+
+    assert_eq!(bitmap_char_len(0), 0);
+    assert_eq!(bitmap_char_len(1), 1);
+    assert_eq!(bitmap_char_len(6), 1);
+    assert_eq!(bitmap_char_len(7), 2);
+    assert_eq!(bitmap_char_len(8), 2);
+
+    // "1D" -> indices {0, 2, 4, 5, 6, 7} -> spells 10, 12, 14, 15, 16, 17.
+    assert_eq!(
+        decode_bitmap(&rows, "1D"),
+        Some(vec![10, 12, 14, 15, 16, 17])
+    );
+    // Reject wrong length, empty row list, and non-ASCII.
+    assert_eq!(decode_bitmap(&rows, "1"), None);
+    assert_eq!(decode_bitmap(&rows, "1DA"), None);
+    assert_eq!(decode_bitmap(&[], ""), None);
+    assert_eq!(decode_bitmap(&rows, "1é"), None);
+    // Unmapped ASCII ('!' -> 0 in s_base64Decode `0x00A1B688`) yields no set bits for that group.
+    assert_eq!(decode_bitmap(&rows, "!D"), Some(vec![16, 17]));
+}
+
+/// Part C round trip: encoding a link from synthetic DBC rows + known spells, parsing the
+/// formatted link string, and decoding its bitmap recovers the exact known-recipe set.
+#[test]
+fn trade_skill_link_encode_parse_decode_round_trip() {
+    let rows: Vec<_> = (1..=14)
+        .map(|i| TradeSkillLinkRow {
+            spell_id: 3000 + i,
+            race_mask: 0,
+            class_mask: 0,
+        })
+        .collect();
+    let known_vec = vec![3001, 3004, 3006, 3007, 3012, 3014];
+    let source = TradeSkillLinkSource {
+        spell_id: 3908,
+        spell_name: "Tailoring".into(),
+        can_link: true,
+        cur_rank: 225,
+        max_rank: 300,
+        player_guid: 0x0000_0000_0000_1A2B,
+        player_race: 1,
+        player_class: 8,
+        ability_rows: rows.clone(),
+        known_spells: known_vec.iter().copied().collect(),
+    };
+
+    let link = encode_trade_skill_link(&source).expect("linkable profession encodes");
+    let parsed = parse_trade_link(&link).expect("formatted link parses");
+    assert_eq!(parsed.spell_id, 3908);
+    assert_eq!(parsed.rank, 225);
+    assert_eq!(parsed.max_rank, 300);
+    assert_eq!(parsed.owner_guid, 0x1A2B);
+    assert_eq!(parsed.display_name.as_deref(), Some("Tailoring"));
+
+    let decoded = decode_bitmap(&rows, &parsed.bitmap).expect("bitmap decodes");
+    assert_eq!(decoded, known_vec);
+}
+
+/// `GetTradeSkillListLink()` (`0x005DC0B0` -> `0x005DB060`) formats
+/// `|cffffd000|Htrade:<spellId>:<curRank>:<maxRank>:<guidHex>:<bitmap>|h[<Name>]|h|r` with
+/// uppercase unpadded hex GUID, and returns `nil` when closed or when `m_canLink == false`.
+#[test]
+fn trade_skill_link_get_list_link_format_and_can_link_gate() {
+    let mut s = UiScript::new().unwrap();
+    s.keep_calls();
+    // Closed window -> nil.
+    assert!(s
+        .eval::<Option<String>>("return GetTradeSkillListLink()")
+        .unwrap()
+        .is_none());
+
+    s.set_trade_skill(Some(two_recipe_state()));
+    let rows = vec![
+        TradeSkillLinkRow {
+            spell_id: 3908,
+            race_mask: 0,
+            class_mask: 0,
+        },
+        TradeSkillLinkRow {
+            spell_id: 2963,
+            race_mask: 0,
+            class_mask: 0,
+        },
+        TradeSkillLinkRow {
+            spell_id: 3919,
+            race_mask: 0,
+            class_mask: 0,
+        },
+    ];
+    let mut src = TradeSkillLinkSource {
+        spell_id: 3908,
+        spell_name: "Tailoring".into(),
+        can_link: true,
+        cur_rank: 57,
+        max_rank: 75,
+        player_guid: 0x0000_0000_00AB_CD01,
+        player_race: 1,
+        player_class: 8,
+        ability_rows: rows,
+        known_spells: [3908, 3919].into(),
+    };
+    s.set_trade_skill_link_source(Some(src.clone()));
+    // Bits {0, 2} = 1 + 4 = 5 -> 'F' in base64 alphabet.
+    assert_eq!(
+        s.eval::<Option<String>>("return GetTradeSkillListLink()")
+            .unwrap()
+            .as_deref(),
+        Some("|cffffd000|Htrade:3908:57:75:ABCD01:F|h[Tailoring]|h|r")
+    );
+
+    // Non-linkable skill (`m_canLink == false`, e.g. Herbalism/Fishing) -> nil.
+    src.can_link = false;
+    s.set_trade_skill_link_source(Some(src));
+    assert!(s
+        .eval::<Option<String>>("return GetTradeSkillListLink()")
+        .unwrap()
+        .is_none());
+}
+
+/// `IsTradeSkillLinked()` (`0x005DA310`) reports `(1, owner)` while viewing a link and
+/// `(nil, nil)` for an own profession; `DoTradeSkill()` refuses to craft or arm a repeat when a
+/// linked list is open.
+#[test]
+fn trade_skill_link_linked_window_reports_owner_and_refuses_to_craft() {
+    let mut s = UiScript::new().unwrap();
+    s.keep_calls();
+    s.set_trade_skill(Some(two_recipe_state()));
+    assert_eq!(
+        s.eval::<(Option<i64>, Option<String>)>("return IsTradeSkillLinked()")
+            .unwrap(),
+        (None, None)
+    );
+
+    let chat_link = "|cffffd000|Htrade:3908:57:75:ABCD01:F|h[Tailoring]|h|r".to_string();
+    s.set_trade_skill_link(Some(("Firna".into(), chat_link.clone())));
+    assert_eq!(
+        s.eval::<(Option<i64>, Option<String>)>("return IsTradeSkillLinked()")
+            .unwrap(),
+        (Some(1), Some("Firna".into()))
+    );
+    assert_eq!(
+        s.eval::<Option<String>>("return GetTradeSkillListLink()")
+            .unwrap(),
+        Some(chat_link)
+    );
+
+    // Attempt crafting from the linked window (both single and batch repeat): refused completely.
+    s.run("SelectTradeSkill(3) DoTradeSkill(3, 5)").unwrap();
+    assert!(
+        s.take_trade_skill_dos().is_empty(),
+        "linked trade skill must not emit a craft call"
+    );
+    assert_eq!(
+        s.eval::<i64>("return GetTradeskillRepeatCount()").unwrap(),
+        1,
+        "linked trade skill must not arm repeat"
+    );
+}
+
+/// `CloseTradeSkill()` (`0x005DA8B0`) clears linked state immediately (`IsTradeSkillLinked()` ->
+/// `(nil, nil)`, `GetTradeSkillListLink()` -> `nil`) and keeps `DoTradeSkill()` blocked until an
+/// own profession replaces the held list.
+#[test]
+fn trade_skill_link_close_clears_linked_state_and_blocks_post_close_craft() {
+    let mut s = UiScript::new().unwrap();
+    s.keep_calls();
+    s.set_trade_skill(Some(two_recipe_state()));
+    s.set_trade_skill_link(Some((
+        "Firna".into(),
+        "|cffffd000|Htrade:3908:57:75:ABCD01:F|h[Tailoring]|h|r".into(),
+    )));
+    assert_eq!(
+        s.eval::<(Option<i64>, Option<String>)>("return IsTradeSkillLinked()")
+            .unwrap(),
+        (Some(1), Some("Firna".into()))
+    );
+
+    s.run("CloseTradeSkill()").unwrap();
+    assert_eq!(s.take_trade_skill_closes(), 1);
+    assert_eq!(
+        s.eval::<(Option<i64>, Option<String>)>("return IsTradeSkillLinked()")
+            .unwrap(),
+        (None, None)
+    );
+    assert!(s
+        .eval::<Option<String>>("return GetTradeSkillListLink()")
+        .unwrap()
+        .is_none());
+
+    // Even after close, the held list belonged to a link, so DoTradeSkill stays blocked.
+    s.run("DoTradeSkill(3, 2)").unwrap();
+    assert!(s.take_trade_skill_dos().is_empty());
+
+    // Opening one's own profession restores normal crafting.
+    s.set_trade_skill(Some(two_recipe_state()));
+    s.run("DoTradeSkill(3, 2)").unwrap();
+    assert_eq!(s.take_trade_skill_dos(), vec![(2963, 2)]);
+}
+
+/// `GameTooltip:SetHyperlink` (`0x0062DAE0`, `Tooltip_Scripts.cpp:634`) intercepts `trade:`
+/// hyperlinks (both bare payload from `SetItemRef` and full chat links) and submits
+/// `TradeSkillCall::OpenLink` without showing the tooltip.
+#[test]
+fn trade_skill_link_set_hyperlink_dispatches_open_link_without_showing_tooltip() {
+    let mut s = UiScript::new().unwrap();
+    s.keep_calls();
+    let bare = "trade:3908:57:75:ABCD01:F";
+    let full = "|cffffd000|Htrade:3908:57:75:ABCD01:F|h[Tailoring]|h|r";
+    s.run(&format!(
+        r#"
+        local tip = CreateFrame("GameTooltip", "TradeLinkTestTip")
+        tip:Hide()
+        tip:SetHyperlink("{bare}")
+        SHOWN_AFTER_BARE = tip:IsShown() and 1 or 0
+        tip:SetHyperlink("{full}")
+        SHOWN_AFTER_FULL = tip:IsShown() and 1 or 0
+        "#
+    ))
+    .unwrap();
+    assert_eq!(s.eval::<i64>("return SHOWN_AFTER_BARE").unwrap(), 0);
+    assert_eq!(s.eval::<i64>("return SHOWN_AFTER_FULL").unwrap(), 0);
+    assert_eq!(
+        s.take_trade_skill_open_links(),
+        vec![bare.to_string(), full.to_string()]
+    );
+}
