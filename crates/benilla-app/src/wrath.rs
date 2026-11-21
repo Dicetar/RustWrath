@@ -2367,8 +2367,8 @@ pub struct WrathSpellCastSuccess {
 /// deliver each row exactly once. `UnitCombatLogSpellFail` (`UnitCombatLog_C.cpp:1556`, called
 /// from `Spell_C.cpp:6793/6856/6858` for the active player's own error) drops
 /// `SPELL_FAILED_DONT_REPORT` (0x17), an unsupported reason and an empty text; a shown failure
-/// is event 7 with a nil destination and 12 values (8 header + spellId/spellName/spellSchoolMask
-/// + the 0x2 reason text, `SetFailReason` `:217`). The source is the active player, the
+/// is event 7 with a nil destination and 12 values (8 header + spellId/spellName/spellSchoolMask,
+/// plus the 0x2 reason text, `SetFailReason` `:217`). The source is the active player, the
 /// `SMSG_CAST_FAILED` recipient.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WrathSpellCastFailed {
