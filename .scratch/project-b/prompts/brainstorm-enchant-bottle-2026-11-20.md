@@ -1,5 +1,9 @@
 # Brainstorm handout: the Enchant Bottle (2026-11-20)
 
+**Built 2026-11-21:** the approved v1 (Reroll, Gamble, Empower, Awaken, Imprint/Pour, plus Absorb
+for white items) is `integrations/ale/rustwrath_enchant_bottle.lua`; its header is the spec.
+Deferred: Lock, Overcharge buff, Corrupted gamble.
+
 A brainstorm brief, not a build order. Goal: agree on one design the owner likes, that fits
 what the running server can do **live**, then build it.
 
