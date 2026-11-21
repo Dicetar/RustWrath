@@ -21,3 +21,5 @@ SpellBookAdapters.xml
 ScriptLogFrame.xml
 # Our fixes to the stock Lua.
 FrameXMLFixes.xml
+# RustWrath's Enchant Bottle panel, opened by the bottle item and `/bottle`.
+EnchantBottle.xml

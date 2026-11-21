@@ -505,11 +505,18 @@ fn row_at(model: &Model, index: usize) -> Option<MailInboxRow> {
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();
 
+    // GetInboxNumItems(): the rows held, then the server's total (`0x56d6d0`, two returns). The
+    // 3.3.5 `InboxFrame_Update` compares the two before it draws a row (`MailFrame.lua:141`), so
+    // a missing total errors there and the inbox stays empty; 1.12 reads the first only.
+    // Deviation: the total is the rows held. The reference keeps the list's `real_count`
+    // (`0x571c50`), which only differs past the server's 50-row cap, where the stock
+    // `InboxTooMuchMail` notice shows; that count is not carried to the VM yet.
     g.set(
         "GetInboxNumItems",
         lua.create_function(|lua, ()| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.mail.as_ref().map_or(0, |m| m.inbox.len()) as i64)
+            let shown = model.mail.as_ref().map_or(0, |m| m.inbox.len()) as i64;
+            Ok((shown, shown))
         })?,
     )?;
 
@@ -1686,6 +1693,14 @@ mod tests {
 
         s.set_mail(Some(state()));
         assert_eq!(s.eval::<i64>("return GetInboxNumItems()").unwrap(), 2);
+        // The 3.3.5 inbox compares the second return before drawing any row.
+        assert_eq!(
+            s.eval::<(i64, i64)>("return GetInboxNumItems()").unwrap(),
+            (2, 2)
+        );
+        assert!(s
+            .eval::<bool>("local n, t = GetInboxNumItems() return t > n == false")
+            .unwrap());
 
         let (pkg, sta, sender, subject, money, cod, days): (
             String,
