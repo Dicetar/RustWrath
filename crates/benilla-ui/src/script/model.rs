@@ -182,6 +182,29 @@ pub struct WrathLfgState {
     pub proposal: Option<WrathLfgProposalState>,
 }
 
+/// One row in the stock 3.3.5 currency display list.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WrathCurrencyRow {
+    pub name: Option<String>,
+    pub item_id: u32,
+    pub category_id: u32,
+    pub is_header: bool,
+    pub is_expanded: bool,
+    pub is_watched: bool,
+    pub shown: bool,
+    pub bit_index: u32,
+    pub count: u32,
+    pub extra_type: u32,
+    pub icon: Option<String>,
+}
+
+/// The app-fed currency state used by the TokenFrame natives.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WrathCurrencyState {
+    pub rows: Vec<WrathCurrencyRow>,
+    pub backpack: Vec<WrathCurrencyRow>,
+}
+
 /// Outbound 12340 LFG and vehicle commands queued from Lua and drained by `wrath_rune_calendar_feed`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WrathScopedCommand {
@@ -734,6 +757,8 @@ pub(crate) struct Model {
     pub(crate) calendar_fetches: std::collections::VecDeque<(u64, u64)>,
     /// 3.3.5a Dungeon Finder state and outbound scoped LFG/vehicle command queue.
     pub(crate) wrath_lfg: WrathLfgState,
+    pub(crate) wrath_currency: WrathCurrencyState,
+    pub(crate) wrath_currency_expanded: HashMap<u32, bool>,
     pub(crate) wrath_scoped_commands: std::collections::VecDeque<WrathScopedCommand>,
     /// Replicated vehicle transport GUID for the local player when riding a vehicle.
     pub(crate) vehicle_guid: Option<u64>,
@@ -1865,6 +1890,8 @@ impl Model {
             wrath_scope: None,
             calendar_fetches: std::collections::VecDeque::new(),
             wrath_lfg: WrathLfgState::default(),
+            wrath_currency: WrathCurrencyState::default(),
+            wrath_currency_expanded: HashMap::new(),
             wrath_scoped_commands: std::collections::VecDeque::new(),
             vehicle_guid: None,
             vehicle_seat_flags: None,

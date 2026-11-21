@@ -184,6 +184,8 @@ mod ui_quest_share;
 mod ui_reputation;
 mod ui_saved;
 mod ui_script;
+#[path = "ui_script/wrath_currency_feed.rs"]
+mod ui_script_wrath_currency_feed;
 mod ui_session;
 mod ui_shapeshift;
 mod ui_social;

@@ -108,6 +108,10 @@ pub(super) const WRATH_UI_CVARS: &[(&str, &str)] = &[
     ("colorblindMode", "0"),
     // 12340 GameUI_CVar.cpp:534.
     ("enableCombatText", "1"),
+    ("currencyTokensUnused1", "0"),
+    ("currencyTokensUnused2", "0"),
+    ("currencyTokensBackpack1", "0"),
+    ("currencyTokensBackpack2", "0"),
 ];
 
 pub(super) fn register_wrath_cvars(cvars: &mut crate::cvars::Cvars) {

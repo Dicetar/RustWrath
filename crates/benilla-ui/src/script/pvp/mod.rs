@@ -121,6 +121,76 @@ impl super::UiScript {
         self.model_mut().honor = honor;
     }
 
+    /// Push the app-resolved 3.3.5 TokenFrame list and backpack rows.
+    pub fn set_wrath_currency(&mut self, state: WrathCurrencyState) {
+        self.model_mut().wrath_currency = state;
+    }
+
+    /// Read the persisted expansion state for a sorted currency category.
+    pub fn wrath_currency_expanded(&self, category_id: u32) -> bool {
+        self.model_ref()
+            .wrath_currency_expanded
+            .get(&category_id)
+            .copied()
+            .unwrap_or(true)
+    }
+
+    /// Apply one stock currency display setting through the VM CVar write queue.
+    pub fn set_wrath_currency_mask(&mut self, index: f64, enabled: f64, unused: bool) {
+        if !index.is_finite() || index < 1.0 {
+            return;
+        }
+        let (name, next) = {
+            let model = self.model_mut();
+            let Some(row) = model.wrath_currency.rows.get(index as usize - 1).cloned() else {
+                return;
+            };
+            if row.is_header || row.bit_index == 0 || row.bit_index > 64 {
+                return;
+            }
+            let (word, bit) = if row.bit_index <= 32 {
+                (0, row.bit_index - 1)
+            } else {
+                (1, row.bit_index - 33)
+            };
+            let names = if unused {
+                ["currencyTokensUnused1", "currencyTokensUnused2"]
+            } else {
+                ["currencyTokensBackpack1", "currencyTokensBackpack2"]
+            };
+            let name = names[word];
+            let current = model
+                .cvars
+                .get(name)
+                .map(|slot| super::binding_abi::s_str_to_int(&slot.value) as u32)
+                .unwrap_or(0);
+            let mask = 1u32 << bit;
+            let next = if enabled != 0.0 {
+                current | mask
+            } else {
+                current & !mask
+            };
+            (name, next)
+        };
+        self.set_cvar_engine(name, &next.to_string());
+    }
+
+    /// Apply the stock category expansion state.
+    pub fn set_wrath_currency_expanded(&mut self, index: f64, expanded: f64) {
+        if !index.is_finite() || index < 1.0 {
+            return;
+        }
+        let model = self.model_mut();
+        let Some(row) = model.wrath_currency.rows.get(index as usize - 1).cloned() else {
+            return;
+        };
+        if row.is_header {
+            model
+                .wrath_currency_expanded
+                .insert(row.category_id, expanded != 0.0);
+        }
+    }
+
     /// Push the player's melee crit percentage from `PLAYER_CRIT_PERCENTAGE`; `GetCritChanceFromAgility("player")` reads it.
     pub fn set_player_crit_percentage(&mut self, value: f32) {
         self.model_mut().player_crit_percentage = value;

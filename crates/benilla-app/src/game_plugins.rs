@@ -204,6 +204,7 @@ impl PluginGroup for GamePlugins {
             .add(crate::ui_inspect::InspectUiPlugin)
             // After the inspect feed, whose target it asks about.
             .add(crate::ui_honor::UiHonorPlugin)
+            .add(crate::ui_script_wrath_currency_feed::UiWrathCurrencyPlugin)
             .add(crate::ui_dressup::DressUpUiPlugin)
             .add(UiActionPlugin)
             // The cast lifecycle; after UiActionPlugin, whose feeds and cast ladder read it.
