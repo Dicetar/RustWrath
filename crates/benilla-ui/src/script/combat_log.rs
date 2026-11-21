@@ -344,7 +344,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     globals.set(
         "CombatLogGetNumEntries",
         lua.create_function(|lua, args: MultiValue| {
-            let all = lua_bool(args.get(0));
+            let all = lua_bool(args.front());
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let count = model
                 .combat_log
