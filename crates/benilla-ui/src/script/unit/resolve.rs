@@ -279,8 +279,17 @@ impl UnitGuids {
     /// one of these or nobody, and a per-guid feed over them covers the chains a script can spell.
     /// A guid repeats when two units share a target, and the last hop's unit need not be held: the
     /// lookup that finds its object is the reader's.
+    ///
+    /// Wrath's focus is listed too: no token push carries it (the app pushes `"player"`,
+    /// `"target"`, `"targettarget"` and `"npc"`), so `UnitHealth("focus")` reads the focus's
+    /// guid entry as a chain end's does.
     pub(crate) fn chain_ends(&self) -> impl Iterator<Item = u64> + '_ {
-        self.held.values().copied().filter(|&guid| guid != 0)
+        let focus = if self.wrath { self.focus } else { 0 };
+        self.held
+            .values()
+            .copied()
+            .chain(std::iter::once(focus))
+            .filter(|&guid| guid != 0)
     }
 
     /// Every token that names a unit now, the base spellings `0x515c50` builds for a guid (it
@@ -413,10 +422,12 @@ impl UnitGuids {
     /// Whether `guid` carries the unit-field watchers: `0x51bbb0` registers them while the unit's
     /// token flags are nonzero (`0x60c4a0`), and `0x60c520` sets those for the active player,
     /// its pet, a party member or its pet, a raid member or its pet, and the target. `npc` and
-    /// `mouseover` set none.
+    /// `mouseover` set none. Wrath's focus registers its unit too: `SetFocusTarget` (`0x51FF20`)
+    /// calls `RegisterScript(0x2000)` on the new focus and `UnregisterScript(0x2000)` on the old.
     pub fn has_field_watchers(&self, guid: u64) -> bool {
         guid != 0
-            && (guid == self.player
+            && ((self.wrath && guid == self.focus)
+                || guid == self.player
                 || (self.player != 0 && guid == self.pet)
                 || guid == self.target
                 || self.party.contains(&guid)

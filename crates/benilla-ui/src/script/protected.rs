@@ -264,6 +264,40 @@ fn refuse(lua: &Lua, context: &Context) {
         .refusing = false;
 }
 
+/// `CGGameUI::ShowBlockedActionFeedback(nullptr, 0)` (`0x513530`) for a verb that refuses tainted
+/// code outright, as `SetFocusTarget` (`0x51FF20`) does: in the client's own context nothing
+/// happens and the verb goes on; otherwise `MACRO_ACTION_FORBIDDEN` with `"<function>()"` for a
+/// `RunScript` chunk, or `ADDON_ACTION_FORBIDDEN` with the addon's name and `"<function>()"`, is
+/// signalled once at a time (its static `showing`, shared here with [`refuse`]'s latch), and the
+/// verb is refused. Whether it refused.
+pub(crate) fn forbid_tainted(lua: &Lua, function: &str) -> bool {
+    let context = taint::current(lua);
+    if context == Context::Client {
+        return false;
+    }
+    {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        if std::mem::replace(&mut model.protected.refusing, true) {
+            return true;
+        }
+    }
+    let called = ScriptValue::Str(format!("{function}()"));
+    match context {
+        Context::Macro => fire_event_into(lua, "MACRO_ACTION_FORBIDDEN", vec![called]),
+        Context::Addon(name) => fire_event_into(
+            lua,
+            "ADDON_ACTION_FORBIDDEN",
+            vec![ScriptValue::Str(name), called],
+        ),
+        Context::Client => {}
+    }
+    lua.app_data_mut::<Model>()
+        .expect("model app_data")
+        .protected
+        .refusing = false;
+    true
+}
+
 impl UiScript {
     /// The input events running now, for a call the app applies after they end.
     pub fn input_events(&self) -> InputEvents {
