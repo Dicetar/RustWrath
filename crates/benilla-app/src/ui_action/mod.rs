@@ -57,7 +57,6 @@ mod weapon_icon;
 pub(crate) struct CooldownEvents;
 
 pub(crate) use cast_fail::report_reaches_pop;
-#[cfg(test)]
 pub(crate) use cast_fail::CAST_FAIL_KEYS;
 pub(crate) use errors::{
     attack_actor_refusal, keyed_line, keyed_line_s, reagent_totem_refusal_in_player, show_messages,

@@ -63,7 +63,7 @@ Do not edit `crates/benilla-ui/src/script/combat_log.rs`.
 
 ## Checks
 
-CI: not run yet. No Cargo command, no client or server launch, no `target` directory; `rustfmt`
+CI run 44948973389 failed to compile: `CAST_FAIL_KEYS` was re-exported only under `#[cfg(test)]`, `targets.unit` is an `Option<u64>`, and one test binding was unnecessarily mutable. The overseer exposed the constant unconditionally, stored `unwrap_or(0)` for a nil target, and removed the `mut`. Re-run pending. No Cargo command, no client or server launch, no `target` directory; `rustfmt`
 was used only to format the two edited Rust files. CI compiles and tests every pushed branch and
 is the authority.
 

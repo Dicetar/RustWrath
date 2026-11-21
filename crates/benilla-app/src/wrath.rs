@@ -15394,7 +15394,7 @@ pub fn run_session_with_cancel(
                                         caster: *caster,
                                         spell_id: *spell_id,
                                         cast_flags: *cast_flags,
-                                        target: targets.unit,
+                                        target: targets.unit.unwrap_or(0),
                                         session_epoch: session.epoch(),
                                         world_generation: session.world_generation(),
                                         revision: 0,
