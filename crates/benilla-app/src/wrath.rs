@@ -2478,11 +2478,23 @@ pub struct WrathSpellPeriodicDrain {
 /// subevents the 12340 handler produces; source is `caster`, destination is the effect target.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WrathSpellExecuteLogRow {
-    Interrupt { target: u64, interrupted_spell_id: u32 },
-    ExtraAttacks { target: u64, amount: u32 },
-    Create { target: u64 },
-    Summon { target: u64 },
-    Resurrect { target: u64 },
+    Interrupt {
+        target: u64,
+        interrupted_spell_id: u32,
+    },
+    ExtraAttacks {
+        target: u64,
+        amount: u32,
+    },
+    Create {
+        target: u64,
+    },
+    Summon {
+        target: u64,
+    },
+    Resurrect {
+        target: u64,
+    },
     Drain {
         target: u64,
         amount: u32,
@@ -2495,8 +2507,14 @@ pub enum WrathSpellExecuteLogRow {
         power_type: u32,
         multiplier: f32,
     },
-    DurabilityDamage { target: u64, item_id: i32, slot: i32 },
-    DurabilityDamageAll { target: u64 },
+    DurabilityDamage {
+        target: u64,
+        item_id: i32,
+        slot: i32,
+    },
+    DurabilityDamageAll {
+        target: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -3314,14 +3332,10 @@ impl WrathWorldView {
     ) {
         match hit.row {
             WrathSpellExecuteLogRow::Drain {
-                amount,
-                power_type,
-                ..
+                amount, power_type, ..
             }
             | WrathSpellExecuteLogRow::Leech {
-                amount,
-                power_type,
-                ..
+                amount, power_type, ..
             } if amount == 0 || power_type == 5 => {
                 return;
             }

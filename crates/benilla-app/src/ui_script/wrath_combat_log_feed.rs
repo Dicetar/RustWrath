@@ -4432,24 +4432,10 @@ mod tests {
             },
             ..drain
         };
-        let drain_args = spell_execute_log_args(
-            1.0,
-            &drain,
-            "Firna",
-            "Kobold Vermin",
-            None,
-            None,
-            Ask::Read,
-        );
-        let leech_args = spell_execute_log_args(
-            1.0,
-            &leech,
-            "Firna",
-            "Kobold Vermin",
-            None,
-            None,
-            Ask::Read,
-        );
+        let drain_args =
+            spell_execute_log_args(1.0, &drain, "Firna", "Kobold Vermin", None, None, Ask::Read);
+        let leech_args =
+            spell_execute_log_args(1.0, &leech, "Firna", "Kobold Vermin", None, None, Ask::Read);
         assert_eq!(drain_args[1], ScriptValue::Str("SPELL_DRAIN".to_owned()));
         assert_eq!(leech_args[1], ScriptValue::Str("SPELL_LEECH".to_owned()));
         assert_eq!(drain_args.len(), 14);

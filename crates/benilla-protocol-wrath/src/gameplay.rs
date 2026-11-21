@@ -2930,7 +2930,10 @@ pub enum PeriodicAuraTick {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SpellExecuteLogRow {
     /// Effect 68: interrupted spell id.
-    Interrupt { target: u64, interrupted_spell_id: u32 },
+    Interrupt {
+        target: u64,
+        interrupted_spell_id: u32,
+    },
     /// Effect 19: extra melee attacks.
     ExtraAttacks { target: u64, amount: u32 },
     /// Effects 28/50/56/76/81/83/104/105/106/107 on a gameobject target.
@@ -4056,6 +4059,12 @@ fn read_periodic_aura(b: &[u8]) -> Result<ServerEvent> {
     })
 }
 
+/// 12340's gameobject type test (`HandleSpellLogExecute`, `UnitCombatLog_C.cpp:1684`):
+/// `(guid >> 32) & 0xF0F00000 == 0xF0100000`. The 1.12 `HIGHGUID_GAMEOBJECT` is a different
+/// value, so this crate keeps its own test.
+fn is_gameobject_guid(guid: u64) -> bool {
+    ((guid >> 32) as u32) & 0xF0F0_0000 == 0xF010_0000
+}
 
 /// `SMSG_SPELL_EXECUTE_LOG` (`0x24C`, `Spell.cpp:5024`, `UnitCombatLog_C.cpp:1684`): packed
 /// caster, spell, effect count, then per effect the effect id, target count and effect-shaped rows.
@@ -4108,7 +4117,7 @@ fn read_spell_execute_log(b: &[u8]) -> Result<ServerEvent> {
                 }
                 28 | 50 | 56 | 76 | 81 | 83 | 104 | 105 | 106 | 107 => {
                     let target = r.packed_guid()?;
-                    if benilla_protocol::guid::is_gameobject(target) {
+                    if is_gameobject_guid(target) {
                         rows.push(SpellExecuteLogRow::Create { target });
                     } else {
                         rows.push(SpellExecuteLogRow::Summon { target });

@@ -55,7 +55,7 @@ Wrath combat-log feed. Do not edit `crates/benilla-ui/src/script/combat_log.rs`,
 
 ## Verification
 
-CI: not run yet (no Cargo/client run in this session).
+CI run 44959418911 failed on one compile error: the decoder used `benilla_protocol::guid::is_gameobject`, which is a 1.12 value and not a dependency of this crate. The overseer replaced it with 12340's `(guid >> 32) & 0xF0F00000 == 0xF0100000` test. Re-run pending. (no Cargo/client run in this session).
 
 ## Checks
 
