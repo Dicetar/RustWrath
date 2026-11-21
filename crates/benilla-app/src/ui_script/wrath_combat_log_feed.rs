@@ -17,10 +17,10 @@ use crate::query_cache::Ask;
 use crate::script_calls::VmWith;
 use crate::ui_script::UiClock;
 use crate::wrath::{
-    WrathPartyKill, WrathSpellDamage, WrathSpellEnergize, WrathSpellHeal, WrathSpellMiss,
-    WrathSpellPeriodicDamage, WrathSpellPeriodicDrain, WrathSpellPeriodicEnergize,
-    WrathSpellPeriodicHeal, WrathSpellPeriodicMiss, WrathSwing, WrathWorldView,
-    COMBAT_LOG_NAME_RETRY_SECONDS,
+    WrathPartyKill, WrathSpellCastFailed, WrathSpellCastStart, WrathSpellCastSuccess,
+    WrathSpellDamage, WrathSpellEnergize, WrathSpellHeal, WrathSpellMiss, WrathSpellPeriodicDamage,
+    WrathSpellPeriodicDrain, WrathSpellPeriodicEnergize, WrathSpellPeriodicHeal,
+    WrathSpellPeriodicMiss, WrathSwing, WrathWorldView, COMBAT_LOG_NAME_RETRY_SECONDS,
 };
 
 /// Capacity loss and unresolved-name counts already reported, so each diagnostic is logged once
@@ -39,6 +39,12 @@ pub(crate) struct CombatLogMemo {
     spell_heal_unresolved: u64,
     spell_energize_dropped: u64,
     spell_energize_unresolved: u64,
+    spell_cast_start_dropped: u64,
+    spell_cast_start_unresolved: u64,
+    spell_cast_success_dropped: u64,
+    spell_cast_success_unresolved: u64,
+    spell_cast_failure_dropped: u64,
+    spell_cast_failure_unresolved: u64,
     spell_periodic_damage_dropped: u64,
     spell_periodic_damage_unresolved: u64,
     spell_periodic_miss_dropped: u64,
@@ -163,6 +169,48 @@ pub(crate) fn feed(
             );
         }
         memo.spell_energize_unresolved = world.spell_energize_unresolved;
+        if world.spell_cast_start_dropped > memo.spell_cast_start_dropped {
+            debug!(
+                dropped = world.spell_cast_start_dropped,
+                "wrath: combat-log queue capacity lost cast-start rows"
+            );
+        }
+        memo.spell_cast_start_dropped = world.spell_cast_start_dropped;
+        if world.spell_cast_start_unresolved > memo.spell_cast_start_unresolved {
+            debug!(
+                unresolved = world.spell_cast_start_unresolved,
+                "wrath: combat-log cast-start rows delivered with an unknown endpoint after name resolution timed out"
+            );
+        }
+        memo.spell_cast_start_unresolved = world.spell_cast_start_unresolved;
+        if world.spell_cast_success_dropped > memo.spell_cast_success_dropped {
+            debug!(
+                dropped = world.spell_cast_success_dropped,
+                "wrath: combat-log queue capacity lost cast-success rows"
+            );
+        }
+        memo.spell_cast_success_dropped = world.spell_cast_success_dropped;
+        if world.spell_cast_success_unresolved > memo.spell_cast_success_unresolved {
+            debug!(
+                unresolved = world.spell_cast_success_unresolved,
+                "wrath: combat-log cast-success rows delivered with an unknown endpoint after name resolution timed out"
+            );
+        }
+        memo.spell_cast_success_unresolved = world.spell_cast_success_unresolved;
+        if world.spell_cast_failure_dropped > memo.spell_cast_failure_dropped {
+            debug!(
+                dropped = world.spell_cast_failure_dropped,
+                "wrath: combat-log queue capacity lost cast-failure rows"
+            );
+        }
+        memo.spell_cast_failure_dropped = world.spell_cast_failure_dropped;
+        if world.spell_cast_failure_unresolved > memo.spell_cast_failure_unresolved {
+            debug!(
+                unresolved = world.spell_cast_failure_unresolved,
+                "wrath: combat-log cast-failure rows delivered with an unknown endpoint after name resolution timed out"
+            );
+        }
+        memo.spell_cast_failure_unresolved = world.spell_cast_failure_unresolved;
         if world.spell_periodic_damage_dropped > memo.spell_periodic_damage_dropped {
             debug!(
                 dropped = world.spell_periodic_damage_dropped,
@@ -507,6 +555,227 @@ pub(crate) fn feed(
             world.spell_energizes.remove(index);
         }
 
+        // START, GO and FAIL are ordered cast edges. The catalog gates that decide whether the
+        // reference writes a line (SpellIsHiddenInCombatLog, SpellHasOpenLockEffect) run here,
+        // where the VM's Spells resource is available, before any endpoint name is asked for.
+        let mut index = 0;
+        while index < world.spell_cast_starts.len() {
+            let hit = world.spell_cast_starts[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                world.spell_cast_starts.remove(index);
+                continue;
+            }
+            let Some(def) = spells
+                .as_deref()
+                .and_then(|spells| spells.catalog.get(hit.spell_id))
+            else {
+                // The reference needs a Spell.dbc record before it writes a cast line.
+                world.spell_cast_starts.remove(index);
+                continue;
+            };
+            if spell_is_hidden_in_combat_log(def) {
+                world.spell_cast_starts.remove(index);
+                continue;
+            }
+            let source = endpoint_name(script, world, names.as_deref(), hit.caster, ask);
+            let timestamp = if hit.received_at > 0.0 { hit.received_at } else { now };
+            if source.is_none() {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at {
+                    now - hit.received_at
+                } else {
+                    0.0
+                };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        spell_cast_start_args(
+                            timestamp,
+                            &hit,
+                            UNKNOWN_OBJECT_NAME,
+                            spells.as_deref(),
+                        ),
+                    );
+                    world.spell_cast_start_unresolved =
+                        world.spell_cast_start_unresolved.saturating_add(1);
+                    world.spell_cast_starts.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let source = source.unwrap_or_default();
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                spell_cast_start_args(timestamp, &hit, &source, spells.as_deref()),
+            );
+            world.spell_cast_starts.remove(index);
+        }
+
+        let mut index = 0;
+        while index < world.spell_cast_successes.len() {
+            let hit = world.spell_cast_successes[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                world.spell_cast_successes.remove(index);
+                continue;
+            }
+            let Some(def) = spells
+                .as_deref()
+                .and_then(|spells| spells.catalog.get(hit.spell_id))
+            else {
+                world.spell_cast_successes.remove(index);
+                continue;
+            };
+            if spell_is_hidden_in_combat_log(def) || def.open_lock.is_some() {
+                // GO alone drops an open-lock spell (SpellHasOpenLockEffect).
+                world.spell_cast_successes.remove(index);
+                continue;
+            }
+            let source = endpoint_name(script, world, names.as_deref(), hit.caster, ask);
+            // The GO packet names its target; guid 0 is a nil destination, not an unknown name.
+            let (target_name, target_unresolved) = if hit.target == 0 {
+                (None, false)
+            } else {
+                match endpoint_name(script, world, names.as_deref(), hit.target, ask) {
+                    Some(name) => (Some(name), false),
+                    None => (None, true),
+                }
+            };
+            let timestamp = if hit.received_at > 0.0 { hit.received_at } else { now };
+            if source.is_none() || target_unresolved {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at {
+                    now - hit.received_at
+                } else {
+                    0.0
+                };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    let target_name = if hit.target == 0 {
+                        None
+                    } else {
+                        Some(target_name.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME))
+                    };
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        spell_cast_success_args(
+                            timestamp,
+                            &hit,
+                            source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            target_name,
+                            spells.as_deref(),
+                        ),
+                    );
+                    world.spell_cast_success_unresolved =
+                        world.spell_cast_success_unresolved.saturating_add(1);
+                    world.spell_cast_successes.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let source = source.unwrap_or_default();
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                spell_cast_success_args(
+                    timestamp,
+                    &hit,
+                    &source,
+                    target_name.as_deref(),
+                    spells.as_deref(),
+                ),
+            );
+            world.spell_cast_successes.remove(index);
+        }
+
+        let mut index = 0;
+        while index < world.spell_cast_failures.len() {
+            let hit = world.spell_cast_failures[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                world.spell_cast_failures.remove(index);
+                continue;
+            }
+            let Some(def) = spells
+                .as_deref()
+                .and_then(|spells| spells.catalog.get(hit.spell_id))
+            else {
+                world.spell_cast_failures.remove(index);
+                continue;
+            };
+            if spell_is_hidden_in_combat_log(def) {
+                world.spell_cast_failures.remove(index);
+                continue;
+            }
+            let raw = match hit.reason {
+                benilla_protocol_wrath::cast_failure::Reason::Vanilla(raw) => raw,
+                benilla_protocol_wrath::cast_failure::Reason::Unsupported(_) => {
+                    world.spell_cast_failures.remove(index);
+                    continue;
+                }
+            };
+            let Some(&key) = crate::ui_action::CAST_FAIL_KEYS.get(usize::from(raw)) else {
+                world.spell_cast_failures.remove(index);
+                continue;
+            };
+            // FrameScript_GetText reads the GlobalString by key; an absent key falls back to the
+            // key itself, and an empty text is never lined up (UnitCombatLogSpellFail :1556).
+            let text = script
+                .lua()
+                .globals()
+                .get::<String>(key)
+                .ok()
+                .unwrap_or_else(|| key.to_owned());
+            if text.is_empty() {
+                world.spell_cast_failures.remove(index);
+                continue;
+            }
+            // SMSG_CAST_FAILED is sent to the failing caster: the active player is the source.
+            let source_guid = world.player_guid;
+            let source = endpoint_name(script, world, names.as_deref(), source_guid, ask);
+            let timestamp = if hit.received_at > 0.0 { hit.received_at } else { now };
+            if source.is_none() {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at {
+                    now - hit.received_at
+                } else {
+                    0.0
+                };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        spell_cast_failed_args(
+                            timestamp,
+                            source_guid,
+                            &hit,
+                            UNKNOWN_OBJECT_NAME,
+                            &text,
+                            spells.as_deref(),
+                        ),
+                    );
+                    world.spell_cast_failure_unresolved =
+                        world.spell_cast_failure_unresolved.saturating_add(1);
+                    world.spell_cast_failures.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let source = source.unwrap_or_default();
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                spell_cast_failed_args(
+                    timestamp,
+                    source_guid,
+                    &hit,
+                    &source,
+                    &text,
+                    spells.as_deref(),
+                ),
+            );
+            world.spell_cast_failures.remove(index);
+        }
 
         let mut index = 0;
         while index < world.spell_periodic_damages.len() {
@@ -920,6 +1189,114 @@ fn combat_log_header(
         ScriptValue::Str(target_name.to_owned()),
         ScriptValue::Int(combat_log_flags(target)),
     ]
+}
+
+/// The cast header differs from the damage header only in its nil destination: PushEvent pushes
+/// a Lua nil name (not an empty string) when the entry has no destName
+/// (UnitCombatLog_C.cpp:1241-1276), and a nil destination keeps guid 0 and flags 0.
+fn cast_log_header(
+    timestamp: f64,
+    subevent: &str,
+    source: u64,
+    source_name: &str,
+    target: u64,
+    target_name: Option<&str>,
+) -> Vec<ScriptValue> {
+    vec![
+        ScriptValue::Number(timestamp),
+        ScriptValue::Str(subevent.to_owned()),
+        ScriptValue::Str(guid_hex(source)),
+        ScriptValue::Str(source_name.to_owned()),
+        ScriptValue::Int(combat_log_flags(source)),
+        ScriptValue::Str(guid_hex(target)),
+        target_name.map_or(ScriptValue::Nil, |name| ScriptValue::Str(name.to_owned())),
+        ScriptValue::Int(combat_log_flags(target)),
+    ]
+}
+
+/// The three spell values PushEvent appends when the entry carries a spell id
+/// (UnitCombatLog_C.cpp:1278-1290): spellId, spellName, spellSchoolMask. No catalog row leaves
+/// the name nil and the school 0, as in the damage/heal builders.
+fn cast_spell_values(
+    args: &mut Vec<ScriptValue>,
+    spell_id: u32,
+    spells: Option<&crate::ui_action::Spells>,
+) {
+    let spell_name = spells
+        .and_then(|spells| spells.catalog.get(spell_id))
+        .map(|def| def.name.clone());
+    let spell_school = spells
+        .and_then(|spells| spells.catalog.school_mask(spell_id))
+        .unwrap_or(0);
+    args.push(ScriptValue::Int(i64::from(spell_id)));
+    args.push(spell_name.map_or(ScriptValue::Nil, ScriptValue::Str));
+    args.push(ScriptValue::Int(i64::from(spell_school)));
+}
+
+/// SpellIsHiddenInCombatLog (UnitCombatLog_C.cpp:2121): Attributes 0x180, an empty locale name,
+/// a learn-spell effect (36), or AttributesExD bit 0 hides the spell from every cast line.
+fn spell_is_hidden_in_combat_log(def: &benilla_formats::SpellDisplay) -> bool {
+    def.attributes & 0x180 != 0
+        || def.name.is_empty()
+        || def.effects.contains(&36)
+        || def.attributes_ex4 & 1 != 0
+}
+
+/// SPELL_CAST_START: 11 values, the eight header values plus the spell trio, with a nil
+/// destination (UnitCombatLogCastStart, UnitCombatLog_C.cpp:2254, called at Spell_C.cpp:1094).
+fn spell_cast_start_args(
+    timestamp: f64,
+    hit: &WrathSpellCastStart,
+    source_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+) -> Vec<ScriptValue> {
+    let mut args = cast_log_header(
+        timestamp,
+        "SPELL_CAST_START",
+        hit.caster,
+        source_name,
+        0,
+        None,
+    );
+    cast_spell_values(&mut args, hit.spell_id, spells);
+    args
+}
+
+/// SPELL_CAST_SUCCESS: 11 values, the eight header values plus the spell trio. The destination is
+/// the GO packet's object target, or nil when it named none (UnitCombatLogCastGo :2272).
+fn spell_cast_success_args(
+    timestamp: f64,
+    hit: &WrathSpellCastSuccess,
+    source_name: &str,
+    target_name: Option<&str>,
+    spells: Option<&crate::ui_action::Spells>,
+) -> Vec<ScriptValue> {
+    let mut args = cast_log_header(
+        timestamp,
+        "SPELL_CAST_SUCCESS",
+        hit.caster,
+        source_name,
+        hit.target,
+        target_name,
+    );
+    cast_spell_values(&mut args, hit.spell_id, spells);
+    args
+}
+
+/// SPELL_CAST_FAILED: 12 values, the eight header values, the spell trio, and the error text
+/// (UnitCombatLogSpellFail :1556, SetFailReason :217). The destination is always nil.
+fn spell_cast_failed_args(
+    timestamp: f64,
+    source: u64,
+    hit: &WrathSpellCastFailed,
+    source_name: &str,
+    text: &str,
+    spells: Option<&crate::ui_action::Spells>,
+) -> Vec<ScriptValue> {
+    let mut args = cast_log_header(timestamp, "SPELL_CAST_FAILED", source, source_name, 0, None);
+    cast_spell_values(&mut args, hit.spell_id, spells);
+    args.push(ScriptValue::Str(text.to_owned()));
+    args
 }
 
 /// `PARTY_KILL` has no event-specific values.
@@ -3258,5 +3635,456 @@ mod tests {
         );
         assert!(world.spell_periodic_drains.is_empty());
         assert_eq!(world.spell_periodic_drain_revision, 0);
+    }
+
+    fn cast_display(id: u32, name: &str) -> benilla_formats::SpellDisplay {
+        benilla_formats::SpellDisplay {
+            id,
+            name: name.to_owned(),
+            ..Default::default()
+        }
+    }
+
+    fn cast_spells(
+        rows: impl IntoIterator<Item = (u32, benilla_formats::SpellDisplay)>,
+    ) -> crate::ui_action::Spells {
+        crate::ui_action::Spells {
+            catalog: benilla_formats::SpellCatalog::from_displays(rows.into_iter().collect()),
+            ..crate::ui_action::Spells::empty_for_tests()
+        }
+    }
+
+    fn cast_start_hit(spell_id: u32) -> WrathSpellCastStart {
+        WrathSpellCastStart {
+            caster: 0x0000_0000_0000_0011,
+            spell_id,
+            cast_flags: 0,
+            cast_time_ms: 1500,
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 3,
+            received_at: 1234.5,
+        }
+    }
+
+    fn cast_success_hit(spell_id: u32, target: u64) -> WrathSpellCastSuccess {
+        WrathSpellCastSuccess {
+            caster: 0x0000_0000_0000_0011,
+            spell_id,
+            cast_flags: 0,
+            target,
+            session_epoch: 4,
+            world_generation: 5,
+            revision: 1,
+            received_at: 97.0,
+        }
+    }
+
+    fn cast_failed_hit(spell_id: u32) -> WrathSpellCastFailed {
+        WrathSpellCastFailed {
+            spell_id,
+            reason: benilla_protocol_wrath::cast_failure::Reason::Vanilla(0x59),
+            session_epoch: 4,
+            world_generation: 5,
+            revision: 1,
+            received_at: 97.0,
+        }
+    }
+
+    /// START posts eleven values: the eight header values with a nil destination and the spell
+    /// trio (UnitCombatLogCastStart, UnitCombatLog_C.cpp:2254, PushEvent :1241).
+    #[test]
+    fn spell_cast_start_has_the_eleven_wrath_values() {
+        let mut scope = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        scope
+            .run(
+                r#"
+                Fired = nil
+                local listener = CreateFrame("Frame", "WrathSpellCastStartTestListener")
+                listener:SetScript("OnEvent", function(_, event, ...)
+                    Fired = { event, ... }
+                end)
+                listener:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+                "#,
+            )
+            .unwrap();
+
+        scope.fire_event(
+            "COMBAT_LOG_EVENT_UNFILTERED",
+            spell_cast_start_args(1234.5, &cast_start_hit(133), "Firna", None),
+        );
+
+        let event: String = scope.eval("return Fired[1]").unwrap();
+        let timestamp: f64 = scope.eval("return Fired[2]").unwrap();
+        let subevent: String = scope.eval("return Fired[3]").unwrap();
+        let source_guid: String = scope.eval("return Fired[4]").unwrap();
+        let source_name: String = scope.eval("return Fired[5]").unwrap();
+        let source_flags: i64 = scope.eval("return Fired[6]").unwrap();
+        let dest_guid: String = scope.eval("return Fired[7]").unwrap();
+        let dest_name: Option<String> = scope.eval("return Fired[8]").unwrap();
+        let dest_flags: i64 = scope.eval("return Fired[9]").unwrap();
+        let spell_id: i64 = scope.eval("return Fired[10]").unwrap();
+        let spell_name: Option<String> = scope.eval("return Fired[11]").unwrap();
+        let spell_school: i64 = scope.eval("return Fired[12]").unwrap();
+        let extra: Option<f64> = scope.eval("return Fired[13]").unwrap();
+
+        assert_eq!(event, "COMBAT_LOG_EVENT_UNFILTERED");
+        assert_eq!(timestamp, 1234.5);
+        assert_eq!(subevent, "SPELL_CAST_START");
+        assert_eq!(source_guid, "0x0000000000000011");
+        assert_eq!(source_name, "Firna");
+        assert_eq!(source_flags, 0x400);
+        assert_eq!(dest_guid, "0x0000000000000000");
+        assert_eq!(dest_name, None, "a nil destination is a Lua nil name");
+        assert_eq!(dest_flags, 0);
+        assert_eq!(spell_id, 133);
+        assert_eq!(spell_name, None, "no catalog row: nil name");
+        assert_eq!(spell_school, 0, "no catalog row: zero school mask");
+        assert_eq!(extra, None, "exactly the eleven SPELL_CAST_START values");
+    }
+
+    /// The SUCCESS drain names the GO packet's unit target in the header, and a zero guid is a
+    /// nil destination rather than an unknown-name retry marker.
+    #[test]
+    fn spell_cast_success_names_the_packet_target() {
+        use crate::ui_script::UiClock;
+        use bevy::ecs::system::RunSystemOnce;
+        use bevy::prelude::App;
+
+        let mut script = script_with_units();
+        script
+            .run(
+                r#"
+                SEEN = 0
+                Fired = nil
+                DEST = {}
+                NAME = {}
+                local listener = CreateFrame("Frame", "WrathSpellCastGoTestListener")
+                listener:SetScript("OnEvent", function(_, event, ...)
+                    SEEN = SEEN + 1
+                    Fired = { event, ... }
+                    DEST[SEEN] = Fired[7]
+                    NAME[SEEN] = Fired[8]
+                end)
+                listener:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+                "#,
+            )
+            .unwrap();
+
+        let mut world = WrathWorldView::default();
+        world.phase = Some(benilla_protocol_wrath::session::Phase::InWorld);
+        world.player_guid = 0x11;
+        world.session_epoch = 4;
+        world.world_generation = 5;
+        // 0x22 is the teammate seat script_with_units knows by guid; 0 is a nil target.
+        world.apply_spell_cast_success(cast_success_hit(133, 0x22), 4, 5, 97.0);
+        world.apply_spell_cast_success(cast_success_hit(133, 0), 4, 5, 97.0);
+
+        let mut app = App::new();
+        app.insert_resource(world)
+            .insert_resource(UiClock {
+                ui_now: 100.0,
+                ..Default::default()
+            })
+            .init_resource::<NameCache>()
+            .insert_resource(cast_spells([(133, cast_display(133, "Fireball"))]))
+            .insert_non_send_resource(script);
+        app.world_mut().run_system_once(feed).unwrap();
+
+        {
+            let script = app.world().non_send_resource::<UiScript>();
+            assert_eq!(script.eval::<i64>("return SEEN").unwrap(), 2);
+            assert_eq!(
+                script.eval::<String>("return Fired[3]").unwrap(),
+                "SPELL_CAST_SUCCESS"
+            );
+            assert_eq!(
+                script.eval::<String>("return DEST[1]").unwrap(),
+                "0x0000000000000022",
+                "the header keeps the GO packet's unit target"
+            );
+            assert_eq!(
+                script.eval::<String>("return NAME[1]").unwrap(),
+                "Teammate",
+                "that target is named from the unit view, not the caster"
+            );
+            assert_eq!(
+                script.eval::<String>("return DEST[2]").unwrap(),
+                "0x0000000000000000",
+                "the zero-guid GO target is the nil destination"
+            );
+            assert_eq!(
+                script.eval::<Option<String>>("return NAME[2]").unwrap(),
+                None,
+                "a nil destination has no name, not UNKNOWNOBJECT"
+            );
+            assert_eq!(script.eval::<i64>("return Fired[10]").unwrap(), 133);
+        }
+        assert!(
+            app.world()
+                .resource::<WrathWorldView>()
+                .spell_cast_successes
+                .is_empty(),
+            "both delivered rows are retired"
+        );
+    }
+
+    /// The failure's 0x2 reason text comes from the VM's GlobalString for CAST_FAIL_KEYS[raw],
+    /// with the key itself as the fallback.
+    #[test]
+    fn spell_cast_failed_posts_the_error_text() {
+        use crate::ui_script::UiClock;
+        use bevy::ecs::system::RunSystemOnce;
+        use bevy::prelude::App;
+
+        let mut script = script_with_units();
+        script
+            .run(r#"SPELL_FAILED_OUT_OF_RANGE = "Out of range""#)
+            .unwrap();
+        script
+            .run(
+                r#"
+                SEEN = 0
+                Fired = nil
+                local listener = CreateFrame("Frame", "WrathSpellFailTestListener")
+                listener:SetScript("OnEvent", function(_, event, ...)
+                    SEEN = SEEN + 1
+                    Fired = { event, ... }
+                end)
+                listener:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+                "#,
+            )
+            .unwrap();
+
+        let mut world = WrathWorldView::default();
+        world.phase = Some(benilla_protocol_wrath::session::Phase::InWorld);
+        world.player_guid = 0x11;
+        world.session_epoch = 4;
+        world.world_generation = 5;
+        world.apply_spell_cast_failed(cast_failed_hit(133), 4, 5, 97.0);
+
+        let mut app = App::new();
+        app.insert_resource(world)
+            .insert_resource(UiClock {
+                ui_now: 100.0,
+                ..Default::default()
+            })
+            .init_resource::<NameCache>()
+            .insert_resource(cast_spells([(133, cast_display(133, "Fireball"))]))
+            .insert_non_send_resource(script);
+        app.world_mut().run_system_once(feed).unwrap();
+
+        {
+            let script = app.world().non_send_resource::<UiScript>();
+            assert_eq!(script.eval::<i64>("return SEEN").unwrap(), 1);
+            assert_eq!(
+                script.eval::<String>("return Fired[3]").unwrap(),
+                "SPELL_CAST_FAILED"
+            );
+            assert_eq!(
+                script.eval::<String>("return Fired[4]").unwrap(),
+                "0x0000000000000011",
+                "the failing player is the source"
+            );
+            assert_eq!(script.eval::<String>("return Fired[5]").unwrap(), "Firna");
+            assert_eq!(
+                script.eval::<Option<String>>("return Fired[8]").unwrap(),
+                None,
+                "a failure has no destination"
+            );
+            assert_eq!(script.eval::<i64>("return Fired[10]").unwrap(), 133);
+            assert_eq!(
+                script.eval::<String>("return Fired[11]").unwrap(),
+                "Fireball"
+            );
+            assert_eq!(
+                script.eval::<String>("return Fired[13]").unwrap(),
+                "Out of range",
+                "the GlobalString text is the twelfth value"
+            );
+            assert_eq!(
+                script.eval::<Option<f64>>("return Fired[14]").unwrap(),
+                None,
+                "exactly the twelve SPELL_CAST_FAILED values"
+            );
+        }
+        assert!(
+            app.world()
+                .resource::<WrathWorldView>()
+                .spell_cast_failures
+                .is_empty(),
+            "the delivered row is retired"
+        );
+    }
+
+    /// Every SpellIsHiddenInCombatLog gate drops a GO row, and an open-lock spell is dropped by
+    /// GO but not by START (SpellHasOpenLockEffect), which has no open-lock gate.
+    #[test]
+    fn hidden_or_open_lock_casts_are_dropped() {
+        use crate::ui_script::UiClock;
+        use bevy::ecs::system::RunSystemOnce;
+        use bevy::prelude::App;
+
+        const HIDDEN_ATTR: u32 = 1;
+        const HIDDEN_NAME: u32 = 2;
+        const HIDDEN_EFFECT: u32 = 3;
+        const HIDDEN_EX4: u32 = 4;
+        const OPEN_LOCK: u32 = 5;
+        const VISIBLE: u32 = 6;
+
+        let spells = cast_spells([
+            (
+                HIDDEN_ATTR,
+                benilla_formats::SpellDisplay {
+                    id: HIDDEN_ATTR,
+                    name: "Flagged".into(),
+                    attributes: 0x180,
+                    ..Default::default()
+                },
+            ),
+            (HIDDEN_NAME, cast_display(HIDDEN_NAME, "")),
+            (
+                HIDDEN_EFFECT,
+                benilla_formats::SpellDisplay {
+                    id: HIDDEN_EFFECT,
+                    name: "Learning".into(),
+                    effects: [36, 0, 0],
+                    ..Default::default()
+                },
+            ),
+            (
+                HIDDEN_EX4,
+                benilla_formats::SpellDisplay {
+                    id: HIDDEN_EX4,
+                    name: "Hidden".into(),
+                    attributes_ex4: 1,
+                    ..Default::default()
+                },
+            ),
+            (
+                OPEN_LOCK,
+                benilla_formats::SpellDisplay {
+                    id: OPEN_LOCK,
+                    name: "Pick Lock".into(),
+                    open_lock: Some(benilla_formats::OpenLock {
+                        lock_type: 1,
+                        effect: 0,
+                    }),
+                    ..Default::default()
+                },
+            ),
+            (VISIBLE, cast_display(VISIBLE, "Fireball")),
+        ]);
+
+        let mut script = script_with_units();
+        script
+            .run(
+                r#"
+                SEEN = 0
+                SUB = {}
+                local listener = CreateFrame("Frame", "WrathHiddenCastTestListener")
+                listener:SetScript("OnEvent", function(_, _, _, subevent)
+                    SEEN = SEEN + 1
+                    SUB[SEEN] = subevent
+                end)
+                listener:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+                "#,
+            )
+            .unwrap();
+
+        let mut world = WrathWorldView::default();
+        world.phase = Some(benilla_protocol_wrath::session::Phase::InWorld);
+        world.player_guid = 0x11;
+        world.session_epoch = 4;
+        world.world_generation = 5;
+        for id in [
+            HIDDEN_ATTR,
+            HIDDEN_NAME,
+            HIDDEN_EFFECT,
+            HIDDEN_EX4,
+            OPEN_LOCK,
+            VISIBLE,
+        ] {
+            world.apply_spell_cast_success(cast_success_hit(id, 0), 4, 5, 97.0);
+        }
+        // START has no open-lock gate; the same spell still opens a START line.
+        world.apply_spell_cast_start(cast_start_hit(OPEN_LOCK), 4, 5, 97.0);
+
+        let mut app = App::new();
+        app.insert_resource(world)
+            .insert_resource(UiClock {
+                ui_now: 100.0,
+                ..Default::default()
+            })
+            .init_resource::<NameCache>()
+            .insert_resource(spells)
+            .insert_non_send_resource(script);
+        app.world_mut().run_system_once(feed).unwrap();
+
+        {
+            let script = app.world().non_send_resource::<UiScript>();
+            assert_eq!(
+                script.eval::<i64>("return SEEN").unwrap(),
+                2,
+                "only the visible GO and the open-lock START are lined up"
+            );
+            assert_eq!(
+                script.eval::<String>("return SUB[1]").unwrap(),
+                "SPELL_CAST_START"
+            );
+            assert_eq!(
+                script.eval::<String>("return SUB[2]").unwrap(),
+                "SPELL_CAST_SUCCESS"
+            );
+        }
+        let world = app.world().resource::<WrathWorldView>();
+        assert!(
+            world.spell_cast_successes.is_empty(),
+            "all GO rows are retired"
+        );
+        assert!(
+            world.spell_cast_starts.is_empty(),
+            "the START row is retired"
+        );
+    }
+
+    /// UnitCombatLogCastStart checks the packet's cast time and hidden-cast flag before QueueEvent
+    /// (UnitCombatLog_C.cpp:2254, Spell_C.cpp:1094), so neither row reaches the feed queue.
+    #[test]
+    fn cast_start_without_cast_time_is_dropped() {
+        let mut world = WrathWorldView::default();
+        world.session_epoch = 1;
+        world.world_generation = 2;
+        let hit = cast_start_hit(133);
+        world.apply_spell_cast_start(
+            WrathSpellCastStart {
+                cast_time_ms: 0,
+                ..hit
+            },
+            1,
+            2,
+            10.0,
+        );
+        assert!(
+            world.spell_cast_starts.is_empty(),
+            "a start with no cast time produces no combat-log row"
+        );
+        world.apply_spell_cast_start(
+            WrathSpellCastStart {
+                cast_flags: 0x1,
+                ..hit
+            },
+            1,
+            2,
+            10.0,
+        );
+        assert!(
+            world.spell_cast_starts.is_empty(),
+            "a hidden cast flag produces no combat-log row"
+        );
+        assert_eq!(
+            world.spell_cast_start_revision, 0,
+            "dropped starts must not advance the cast-start revision"
+        );
     }
 }

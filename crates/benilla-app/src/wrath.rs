@@ -684,6 +684,27 @@ pub enum WrathFeedEvent {
         session_epoch: u64,
         world_generation: u64,
     },
+    /// `SMSG_SPELL_START` (`0x131`): one cast-start edge's raw 12340 facts. Carries the scope so
+    /// a delayed row from a retired world never reaches the Wrath VM.
+    SpellCastStart {
+        hit: WrathSpellCastStart,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_SPELL_GO` (`0x132`): one cast-success edge's raw 12340 facts. Carries the scope so
+    /// a delayed row from a retired world never reaches the Wrath VM.
+    SpellCastSuccess {
+        hit: WrathSpellCastSuccess,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_CAST_FAILED` (`0x130`): one cast-failure edge's raw 12340 facts. Carries the scope
+    /// so a delayed row from a retired world never reaches the Wrath VM.
+    SpellCastFailed {
+        hit: WrathSpellCastFailed,
+        session_epoch: u64,
+        world_generation: u64,
+    },
     /// `SMSG_PERIODICAURALOG` aura 3/89, damage != 0: `SPELL_PERIODIC_DAMAGE`.
     SpellPeriodicDamage {
         hit: WrathSpellPeriodicDamage,
@@ -2299,6 +2320,68 @@ pub struct WrathSpellEnergize {
     pub received_at: f64,
 }
 
+/// One decoded `SMSG_SPELL_START` (`0x131`, `Net/Types.h`) cast-start edge with the world
+/// scope it belongs to, the UI clock at apply, and a monotonic sequence the UI feed uses to
+/// deliver each row exactly once. `UnitCombatLogCastStart` (`UnitCombatLog_C.cpp:2254`, called
+/// from `Spell_C.cpp:1094`) drops a packet whose `castFlags & 0x1` is set, a spell
+/// `SpellIsHiddenInCombatLog` hides, and a caster with no cast time; a shown start is event 5
+/// with a nil destination and 11 values (8 header + spellId/spellName/spellSchoolMask,
+/// `PushEvent` `:1241`). The packet's `cast_time_ms` is `m_timer`, the time left when the
+/// packet was written, not the full cast time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathSpellCastStart {
+    pub caster: u64,
+    pub spell_id: u32,
+    pub cast_flags: u32,
+    pub cast_time_ms: i32,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    /// `UiClock::ui_now` when the row was applied; 0 when no clock existed yet.
+    pub received_at: f64,
+}
+
+/// One decoded `SMSG_SPELL_GO` (`0x132`, `Net/Types.h`) cast-success edge with the world
+/// scope it belongs to, the UI clock at apply, and a monotonic sequence the UI feed uses to
+/// deliver each row exactly once. `UnitCombatLogCastGo` (`UnitCombatLog_C.cpp:2272`, called
+/// from `Spell_C.cpp:2108`) drops a packet whose `castFlags & 0x1` is set, a spell
+/// `SpellIsHiddenInCombatLog` hides and an open-lock spell (`SpellHasOpenLockEffect`); a shown
+/// success is event 6 with the packet's object target and 11 values (8 header +
+/// spellId/spellName/spellSchoolMask, `PushEvent` `:1241`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathSpellCastSuccess {
+    pub caster: u64,
+    pub spell_id: u32,
+    pub cast_flags: u32,
+    /// The packet's object target; 0 when it named none.
+    pub target: u64,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    /// `UiClock::ui_now` when the row was applied; 0 when no clock existed yet.
+    pub received_at: f64,
+}
+
+/// One decoded `SMSG_CAST_FAILED` (`0x130`, `Net/Types.h`) cast-failure edge with the world
+/// scope it belongs to, the UI clock at apply, and a monotonic sequence the UI feed uses to
+/// deliver each row exactly once. `UnitCombatLogSpellFail` (`UnitCombatLog_C.cpp:1556`, called
+/// from `Spell_C.cpp:6793/6856/6858` for the active player's own error) drops
+/// `SPELL_FAILED_DONT_REPORT` (0x17), an unsupported reason and an empty text; a shown failure
+/// is event 7 with a nil destination and 12 values (8 header + spellId/spellName/spellSchoolMask
+/// + the 0x2 reason text, `SetFailReason` `:217`). The source is the active player, the
+/// `SMSG_CAST_FAILED` recipient.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathSpellCastFailed {
+    pub spell_id: u32,
+    /// The mapped 1.12 reason; `Vanilla(raw)` indexes `CAST_FAIL_KEYS`.
+    pub reason: cast_failure::Reason,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    /// `UiClock::ui_now` when the row was applied; 0 when no clock existed yet.
+    pub received_at: f64,
+}
+
 /// One decoded periodic-damage tick from `SMSG_PERIODICAURALOG` (aura 3/89) that produced a
 /// `SPELL_PERIODIC_DAMAGE` row. Reference: `UnitCombatLog_C.cpp:2627/2414/2373/1241`. The
 /// 0x10 block carries damage, overkill, school mask, resisted or nil, blocked or nil (always 0
@@ -2504,6 +2587,33 @@ pub struct WrathWorldView {
     pub spell_energize_dropped: u64,
     /// Spell-energize rows delivered with an unknown endpoint after name resolution timed out.
     pub spell_energize_unresolved: u64,
+    /// The decoded `SPELL_CAST_START` rows waiting for the UI feed; ordered rows up to
+    /// `SPELL_LOG_CAPACITY`.
+    pub spell_cast_starts: VecDeque<WrathSpellCastStart>,
+    /// Monotonic sequence for `Self::spell_cast_starts`, never reset on a scope clear.
+    pub spell_cast_start_revision: u64,
+    /// Cast-start rows dropped because the pending queue was full.
+    pub spell_cast_start_dropped: u64,
+    /// Cast-start rows delivered with an unknown endpoint after name resolution timed out.
+    pub spell_cast_start_unresolved: u64,
+    /// The decoded `SPELL_CAST_SUCCESS` rows waiting for the UI feed; ordered rows up to
+    /// `SPELL_LOG_CAPACITY`.
+    pub spell_cast_successes: VecDeque<WrathSpellCastSuccess>,
+    /// Monotonic sequence for `Self::spell_cast_successes`, never reset on a scope clear.
+    pub spell_cast_success_revision: u64,
+    /// Cast-success rows dropped because the pending queue was full.
+    pub spell_cast_success_dropped: u64,
+    /// Cast-success rows delivered with an unknown endpoint after name resolution timed out.
+    pub spell_cast_success_unresolved: u64,
+    /// The decoded `SPELL_CAST_FAILED` rows waiting for the UI feed; ordered rows up to
+    /// `SPELL_LOG_CAPACITY`.
+    pub spell_cast_failures: VecDeque<WrathSpellCastFailed>,
+    /// Monotonic sequence for `Self::spell_cast_failures`, never reset on a scope clear.
+    pub spell_cast_failure_revision: u64,
+    /// Cast-failure rows dropped because the pending queue was full.
+    pub spell_cast_failure_dropped: u64,
+    /// Cast-failure rows delivered with an unknown endpoint after name resolution timed out.
+    pub spell_cast_failure_unresolved: u64,
     /// Periodic damage rows (`SPELL_PERIODIC_DAMAGE`) waiting for the UI feed.
     pub spell_periodic_damages: VecDeque<WrathSpellPeriodicDamage>,
     pub spell_periodic_damage_revision: u64,
@@ -2602,6 +2712,18 @@ impl Default for WrathWorldView {
             spell_energize_revision: 0,
             spell_energize_dropped: 0,
             spell_energize_unresolved: 0,
+            spell_cast_starts: VecDeque::new(),
+            spell_cast_start_revision: 0,
+            spell_cast_start_dropped: 0,
+            spell_cast_start_unresolved: 0,
+            spell_cast_successes: VecDeque::new(),
+            spell_cast_success_revision: 0,
+            spell_cast_success_dropped: 0,
+            spell_cast_success_unresolved: 0,
+            spell_cast_failures: VecDeque::new(),
+            spell_cast_failure_revision: 0,
+            spell_cast_failure_dropped: 0,
+            spell_cast_failure_unresolved: 0,
             spell_periodic_damages: VecDeque::new(),
             spell_periodic_damage_revision: 0,
             spell_periodic_damage_dropped: 0,
@@ -2917,6 +3039,96 @@ impl WrathWorldView {
         });
     }
 
+    /// Adopt one decoded `SMSG_SPELL_START` edge. Ordered event, never a replaceable snapshot:
+    /// the pending queue is bounded, and overflow drops the oldest row and records the loss.
+    /// `UnitCombatLogCastStart` (`UnitCombatLog_C.cpp:2254`) returns without an entry for a
+    /// packet whose `castFlags & 0x1` is set and for a caster with no cast time, so those rows
+    /// are skipped here; the hidden-spell gate needs the catalog and runs in the UI feed.
+    pub(crate) fn apply_spell_cast_start(
+        &mut self,
+        hit: WrathSpellCastStart,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        if hit.cast_flags & 0x1 != 0 || hit.cast_time_ms <= 0 {
+            return;
+        }
+        self.spell_cast_start_revision = self.spell_cast_start_revision.saturating_add(1);
+        if self.spell_cast_starts.len() >= SPELL_LOG_CAPACITY {
+            self.spell_cast_starts.pop_front();
+            self.spell_cast_start_dropped = self.spell_cast_start_dropped.saturating_add(1);
+        }
+        self.spell_cast_starts.push_back(WrathSpellCastStart {
+            session_epoch,
+            world_generation,
+            revision: self.spell_cast_start_revision,
+            received_at,
+            ..hit
+        });
+    }
+
+    /// Adopt one decoded `SMSG_SPELL_GO` edge. Ordered event, never a replaceable snapshot: the
+    /// pending queue is bounded, and overflow drops the oldest row and records the loss.
+    /// `UnitCombatLogCastGo` (`UnitCombatLog_C.cpp:2272`) returns without an entry for a packet
+    /// whose `castFlags & 0x1` is set; the hidden and open-lock gates need the catalog and run
+    /// in the UI feed.
+    pub(crate) fn apply_spell_cast_success(
+        &mut self,
+        hit: WrathSpellCastSuccess,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        if hit.cast_flags & 0x1 != 0 {
+            return;
+        }
+        self.spell_cast_success_revision = self.spell_cast_success_revision.saturating_add(1);
+        if self.spell_cast_successes.len() >= SPELL_LOG_CAPACITY {
+            self.spell_cast_successes.pop_front();
+            self.spell_cast_success_dropped = self.spell_cast_success_dropped.saturating_add(1);
+        }
+        self.spell_cast_successes.push_back(WrathSpellCastSuccess {
+            session_epoch,
+            world_generation,
+            revision: self.spell_cast_success_revision,
+            received_at,
+            ..hit
+        });
+    }
+
+    /// Adopt one decoded `SMSG_CAST_FAILED` edge. Ordered event, never a replaceable snapshot:
+    /// the pending queue is bounded, and overflow drops the oldest row and records the loss.
+    /// `UnitCombatLogSpellFail` (`UnitCombatLog_C.cpp:1556`) returns without an entry for
+    /// `SPELL_FAILED_DONT_REPORT` (0x17) and for a reason with no 1.12 text, so those rows are
+    /// skipped here; the text itself is resolved in the UI feed.
+    pub(crate) fn apply_spell_cast_failed(
+        &mut self,
+        hit: WrathSpellCastFailed,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        if !matches!(
+            hit.reason,
+            cast_failure::Reason::Vanilla(raw) if raw != 0x17
+        ) {
+            return;
+        }
+        self.spell_cast_failure_revision = self.spell_cast_failure_revision.saturating_add(1);
+        if self.spell_cast_failures.len() >= SPELL_LOG_CAPACITY {
+            self.spell_cast_failures.pop_front();
+            self.spell_cast_failure_dropped = self.spell_cast_failure_dropped.saturating_add(1);
+        }
+        self.spell_cast_failures.push_back(WrathSpellCastFailed {
+            session_epoch,
+            world_generation,
+            revision: self.spell_cast_failure_revision,
+            received_at,
+            ..hit
+        });
+    }
+
     pub(crate) fn apply_spell_periodic_damage(
         &mut self,
         hit: WrathSpellPeriodicDamage,
@@ -3067,6 +3279,15 @@ impl WrathWorldView {
         self.spell_energizes.clear();
         self.spell_energize_dropped = 0;
         self.spell_energize_unresolved = 0;
+        self.spell_cast_starts.clear();
+        self.spell_cast_start_dropped = 0;
+        self.spell_cast_start_unresolved = 0;
+        self.spell_cast_successes.clear();
+        self.spell_cast_success_dropped = 0;
+        self.spell_cast_success_unresolved = 0;
+        self.spell_cast_failures.clear();
+        self.spell_cast_failure_dropped = 0;
+        self.spell_cast_failure_unresolved = 0;
         self.spell_periodic_damages.clear();
         self.spell_periodic_damage_dropped = 0;
         self.spell_periodic_damage_unresolved = 0;
@@ -9668,6 +9889,63 @@ fn wrath_net_drain(
                     );
                 }
             }
+            WrathFeedEvent::SpellCastStart {
+                hit,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_spell_cast_start(
+                        hit,
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
+            WrathFeedEvent::SpellCastSuccess {
+                hit,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_spell_cast_success(
+                        hit,
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
+            WrathFeedEvent::SpellCastFailed {
+                hit,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_spell_cast_failed(
+                        hit,
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
             WrathFeedEvent::SpellPeriodicDamage {
                 hit,
                 session_epoch,
@@ -15077,6 +15355,70 @@ pub fn run_session_with_cancel(
                             }
                         }
                         Ok(event) => {
+                            // The cast edges also feed the combat-log queues; the event is only
+                            // borrowed here so the native cast lifecycle and the live translation
+                            // below still see the same packet.
+                            if let WrathGameplayEvent::SpellStart {
+                                caster,
+                                spell_id,
+                                cast_flags,
+                                cast_time_ms,
+                                ..
+                            } = &event
+                            {
+                                feed.push_event(WrathFeedEvent::SpellCastStart {
+                                    hit: WrathSpellCastStart {
+                                        caster: *caster,
+                                        spell_id: *spell_id,
+                                        cast_flags: *cast_flags,
+                                        cast_time_ms: *cast_time_ms,
+                                        session_epoch: session.epoch(),
+                                        world_generation: session.world_generation(),
+                                        revision: 0,
+                                        received_at: 0.0,
+                                    },
+                                    session_epoch: session.epoch(),
+                                    world_generation: session.world_generation(),
+                                });
+                            }
+                            if let WrathGameplayEvent::SpellGo {
+                                caster,
+                                spell_id,
+                                cast_flags,
+                                targets,
+                                ..
+                            } = &event
+                            {
+                                feed.push_event(WrathFeedEvent::SpellCastSuccess {
+                                    hit: WrathSpellCastSuccess {
+                                        caster: *caster,
+                                        spell_id: *spell_id,
+                                        cast_flags: *cast_flags,
+                                        target: targets.unit,
+                                        session_epoch: session.epoch(),
+                                        world_generation: session.world_generation(),
+                                        revision: 0,
+                                        received_at: 0.0,
+                                    },
+                                    session_epoch: session.epoch(),
+                                    world_generation: session.world_generation(),
+                                });
+                            }
+                            if let WrathGameplayEvent::CastFailed { spell_id, reason, .. } = &event
+                            {
+                                feed.push_event(WrathFeedEvent::SpellCastFailed {
+                                    hit: WrathSpellCastFailed {
+                                        spell_id: *spell_id,
+                                        reason: *reason,
+                                        session_epoch: session.epoch(),
+                                        world_generation: session.world_generation(),
+                                        revision: 0,
+                                        received_at: 0.0,
+                                    },
+                                    session_epoch: session.epoch(),
+                                    world_generation: session.world_generation(),
+                                });
+                            }
                             if let WrathGameplayEvent::VendorInventory { vendor, items } = &event {
                                 feed.push_event(WrathFeedEvent::VendorInventory {
                                     vendor: *vendor,
