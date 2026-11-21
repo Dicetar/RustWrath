@@ -1,10 +1,10 @@
 # Equipment manager: saved gear sets end to end
 
-Status: in progress
+Status: ready to merge
 Owner: Claude Code / Claude Opus 5.5 (run from the brief written for pi)
 Branch: pi/equipment-manager
 Issue: none
-Next: read CI on the pushed head; fix until gates and windows are green
+Next: coordinator reviews and merges; owner checks the gear-manager dialog in game
 
 ## What landed
 
@@ -105,7 +105,11 @@ Pin e67b6ffe, `WoW/Source/Ui/EquipmentManager.cpp` and `EquipmentManager_Scripts
 
 ## CI
 
-- Run id and result: not run yet when this note was written.
+- CI 44948925092 on 534d4210e: compiles; tests pass. Both jobs passed:
+  - `gates`: fmt, clippy, the `changed` step testing benilla-app, benilla-protocol-wrath and
+    benilla-ui (benilla-app: 6900 passed, 0 failed), `player-clippy`, and `player-tests`
+    (benilla-app `--no-default-features`: 6834 passed; benilla-formats: 590 passed);
+  - `windows`.
 - Locally (own target dir `worktrees/pi-equipment-manager/target`, sccache):
   - `cargo check -p benilla-app --tests`;
   - `cargo test -p benilla-protocol-wrath --lib equipment_set` (3 passed);
