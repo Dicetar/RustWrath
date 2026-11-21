@@ -684,6 +684,36 @@ pub enum WrathFeedEvent {
         session_epoch: u64,
         world_generation: u64,
     },
+    /// `SMSG_PERIODICAURALOG` aura 3/89, damage != 0: `SPELL_PERIODIC_DAMAGE`.
+    SpellPeriodicDamage {
+        hit: WrathSpellPeriodicDamage,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_PERIODICAURALOG` aura 3/89, damage == 0 absorb/resist: `SPELL_PERIODIC_MISSED`.
+    SpellPeriodicMiss {
+        hit: WrathSpellPeriodicMiss,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_PERIODICAURALOG` aura 8/20: `SPELL_PERIODIC_HEAL`.
+    SpellPeriodicHeal {
+        hit: WrathSpellPeriodicHeal,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_PERIODICAURALOG` aura 21/24: `SPELL_PERIODIC_ENERGIZE`.
+    SpellPeriodicEnergize {
+        hit: WrathSpellPeriodicEnergize,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_PERIODICAURALOG` aura 64: `SPELL_PERIODIC_DRAIN` or `SPELL_PERIODIC_LEECH`.
+    SpellPeriodicDrain {
+        hit: WrathSpellPeriodicDrain,
+        session_epoch: u64,
+        world_generation: u64,
+    },
     /// `SMSG_PARTYKILLLOG`: the killing blow credited to a player. Carries the scope so a
     /// delayed kill from a retired world never reaches the Wrath VM.
     PartyKillLog {
@@ -2269,6 +2299,92 @@ pub struct WrathSpellEnergize {
     pub received_at: f64,
 }
 
+/// One decoded periodic-damage tick from `SMSG_PERIODICAURALOG` (aura 3/89) that produced a
+/// `SPELL_PERIODIC_DAMAGE` row. Reference: `UnitCombatLog_C.cpp:2627/2414/2373/1241`. The
+/// 0x10 block carries damage, overkill, school mask, resisted or nil, blocked or nil (always 0
+/// from this packet), absorbed or nil, critical 1.0/nil, glancing nil, crushing nil.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathSpellPeriodicDamage {
+    pub target: u64,
+    pub caster: u64,
+    pub spell_id: u32,
+    pub amount: u32,
+    pub overkill: u32,
+    pub school: u32,
+    pub absorb: u32,
+    pub resist: i32,
+    pub critical: bool,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    pub received_at: f64,
+}
+
+/// One decoded periodic-damage tick that produced `SPELL_PERIODIC_MISSED` (damage == 0 with an
+/// absorb or resist). 12 values: header 8 + spell 3 + miss string (+ amount for ABSORB/RESIST).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathSpellPeriodicMiss {
+    pub target: u64,
+    pub caster: u64,
+    pub spell_id: u32,
+    pub miss_type: u8,
+    pub amount: u32,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    pub received_at: f64,
+}
+
+/// One decoded periodic-heal tick (aura 8/20) for `SPELL_PERIODIC_HEAL`. 15 values: header 8 +
+/// spell 3 + amount, overheal, absorbed, critical 1.0/nil. Dropped when all three amounts are 0.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathSpellPeriodicHeal {
+    pub target: u64,
+    pub caster: u64,
+    pub spell_id: u32,
+    pub amount: u32,
+    pub overheal: u32,
+    pub absorbed: u32,
+    pub critical: bool,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    pub received_at: f64,
+}
+
+/// One decoded periodic-energize tick (aura 21/24) for `SPELL_PERIODIC_ENERGIZE`. 13 values:
+/// header 8 + spell 3 + divided amount, powerType. Dropped when amount is 0.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathSpellPeriodicEnergize {
+    pub target: u64,
+    pub caster: u64,
+    pub spell_id: u32,
+    pub power_type: u32,
+    pub amount: u32,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    pub received_at: f64,
+}
+
+/// One decoded periodic drain/leech tick (aura 64) for `SPELL_PERIODIC_DRAIN` or
+/// `SPELL_PERIODIC_LEECH`. `extra = trunc(amount * multiplier)`; event 38 when extra != 0,
+/// else 37. 0x80 block: divided amount, powerType, divided extra or nil. 14 values.
+/// Dropped when amount == 0 or power_type == 5 (POWER_HAPPINESS).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathSpellPeriodicDrain {
+    pub target: u64,
+    pub caster: u64,
+    pub spell_id: u32,
+    pub power_type: u32,
+    pub amount: u32,
+    pub multiplier: f32,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    pub received_at: f64,
+}
+
 /// The decoded `SMSG_CALENDAR_SEND_CALENDAR` snapshot, kept as the wire delivered it. The UI
 /// reads the date from `zone_time` and pending invites from `invites`; the other rows stay here
 /// for the calendar windows that need them.
@@ -2388,6 +2504,31 @@ pub struct WrathWorldView {
     pub spell_energize_dropped: u64,
     /// Spell-energize rows delivered with an unknown endpoint after name resolution timed out.
     pub spell_energize_unresolved: u64,
+    /// Periodic damage rows (`SPELL_PERIODIC_DAMAGE`) waiting for the UI feed.
+    pub spell_periodic_damages: VecDeque<WrathSpellPeriodicDamage>,
+    pub spell_periodic_damage_revision: u64,
+    pub spell_periodic_damage_dropped: u64,
+    pub spell_periodic_damage_unresolved: u64,
+    /// Periodic miss rows (`SPELL_PERIODIC_MISSED`) waiting for the UI feed.
+    pub spell_periodic_misses: VecDeque<WrathSpellPeriodicMiss>,
+    pub spell_periodic_miss_revision: u64,
+    pub spell_periodic_miss_dropped: u64,
+    pub spell_periodic_miss_unresolved: u64,
+    /// Periodic heal rows (`SPELL_PERIODIC_HEAL`) waiting for the UI feed.
+    pub spell_periodic_heals: VecDeque<WrathSpellPeriodicHeal>,
+    pub spell_periodic_heal_revision: u64,
+    pub spell_periodic_heal_dropped: u64,
+    pub spell_periodic_heal_unresolved: u64,
+    /// Periodic energize rows (`SPELL_PERIODIC_ENERGIZE`) waiting for the UI feed.
+    pub spell_periodic_energizes: VecDeque<WrathSpellPeriodicEnergize>,
+    pub spell_periodic_energize_revision: u64,
+    pub spell_periodic_energize_dropped: u64,
+    pub spell_periodic_energize_unresolved: u64,
+    /// Periodic drain/leech rows (`SPELL_PERIODIC_DRAIN`/`SPELL_PERIODIC_LEECH`) waiting for the UI feed.
+    pub spell_periodic_drains: VecDeque<WrathSpellPeriodicDrain>,
+    pub spell_periodic_drain_revision: u64,
+    pub spell_periodic_drain_dropped: u64,
+    pub spell_periodic_drain_unresolved: u64,
     /// Presentation mirror of the authority's active casts, keyed by caster, retaining 12340
     /// identity/timing beyond the vanilla cast-bar edges. Written only from resolved snapshots;
     /// never re-resolves wire facts. UI clocks are stamped here, not in the authority.
@@ -2461,6 +2602,26 @@ impl Default for WrathWorldView {
             spell_energize_revision: 0,
             spell_energize_dropped: 0,
             spell_energize_unresolved: 0,
+            spell_periodic_damages: VecDeque::new(),
+            spell_periodic_damage_revision: 0,
+            spell_periodic_damage_dropped: 0,
+            spell_periodic_damage_unresolved: 0,
+            spell_periodic_misses: VecDeque::new(),
+            spell_periodic_miss_revision: 0,
+            spell_periodic_miss_dropped: 0,
+            spell_periodic_miss_unresolved: 0,
+            spell_periodic_heals: VecDeque::new(),
+            spell_periodic_heal_revision: 0,
+            spell_periodic_heal_dropped: 0,
+            spell_periodic_heal_unresolved: 0,
+            spell_periodic_energizes: VecDeque::new(),
+            spell_periodic_energize_revision: 0,
+            spell_periodic_energize_dropped: 0,
+            spell_periodic_energize_unresolved: 0,
+            spell_periodic_drains: VecDeque::new(),
+            spell_periodic_drain_revision: 0,
+            spell_periodic_drain_dropped: 0,
+            spell_periodic_drain_unresolved: 0,
             casts: BTreeMap::new(),
             channels: BTreeMap::new(),
             last_cast_end: None,
@@ -2756,6 +2917,139 @@ impl WrathWorldView {
         });
     }
 
+    pub(crate) fn apply_spell_periodic_damage(
+        &mut self,
+        hit: WrathSpellPeriodicDamage,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        self.spell_periodic_damage_revision =
+            self.spell_periodic_damage_revision.saturating_add(1);
+        if self.spell_periodic_damages.len() >= SPELL_LOG_CAPACITY {
+            self.spell_periodic_damages.pop_front();
+            self.spell_periodic_damage_dropped =
+                self.spell_periodic_damage_dropped.saturating_add(1);
+        }
+        self.spell_periodic_damages
+            .push_back(WrathSpellPeriodicDamage {
+                session_epoch,
+                world_generation,
+                revision: self.spell_periodic_damage_revision,
+                received_at,
+                ..hit
+            });
+    }
+
+    pub(crate) fn apply_spell_periodic_miss(
+        &mut self,
+        hit: WrathSpellPeriodicMiss,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        self.spell_periodic_miss_revision =
+            self.spell_periodic_miss_revision.saturating_add(1);
+        if self.spell_periodic_misses.len() >= SPELL_LOG_CAPACITY {
+            self.spell_periodic_misses.pop_front();
+            self.spell_periodic_miss_dropped =
+                self.spell_periodic_miss_dropped.saturating_add(1);
+        }
+        self.spell_periodic_misses
+            .push_back(WrathSpellPeriodicMiss {
+                session_epoch,
+                world_generation,
+                revision: self.spell_periodic_miss_revision,
+                received_at,
+                ..hit
+            });
+    }
+
+    /// `UnitCombatLogHeal` returns without an entry when amount, overheal and absorbed are all
+    /// zero; the same drop rule applies to periodic heals.
+    pub(crate) fn apply_spell_periodic_heal(
+        &mut self,
+        hit: WrathSpellPeriodicHeal,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        if hit.amount == 0 && hit.overheal == 0 && hit.absorbed == 0 {
+            return;
+        }
+        self.spell_periodic_heal_revision =
+            self.spell_periodic_heal_revision.saturating_add(1);
+        if self.spell_periodic_heals.len() >= SPELL_LOG_CAPACITY {
+            self.spell_periodic_heals.pop_front();
+            self.spell_periodic_heal_dropped =
+                self.spell_periodic_heal_dropped.saturating_add(1);
+        }
+        self.spell_periodic_heals
+            .push_back(WrathSpellPeriodicHeal {
+                session_epoch,
+                world_generation,
+                revision: self.spell_periodic_heal_revision,
+                received_at,
+                ..hit
+            });
+    }
+
+    /// `UnitCombatLogEnergize` returns when amount is zero; periodic energize uses the same rule.
+    pub(crate) fn apply_spell_periodic_energize(
+        &mut self,
+        hit: WrathSpellPeriodicEnergize,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        if hit.amount == 0 {
+            return;
+        }
+        self.spell_periodic_energize_revision =
+            self.spell_periodic_energize_revision.saturating_add(1);
+        if self.spell_periodic_energizes.len() >= SPELL_LOG_CAPACITY {
+            self.spell_periodic_energizes.pop_front();
+            self.spell_periodic_energize_dropped =
+                self.spell_periodic_energize_dropped.saturating_add(1);
+        }
+        self.spell_periodic_energizes
+            .push_back(WrathSpellPeriodicEnergize {
+                session_epoch,
+                world_generation,
+                revision: self.spell_periodic_energize_revision,
+                received_at,
+                ..hit
+            });
+    }
+
+    /// Drain/leech: drop amount 0 and power type 5 (POWER_HAPPINESS).
+    pub(crate) fn apply_spell_periodic_drain(
+        &mut self,
+        hit: WrathSpellPeriodicDrain,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        if hit.amount == 0 || hit.power_type == 5 {
+            return;
+        }
+        self.spell_periodic_drain_revision =
+            self.spell_periodic_drain_revision.saturating_add(1);
+        if self.spell_periodic_drains.len() >= SPELL_LOG_CAPACITY {
+            self.spell_periodic_drains.pop_front();
+            self.spell_periodic_drain_dropped =
+                self.spell_periodic_drain_dropped.saturating_add(1);
+        }
+        self.spell_periodic_drains
+            .push_back(WrathSpellPeriodicDrain {
+                session_epoch,
+                world_generation,
+                revision: self.spell_periodic_drain_revision,
+                received_at,
+                ..hit
+            });
+    }
+
     /// Clear every scoped rune/calendar/combat-log/LFG fact on a session end or world transfer.
     fn clear_rune_calendar(&mut self) {
         self.runes.clear();
@@ -2781,6 +3075,21 @@ impl WrathWorldView {
         self.spell_energizes.clear();
         self.spell_energize_dropped = 0;
         self.spell_energize_unresolved = 0;
+        self.spell_periodic_damages.clear();
+        self.spell_periodic_damage_dropped = 0;
+        self.spell_periodic_damage_unresolved = 0;
+        self.spell_periodic_misses.clear();
+        self.spell_periodic_miss_dropped = 0;
+        self.spell_periodic_miss_unresolved = 0;
+        self.spell_periodic_heals.clear();
+        self.spell_periodic_heal_dropped = 0;
+        self.spell_periodic_heal_unresolved = 0;
+        self.spell_periodic_energizes.clear();
+        self.spell_periodic_energize_dropped = 0;
+        self.spell_periodic_energize_unresolved = 0;
+        self.spell_periodic_drains.clear();
+        self.spell_periodic_drain_dropped = 0;
+        self.spell_periodic_drain_unresolved = 0;
         self.lfg_join_result = None;
         self.lfg_queue_status = None;
         self.lfg_update_player = None;
@@ -4224,13 +4533,14 @@ fn translate_gameplay(
                         school,
                         absorb,
                         resist,
+                        ..
                     } => ProtocolPeriodicTick::Damage {
                         amount,
                         school: vanilla_school(school),
                         absorb,
                         resist,
                     },
-                    gameplay::PeriodicAuraTick::Heal { amount } => {
+                    gameplay::PeriodicAuraTick::Heal { amount, .. } => {
                         ProtocolPeriodicTick::Heal { amount }
                     }
                     gameplay::PeriodicAuraTick::Energize { power, amount } => {
@@ -9366,6 +9676,101 @@ fn wrath_net_drain(
                     );
                 }
             }
+            WrathFeedEvent::SpellPeriodicDamage {
+                hit,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_spell_periodic_damage(
+                        hit,
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
+            WrathFeedEvent::SpellPeriodicMiss {
+                hit,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_spell_periodic_miss(
+                        hit,
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
+            WrathFeedEvent::SpellPeriodicHeal {
+                hit,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_spell_periodic_heal(
+                        hit,
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
+            WrathFeedEvent::SpellPeriodicEnergize {
+                hit,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_spell_periodic_energize(
+                        hit,
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
+            WrathFeedEvent::SpellPeriodicDrain {
+                hit,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_spell_periodic_drain(
+                        hit,
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
             WrathFeedEvent::PartyKillLog {
                 killer,
                 victim,
@@ -14147,6 +14552,156 @@ pub fn run_session_with_cancel(
                             // terminal. Both handlers do different work, so both are delivered.
                             push_forced_event(&events_out, SessionEvent::LoggedOut, None);
                         }
+                        Ok(
+                            event @ WrathGameplayEvent::PeriodicAura {
+                                target,
+                                caster,
+                                spell_id,
+                                ref ticks,
+                            },
+                        ) => {
+                            let session_epoch = session.epoch();
+                            let world_generation = session.world_generation();
+                            for tick in ticks {
+                                match *tick {
+                                    gameplay::PeriodicAuraTick::Damage {
+                                        amount,
+                                        overkill,
+                                        school,
+                                        absorb,
+                                        resist,
+                                        critical,
+                                        ..
+                                    } => {
+                                        if amount != 0 {
+                                            feed.push_event(WrathFeedEvent::SpellPeriodicDamage {
+                                                hit: WrathSpellPeriodicDamage {
+                                                    target,
+                                                    caster,
+                                                    spell_id,
+                                                    amount,
+                                                    overkill,
+                                                    school,
+                                                    absorb,
+                                                    resist,
+                                                    critical,
+                                                    session_epoch,
+                                                    world_generation,
+                                                    revision: 0,
+                                                    received_at: 0.0,
+                                                },
+                                                session_epoch,
+                                                world_generation,
+                                            });
+                                        } else if absorb != 0 {
+                                            feed.push_event(WrathFeedEvent::SpellPeriodicMiss {
+                                                hit: WrathSpellPeriodicMiss {
+                                                    target,
+                                                    caster,
+                                                    spell_id,
+                                                    miss_type: 10, // ABSORB
+                                                    amount: absorb,
+                                                    session_epoch,
+                                                    world_generation,
+                                                    revision: 0,
+                                                    received_at: 0.0,
+                                                },
+                                                session_epoch,
+                                                world_generation,
+                                            });
+                                        } else if resist != 0 {
+                                            feed.push_event(WrathFeedEvent::SpellPeriodicMiss {
+                                                hit: WrathSpellPeriodicMiss {
+                                                    target,
+                                                    caster,
+                                                    spell_id,
+                                                    miss_type: 2, // RESIST
+                                                    amount: resist.unsigned_abs(),
+                                                    session_epoch,
+                                                    world_generation,
+                                                    revision: 0,
+                                                    received_at: 0.0,
+                                                },
+                                                session_epoch,
+                                                world_generation,
+                                            });
+                                        }
+                                    }
+                                    gameplay::PeriodicAuraTick::Heal {
+                                        amount,
+                                        overheal,
+                                        absorb,
+                                        critical,
+                                    } => {
+                                        feed.push_event(WrathFeedEvent::SpellPeriodicHeal {
+                                            hit: WrathSpellPeriodicHeal {
+                                                target,
+                                                caster,
+                                                spell_id,
+                                                amount,
+                                                overheal,
+                                                absorbed: absorb,
+                                                critical,
+                                                session_epoch,
+                                                world_generation,
+                                                revision: 0,
+                                                received_at: 0.0,
+                                            },
+                                            session_epoch,
+                                            world_generation,
+                                        });
+                                    }
+                                    gameplay::PeriodicAuraTick::Energize { power, amount } => {
+                                        feed.push_event(WrathFeedEvent::SpellPeriodicEnergize {
+                                            hit: WrathSpellPeriodicEnergize {
+                                                target,
+                                                caster,
+                                                spell_id,
+                                                power_type: power,
+                                                amount,
+                                                session_epoch,
+                                                world_generation,
+                                                revision: 0,
+                                                received_at: 0.0,
+                                            },
+                                            session_epoch,
+                                            world_generation,
+                                        });
+                                    }
+                                    gameplay::PeriodicAuraTick::ManaLeech {
+                                        power,
+                                        amount,
+                                        multiplier,
+                                    } => {
+                                        feed.push_event(WrathFeedEvent::SpellPeriodicDrain {
+                                            hit: WrathSpellPeriodicDrain {
+                                                target,
+                                                caster,
+                                                spell_id,
+                                                power_type: power,
+                                                amount,
+                                                multiplier,
+                                                session_epoch,
+                                                world_generation,
+                                                revision: 0,
+                                                received_at: 0.0,
+                                            },
+                                            session_epoch,
+                                            world_generation,
+                                        });
+                                    }
+                                }
+                            }
+                            if session.player_guid().is_some() {
+                                for event in translate_live(
+                                    event,
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
+                                }
+                            }
+                        }
                         Ok(event) => {
                             if let WrathGameplayEvent::VendorInventory { vendor, items } = &event {
                                 feed.push_event(WrathFeedEvent::VendorInventory {
@@ -14779,9 +15334,12 @@ mod tests {
                 spell_id: 172,
                 ticks: vec![gameplay::PeriodicAuraTick::Damage {
                     amount: 5,
+                    overkill: 0,
                     school: 16,
                     absorb: 0,
                     resist: 0,
+                    critical: false,
+                    hit_info: 0,
                 }],
             },
             0x11,

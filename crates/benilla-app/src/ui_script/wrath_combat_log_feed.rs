@@ -18,7 +18,9 @@ use crate::script_calls::VmWith;
 use crate::ui_script::UiClock;
 use crate::wrath::{
     WrathPartyKill, WrathSpellDamage, WrathSpellEnergize, WrathSpellHeal, WrathSpellMiss,
-    WrathSwing, WrathWorldView, COMBAT_LOG_NAME_RETRY_SECONDS,
+    WrathSpellPeriodicDamage, WrathSpellPeriodicDrain, WrathSpellPeriodicEnergize,
+    WrathSpellPeriodicHeal, WrathSpellPeriodicMiss, WrathSwing, WrathWorldView,
+    COMBAT_LOG_NAME_RETRY_SECONDS,
 };
 
 /// Capacity loss and unresolved-name counts already reported, so each diagnostic is logged once
@@ -37,6 +39,16 @@ pub(crate) struct CombatLogMemo {
     spell_heal_unresolved: u64,
     spell_energize_dropped: u64,
     spell_energize_unresolved: u64,
+    spell_periodic_damage_dropped: u64,
+    spell_periodic_damage_unresolved: u64,
+    spell_periodic_miss_dropped: u64,
+    spell_periodic_miss_unresolved: u64,
+    spell_periodic_heal_dropped: u64,
+    spell_periodic_heal_unresolved: u64,
+    spell_periodic_energize_dropped: u64,
+    spell_periodic_energize_unresolved: u64,
+    spell_periodic_drain_dropped: u64,
+    spell_periodic_drain_unresolved: u64,
 }
 
 /// The visible marker for an endpoint whose name never resolved inside the retry window. It is
@@ -151,6 +163,73 @@ pub(crate) fn feed(
             );
         }
         memo.spell_energize_unresolved = world.spell_energize_unresolved;
+        for (label, dropped, memo_dropped) in [
+            (
+                "periodic-damage",
+                world.spell_periodic_damage_dropped,
+                &mut memo.spell_periodic_damage_dropped,
+            ),
+            (
+                "periodic-miss",
+                world.spell_periodic_miss_dropped,
+                &mut memo.spell_periodic_miss_dropped,
+            ),
+            (
+                "periodic-heal",
+                world.spell_periodic_heal_dropped,
+                &mut memo.spell_periodic_heal_dropped,
+            ),
+            (
+                "periodic-energize",
+                world.spell_periodic_energize_dropped,
+                &mut memo.spell_periodic_energize_dropped,
+            ),
+            (
+                "periodic-drain",
+                world.spell_periodic_drain_dropped,
+                &mut memo.spell_periodic_drain_dropped,
+            ),
+        ] {
+            if dropped > *memo_dropped {
+                debug!(dropped, "wrath: combat-log queue capacity lost {label} rows");
+            }
+            *memo_dropped = dropped;
+        }
+        for (label, unresolved, memo_unresolved) in [
+            (
+                "periodic-damage",
+                world.spell_periodic_damage_unresolved,
+                &mut memo.spell_periodic_damage_unresolved,
+            ),
+            (
+                "periodic-miss",
+                world.spell_periodic_miss_unresolved,
+                &mut memo.spell_periodic_miss_unresolved,
+            ),
+            (
+                "periodic-heal",
+                world.spell_periodic_heal_unresolved,
+                &mut memo.spell_periodic_heal_unresolved,
+            ),
+            (
+                "periodic-energize",
+                world.spell_periodic_energize_unresolved,
+                &mut memo.spell_periodic_energize_unresolved,
+            ),
+            (
+                "periodic-drain",
+                world.spell_periodic_drain_unresolved,
+                &mut memo.spell_periodic_drain_unresolved,
+            ),
+        ] {
+            if unresolved > *memo_unresolved {
+                debug!(
+                    unresolved,
+                    "wrath: combat-log {label} rows delivered with an unknown endpoint after name resolution timed out"
+                );
+            }
+            *memo_unresolved = unresolved;
+        }
 
         let now = clock.as_deref().map_or(0.0, |clock| clock.ui_now);
         let ask = match net.as_deref() {
@@ -425,6 +504,211 @@ pub(crate) fn feed(
             world.spell_energizes.remove(index);
         }
 
+
+        let mut index = 0;
+        while index < world.spell_periodic_damages.len() {
+            let hit = world.spell_periodic_damages[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                world.spell_periodic_damages.remove(index);
+                continue;
+            }
+            let source = endpoint_name(script, world, names.as_deref(), hit.caster, ask);
+            let target = endpoint_name(script, world, names.as_deref(), hit.target, ask);
+            let timestamp = if hit.received_at > 0.0 { hit.received_at } else { now };
+            if source.is_none() || target.is_none() {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at { now - hit.received_at } else { 0.0 };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        spell_periodic_damage_args(
+                            timestamp,
+                            &hit,
+                            source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            spells.as_deref(),
+                        ),
+                    );
+                    world.spell_periodic_damage_unresolved =
+                        world.spell_periodic_damage_unresolved.saturating_add(1);
+                    world.spell_periodic_damages.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let (source, target) = (source.unwrap_or_default(), target.unwrap_or_default());
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                spell_periodic_damage_args(timestamp, &hit, &source, &target, spells.as_deref()),
+            );
+            world.spell_periodic_damages.remove(index);
+        }
+
+        let mut index = 0;
+        while index < world.spell_periodic_misses.len() {
+            let hit = world.spell_periodic_misses[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                world.spell_periodic_misses.remove(index);
+                continue;
+            }
+            let source = endpoint_name(script, world, names.as_deref(), hit.caster, ask);
+            let target = endpoint_name(script, world, names.as_deref(), hit.target, ask);
+            let timestamp = if hit.received_at > 0.0 { hit.received_at } else { now };
+            if source.is_none() || target.is_none() {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at { now - hit.received_at } else { 0.0 };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        spell_periodic_miss_args(
+                            timestamp,
+                            &hit,
+                            source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            spells.as_deref(),
+                        ),
+                    );
+                    world.spell_periodic_miss_unresolved =
+                        world.spell_periodic_miss_unresolved.saturating_add(1);
+                    world.spell_periodic_misses.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let (source, target) = (source.unwrap_or_default(), target.unwrap_or_default());
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                spell_periodic_miss_args(timestamp, &hit, &source, &target, spells.as_deref()),
+            );
+            world.spell_periodic_misses.remove(index);
+        }
+
+        let mut index = 0;
+        while index < world.spell_periodic_heals.len() {
+            let hit = world.spell_periodic_heals[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                world.spell_periodic_heals.remove(index);
+                continue;
+            }
+            let source = endpoint_name(script, world, names.as_deref(), hit.caster, ask);
+            let target = endpoint_name(script, world, names.as_deref(), hit.target, ask);
+            let timestamp = if hit.received_at > 0.0 { hit.received_at } else { now };
+            if source.is_none() || target.is_none() {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at { now - hit.received_at } else { 0.0 };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        spell_periodic_heal_args(
+                            timestamp,
+                            &hit,
+                            source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            spells.as_deref(),
+                        ),
+                    );
+                    world.spell_periodic_heal_unresolved =
+                        world.spell_periodic_heal_unresolved.saturating_add(1);
+                    world.spell_periodic_heals.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let (source, target) = (source.unwrap_or_default(), target.unwrap_or_default());
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                spell_periodic_heal_args(timestamp, &hit, &source, &target, spells.as_deref()),
+            );
+            world.spell_periodic_heals.remove(index);
+        }
+
+        let mut index = 0;
+        while index < world.spell_periodic_energizes.len() {
+            let hit = world.spell_periodic_energizes[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                world.spell_periodic_energizes.remove(index);
+                continue;
+            }
+            let source = endpoint_name(script, world, names.as_deref(), hit.caster, ask);
+            let target = endpoint_name(script, world, names.as_deref(), hit.target, ask);
+            let timestamp = if hit.received_at > 0.0 { hit.received_at } else { now };
+            if source.is_none() || target.is_none() {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at { now - hit.received_at } else { 0.0 };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        spell_periodic_energize_args(
+                            timestamp,
+                            &hit,
+                            source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            spells.as_deref(),
+                        ),
+                    );
+                    world.spell_periodic_energize_unresolved =
+                        world.spell_periodic_energize_unresolved.saturating_add(1);
+                    world.spell_periodic_energizes.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let (source, target) = (source.unwrap_or_default(), target.unwrap_or_default());
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                spell_periodic_energize_args(timestamp, &hit, &source, &target, spells.as_deref()),
+            );
+            world.spell_periodic_energizes.remove(index);
+        }
+
+        let mut index = 0;
+        while index < world.spell_periodic_drains.len() {
+            let hit = world.spell_periodic_drains[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                world.spell_periodic_drains.remove(index);
+                continue;
+            }
+            let source = endpoint_name(script, world, names.as_deref(), hit.caster, ask);
+            let target = endpoint_name(script, world, names.as_deref(), hit.target, ask);
+            let timestamp = if hit.received_at > 0.0 { hit.received_at } else { now };
+            if source.is_none() || target.is_none() {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at { now - hit.received_at } else { 0.0 };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        spell_periodic_drain_args(
+                            timestamp,
+                            &hit,
+                            source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            spells.as_deref(),
+                        ),
+                    );
+                    world.spell_periodic_drain_unresolved =
+                        world.spell_periodic_drain_unresolved.saturating_add(1);
+                    world.spell_periodic_drains.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let (source, target) = (source.unwrap_or_default(), target.unwrap_or_default());
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                spell_periodic_drain_args(timestamp, &hit, &source, &target, spells.as_deref()),
+            );
+            world.spell_periodic_drains.remove(index);
+        }
         let mut index = 0;
         while index < world.spell_misses.len() {
             let hit = world.spell_misses[index];
@@ -836,6 +1120,184 @@ fn spell_energize_args(
     args.push(ScriptValue::Int(i64::from(spell_school)));
     args.push(ScriptValue::Number(f64::from(divided_amount)));
     args.push(ScriptValue::Number(f64::from(hit.power_type)));
+    args
+}
+
+fn spell_periodic_damage_args(
+    timestamp: f64,
+    hit: &WrathSpellPeriodicDamage,
+    source_name: &str,
+    target_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+) -> Vec<ScriptValue> {
+    let mut args = combat_log_header(
+        timestamp,
+        "SPELL_PERIODIC_DAMAGE",
+        hit.caster,
+        source_name,
+        hit.target,
+        target_name,
+    );
+    let spell_name = spells
+        .and_then(|spells| spells.catalog.get(hit.spell_id))
+        .map(|def| def.name.clone());
+    let spell_school = spells
+        .and_then(|spells| spells.catalog.school_mask(hit.spell_id))
+        .unwrap_or(0);
+    args.push(ScriptValue::Int(i64::from(hit.spell_id)));
+    args.push(spell_name.map_or(ScriptValue::Nil, ScriptValue::Str));
+    args.push(ScriptValue::Int(i64::from(spell_school)));
+    args.extend([
+        ScriptValue::Number(f64::from(hit.amount)),
+        ScriptValue::Number(f64::from(hit.overkill)),
+        ScriptValue::Int(i64::from(hit.school)),
+        nonzero(i64::from(hit.resist)),
+        ScriptValue::Nil, // blocked: always 0/nil from this packet
+        nonzero(i64::from(hit.absorb)),
+        present(hit.critical),
+        ScriptValue::Nil, // glancing
+        ScriptValue::Nil, // crushing
+    ]);
+    args
+}
+
+fn spell_periodic_miss_args(
+    timestamp: f64,
+    hit: &WrathSpellPeriodicMiss,
+    source_name: &str,
+    target_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+) -> Vec<ScriptValue> {
+    let mut args = combat_log_header(
+        timestamp,
+        "SPELL_PERIODIC_MISSED",
+        hit.caster,
+        source_name,
+        hit.target,
+        target_name,
+    );
+    let spell_name = spells
+        .and_then(|spells| spells.catalog.get(hit.spell_id))
+        .map(|def| def.name.clone());
+    let spell_school = spells
+        .and_then(|spells| spells.catalog.school_mask(hit.spell_id))
+        .unwrap_or(0);
+    args.push(ScriptValue::Int(i64::from(hit.spell_id)));
+    args.push(spell_name.map_or(ScriptValue::Nil, ScriptValue::Str));
+    args.push(ScriptValue::Int(i64::from(spell_school)));
+    args.push(ScriptValue::Str(
+        spell_miss_string(hit.miss_type).to_owned(),
+    ));
+    if matches!(hit.miss_type, 2 | 5 | 10) {
+        args.push(ScriptValue::Number(f64::from(hit.amount)));
+    }
+    args
+}
+
+fn spell_periodic_heal_args(
+    timestamp: f64,
+    hit: &WrathSpellPeriodicHeal,
+    source_name: &str,
+    target_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+) -> Vec<ScriptValue> {
+    let mut args = combat_log_header(
+        timestamp,
+        "SPELL_PERIODIC_HEAL",
+        hit.caster,
+        source_name,
+        hit.target,
+        target_name,
+    );
+    let spell_name = spells
+        .and_then(|spells| spells.catalog.get(hit.spell_id))
+        .map(|def| def.name.clone());
+    let spell_school = spells
+        .and_then(|spells| spells.catalog.school_mask(hit.spell_id))
+        .unwrap_or(0);
+    args.push(ScriptValue::Int(i64::from(hit.spell_id)));
+    args.push(spell_name.map_or(ScriptValue::Nil, ScriptValue::Str));
+    args.push(ScriptValue::Int(i64::from(spell_school)));
+    args.extend([
+        ScriptValue::Number(f64::from(hit.amount)),
+        ScriptValue::Number(f64::from(hit.overheal)),
+        ScriptValue::Number(f64::from(hit.absorbed)),
+        present(hit.critical),
+    ]);
+    args
+}
+
+fn spell_periodic_energize_args(
+    timestamp: f64,
+    hit: &WrathSpellPeriodicEnergize,
+    source_name: &str,
+    target_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+) -> Vec<ScriptValue> {
+    let mut args = combat_log_header(
+        timestamp,
+        "SPELL_PERIODIC_ENERGIZE",
+        hit.caster,
+        source_name,
+        hit.target,
+        target_name,
+    );
+    let spell_name = spells
+        .and_then(|spells| spells.catalog.get(hit.spell_id))
+        .map(|def| def.name.clone());
+    let spell_school = spells
+        .and_then(|spells| spells.catalog.school_mask(hit.spell_id))
+        .unwrap_or(0);
+    let divisor = benilla_protocol::messages::power_display_scale(hit.power_type);
+    let divided_amount = hit.amount.checked_div(divisor).unwrap_or(hit.amount);
+    args.push(ScriptValue::Int(i64::from(hit.spell_id)));
+    args.push(spell_name.map_or(ScriptValue::Nil, ScriptValue::Str));
+    args.push(ScriptValue::Int(i64::from(spell_school)));
+    args.push(ScriptValue::Number(f64::from(divided_amount)));
+    args.push(ScriptValue::Number(f64::from(hit.power_type)));
+    args
+}
+
+fn spell_periodic_drain_args(
+    timestamp: f64,
+    hit: &WrathSpellPeriodicDrain,
+    source_name: &str,
+    target_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+) -> Vec<ScriptValue> {
+    let extra = (f64::from(hit.amount) * f64::from(hit.multiplier)).trunc() as u32;
+    let subevent = if extra != 0 {
+        "SPELL_PERIODIC_LEECH"
+    } else {
+        "SPELL_PERIODIC_DRAIN"
+    };
+    let mut args = combat_log_header(
+        timestamp,
+        subevent,
+        hit.caster,
+        source_name,
+        hit.target,
+        target_name,
+    );
+    let spell_name = spells
+        .and_then(|spells| spells.catalog.get(hit.spell_id))
+        .map(|def| def.name.clone());
+    let spell_school = spells
+        .and_then(|spells| spells.catalog.school_mask(hit.spell_id))
+        .unwrap_or(0);
+    let divisor = benilla_protocol::messages::power_display_scale(hit.power_type);
+    let divided_amount = hit.amount.checked_div(divisor).unwrap_or(hit.amount);
+    let divided_extra = extra.checked_div(divisor).unwrap_or(extra);
+    args.push(ScriptValue::Int(i64::from(hit.spell_id)));
+    args.push(spell_name.map_or(ScriptValue::Nil, ScriptValue::Str));
+    args.push(ScriptValue::Int(i64::from(spell_school)));
+    args.push(ScriptValue::Number(f64::from(divided_amount)));
+    args.push(ScriptValue::Number(f64::from(hit.power_type)));
+    if extra != 0 {
+        args.push(ScriptValue::Number(f64::from(divided_extra)));
+    } else {
+        args.push(ScriptValue::Nil);
+    }
     args
 }
 
@@ -2500,4 +2962,277 @@ mod tests {
         assert_eq!(args[11], ScriptValue::Number(120.0));
         assert_eq!(args[12], ScriptValue::Number(0.0));
     }
+
+    fn spell_periodic_damage_hit() -> crate::wrath::WrathSpellPeriodicDamage {
+        crate::wrath::WrathSpellPeriodicDamage {
+            target: 0xF130_0000_0000_0022,
+            caster: 0x0000_0000_0000_0011,
+            spell_id: 172,
+            amount: 5,
+            overkill: 1,
+            school: 4,
+            absorb: 2,
+            resist: 3,
+            critical: true,
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 3,
+            received_at: 1234.5,
+        }
+    }
+
+    #[test]
+    fn spell_periodic_damage_has_the_twenty_wrath_values() {
+        let mut scope = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        scope
+            .run(
+                r#"
+                Fired = nil
+                local listener = CreateFrame("Frame", "WrathSpellPeriodicDamageTestListener")
+                listener:SetScript("OnEvent", function(_, event, ...)
+                    Fired = { event, ... }
+                end)
+                listener:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+                "#,
+            )
+            .unwrap();
+
+        let hit = spell_periodic_damage_hit();
+        scope.fire_event(
+            "COMBAT_LOG_EVENT_UNFILTERED",
+            spell_periodic_damage_args(1234.5, &hit, "Firna", "Kobold Vermin", None),
+        );
+
+        let subevent: String = scope.eval("return Fired[3]").unwrap();
+        let spell_id: i64 = scope.eval("return Fired[10]").unwrap();
+        let spell_name: Option<String> = scope.eval("return Fired[11]").unwrap();
+        let spell_school: i64 = scope.eval("return Fired[12]").unwrap();
+        let amount: f64 = scope.eval("return Fired[13]").unwrap();
+        let overkill: f64 = scope.eval("return Fired[14]").unwrap();
+        let school: i64 = scope.eval("return Fired[15]").unwrap();
+        let resisted: Option<f64> = scope.eval("return Fired[16]").unwrap();
+        let blocked: Option<f64> = scope.eval("return Fired[17]").unwrap();
+        let absorbed: Option<f64> = scope.eval("return Fired[18]").unwrap();
+        let critical: Option<f64> = scope.eval("return Fired[19]").unwrap();
+        let glancing: Option<f64> = scope.eval("return Fired[20]").unwrap();
+        let crushing: Option<f64> = scope.eval("return Fired[21]").unwrap();
+        let extra: Option<f64> = scope.eval("return Fired[22]").unwrap();
+
+        assert_eq!(subevent, "SPELL_PERIODIC_DAMAGE");
+        assert_eq!(spell_id, 172);
+        assert_eq!(spell_name, None);
+        assert_eq!(spell_school, 0);
+        assert_eq!(amount, 5.0);
+        assert_eq!(overkill, 1.0);
+        assert_eq!(school, 4);
+        assert_eq!(resisted, Some(3.0));
+        assert_eq!(blocked, None, "blocked is always nil from this packet");
+        assert_eq!(absorbed, Some(2.0));
+        assert_eq!(critical, Some(1.0));
+        assert_eq!(glancing, None);
+        assert_eq!(crushing, None);
+        assert_eq!(extra, None, "exactly the twenty SPELL_PERIODIC_DAMAGE values");
+    }
+
+    #[test]
+    fn spell_periodic_zero_damage_absorb_or_resist_posts_missed() {
+        let absorb_hit = crate::wrath::WrathSpellPeriodicMiss {
+            target: 0xF130_0000_0000_0022,
+            caster: 0x0000_0000_0000_0011,
+            spell_id: 172,
+            miss_type: 10,
+            amount: 9,
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 1,
+            received_at: 1.0,
+        };
+        let absorb_args = spell_periodic_miss_args(1.0, &absorb_hit, "Firna", "Kobold Vermin", None);
+        assert_eq!(absorb_args[1], ScriptValue::Str("SPELL_PERIODIC_MISSED".to_owned()));
+        assert_eq!(absorb_args[11], ScriptValue::Str("ABSORB".to_owned()));
+        assert_eq!(absorb_args[12], ScriptValue::Number(9.0));
+        assert_eq!(absorb_args.len(), 13);
+
+        let resist_hit = crate::wrath::WrathSpellPeriodicMiss {
+            miss_type: 2,
+            amount: 7,
+            ..absorb_hit
+        };
+        let resist_args = spell_periodic_miss_args(1.0, &resist_hit, "Firna", "Kobold Vermin", None);
+        assert_eq!(resist_args[11], ScriptValue::Str("RESIST".to_owned()));
+        assert_eq!(resist_args[12], ScriptValue::Number(7.0));
+
+        // damage == 0 with no absorb/resist produces no entry - dispatch classification covers it;
+        // the periodic damage apply path never enqueues such rows.
+        let mut world = WrathWorldView::default();
+        world.session_epoch = 1;
+        world.world_generation = 2;
+        // No row is enqueued for damage==0, absorb==0, resist==0 in the dispatch; nothing to apply.
+        assert!(world.spell_periodic_damages.is_empty());
+        assert!(world.spell_periodic_misses.is_empty());
+    }
+
+    #[test]
+    fn spell_periodic_heal_and_energize_use_their_reference_blocks() {
+        let heal = crate::wrath::WrathSpellPeriodicHeal {
+            target: 0xF130_0000_0000_0022,
+            caster: 0x0000_0000_0000_0011,
+            spell_id: 2050,
+            amount: 42,
+            overheal: 3,
+            absorbed: 7,
+            critical: true,
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 1,
+            received_at: 1.0,
+        };
+        let heal_args = spell_periodic_heal_args(1.0, &heal, "Firna", "Teammate", None);
+        assert_eq!(heal_args[1], ScriptValue::Str("SPELL_PERIODIC_HEAL".to_owned()));
+        assert_eq!(heal_args.len(), 15);
+        assert_eq!(heal_args[11], ScriptValue::Number(42.0));
+        assert_eq!(heal_args[12], ScriptValue::Number(3.0));
+        assert_eq!(heal_args[13], ScriptValue::Number(7.0));
+        assert_eq!(heal_args[14], ScriptValue::Number(1.0));
+
+        let energize = crate::wrath::WrathSpellPeriodicEnergize {
+            target: 0xF130_0000_0000_0022,
+            caster: 0x0000_0000_0000_0011,
+            spell_id: 29166,
+            power_type: 1, // rage: /10
+            amount: 120,
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 1,
+            received_at: 1.0,
+        };
+        let energize_args =
+            spell_periodic_energize_args(1.0, &energize, "Firna", "Teammate", None);
+        assert_eq!(
+            energize_args[1],
+            ScriptValue::Str("SPELL_PERIODIC_ENERGIZE".to_owned())
+        );
+        assert_eq!(energize_args.len(), 13);
+        assert_eq!(energize_args[11], ScriptValue::Number(12.0));
+        assert_eq!(energize_args[12], ScriptValue::Number(1.0));
+    }
+
+    #[test]
+    fn spell_periodic_drain_and_leech_split_on_the_multiplier() {
+        let drain = crate::wrath::WrathSpellPeriodicDrain {
+            target: 0xF130_0000_0000_0022,
+            caster: 0x0000_0000_0000_0011,
+            spell_id: 1454,
+            power_type: 0,
+            amount: 100,
+            multiplier: 0.0,
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 1,
+            received_at: 1.0,
+        };
+        let drain_args = spell_periodic_drain_args(1.0, &drain, "Firna", "Kobold Vermin", None);
+        assert_eq!(drain_args[1], ScriptValue::Str("SPELL_PERIODIC_DRAIN".to_owned()));
+        assert_eq!(drain_args.len(), 14);
+        assert_eq!(drain_args[11], ScriptValue::Number(100.0));
+        assert_eq!(drain_args[12], ScriptValue::Number(0.0));
+        assert_eq!(drain_args[13], ScriptValue::Nil, "no extra when multiplier yields 0");
+
+        let leech = crate::wrath::WrathSpellPeriodicDrain {
+            amount: 100,
+            multiplier: 0.5,
+            ..drain
+        };
+        let leech_args = spell_periodic_drain_args(1.0, &leech, "Firna", "Kobold Vermin", None);
+        assert_eq!(leech_args[1], ScriptValue::Str("SPELL_PERIODIC_LEECH".to_owned()));
+        assert_eq!(leech_args.len(), 14);
+        assert_eq!(leech_args[11], ScriptValue::Number(100.0));
+        assert_eq!(leech_args[12], ScriptValue::Number(0.0));
+        assert_eq!(leech_args[13], ScriptValue::Number(50.0));
+    }
+
+    #[test]
+    fn spell_periodic_zero_amount_rows_are_dropped() {
+        let mut world = WrathWorldView::default();
+        world.session_epoch = 1;
+        world.world_generation = 2;
+
+        world.apply_spell_periodic_heal(
+            crate::wrath::WrathSpellPeriodicHeal {
+                target: 1,
+                caster: 2,
+                spell_id: 3,
+                amount: 0,
+                overheal: 0,
+                absorbed: 0,
+                critical: false,
+                session_epoch: 1,
+                world_generation: 2,
+                revision: 0,
+                received_at: 0.0,
+            },
+            1,
+            2,
+            10.0,
+        );
+        assert!(world.spell_periodic_heals.is_empty());
+        assert_eq!(world.spell_periodic_heal_revision, 0);
+
+        world.apply_spell_periodic_energize(
+            crate::wrath::WrathSpellPeriodicEnergize {
+                target: 1,
+                caster: 2,
+                spell_id: 3,
+                power_type: 0,
+                amount: 0,
+                session_epoch: 1,
+                world_generation: 2,
+                revision: 0,
+                received_at: 0.0,
+            },
+            1,
+            2,
+            10.0,
+        );
+        assert!(world.spell_periodic_energizes.is_empty());
+        assert_eq!(world.spell_periodic_energize_revision, 0);
+
+        world.apply_spell_periodic_drain(
+            crate::wrath::WrathSpellPeriodicDrain {
+                target: 1,
+                caster: 2,
+                spell_id: 3,
+                power_type: 0,
+                amount: 0,
+                multiplier: 1.0,
+                session_epoch: 1,
+                world_generation: 2,
+                revision: 0,
+                received_at: 0.0,
+            },
+            1,
+            2,
+            10.0,
+        );
+        world.apply_spell_periodic_drain(
+            crate::wrath::WrathSpellPeriodicDrain {
+                target: 1,
+                caster: 2,
+                spell_id: 3,
+                power_type: 5, // POWER_HAPPINESS
+                amount: 10,
+                multiplier: 1.0,
+                session_epoch: 1,
+                world_generation: 2,
+                revision: 0,
+                received_at: 0.0,
+            },
+            1,
+            2,
+            10.0,
+        );
+        assert!(world.spell_periodic_drains.is_empty());
+        assert_eq!(world.spell_periodic_drain_revision, 0);
+    }
 }
+

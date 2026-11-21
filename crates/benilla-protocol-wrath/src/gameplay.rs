@@ -2880,22 +2880,32 @@ pub struct SpellMissTarget {
     pub miss_type: u8,
 }
 
-/// One periodic aura tick, shaped by its aura type (`Unit::SendPeriodicAuraLog`).
+/// One periodic aura tick, shaped by its aura type (`Unit::SendPeriodicAuraLog`, 12340
+/// `UnitCombatLog_C.cpp:2627`). The tick fields keep the reference's wire order and values so
+/// the combat-log feed can post the 12340 subevents without inventing offsets.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PeriodicAuraTick {
+    /// Aura types 3 / 89: u32 damage, u32 overkill, u32 school mask, u32 absorbed, u32 resisted,
+    /// u8 crit, u8 hitInfo (reference rewrites hitInfo to 2 when crit).
     Damage {
         amount: u32,
+        overkill: u32,
         school: u32,
         absorb: u32,
         resist: i32,
+        critical: bool,
+        hit_info: u8,
     },
+    /// Aura types 8 / 20: u32 amount, u32 overheal, u32 absorbed, u8 crit.
     Heal {
         amount: u32,
+        overheal: u32,
+        absorb: u32,
+        critical: bool,
     },
-    Energize {
-        power: u32,
-        amount: u32,
-    },
+    /// Aura types 21 / 24: u32 powerType, u32 amount.
+    Energize { power: u32, amount: u32 },
+    /// Aura type 64: u32 powerType, u32 amount, f32 multiplier.
     ManaLeech {
         power: u32,
         amount: u32,
@@ -3938,24 +3948,35 @@ fn read_periodic_aura(b: &[u8]) -> Result<ServerEvent> {
         let tick = match aura_type {
             3 | 89 => {
                 let amount = r.u32()?;
-                let _overkill = r.u32()?;
+                let overkill = r.u32()?;
                 let school = r.u32()?;
                 let absorb = r.u32()?;
                 let resist = r.u32()? as i32;
-                let _critical = r.u8()?;
+                let critical = r.u8()? != 0;
+                let hit_info = r.u8()?;
+                // Reference rewrites hitInfo to 2 when crit.
+                let hit_info = if critical { 2 } else { hit_info };
                 PeriodicAuraTick::Damage {
                     amount,
+                    overkill,
                     school,
                     absorb,
                     resist,
+                    critical,
+                    hit_info,
                 }
             }
             8 | 20 => {
                 let amount = r.u32()?;
-                let _overheal = r.u32()?;
-                let _absorb = r.u32()?;
-                let _critical = r.u8()?;
-                PeriodicAuraTick::Heal { amount }
+                let overheal = r.u32()?;
+                let absorb = r.u32()?;
+                let critical = r.u8()? != 0;
+                PeriodicAuraTick::Heal {
+                    amount,
+                    overheal,
+                    absorb,
+                    critical,
+                }
             }
             21 | 24 => PeriodicAuraTick::Energize {
                 power: r.u32()?,
@@ -7053,5 +7074,72 @@ mod tests {
                 allow_move: false
             }
         );
+    }
+
+    #[test]
+    fn periodic_aura_decode_keeps_overkill_crit_overheal_and_absorbed() {
+        use crate::opcode::SMSG_PERIODICAURALOG;
+
+        let mut body = Vec::new();
+        body.extend_from_slice(&[0x01, 0x11]); // packed target guid 0x11
+        body.extend_from_slice(&[0x01, 0x22]); // packed caster guid 0x22
+        body.extend_from_slice(&133u32.to_le_bytes()); // spell id
+        body.extend_from_slice(&2u32.to_le_bytes()); // tick count
+
+        // Damage tick (aura type 3): amount, overkill, school, absorbed, resisted, crit, hitInfo
+        body.extend_from_slice(&3u32.to_le_bytes());
+        body.extend_from_slice(&100u32.to_le_bytes()); // amount
+        body.extend_from_slice(&7u32.to_le_bytes()); // overkill
+        body.extend_from_slice(&4u32.to_le_bytes()); // school mask
+        body.extend_from_slice(&9u32.to_le_bytes()); // absorbed
+        body.extend_from_slice(&5u32.to_le_bytes()); // resisted
+        body.push(1); // crit
+        body.push(0); // hitInfo, reference rewrites to 2 when crit
+
+        // Heal tick (aura type 8): amount, overheal, absorbed, crit
+        body.extend_from_slice(&8u32.to_le_bytes());
+        body.extend_from_slice(&50u32.to_le_bytes()); // amount
+        body.extend_from_slice(&11u32.to_le_bytes()); // overheal
+        body.extend_from_slice(&3u32.to_le_bytes()); // absorbed
+        body.push(0); // crit
+
+        let event = parse(SMSG_PERIODICAURALOG, &body)
+            .expect("periodic aura is decoded")
+            .expect("periodic aura body is valid");
+        match event {
+            ServerEvent::PeriodicAura {
+                target,
+                caster,
+                spell_id,
+                ticks,
+            } => {
+                assert_eq!(target, 0x11);
+                assert_eq!(caster, 0x22);
+                assert_eq!(spell_id, 133);
+                assert_eq!(ticks.len(), 2);
+                assert_eq!(
+                    ticks[0],
+                    PeriodicAuraTick::Damage {
+                        amount: 100,
+                        overkill: 7,
+                        school: 4,
+                        absorb: 9,
+                        resist: 5,
+                        critical: true,
+                        hit_info: 2,
+                    }
+                );
+                assert_eq!(
+                    ticks[1],
+                    PeriodicAuraTick::Heal {
+                        amount: 50,
+                        overheal: 11,
+                        absorb: 3,
+                        critical: false,
+                    }
+                );
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }
