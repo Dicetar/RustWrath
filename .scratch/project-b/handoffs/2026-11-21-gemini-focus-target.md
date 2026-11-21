@@ -135,7 +135,7 @@ the follow-up: this worktree's own `target/` (see the CI line below).
   B0002: `follow_focus` and `clear_focus_on_leave_world` held `ResMut<FocusTarget>` beside
   `HostedVm`, whose call host reads `Res<FocusTarget>` through `UnitTokens`. The follow-up
   commit moves both systems to `VmWith<FocusWorld>`, the disjoint pair `follow_selection_object`
-  uses. CI on that commit is pending.
+  uses. CI 44932954995 on 634332de8: compiles; tests pass (Windows and Linux gates).
 - The first local checks shared `CARGO_TARGET_DIR` with the other task's worktree, and cargo then
   reported this worktree's edits as fresh: a deliberate `compile_error!` probe passed. The
   follow-up was re-checked with this worktree's own `target/`, where the probe failed as it
