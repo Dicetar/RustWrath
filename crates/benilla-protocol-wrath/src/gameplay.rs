@@ -14,6 +14,7 @@ use anyhow::Result;
 use crate::cast_failure;
 
 pub mod economy;
+pub mod equipment_set;
 mod movement;
 mod mover_control;
 pub mod pet_talent;
@@ -2772,6 +2773,12 @@ pub enum ServerEvent {
     RuneState(wrath_systems::RuneState),
     /// `SMSG_ADD_RUNE_POWER`: the mask of runes that became usable.
     RunePower(wrath_systems::RunePower),
+    /// `SMSG_LOAD_EQUIPMENT_SET`: every saved gear set.
+    EquipmentSetList(Vec<equipment_set::EquipmentSet>),
+    /// `SMSG_EQUIPMENT_SET_ID`: the guid the server gave a saved set, 0 for a refusal.
+    EquipmentSetSaved(equipment_set::EquipmentSetSaved),
+    /// `SMSG_USE_EQUIPMENT_SET_RESULT`: the swap's result byte, 0 for success.
+    EquipmentSetUseResult(u8),
     XpGain {
         victim: u64,
         total_xp: u32,
@@ -3237,6 +3244,14 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_CONVERT_RUNE => wrath_systems::read_convert_rune(body).map(ServerEvent::RuneConvert),
         SMSG_RESYNC_RUNES => wrath_systems::read_resync_runes(body).map(ServerEvent::RuneState),
         SMSG_ADD_RUNE_POWER => wrath_systems::read_add_rune_power(body).map(ServerEvent::RunePower),
+        SMSG_LOAD_EQUIPMENT_SET => {
+            equipment_set::read_load_equipment_set(body).map(ServerEvent::EquipmentSetList)
+        }
+        SMSG_EQUIPMENT_SET_ID => {
+            equipment_set::read_equipment_set_id(body).map(ServerEvent::EquipmentSetSaved)
+        }
+        SMSG_USE_EQUIPMENT_SET_RESULT => equipment_set::read_use_equipment_set_result(body)
+            .map(ServerEvent::EquipmentSetUseResult),
         SMSG_LOG_XPGAIN => read_xp_gain(body),
         SMSG_LEVELUP_INFO => read_levelup_info(body),
         SMSG_SPELLHEALLOG => read_spell_heal_log(body),

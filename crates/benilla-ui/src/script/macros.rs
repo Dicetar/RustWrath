@@ -698,7 +698,7 @@ fn pickup_macro(lua: &Lua, index: usize) -> bool {
 /// behind a zero count). The source runs with no borrow of the model held. Deviation: a listing
 /// that finds no icon stays empty, to be listed again on the next ask, where the reference's
 /// dedup then reads below its null list (`0x4f0134`-`0x4f0145`) and faults.
-fn ensure_macro_icons(lua: &Lua) {
+pub(super) fn ensure_macro_icons(lua: &Lua) {
     let source = {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
         if !model.macro_icons.is_empty() {
@@ -1076,7 +1076,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
 /// The chooser entry at a 1-based icon number: `trunc(n) - 1` (`__ftol`, `0x40a2b0`) compared
 /// unsigned with the count, so 0, a negative or a number past the list is no entry.
-fn icon_at(model: &Model, n: f64) -> Option<String> {
+pub(super) fn icon_at(model: &Model, n: f64) -> Option<String> {
     let i = (super::binding_abi::ftol(n) as u32).wrapping_sub(1);
     model.macro_icons.get(i as usize).cloned()
 }

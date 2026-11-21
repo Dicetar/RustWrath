@@ -107,6 +107,7 @@ mod screen_fade;
 mod screenshot;
 mod script_calls;
 mod shaders;
+mod wrath_equipment;
 mod wrath_inventory;
 mod wrath_item;
 

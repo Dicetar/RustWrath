@@ -265,6 +265,9 @@ pub enum ScriptCall {
     /// `ConfirmPetUnlearn()` (`0x48dca0` → `0x5dfba0(0, 0)`): `CMSG_PET_UNLEARN` to the
     /// remembered trainer, or the money refusal's line, inside the call.
     ConfirmPetUnlearn,
+    /// An equipment-set verb ([`super::EquipmentSetCall`]): the list's change, its send and its
+    /// `EQUIPMENT_SETS_CHANGED`, or the swap's send and `EQUIPMENT_SWAP_PENDING`, inside the call.
+    EquipmentSet(super::EquipmentSetCall),
 }
 
 /// The mode the four `TargetNearest*` shims hand the TAB cycler `0x493f60`, the only byte that
