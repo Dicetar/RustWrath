@@ -10007,9 +10007,9 @@ fn refresh_cast_interruptibility(
                 }
             }
         }
-        let value = Some(definition.prevention_type != 1 || interrupt != 0 || silence != 0);
-        cast.interruptible = value;
-        if previous != value {
+        let interruptible = definition.prevention_type != 1 || interrupt != 0 || silence != 0;
+        cast.interruptible = Some(interruptible);
+        if previous != Some(interruptible) {
             cast_events.write(crate::wrath_native::WrathCastEvent {
                 scope: cast.scope,
                 attempt_serial: Some(cast.attempt_serial),
@@ -10020,7 +10020,7 @@ fn refresh_cast_interruptibility(
                 start_ui_now_seconds: cast.start_ui_now_seconds,
                 ui_now_seconds: cast.last_update_ui_now_seconds,
                 kind: crate::wrath_native::WrathCastEventKind::InterruptibilityChanged {
-                    not_interruptible: !value.expect("interruptibility is computed above"),
+                    not_interruptible: !interruptible,
                 },
             });
         }
