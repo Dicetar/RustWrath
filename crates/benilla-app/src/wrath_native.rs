@@ -167,6 +167,8 @@ pub struct WrathInventoryFailure {
 
 /// One native feed item. Kept on its own queue so cast/channel traffic cannot displace lifecycle
 /// edges from the bounded session queue.
+// Unboxed on purpose: boxing the cast edge would add an allocation to every cast edge.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum WrathNativeFeedEvent {
     /// One resolved cast/channel edge, carrying the authoritative entries it left for its caster.
