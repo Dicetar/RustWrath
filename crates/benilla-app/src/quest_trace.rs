@@ -9080,6 +9080,8 @@ mod tests {
         }
     }
 
+    // `History::counters` exists only with the `dev` feature.
+    #[cfg(feature = "dev")]
     #[test]
     fn full_ingress_drops_excess_without_blocking_gameplay_and_marks_gaps() {
         let (source, mut history) = new_pair();
@@ -9316,6 +9318,8 @@ mod tests {
         }));
     }
 
+    // The snapshot export reader (`serde_json`, `validate_snapshot_header`) is dev-only.
+    #[cfg(feature = "dev")]
     #[test]
     fn npc_aliases_and_redacted_snapshot_export_omit_raw_guids_and_reject_unknown_versions() {
         let (source, mut history) = new_pair();
