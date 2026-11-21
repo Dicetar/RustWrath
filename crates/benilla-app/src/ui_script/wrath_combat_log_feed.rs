@@ -18,9 +18,10 @@ use crate::script_calls::VmWith;
 use crate::ui_script::UiClock;
 use crate::wrath::{
     WrathPartyKill, WrathSpellCastFailed, WrathSpellCastStart, WrathSpellCastSuccess,
-    WrathSpellDamage, WrathSpellEnergize, WrathSpellHeal, WrathSpellMiss, WrathSpellPeriodicDamage,
-    WrathSpellPeriodicDrain, WrathSpellPeriodicEnergize, WrathSpellPeriodicHeal,
-    WrathSpellPeriodicMiss, WrathSwing, WrathWorldView, COMBAT_LOG_NAME_RETRY_SECONDS,
+    WrathSpellDamage, WrathSpellEnergize, WrathSpellExecuteLog, WrathSpellExecuteLogRow,
+    WrathSpellHeal, WrathSpellMiss, WrathSpellPeriodicDamage, WrathSpellPeriodicDrain,
+    WrathSpellPeriodicEnergize, WrathSpellPeriodicHeal, WrathSpellPeriodicMiss, WrathSwing,
+    WrathWorldView, COMBAT_LOG_NAME_RETRY_SECONDS,
 };
 
 /// Capacity loss and unresolved-name counts already reported, so each diagnostic is logged once
@@ -55,6 +56,8 @@ pub(crate) struct CombatLogMemo {
     spell_periodic_energize_unresolved: u64,
     spell_periodic_drain_dropped: u64,
     spell_periodic_drain_unresolved: u64,
+    spell_execute_log_dropped: u64,
+    spell_execute_log_unresolved: u64,
 }
 
 /// The visible marker for an endpoint whose name never resolved inside the retry window. It is
@@ -69,10 +72,11 @@ pub(crate) fn feed(
         Option<Res<'static, NameCache>>,
         Option<Res<'static, NetCommands>>,
         Option<Res<'static, crate::ui_action::Spells>>,
+        Option<Res<'static, crate::item_names::ItemNames>>,
     )>,
     mut memo: Local<CombatLogMemo>,
 ) {
-    vm.feed(|script, (mut world, clock, names, net, spells), fires| {
+    vm.feed(|script, (mut world, clock, names, net, spells, item_names), fires| {
         let Some(script) = script.filter(|script| script.target() == UiTarget::Wrath335) else {
             return;
         };
@@ -281,6 +285,20 @@ pub(crate) fn feed(
             );
         }
         memo.spell_periodic_drain_unresolved = world.spell_periodic_drain_unresolved;
+        if world.spell_execute_log_dropped > memo.spell_execute_log_dropped {
+            debug!(
+                dropped = world.spell_execute_log_dropped,
+                "wrath: combat-log queue capacity lost spell-execute rows"
+            );
+        }
+        memo.spell_execute_log_dropped = world.spell_execute_log_dropped;
+        if world.spell_execute_log_unresolved > memo.spell_execute_log_unresolved {
+            debug!(
+                unresolved = world.spell_execute_log_unresolved,
+                "wrath: combat-log spell-execute rows delivered with an unknown endpoint after name resolution timed out"
+            );
+        }
+        memo.spell_execute_log_unresolved = world.spell_execute_log_unresolved;
 
         let now = clock.as_deref().map_or(0.0, |clock| clock.ui_now);
         let ask = match net.as_deref() {
@@ -981,6 +999,71 @@ pub(crate) fn feed(
             );
             world.spell_periodic_drains.remove(index);
         }
+
+        let mut index = 0;
+        while index < world.spell_execute_logs.len() {
+            let hit = world.spell_execute_logs[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                world.spell_execute_logs.remove(index);
+                continue;
+            }
+            let hidden = spells
+                .as_deref()
+                .and_then(|spells| spells.catalog.get(hit.spell_id))
+                .is_some_and(spell_is_hidden_in_combat_log);
+            if hidden {
+                world.spell_execute_logs.remove(index);
+                continue;
+            }
+
+            let (source_guid, target_guid) = execute_log_endpoints(&hit);
+            let source = endpoint_name(script, world, names.as_deref(), source_guid, ask);
+            let target = endpoint_name(script, world, names.as_deref(), target_guid, ask);
+            let timestamp = if hit.received_at > 0.0 { hit.received_at } else { now };
+            if source.is_none() || target.is_none() {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at {
+                    now - hit.received_at
+                } else {
+                    0.0
+                };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        spell_execute_log_args(
+                            timestamp,
+                            &hit,
+                            source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            spells.as_deref(),
+                            item_names.as_deref(),
+                            ask,
+                        ),
+                    );
+                    world.spell_execute_log_unresolved =
+                        world.spell_execute_log_unresolved.saturating_add(1);
+                    world.spell_execute_logs.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let (source, target) = (source.unwrap_or_default(), target.unwrap_or_default());
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                spell_execute_log_args(
+                    timestamp,
+                    &hit,
+                    &source,
+                    &target,
+                    spells.as_deref(),
+                    item_names.as_deref(),
+                    ask,
+                ),
+            );
+            world.spell_execute_logs.remove(index);
+        }
         let mut index = 0;
         while index < world.spell_misses.len() {
             let hit = world.spell_misses[index];
@@ -1636,6 +1719,105 @@ fn spell_periodic_energize_args(
     args.push(ScriptValue::Int(i64::from(spell_school)));
     args.push(ScriptValue::Number(f64::from(divided_amount)));
     args.push(ScriptValue::Number(f64::from(hit.power_type)));
+    args
+}
+
+fn execute_log_endpoints(hit: &WrathSpellExecuteLog) -> (u64, u64) {
+    let target = match hit.row {
+        WrathSpellExecuteLogRow::Interrupt { target, .. }
+        | WrathSpellExecuteLogRow::ExtraAttacks { target, .. }
+        | WrathSpellExecuteLogRow::Create { target }
+        | WrathSpellExecuteLogRow::Summon { target }
+        | WrathSpellExecuteLogRow::Resurrect { target }
+        | WrathSpellExecuteLogRow::Drain { target, .. }
+        | WrathSpellExecuteLogRow::Leech { target, .. }
+        | WrathSpellExecuteLogRow::DurabilityDamage { target, .. }
+        | WrathSpellExecuteLogRow::DurabilityDamageAll { target } => target,
+    };
+    (hit.caster, target)
+}
+
+fn spell_execute_log_args(
+    timestamp: f64,
+    hit: &WrathSpellExecuteLog,
+    source_name: &str,
+    target_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+    item_names: Option<&crate::item_names::ItemNames>,
+    ask: Ask<'_>,
+) -> Vec<ScriptValue> {
+    let (subevent, target) = match hit.row {
+        WrathSpellExecuteLogRow::Interrupt { target, .. } => ("SPELL_INTERRUPT", target),
+        WrathSpellExecuteLogRow::ExtraAttacks { target, .. } => ("SPELL_EXTRA_ATTACKS", target),
+        WrathSpellExecuteLogRow::Create { target } => ("SPELL_CREATE", target),
+        WrathSpellExecuteLogRow::Summon { target } => ("SPELL_SUMMON", target),
+        WrathSpellExecuteLogRow::Resurrect { target } => ("SPELL_RESURRECT", target),
+        WrathSpellExecuteLogRow::Drain { target, .. } => ("SPELL_DRAIN", target),
+        WrathSpellExecuteLogRow::Leech { target, .. } => ("SPELL_LEECH", target),
+        WrathSpellExecuteLogRow::DurabilityDamage { target, .. } => {
+            ("SPELL_DURABILITY_DAMAGE", target)
+        }
+        WrathSpellExecuteLogRow::DurabilityDamageAll { target } => {
+            ("SPELL_DURABILITY_DAMAGE_ALL", target)
+        }
+    };
+    let mut args = combat_log_header(
+        timestamp,
+        subevent,
+        hit.caster,
+        source_name,
+        target,
+        target_name,
+    );
+    cast_spell_values(&mut args, hit.spell_id, spells);
+    match hit.row {
+        WrathSpellExecuteLogRow::Interrupt {
+            interrupted_spell_id,
+            ..
+        } => {
+            cast_spell_values(&mut args, interrupted_spell_id, spells);
+        }
+        WrathSpellExecuteLogRow::ExtraAttacks { amount, .. } => {
+            args.push(ScriptValue::Int(i64::from(amount)));
+        }
+        WrathSpellExecuteLogRow::Drain {
+            amount,
+            power_type,
+            multiplier,
+            ..
+        }
+        | WrathSpellExecuteLogRow::Leech {
+            amount,
+            power_type,
+            multiplier,
+            ..
+        } => {
+            let extra = (f64::from(amount) * f64::from(multiplier)).trunc() as u32;
+            let divisor = benilla_protocol::messages::power_display_scale(power_type);
+            let divided_amount = amount.checked_div(divisor).unwrap_or(amount);
+            let divided_extra = extra.checked_div(divisor).unwrap_or(extra);
+            args.push(ScriptValue::Number(f64::from(divided_amount)));
+            args.push(ScriptValue::Number(f64::from(power_type)));
+            if divided_extra != 0 {
+                args.push(ScriptValue::Number(f64::from(divided_extra)));
+            } else {
+                args.push(ScriptValue::Nil);
+            }
+        }
+        WrathSpellExecuteLogRow::DurabilityDamage { item_id, .. } => {
+            args.push(ScriptValue::Int(i64::from(item_id)));
+            let name = if item_id > 0 {
+                item_names.and_then(|names| names.name(item_id as u32, ask))
+            } else {
+                None
+            };
+            args.push(name.map_or(ScriptValue::Nil, |name| ScriptValue::Str(name.to_owned())));
+        }
+        WrathSpellExecuteLogRow::Create { .. }
+        | WrathSpellExecuteLogRow::Summon { .. }
+        | WrathSpellExecuteLogRow::Resurrect { .. }
+        | WrathSpellExecuteLogRow::DurabilityDamageAll { .. } => {}
+    }
     args
 }
 
@@ -4086,5 +4268,304 @@ mod tests {
             world.spell_cast_start_revision, 0,
             "dropped starts must not advance the cast-start revision"
         );
+    }
+
+    #[test]
+    fn spell_interrupt_has_the_interrupted_spell_trio() {
+        let hit = WrathSpellExecuteLog {
+            caster: 0x0000_0000_0000_0011,
+            spell_id: 2139,
+            row: WrathSpellExecuteLogRow::Interrupt {
+                target: 0xF130_0000_0000_0022,
+                interrupted_spell_id: 116,
+            },
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 1,
+            received_at: 1.0,
+        };
+        let spells = cast_spells([
+            (2139, cast_display(2139, "Counterspell")),
+            (116, cast_display(116, "Frostbolt")),
+        ]);
+        let args = spell_execute_log_args(
+            1.0,
+            &hit,
+            "Firna",
+            "Kobold Vermin",
+            Some(&spells),
+            None,
+            Ask::Read,
+        );
+        assert_eq!(args[1], ScriptValue::Str("SPELL_INTERRUPT".to_owned()));
+        assert_eq!(args.len(), 14);
+        assert_eq!(args[8], ScriptValue::Int(2139));
+        assert_eq!(args[9], ScriptValue::Str("Counterspell".to_owned()));
+        assert_eq!(args[11], ScriptValue::Int(116));
+        assert_eq!(args[12], ScriptValue::Str("Frostbolt".to_owned()));
+    }
+
+    #[test]
+    fn spell_extra_attacks_carries_the_amount() {
+        let hit = WrathSpellExecuteLog {
+            caster: 0x0000_0000_0000_0011,
+            spell_id: 15600,
+            row: WrathSpellExecuteLogRow::ExtraAttacks {
+                target: 0xF130_0000_0000_0022,
+                amount: 2,
+            },
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 1,
+            received_at: 1.0,
+        };
+        let spells = cast_spells([(15600, cast_display(15600, "Hand of Justice"))]);
+        let args = spell_execute_log_args(
+            1.0,
+            &hit,
+            "Firna",
+            "Kobold Vermin",
+            Some(&spells),
+            None,
+            Ask::Read,
+        );
+        assert_eq!(args[1], ScriptValue::Str("SPELL_EXTRA_ATTACKS".to_owned()));
+        assert_eq!(args.len(), 12);
+        assert_eq!(args[11], ScriptValue::Int(2));
+    }
+
+    #[test]
+    fn gameobject_summon_posts_spell_create_and_unit_summon_posts_spell_summon() {
+        let create = WrathSpellExecuteLog {
+            caster: 0x0000_0000_0000_0011,
+            spell_id: 2006,
+            row: WrathSpellExecuteLogRow::Create {
+                target: 0xF110_0000_0000_0022,
+            },
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 1,
+            received_at: 1.0,
+        };
+        let summon = WrathSpellExecuteLog {
+            row: WrathSpellExecuteLogRow::Summon {
+                target: 0xF130_0000_0000_0022,
+            },
+            ..create
+        };
+        let spells = cast_spells([(2006, cast_display(2006, "Resurrection"))]);
+        let create_args = spell_execute_log_args(
+            1.0,
+            &create,
+            "Firna",
+            "Grave",
+            Some(&spells),
+            None,
+            Ask::Read,
+        );
+        let summon_args = spell_execute_log_args(
+            1.0,
+            &summon,
+            "Firna",
+            "Kobold Vermin",
+            Some(&spells),
+            None,
+            Ask::Read,
+        );
+        assert_eq!(create_args[1], ScriptValue::Str("SPELL_CREATE".to_owned()));
+        assert_eq!(summon_args[1], ScriptValue::Str("SPELL_SUMMON".to_owned()));
+        assert_eq!(create_args.len(), 11);
+        assert_eq!(summon_args.len(), 11);
+    }
+
+    #[test]
+    fn spell_resurrect_has_the_spell_trio() {
+        let hit = WrathSpellExecuteLog {
+            caster: 0x0000_0000_0000_0011,
+            spell_id: 2006,
+            row: WrathSpellExecuteLogRow::Resurrect {
+                target: 0x0000_0000_0000_0022,
+            },
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 1,
+            received_at: 1.0,
+        };
+        let spells = cast_spells([(2006, cast_display(2006, "Resurrection"))]);
+        let args = spell_execute_log_args(
+            1.0,
+            &hit,
+            "Firna",
+            "Teammate",
+            Some(&spells),
+            None,
+            Ask::Read,
+        );
+        assert_eq!(args[1], ScriptValue::Str("SPELL_RESURRECT".to_owned()));
+        assert_eq!(args.len(), 11);
+        assert_eq!(args[8], ScriptValue::Int(2006));
+        assert_eq!(args[9], ScriptValue::Str("Resurrection".to_owned()));
+    }
+
+    #[test]
+    fn spell_execute_drain_and_leech_split_on_the_multiplier() {
+        let drain = WrathSpellExecuteLog {
+            caster: 0x0000_0000_0000_0011,
+            spell_id: 1454,
+            row: WrathSpellExecuteLogRow::Drain {
+                target: 0xF130_0000_0000_0022,
+                amount: 100,
+                power_type: 0,
+                multiplier: 0.0,
+            },
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 1,
+            received_at: 1.0,
+        };
+        let leech = WrathSpellExecuteLog {
+            row: WrathSpellExecuteLogRow::Leech {
+                target: 0xF130_0000_0000_0022,
+                amount: 100,
+                power_type: 0,
+                multiplier: 0.5,
+            },
+            ..drain
+        };
+        let drain_args = spell_execute_log_args(
+            1.0,
+            &drain,
+            "Firna",
+            "Kobold Vermin",
+            None,
+            None,
+            Ask::Read,
+        );
+        let leech_args = spell_execute_log_args(
+            1.0,
+            &leech,
+            "Firna",
+            "Kobold Vermin",
+            None,
+            None,
+            Ask::Read,
+        );
+        assert_eq!(drain_args[1], ScriptValue::Str("SPELL_DRAIN".to_owned()));
+        assert_eq!(leech_args[1], ScriptValue::Str("SPELL_LEECH".to_owned()));
+        assert_eq!(drain_args.len(), 14);
+        assert_eq!(leech_args.len(), 14);
+        assert_eq!(drain_args[13], ScriptValue::Nil);
+        assert_eq!(leech_args[13], ScriptValue::Number(50.0));
+    }
+
+    #[test]
+    fn spell_durability_damage_names_the_item_and_all_has_no_item() {
+        let mut item_names = crate::item_names::ItemNames::default();
+        item_names.file(25, Some("Worn Shortsword".to_owned()));
+        let damage = WrathSpellExecuteLog {
+            caster: 0x0000_0000_0000_0011,
+            spell_id: 133,
+            row: WrathSpellExecuteLogRow::DurabilityDamage {
+                target: 0x0000_0000_0000_0011,
+                item_id: 25,
+                slot: 15,
+            },
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 1,
+            received_at: 1.0,
+        };
+        let all = WrathSpellExecuteLog {
+            row: WrathSpellExecuteLogRow::DurabilityDamageAll {
+                target: 0x0000_0000_0000_0011,
+            },
+            ..damage
+        };
+        let spells = cast_spells([(133, cast_display(133, "Fireball"))]);
+        let damage_args = spell_execute_log_args(
+            1.0,
+            &damage,
+            "Firna",
+            "Firna",
+            Some(&spells),
+            Some(&item_names),
+            Ask::Read,
+        );
+        let all_args = spell_execute_log_args(
+            1.0,
+            &all,
+            "Firna",
+            "Firna",
+            Some(&spells),
+            Some(&item_names),
+            Ask::Read,
+        );
+        assert_eq!(
+            damage_args[1],
+            ScriptValue::Str("SPELL_DURABILITY_DAMAGE".to_owned())
+        );
+        assert_eq!(damage_args.len(), 13);
+        assert_eq!(damage_args[11], ScriptValue::Int(25));
+        assert_eq!(
+            damage_args[12],
+            ScriptValue::Str("Worn Shortsword".to_owned())
+        );
+        assert_eq!(
+            all_args[1],
+            ScriptValue::Str("SPELL_DURABILITY_DAMAGE_ALL".to_owned())
+        );
+        assert_eq!(all_args.len(), 11);
+    }
+
+    #[test]
+    fn spell_power_drain_drops_zero_amount_and_happiness() {
+        let mut world = WrathWorldView::default();
+        world.session_epoch = 1;
+        world.world_generation = 2;
+        let base = WrathSpellExecuteLog {
+            caster: 0x0000_0000_0000_0011,
+            spell_id: 1454,
+            row: WrathSpellExecuteLogRow::Drain {
+                target: 0xF130_0000_0000_0022,
+                amount: 0,
+                power_type: 0,
+                multiplier: 1.0,
+            },
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 0,
+            received_at: 0.0,
+        };
+        world.apply_spell_execute_log(base, 1, 2, 10.0);
+        world.apply_spell_execute_log(
+            WrathSpellExecuteLog {
+                row: WrathSpellExecuteLogRow::Drain {
+                    target: 0xF130_0000_0000_0022,
+                    amount: 10,
+                    power_type: 5,
+                    multiplier: 1.0,
+                },
+                ..base
+            },
+            1,
+            2,
+            10.0,
+        );
+        world.apply_spell_execute_log(
+            WrathSpellExecuteLog {
+                row: WrathSpellExecuteLogRow::Leech {
+                    target: 0xF130_0000_0000_0022,
+                    amount: 0,
+                    power_type: 0,
+                    multiplier: 1.0,
+                },
+                ..base
+            },
+            1,
+            2,
+            10.0,
+        );
+        assert!(world.spell_execute_logs.is_empty());
+        assert_eq!(world.spell_execute_log_revision, 0);
     }
 }

@@ -735,6 +735,12 @@ pub enum WrathFeedEvent {
         session_epoch: u64,
         world_generation: u64,
     },
+    /// `SMSG_SPELL_EXECUTE_LOG` (`0x24C`): one logged effect row, in wire order.
+    SpellExecuteLog {
+        hit: WrathSpellExecuteLog,
+        session_epoch: u64,
+        world_generation: u64,
+    },
     /// `SMSG_PARTYKILLLOG`: the killing blow credited to a player. Carries the scope so a
     /// delayed kill from a retired world never reaches the Wrath VM.
     PartyKillLog {
@@ -2468,6 +2474,42 @@ pub struct WrathSpellPeriodicDrain {
     pub received_at: f64,
 }
 
+/// One logged `SMSG_SPELL_EXECUTE_LOG` effect row. The nine variants are the combat-log
+/// subevents the 12340 handler produces; source is `caster`, destination is the effect target.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WrathSpellExecuteLogRow {
+    Interrupt { target: u64, interrupted_spell_id: u32 },
+    ExtraAttacks { target: u64, amount: u32 },
+    Create { target: u64 },
+    Summon { target: u64 },
+    Resurrect { target: u64 },
+    Drain {
+        target: u64,
+        amount: u32,
+        power_type: u32,
+        multiplier: f32,
+    },
+    Leech {
+        target: u64,
+        amount: u32,
+        power_type: u32,
+        multiplier: f32,
+    },
+    DurabilityDamage { target: u64, item_id: i32, slot: i32 },
+    DurabilityDamageAll { target: u64 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathSpellExecuteLog {
+    pub caster: u64,
+    pub spell_id: u32,
+    pub row: WrathSpellExecuteLogRow,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    pub received_at: f64,
+}
+
 /// The decoded `SMSG_CALENDAR_SEND_CALENDAR` snapshot, kept as the wire delivered it. The UI
 /// reads the date from `zone_time` and pending invites from `invites`; the other rows stay here
 /// for the calendar windows that need them.
@@ -2639,6 +2681,11 @@ pub struct WrathWorldView {
     pub spell_periodic_drain_revision: u64,
     pub spell_periodic_drain_dropped: u64,
     pub spell_periodic_drain_unresolved: u64,
+    /// Execute-log rows (`SMSG_SPELL_EXECUTE_LOG`) waiting for the UI feed.
+    pub spell_execute_logs: VecDeque<WrathSpellExecuteLog>,
+    pub spell_execute_log_revision: u64,
+    pub spell_execute_log_dropped: u64,
+    pub spell_execute_log_unresolved: u64,
     /// Presentation mirror of the authority's active casts, keyed by caster, retaining 12340
     /// identity/timing beyond the vanilla cast-bar edges. Written only from resolved snapshots;
     /// never re-resolves wire facts. UI clocks are stamped here, not in the authority.
@@ -2744,6 +2791,10 @@ impl Default for WrathWorldView {
             spell_periodic_drain_revision: 0,
             spell_periodic_drain_dropped: 0,
             spell_periodic_drain_unresolved: 0,
+            spell_execute_logs: VecDeque::new(),
+            spell_execute_log_revision: 0,
+            spell_execute_log_dropped: 0,
+            spell_execute_log_unresolved: 0,
             casts: BTreeMap::new(),
             channels: BTreeMap::new(),
             last_cast_end: None,
@@ -3254,6 +3305,42 @@ impl WrathWorldView {
             });
     }
 
+    pub(crate) fn apply_spell_execute_log(
+        &mut self,
+        hit: WrathSpellExecuteLog,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        match hit.row {
+            WrathSpellExecuteLogRow::Drain {
+                amount,
+                power_type,
+                ..
+            }
+            | WrathSpellExecuteLogRow::Leech {
+                amount,
+                power_type,
+                ..
+            } if amount == 0 || power_type == 5 => {
+                return;
+            }
+            _ => {}
+        }
+        self.spell_execute_log_revision = self.spell_execute_log_revision.saturating_add(1);
+        if self.spell_execute_logs.len() >= SPELL_LOG_CAPACITY {
+            self.spell_execute_logs.pop_front();
+            self.spell_execute_log_dropped = self.spell_execute_log_dropped.saturating_add(1);
+        }
+        self.spell_execute_logs.push_back(WrathSpellExecuteLog {
+            session_epoch,
+            world_generation,
+            revision: self.spell_execute_log_revision,
+            received_at,
+            ..hit
+        });
+    }
+
     /// Clear every scoped rune/calendar/combat-log/LFG fact on a session end or world transfer.
     fn clear_rune_calendar(&mut self) {
         self.runes.clear();
@@ -3303,6 +3390,9 @@ impl WrathWorldView {
         self.spell_periodic_drains.clear();
         self.spell_periodic_drain_dropped = 0;
         self.spell_periodic_drain_unresolved = 0;
+        self.spell_execute_logs.clear();
+        self.spell_execute_log_dropped = 0;
+        self.spell_execute_log_unresolved = 0;
         self.lfg_join_result = None;
         self.lfg_queue_status = None;
         self.lfg_update_player = None;
@@ -4732,6 +4822,7 @@ fn translate_gameplay(
             hit_info,
         })],
         WrathGameplayEvent::SpellMiss { .. } => Vec::new(),
+        WrathGameplayEvent::SpellExecuteLog { .. } => Vec::new(),
         WrathGameplayEvent::PeriodicAura {
             target,
             caster,
@@ -10034,6 +10125,25 @@ fn wrath_net_drain(
                     world_generation,
                 ) {
                     view.apply_spell_periodic_drain(
+                        hit,
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
+            WrathFeedEvent::SpellExecuteLog {
+                hit,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_spell_execute_log(
                         hit,
                         session_epoch,
                         world_generation,
@@ -15352,6 +15462,84 @@ pub fn run_session_with_cancel(
                                 ) {
                                     push_session_event(&events_out, &session, event);
                                 }
+                            }
+                        }
+                        Ok(WrathGameplayEvent::SpellExecuteLog {
+                            caster,
+                            spell_id,
+                            rows,
+                        }) => {
+                            let session_epoch = session.epoch();
+                            let world_generation = session.world_generation();
+                            for row in rows {
+                                let row = match row {
+                                    gameplay::SpellExecuteLogRow::Interrupt {
+                                        target,
+                                        interrupted_spell_id,
+                                    } => WrathSpellExecuteLogRow::Interrupt {
+                                        target,
+                                        interrupted_spell_id,
+                                    },
+                                    gameplay::SpellExecuteLogRow::ExtraAttacks { target, amount } => {
+                                        WrathSpellExecuteLogRow::ExtraAttacks { target, amount }
+                                    }
+                                    gameplay::SpellExecuteLogRow::Create { target } => {
+                                        WrathSpellExecuteLogRow::Create { target }
+                                    }
+                                    gameplay::SpellExecuteLogRow::Summon { target } => {
+                                        WrathSpellExecuteLogRow::Summon { target }
+                                    }
+                                    gameplay::SpellExecuteLogRow::Resurrect { target } => {
+                                        WrathSpellExecuteLogRow::Resurrect { target }
+                                    }
+                                    gameplay::SpellExecuteLogRow::Drain {
+                                        target,
+                                        amount,
+                                        power_type,
+                                        multiplier,
+                                    } => WrathSpellExecuteLogRow::Drain {
+                                        target,
+                                        amount,
+                                        power_type,
+                                        multiplier,
+                                    },
+                                    gameplay::SpellExecuteLogRow::Leech {
+                                        target,
+                                        amount,
+                                        power_type,
+                                        multiplier,
+                                    } => WrathSpellExecuteLogRow::Leech {
+                                        target,
+                                        amount,
+                                        power_type,
+                                        multiplier,
+                                    },
+                                    gameplay::SpellExecuteLogRow::DurabilityDamage {
+                                        target,
+                                        item_id,
+                                        slot,
+                                    } => WrathSpellExecuteLogRow::DurabilityDamage {
+                                        target,
+                                        item_id,
+                                        slot,
+                                    },
+                                    gameplay::SpellExecuteLogRow::DurabilityDamageAll { target } => {
+                                        WrathSpellExecuteLogRow::DurabilityDamageAll { target }
+                                    }
+                                };
+                                feed.push_event(WrathFeedEvent::SpellExecuteLog {
+                                    hit: WrathSpellExecuteLog {
+                                        caster,
+                                        spell_id,
+                                        row,
+                                        session_epoch,
+                                        world_generation,
+                                        revision: 0,
+                                        received_at: 0.0,
+                                    },
+                                    session_epoch,
+                                    world_generation,
+                                });
                             }
                         }
                         Ok(event) => {

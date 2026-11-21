@@ -2281,6 +2281,14 @@ pub enum ServerEvent {
         spell_id: u32,
         ticks: Vec<PeriodicAuraTick>,
     },
+    /// `SMSG_SPELL_EXECUTE_LOG` (`0x24C`, `Spell.cpp:5024` `SendLogExecute`,
+    /// `UnitCombatLog_C.cpp:1684` `HandleSpellLogExecute`): one decoded combat-log row per logged
+    /// effect target, in wire order across effects. Unknown/no-row effects are omitted.
+    SpellExecuteLog {
+        caster: u64,
+        spell_id: u32,
+        rows: Vec<SpellExecuteLogRow>,
+    },
     /// `MSG_CORPSE_QUERY`'s answer: the corpse's adjusted display map/position and real map.
     CorpseQuery {
         found: bool,
@@ -2917,6 +2925,44 @@ pub enum PeriodicAuraTick {
     },
 }
 
+/// One logged `SMSG_SPELL_EXECUTE_LOG` effect row (`UnitCombatLog_C.cpp:1684`). The target is
+/// packed on the wire; every row carries it as the destination guid.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SpellExecuteLogRow {
+    /// Effect 68: interrupted spell id.
+    Interrupt { target: u64, interrupted_spell_id: u32 },
+    /// Effect 19: extra melee attacks.
+    ExtraAttacks { target: u64, amount: u32 },
+    /// Effects 28/50/56/76/81/83/104/105/106/107 on a gameobject target.
+    Create { target: u64 },
+    /// Effects 28/50/56/76/81/83/104/105/106/107 on a non-gameobject target.
+    Summon { target: u64 },
+    /// Effects 18/113.
+    Resurrect { target: u64 },
+    /// Effects 8/62 with `extra = trunc(amount * multiplier) == 0`.
+    Drain {
+        target: u64,
+        amount: u32,
+        power_type: u32,
+        multiplier: f32,
+    },
+    /// Effects 8/62 with `extra = trunc(amount * multiplier) != 0`.
+    Leech {
+        target: u64,
+        amount: u32,
+        power_type: u32,
+        multiplier: f32,
+    },
+    /// Effect 111 with item id and slot not both `0xFFFFFFFF`.
+    DurabilityDamage {
+        target: u64,
+        item_id: i32,
+        slot: i32,
+    },
+    /// Effect 111 with both item id and slot `0xFFFFFFFF`.
+    DurabilityDamageAll { target: u64 },
+}
+
 /// Decode one server opcode into the app-facing shape: `Ok(None)` for an opcode this slice does
 /// not consume, the codec's error for a malformed body. The session's direct movement arm reads
 /// this wrapper; [`parse`] remains the raw `Option<Result>` form its other callers pattern on.
@@ -2957,6 +3003,7 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_PERIODICAURALOG => read_periodic_aura(body),
         SMSG_SPELLNONMELEEDAMAGELOG => read_spell_damage(body),
         SMSG_SPELL_MISS_LOG => read_spell_miss(body),
+        0x24C => read_spell_execute_log(body),
         MSG_CORPSE_QUERY => read_corpse_query(body),
         SMSG_CORPSE_RECLAIM_DELAY => read_corpse_reclaim_delay(body),
         SMSG_RESURRECT_REQUEST => read_resurrect_request(body),
@@ -4009,6 +4056,111 @@ fn read_periodic_aura(b: &[u8]) -> Result<ServerEvent> {
     })
 }
 
+
+/// `SMSG_SPELL_EXECUTE_LOG` (`0x24C`, `Spell.cpp:5024`, `UnitCombatLog_C.cpp:1684`): packed
+/// caster, spell, effect count, then per effect the effect id, target count and effect-shaped rows.
+/// Every target guid is packed in 3.3.5. No-row effects and unknown effects with an unknown width
+/// are rejected as invalid values so the stream does not desync.
+fn read_spell_execute_log(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let caster = r.packed_guid()?;
+    let spell_id = r.u32()?;
+    let effect_count = r.u32()?;
+    let mut rows = Vec::new();
+    for _ in 0..effect_count {
+        let effect = r.u32()?;
+        let target_count = r.u32()?;
+        for _ in 0..target_count {
+            match effect {
+                8 | 62 => {
+                    let target = r.packed_guid()?;
+                    let amount = r.u32()?;
+                    let power_type = r.u32()?;
+                    let multiplier = r.f32()?;
+                    let extra = (f64::from(amount) * f64::from(multiplier)).trunc() as u32;
+                    rows.push(if extra != 0 {
+                        SpellExecuteLogRow::Leech {
+                            target,
+                            amount,
+                            power_type,
+                            multiplier,
+                        }
+                    } else {
+                        SpellExecuteLogRow::Drain {
+                            target,
+                            amount,
+                            power_type,
+                            multiplier,
+                        }
+                    });
+                }
+                18 | 113 => {
+                    let target = r.packed_guid()?;
+                    rows.push(SpellExecuteLogRow::Resurrect { target });
+                }
+                19 => {
+                    let target = r.packed_guid()?;
+                    let amount = r.u32()?;
+                    rows.push(SpellExecuteLogRow::ExtraAttacks { target, amount });
+                }
+                24 | 59 | 157 => {
+                    let _item_id = r.u32()?;
+                }
+                28 | 50 | 56 | 76 | 81 | 83 | 104 | 105 | 106 | 107 => {
+                    let target = r.packed_guid()?;
+                    if benilla_protocol::guid::is_gameobject(target) {
+                        rows.push(SpellExecuteLogRow::Create { target });
+                    } else {
+                        rows.push(SpellExecuteLogRow::Summon { target });
+                    }
+                }
+                33 => {
+                    let _target = r.packed_guid()?;
+                }
+                68 => {
+                    let target = r.packed_guid()?;
+                    let interrupted_spell_id = r.u32()?;
+                    rows.push(SpellExecuteLogRow::Interrupt {
+                        target,
+                        interrupted_spell_id,
+                    });
+                }
+                101 => {
+                    let _item_id = r.u32()?;
+                }
+                102 => {
+                    let _target = r.packed_guid()?;
+                }
+                111 => {
+                    let target = r.packed_guid()?;
+                    let item_id = r.u32()? as i32;
+                    let slot = r.u32()? as i32;
+                    if item_id == -1 && slot == -1 {
+                        rows.push(SpellExecuteLogRow::DurabilityDamageAll { target });
+                    } else {
+                        rows.push(SpellExecuteLogRow::DurabilityDamage {
+                            target,
+                            item_id,
+                            slot,
+                        });
+                    }
+                }
+                other => {
+                    return Err(DecodeError::invalid_value(
+                        "SMSG_SPELL_EXECUTE_LOG: unknown effect",
+                    )
+                    .with_value(other)
+                    .into());
+                }
+            }
+        }
+    }
+    Ok(ServerEvent::SpellExecuteLog {
+        caster,
+        spell_id,
+        rows,
+    })
+}
 fn read_cast_failed(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let cast_count = r.u8()?;
@@ -7153,6 +7305,54 @@ mod tests {
                         absorb: 3,
                         critical: false,
                     }
+                );
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spell_execute_log_reads_target_and_amount_effects_in_wire_order() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&pack_guid(0x11)); // caster
+        body.extend_from_slice(&1337u32.to_le_bytes()); // spell id
+        body.extend_from_slice(&2u32.to_le_bytes()); // effect count
+
+        // effect 19: extra attacks
+        body.extend_from_slice(&19u32.to_le_bytes());
+        body.extend_from_slice(&1u32.to_le_bytes()); // target count
+        body.extend_from_slice(&pack_guid(0x22)); // target
+        body.extend_from_slice(&3u32.to_le_bytes()); // amount
+
+        // effect 68: interrupt
+        body.extend_from_slice(&68u32.to_le_bytes());
+        body.extend_from_slice(&1u32.to_le_bytes()); // target count
+        body.extend_from_slice(&pack_guid(0x33)); // target
+        body.extend_from_slice(&77u32.to_le_bytes()); // interrupted spell id
+
+        let event = parse(0x24C, &body)
+            .expect("spell execute log is decoded")
+            .expect("spell execute log body is valid");
+        match event {
+            ServerEvent::SpellExecuteLog {
+                caster,
+                spell_id,
+                rows,
+            } => {
+                assert_eq!(caster, 0x11);
+                assert_eq!(spell_id, 1337);
+                assert_eq!(
+                    rows,
+                    vec![
+                        SpellExecuteLogRow::ExtraAttacks {
+                            target: 0x22,
+                            amount: 3,
+                        },
+                        SpellExecuteLogRow::Interrupt {
+                            target: 0x33,
+                            interrupted_spell_id: 77,
+                        },
+                    ]
                 );
             }
             other => panic!("unexpected event: {other:?}"),
