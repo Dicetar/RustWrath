@@ -519,7 +519,9 @@ local function light_share(player, state, now)
         or not player:IsWithinLoS(player:GetX(), player:GetY(), player:GetZ() + ROOF_PROBE_YARDS) then
         share = INDOOR_SIGHT
     else
-        local hour = tonumber(os.date("%H", GetGameTime()))
+        -- GetGameTime() is a 64-bit userdata that os.date refuses; the server's own clock is
+        -- the game clock here.
+        local hour = tonumber(os.date("%H"))
         if hour and (hour >= 22 or hour < 5) then
             share = NIGHT_SIGHT
         elseif hour and (hour >= 20 or hour < 7) then
