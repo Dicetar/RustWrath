@@ -123,6 +123,7 @@ cursor_keys = ["Escape", "B", "C", "P", "M", "L", "N", "O", "I", "K", "U", "H", 
 | Poise: each hit taken costs poise and does not interrupt; at zero it breaks and staggers; refills 30 s after the last hit | done (prediction only, authored numbers) | `souls/input.rs`, `combat_playback.rs` | `poise` |
 | Hyperarmor: inside a heavy's windup and swing a hit costs half the poise | done (prediction only) | `souls/input.rs` | `poise` |
 | Crouch (toggle) and the crouch attack (light from a crouch) | done; the stealth crouch pose (StealthStand/StealthWalk) on our body, ×0.5 run speed and the pose for others from the server script | `souls/input.rs` | `crouch` |
+| Crouch stealth: hidden while crouched out of combat; per-creature suspicion from sight (cone, line of sight, light, stillness) and noise (movement, armour past leather); look at 30, investigate at 65, attack at 100; broken by a landed attack, damage taken, combat, sprint, roll or mount, back 4 s later; a ×2.5 sneak attack on an unaware creature; rogues also get their Stealth (no slow) and are noticed at half; the HUD's eye meter | done in source and live on the server; client not yet built; numbers are estimates | `integrations/ale/rustwrath_souls.lua`, `souls/server.rs`, `souls/hud.rs` | `crouch`, `hud` |
 | Jump attacks (light/heavy in the air) | imports authored `JumpLightLand`/`JumpHeavyLand` rows where present | `souls/input.rs` | `jump_attacks` |
 | Left-hand chain | done; needs `LeftLight1…` or `PairedLight1…` rows (the importer's opt-in) | `souls/input.rs` | `left_hand` |
 | Parry: the `Parry` row's `iframes` window deflects a hit | done; needs a `Parry` row; with the server script a parried strike opens a ×3 riposte on that creature for 1.5 s | `souls/input.rs` | `parry` |
@@ -138,7 +139,7 @@ cursor_keys = ["Escape", "B", "C", "P", "M", "L", "N", "O", "I", "K", "U", "H", 
 by itself; deleting it turns it off). The client talks to it over addon self-whispers with the
 prefix `RWSOULS` (`souls/server.rs`): `HELLO`, `MODE 1|0` every 10 s while F10 is on, `SPRINT`,
 `CROUCH`, `HIT <mv%> <guids>`, `SWING <action>`, `VERDICT <id> <outcome>`; the server answers
-`STRIKE <id> <creature> <windup-ms> <base-reach> <mine> [sweep|thrust|slam]`, `RESOLVE`, `PARRIED`, `BROKEN`, `SWING`. The optional trailing shape preserves old-client parsing; absent or unknown means the legacy 60° half-cone. Entry policy is in `STRIKE_KIND_BY_ENTRY`; unspecified creatures sweep. F10 off sends `MODE 0` and the server hands every creature back to
+`STRIKE <id> <creature> <windup-ms> <base-reach> <mine> [sweep|thrust|slam]`, `RESOLVE`, `PARRIED`, `BROKEN`, `SWING`, and for the crouch stealth `EYE <0 standing|1 hidden|2 seen> <suspicion> <creature>` and `SNEAK <creature>`. The optional trailing shape preserves old-client parsing; absent or unknown means the legacy 60° half-cone. Entry policy is in `STRIKE_KIND_BY_ENTRY`; unspecified creatures sweep. F10 off sends `MODE 0` and the server hands every creature back to
 stock AI. Without the script the client stays on the stock-melee fallback (`engage_on_hit`).
 Install and side effects: `.scratch/project-b/server-rebuild-batch.md` item 2.
 

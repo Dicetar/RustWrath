@@ -26,6 +26,9 @@
 //!   window ([`SoulsLink::riposte`]): the next hit on it deals the riposte damage.
 //! - **Stance.** The server counts each creature's stance down with our hits; at zero it sends
 //!   `BROKEN`: the creature staggers (its stun stance) and the same riposte window opens.
+//! - **Crouch stealth.** Crouched out of combat, the server hides us and works each creature's
+//!   suspicion; `EYE <mode> <suspicion> <guid>` feeds the HUD's eye meter ([`SoulsLink::eye`]) and
+//!   `SNEAK <guid>` flashes it for a sneak attack ([`SoulsLink::sneak`]).
 //!
 //! Everything resets the frame the mode or the switch is off.
 
@@ -65,6 +68,8 @@ const DODGE_TOLERANCE_SECONDS: f32 = 0.1;
 pub(crate) const DODGE_LEAD_SECONDS: f32 = 0.45;
 /// A strike whose `RESOLVE` never comes is dropped this long past its windup.
 const STRIKE_FORGET_SECONDS: f32 = 2.0;
+/// The eye meter flashes this long for a sneak attack.
+const SNEAK_FLASH_SECONDS: f32 = 0.6;
 /// A remote body's network swing stays muted this long after its last relayed `SWING`.
 const REMOTE_MUTE_SECONDS: f32 = 3.0;
 /// The inbox keeps at most this many unread messages.
@@ -174,6 +179,50 @@ enum Inbound {
     },
     /// Our equipment load score, for the roll tier.
     Load(u8),
+    /// The crouch stealth's eye meter.
+    Eye(Eye),
+    /// A sneak attack landed on this creature.
+    Sneak(u64),
+}
+
+/// The crouch stealth as the server last sent it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Eye {
+    pub(crate) mode: EyeMode,
+    /// The highest suspicion of a creature around us, 0-100 (100: spotted).
+    pub(crate) suspicion: u8,
+    /// The creature holding it; 0 for none.
+    pub(crate) creature: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EyeMode {
+    /// Not crouched.
+    Standing,
+    /// Crouched and hidden.
+    Hidden,
+    /// Crouched but seen: the stealth broke and its cooldown runs, or we are in combat.
+    Seen,
+}
+
+impl Eye {
+    /// Suspicion at which a creature stops and looks, then walks over to investigate (the script's
+    /// NOTICE and INVESTIGATE).
+    pub(crate) const NOTICE: u8 = 30;
+    pub(crate) const INVESTIGATE: u8 = 65;
+
+    fn parse(mode: &str, suspicion: &str, creature: &str) -> Option<Self> {
+        Some(Self {
+            mode: match mode {
+                "0" => EyeMode::Standing,
+                "1" => EyeMode::Hidden,
+                "2" => EyeMode::Seen,
+                _ => return None,
+            },
+            suspicion: suspicion.parse::<u32>().ok()?.min(100) as u8,
+            creature: creature.parse().ok()?,
+        })
+    }
 }
 
 fn parse(body: &str) -> Option<Inbound> {
@@ -212,6 +261,8 @@ fn parse(body: &str) -> Option<Inbound> {
             action: next()?.to_owned(),
         },
         "LOAD" => Inbound::Load(next()?.parse::<u32>().ok()?.min(255) as u8),
+        "EYE" => Inbound::Eye(Eye::parse(next()?, next()?, next()?)?),
+        "SNEAK" => Inbound::Sneak(next()?.parse().ok()?),
         _ => return None,
     })
 }
@@ -274,6 +325,10 @@ pub(crate) struct SoulsLink {
     striking: Vec<(Entity, f32)>,
     /// Our equipment load score as the server last sent it.
     pub(crate) load: Option<u8>,
+    /// The crouch stealth's eye meter as the server last sent it.
+    pub(crate) eye: Option<Eye>,
+    /// The last sneak attack's creature and the end of its flash (app seconds).
+    pub(crate) sneak: Option<(u64, f32)>,
     /// The latest dodge's i-frames (app seconds, first and last frame inside), kept after they
     /// end so a strike is judged against the window rather than the one frame of its deadline.
     iframes_span: Option<(f32, f32)>,
@@ -321,6 +376,8 @@ impl SoulsLink {
             && self.remote_swings.is_empty()
             && self.striking.is_empty()
             && self.load.is_none()
+            && self.eye.is_none()
+            && self.sneak.is_none()
     }
 }
 
@@ -649,7 +706,19 @@ pub(super) fn drive_link(
                 }
                 link.load = Some(score);
             }
+            Inbound::Eye(eye) => {
+                if link.eye.map(|old| old.mode) != Some(eye.mode) {
+                    info!("souls link: crouch stealth {:?}", eye.mode);
+                }
+                link.eye = Some(eye);
+            }
+            Inbound::Sneak(creature) => {
+                link.sneak = Some((creature, t + SNEAK_FLASH_SECONDS));
+            }
         }
+    }
+    if link.sneak.is_some_and(|(_, until)| t >= until) {
+        link.sneak = None;
     }
     if link.broken.is_some_and(|(_, until)| t >= until) {
         link.broken = None;
@@ -825,6 +894,16 @@ mod tests {
                 riposte_ms: 3000
             })
         );
+        assert_eq!(
+            parse("EYE\t1\t35\t42"),
+            Some(Inbound::Eye(Eye {
+                mode: EyeMode::Hidden,
+                suspicion: 35,
+                creature: 42
+            }))
+        );
+        assert_eq!(parse("SNEAK\t42"), Some(Inbound::Sneak(42)));
+        assert_eq!(parse("EYE\t3\t35\t42"), None);
         assert_eq!(parse("STRIKE\t7\tnot-a-guid\t800\t5\t1"), None);
         assert_eq!(parse("WHAT\t1"), None);
     }
