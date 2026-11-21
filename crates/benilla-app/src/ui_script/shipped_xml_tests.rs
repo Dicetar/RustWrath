@@ -2036,6 +2036,9 @@ fn the_layer_does_not_grow() {
         "SpellBookAdapters.xml",
         "ScriptLogFrame.xml",
         "FrameXMLFixes.xml",
+        // RustWrath's Enchant Bottle panel: a server feature's own window, which the stock
+        // interface has no counterpart for.
+        "EnchantBottle.xml",
     ];
     assert_eq!(
         super::addons::Addon::layer().toc.files,
