@@ -14544,17 +14544,15 @@ pub fn run_session_with_cancel(
                             // terminal. Both handlers do different work, so both are delivered.
                             push_forced_event(&events_out, SessionEvent::LoggedOut, None);
                         }
-                        Ok(
-                            event @ WrathGameplayEvent::PeriodicAura {
-                                target,
-                                caster,
-                                spell_id,
-                                ref ticks,
-                            },
-                        ) => {
+                        Ok(WrathGameplayEvent::PeriodicAura {
+                            target,
+                            caster,
+                            spell_id,
+                            ticks,
+                        }) => {
                             let session_epoch = session.epoch();
                             let world_generation = session.world_generation();
-                            for tick in ticks {
+                            for tick in &ticks {
                                 match *tick {
                                     gameplay::PeriodicAuraTick::Damage {
                                         amount,
@@ -14687,7 +14685,12 @@ pub fn run_session_with_cancel(
                             }
                             if session.player_guid().is_some() {
                                 for event in translate_live(
-                                    event,
+                                    WrathGameplayEvent::PeriodicAura {
+                                        target,
+                                        caster,
+                                        spell_id,
+                                        ticks,
+                                    },
                                     session.player_guid().unwrap_or(0),
                                     received_at,
                                 ) {

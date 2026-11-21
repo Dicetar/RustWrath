@@ -163,73 +163,76 @@ pub(crate) fn feed(
             );
         }
         memo.spell_energize_unresolved = world.spell_energize_unresolved;
-        for (label, dropped, memo_dropped) in [
-            (
-                "periodic-damage",
-                world.spell_periodic_damage_dropped,
-                &mut memo.spell_periodic_damage_dropped,
-            ),
-            (
-                "periodic-miss",
-                world.spell_periodic_miss_dropped,
-                &mut memo.spell_periodic_miss_dropped,
-            ),
-            (
-                "periodic-heal",
-                world.spell_periodic_heal_dropped,
-                &mut memo.spell_periodic_heal_dropped,
-            ),
-            (
-                "periodic-energize",
-                world.spell_periodic_energize_dropped,
-                &mut memo.spell_periodic_energize_dropped,
-            ),
-            (
-                "periodic-drain",
-                world.spell_periodic_drain_dropped,
-                &mut memo.spell_periodic_drain_dropped,
-            ),
-        ] {
-            if dropped > *memo_dropped {
-                debug!(dropped, "wrath: combat-log queue capacity lost {label} rows");
-            }
-            *memo_dropped = dropped;
+        if world.spell_periodic_damage_dropped > memo.spell_periodic_damage_dropped {
+            debug!(
+                dropped = world.spell_periodic_damage_dropped,
+                "wrath: combat-log queue capacity lost periodic-damage rows"
+            );
         }
-        for (label, unresolved, memo_unresolved) in [
-            (
-                "periodic-damage",
-                world.spell_periodic_damage_unresolved,
-                &mut memo.spell_periodic_damage_unresolved,
-            ),
-            (
-                "periodic-miss",
-                world.spell_periodic_miss_unresolved,
-                &mut memo.spell_periodic_miss_unresolved,
-            ),
-            (
-                "periodic-heal",
-                world.spell_periodic_heal_unresolved,
-                &mut memo.spell_periodic_heal_unresolved,
-            ),
-            (
-                "periodic-energize",
-                world.spell_periodic_energize_unresolved,
-                &mut memo.spell_periodic_energize_unresolved,
-            ),
-            (
-                "periodic-drain",
-                world.spell_periodic_drain_unresolved,
-                &mut memo.spell_periodic_drain_unresolved,
-            ),
-        ] {
-            if unresolved > *memo_unresolved {
-                debug!(
-                    unresolved,
-                    "wrath: combat-log {label} rows delivered with an unknown endpoint after name resolution timed out"
-                );
-            }
-            *memo_unresolved = unresolved;
+        memo.spell_periodic_damage_dropped = world.spell_periodic_damage_dropped;
+        if world.spell_periodic_damage_unresolved > memo.spell_periodic_damage_unresolved {
+            debug!(
+                unresolved = world.spell_periodic_damage_unresolved,
+                "wrath: combat-log periodic-damage rows delivered with an unknown endpoint after name resolution timed out"
+            );
         }
+        memo.spell_periodic_damage_unresolved = world.spell_periodic_damage_unresolved;
+        if world.spell_periodic_miss_dropped > memo.spell_periodic_miss_dropped {
+            debug!(
+                dropped = world.spell_periodic_miss_dropped,
+                "wrath: combat-log queue capacity lost periodic-miss rows"
+            );
+        }
+        memo.spell_periodic_miss_dropped = world.spell_periodic_miss_dropped;
+        if world.spell_periodic_miss_unresolved > memo.spell_periodic_miss_unresolved {
+            debug!(
+                unresolved = world.spell_periodic_miss_unresolved,
+                "wrath: combat-log periodic-miss rows delivered with an unknown endpoint after name resolution timed out"
+            );
+        }
+        memo.spell_periodic_miss_unresolved = world.spell_periodic_miss_unresolved;
+        if world.spell_periodic_heal_dropped > memo.spell_periodic_heal_dropped {
+            debug!(
+                dropped = world.spell_periodic_heal_dropped,
+                "wrath: combat-log queue capacity lost periodic-heal rows"
+            );
+        }
+        memo.spell_periodic_heal_dropped = world.spell_periodic_heal_dropped;
+        if world.spell_periodic_heal_unresolved > memo.spell_periodic_heal_unresolved {
+            debug!(
+                unresolved = world.spell_periodic_heal_unresolved,
+                "wrath: combat-log periodic-heal rows delivered with an unknown endpoint after name resolution timed out"
+            );
+        }
+        memo.spell_periodic_heal_unresolved = world.spell_periodic_heal_unresolved;
+        if world.spell_periodic_energize_dropped > memo.spell_periodic_energize_dropped {
+            debug!(
+                dropped = world.spell_periodic_energize_dropped,
+                "wrath: combat-log queue capacity lost periodic-energize rows"
+            );
+        }
+        memo.spell_periodic_energize_dropped = world.spell_periodic_energize_dropped;
+        if world.spell_periodic_energize_unresolved > memo.spell_periodic_energize_unresolved {
+            debug!(
+                unresolved = world.spell_periodic_energize_unresolved,
+                "wrath: combat-log periodic-energize rows delivered with an unknown endpoint after name resolution timed out"
+            );
+        }
+        memo.spell_periodic_energize_unresolved = world.spell_periodic_energize_unresolved;
+        if world.spell_periodic_drain_dropped > memo.spell_periodic_drain_dropped {
+            debug!(
+                dropped = world.spell_periodic_drain_dropped,
+                "wrath: combat-log queue capacity lost periodic-drain rows"
+            );
+        }
+        memo.spell_periodic_drain_dropped = world.spell_periodic_drain_dropped;
+        if world.spell_periodic_drain_unresolved > memo.spell_periodic_drain_unresolved {
+            debug!(
+                unresolved = world.spell_periodic_drain_unresolved,
+                "wrath: combat-log periodic-drain rows delivered with an unknown endpoint after name resolution timed out"
+            );
+        }
+        memo.spell_periodic_drain_unresolved = world.spell_periodic_drain_unresolved;
 
         let now = clock.as_deref().map_or(0.0, |clock| clock.ui_now);
         let ask = match net.as_deref() {

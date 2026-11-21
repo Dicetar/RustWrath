@@ -28,7 +28,7 @@ Next: integrator review; CI should compile and run the named periodic tests
 - `spell_periodic_drain_and_leech_split_on_the_multiplier` (feed)
 - `spell_periodic_zero_amount_rows_are_dropped` (feed)
 
-CI: run 44928577145 failed `fmt` only; the overseer applied `rustfmt`, made the periodic-miss amount an integer like `PushEvent` 0x2000/0x4000/0x8000, made a zero divided drain extra nil, and read crit from `hitInfo` bit 1 as well as the crit byte. Re-run pending.
+CI: run 44928577145 failed `fmt` only; the overseer applied `rustfmt`, made the periodic-miss amount an integer like `PushEvent` 0x2000/0x4000/0x8000, made a zero divided drain extra nil, and read crit from `hitInfo` bit 1 as well as the crit byte. Run 44929021935 then failed on ten borrow errors: the memo tuple arrays borrowed `memo` twice, and the match arm moved `event` while `ticks` was borrowed. The overseer replaced the memo arrays with explicit per-field blocks and destructured `PeriodicAura` by value, then re-ran `rustfmt`.
 
 ## Scope
 
