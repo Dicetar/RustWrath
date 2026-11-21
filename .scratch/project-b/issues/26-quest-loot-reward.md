@@ -90,4 +90,13 @@ future tickets, not assigned issue numbers; no runtime behavior is claimed for a
 | Repeatable / weekly | Replay and reset semantics; the narrow path's acted latch assumes one-shot. | giver `repeatable`; reset machinery | `TBD-REPEATABLE` |
 | Vehicle | Vehicle seat/control objectives; the client currently boards no vehicle. | `gameplay.rs` "This client boards no vehicle" | `TBD-VEHICLE` |
 
+## Evidence refresh (2026-11-24)
+
+The issue 26 source gap table and uncovered-type inventory remain current. The landed evidence
+reviewed for this refresh is `5c4786a91`, which merges the landed issue-27 ledger ancestry into the
+branch, and `efdbf2a75`, which enumerates the uncovered quest types. No later landed commit supplies
+new quest, loot, reward, duplicate-prevention, or reconnect runtime evidence. The existing Covered,
+Missing, and Blocked classifications are therefore preserved; connected behavior remains UNKNOWN
+without the prohibited live client/server run.
+
 

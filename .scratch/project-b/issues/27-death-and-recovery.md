@@ -50,7 +50,15 @@ Row totals: Covered 3, Missing 1, Blocked 2.
 - **Re-query the corpse on a reconnect while dead.** Behavior: on the first frame the returning self body is dead or a ghost, send exactly one MSG_CORPSE_QUERY so corpse position and range are restored after a dead reconnect. Files: crates/benilla-app/src/death/mod.rs (feed_death), crates/benilla-app/src/net/session.rs (world/reconnect entry); well under 300 lines added. Acceptance: (1) exactly one CorpseQuery is sent on dead-or-ghost return after a reconnect; (2) no duplicate query while an answer is pending; (3) the post-release ghost-to-alive query is unchanged. Named tests: `reconnect_while_dead_resends_corpse_query` and `no_duplicate_corpse_query_after_reconnect` in death/mod.rs tests, driven by the headless client with a captured NetCommands channel.
 - **Unit-test combat-intent clearing on reconnect. Blocked: ownership boundary.** Behavior: core::reconnect clears the input buffer, pending inputs and gesture and emits Reconnected, so stale intents cannot replay in the new epoch. File: crates/benilla-combat-core/src/core.rs (reconnect) is owned by Astra/Claude tonight and must not be edited by this swarm; hand this test-only ticket to that owner. Acceptance: (1) reconnect with a newer epoch resets session/player/clock and clears buffer, pending and gesture; (2) an older or equal epoch is rejected with SessionNotAdvanced; (3) the Reconnected event carries the new epoch, session and player. Named tests: `reconnect_clears_buffer_pending_and_gesture`, `reconnect_rejects_stale_epoch` in core.rs tests.
 - **Record instance and pet death edge cases in the compatibility ledger.** Behavior: add instance-bound corpse (corpse map differs from display map) and pet-death edge rows to the death section. File: .scratch/project-b/compatibility/first-loop-behaviors.md (doc only, roughly 30 lines); no source change. Acceptance: (1) new rows with N/R/T/P cases; (2) each row marked Partial/Missing/Blocked with a source owner; (3) no live claim — evidence is live-only. Named test: none (doc ticket); the live check is listed below instead.
-- **Live-only checks (not source tickets).** Corpse restoration after a dead reconnect, and health/durability/soulstone/cooldown outcomes before and after a rejected action across a transition, require a live client+server run and remain blocked in this audit.
+- **Live-only checks (not source tickets).** Corpse restoration after a dead reconnect, health/durability/soulstone/cooldown outcomes before and after a rejected action across a transition, the instance-bound corpse marker/route, and a real dead-pet revive require a live client+server run and remain blocked in this audit.
+
+## Evidence refresh (2026-11-24)
+
+The death/recovery rows retain their source-only classifications. Landed evidence `4904db731` and
+`ede7c8d2f` preserves the issue-27 audit and adds compatibility-ledger rows D07 (instance-bound
+corpse) and D08 (pet death/revive). D07 remains Partial with live proof required; D08 remains Partial
+for dead-pet refusal/gating and Missing for the Revive Pet command. No runtime behavior is promoted
+to Covered.
 
 
 
