@@ -317,8 +317,8 @@ Smallest missing rows:
 | Channel join/leave/list and numbered slots | WORKING | `ui_chat/channels.rs::an_ordinary_zone_joins_general_and_local_defense` | `crates/benilla-app/src/ui_chat/channels.rs`, `slots.rs`; stock `ChatFrame.lua` | Zone-driven auto-join, custom channel verbs, server `ChannelNotify` confirmation and slot reuse |
 | Whispers and offline targets | WORKING | `ui_chat/tests.rs::a_received_whisper_triggers_replying_to_tells` | `crates/benilla-app/src/ui_chat/net.rs` (`on_whisper_refusal`); stock `ChatFrame.lua` | Whisper refusal packets print the not-found/wrong-faction lines; ignored senders get `CMSG_CHAT_IGNORED` |
 | Chat filters, languages and addon lane | WORKING | `ui_chat/net.rs::addon_chat_never_reaches_the_chat_window` | `crates/benilla-app/src/ui_chat/net.rs` (`chat`), `language.rs`; stock `ChatFrame.lua` | Addon traffic fires `CHAT_MSG_ADDON` without rendering; language headers and GM mode are applied |
-| Combat log frame (COMBAT_LOG_EVENT_UNFILTERED) | PARTIAL | `wrath_combat_log_feed.rs::party_kill_event_has_the_eight_wrath_combat_log_values` | `crates/benilla-app/src/ui_script/wrath_combat_log_feed.rs`; stock `Blizzard_CombatLog/Blizzard_CombatLog.lua` | Only `PARTY_KILL` is emitted, with endpoint names/guids/flags after name resolution |
-| Combat log filter and history API | PARTIAL | `benilla-ui/src/script/combat_log.rs::apply_filters_sequence_stores_complete_masks_and_guids` | `crates/benilla-ui/src/script/combat_log.rs`; stock `Blizzard_CombatLog.lua` | Filter rows and retention are real state, but `CombatLogGetNumEntries` is always 0 and no entry ring/matcher exists |
+| Combat log frame (COMBAT_LOG_EVENT_UNFILTERED) | PARTIAL | `wrath_combat_log_feed.rs::party_kill_event_has_the_eight_wrath_combat_log_values`; current `feed` | `crates/benilla-app/src/ui_script/wrath_combat_log_feed.rs`; stock `Blizzard_CombatLog/Blizzard_CombatLog.lua` | The feed now emits `PARTY_KILL`, `SWING_DAMAGE`, `SWING_MISSED`, `SPELL_DAMAGE`, `SPELL_MISSED`, `SPELL_HEAL`, and `SPELL_ENERGIZE` from decoded server rows. Source coverage is landed; rendered stock-frame behavior remains unproven without a live run. Evidence: `f902a884c`, `7e4628ca1`, `519095eb3`, `9b8ba646c`, `cd95c37d9`, `bdf7391cd`. |
+| Combat log filter and history API | PARTIAL | `benilla-ui/src/script/combat_log.rs::record_unfiltered`, `CombatLogState`; `benilla-ui/src/script/tick.rs::fire_event_into` | `crates/benilla-ui/src/script/combat_log.rs`; stock `Blizzard_CombatLog.lua` | `fire_event_into` records every unfiltered tuple; the `VecDeque` history, retention pruning, filtered count/cursor/current-entry queries, and GUID selector matching are source-backed. CI/runtime execution is absent, so the stock history walk remains unproven. Evidence: `681426a2b`, `8a78e95ef`. |
 | Combat log retention (combatLogRetentionTime) | WORKING | `combat_log.rs::retention_round_trips_from_the_stock_default` | `crates/benilla-ui/src/script/combat_log.rs`; stock `Blizzard_CombatLog.lua` | Getter/setter follow the registered CVar or the 300s fallback, including read-only refusal |
 | Player frame (health/power/level/class/status) | WORKING | SOURCE-OBSERVED | `crates/benilla-ui/src/script/unit.rs`, `wrath_unit.rs`, `crates/benilla-app/src/ui_unit/*`; stock `Interface/FrameXML/PlayerFrame.lua` | Unit tokens, GUIDs, health/power and power type come from the model and Wrath host getters |
 | Player/target auras (UnitAura/UnitBuff/UnitDebuff) | PARTIAL | SOURCE-OBSERVED | `crates/benilla-ui/src/script/wrath_aura.rs`, `aura/mod.rs`; stock `PlayerFrame.lua`/`TargetFrame.lua` | Aura list, counts, durations and filters work; `RAID` aura filtering is explicitly unsupported |
@@ -331,9 +331,9 @@ Smallest missing rows:
 | Guild roster and ranks | WORKING | `ui_guild/feed.rs::an_offline_row_keeps_its_level_class_and_zone` | `crates/benilla-app/src/ui_guild/*`; stock `Interface/FrameXML/GuildFrame.lua` | Roster, ranks, notes, last-online and identity cache are projected to stock frames |
 | Guild events and commands | WORKING | `ui_guild/call_tests.rs::the_guild_verbs_send_inside_their_calls` | `crates/benilla-app/src/ui_guild/*`; stock `GuildFrame.lua` | Invite, promote, demote, remove, note and MOTD verbs send and roster updates signal |
 
-Smallest missing rows:
-- Combat log raw entry ring and matcher: `crates/benilla-ui/src/script/combat_log.rs` keeps filters and retention, but `CombatLogGetNumEntries` is hard-coded to 0 and `CombatLogGetCurrentEntry` returns no values; stock `Blizzard_CombatLog.lua` history walk cannot work.
-- Combat log event coverage: `crates/benilla-app/src/ui_script/wrath_combat_log_feed.rs` emits only `COMBAT_LOG_EVENT_UNFILTERED` for `PARTY_KILL`; no other combat events reach the stock combat log frame.
+Smallest remaining runtime checks:
+- Combat log frame observation: source producers and the history API are landed, but a live Wrath client run must still confirm filtered `COMBAT_LOG_EVENT` delivery and the stock `Blizzard_CombatLog.lua` history walk.
+- Class-specific combat behavior: the class ledger below records the available resource/usable-action seams and leaves class-specific server outcomes UNKNOWN.
 - Aura raid filtering: `crates/benilla-ui/src/script/wrath_aura.rs` rejects the `RAID` filter with "requires the native raid policy"; raid-frame aura buttons using that filter are incomplete.
 
 ### Overseer selection: the three smallest missing rows
@@ -349,9 +349,49 @@ Smallest missing rows:
    `oc/economy-ui-coverage`.
 
 Not ticketed tonight: the bank 28-slot/7-bag proof needs an owned character with items in those
-slots (`Blocked: needs owner run`); the world-map quest POI feed, the combat-log entry ring and
-`CombatLogGetNumEntries` are real but larger than one sitting and are named under "Next" in the
-area notes; the GameObject quest-marker `BROKEN` row is not a gap, because the 12340 answer
-handler at `0x5dca2f` drops a GameObject's questgiver status, so neither client renders a marker
-over one.
+slots (`Blocked: needs owner run`); the GameObject quest-marker `BROKEN` row is not a gap, because
+the 12340 answer handler at `0x5dca2f` drops a GameObject's questgiver status, so neither client
+renders a marker over one.
+
+## Class combat compatibility ledger (2026-11-24)
+
+This section extends issue 18's stock replacement inventory with the nine requested Wrath classes.
+It records mechanics that have a current source seam, then separates class-specific server/live
+behavior that the repository does not prove. `PARTIAL` means the shared resource, usability, or
+UI seam is source-backed; `UNKNOWN` means the class-specific outcome, talent/proc interaction,
+server acceptance, or rendered result still needs evidence. No row below claims a live character
+run.
+
+The shared owner paths are:
+
+- `crates/benilla-app/src/spell/usable.rs:371-496` (`spell_usable`) and `:622-636`
+  (`can_afford`) implement the common dead/control/reagent/equipment/ammo/combo/form/stealth/
+  combat/aura/power gates. `crates/benilla-app/src/spell/cast_send.rs:912-918` keeps the
+  rogue-specific no-combo refusal selection, while `:1082-1090` applies the same power read to
+  the send path.
+- `crates/benilla-ui/src/script/wrath_unit.rs:5-43` and `:85-105` expose Wrath `UnitPower`,
+  `UnitPowerMax`, and `UnitPowerType`; `crates/benilla-app/src/ui_unit.rs:1841-1848` projects
+  the combo count and banked target. `crates/benilla-ui/src/script/shapeshift.rs:37-65` owns
+  the form list, cooldowns, and `CastShapeshiftForm` calls.
+- `crates/benilla-app/src/wrath.rs:2215-2221`, `:2525-2534`, and `:2560-2588` retain unit
+  resources and rune slots; `:9242-9271` applies rune resync, conversion, and power updates.
+  The corresponding 12340 packet dispatch is `Player_C.cpp:9811-9826`.
+
+| Class | 3.3.5 mechanics in scope | Repo owner / file lines | 12340 reference addresses | Evidence status |
+|---|---|---|---|---|
+| Warrior | Rage power (type 1), weapon/equipment and ammo gates, combo-point style finisher gate, and stance/form action-bar usability. Warrior-specific stance changes are represented through the shared form/bar path. | `benilla-app/src/spell/usable.rs:371-496,622-636`; `benilla-app/src/spell/cast_send.rs:912-918`; `benilla-ui/src/script/action.rs:603-607`; `benilla-ui/src/script/shapeshift.rs:37-65` | `Spell_C_IsUsableAction` `0x0080B5D0`; `Spell_C_GetPowerCost` `0x008012F0`; `CGUnit_C::GetShapeshiftForm` `0x0071AF70`; `SpellRec::UsableInShapeshift` `0x007FE850`; `ActionBarFrame.cpp:394`; `ActionBarFrame_Scripts.cpp:268` | PARTIAL shared gates/source; UNKNOWN warrior spell formulas, stance/talent interactions, rage generation/spend outcomes, and live server/UI behavior. |
+| Rogue | Energy power (type 3), combo points, stealth-only gating, weapon requirements, and finisher usability. The repo explicitly keeps the rogue no-combo refusal reason. | `benilla-app/src/spell/usable.rs:419-426,622-636`; `benilla-app/src/spell/cast_send.rs:912-918,2233-2258`; `benilla-ui/src/script/unit/bindings.rs:846-872` | `CGGameUI::GetComboPoints` `0x00513920`; `Script_GetComboPoints` `0x00611670`; `Spell_C_IsUsableAction` `0x0080B5D0`; `Spell_C_GetPowerCost` `0x008012F0` | PARTIAL combo/energy/stealth source; UNKNOWN combo-point production/consumption timing, poison/proc/talent behavior, server outcomes, and live result. |
+| Mage | Mana power (type 0), spell power-cost and control/dead-state usability gates. No mage-only formula or spell-result implementation is identified by this ledger. | `benilla-app/src/spell/usable.rs:371-496,622-636`; `benilla-ui/src/script/wrath_unit.rs:5-43,85-105`; `benilla-app/src/spell/cast_send.rs:1082-1090` | `Spell_C_GetPowerCost` `0x008012F0`; `Spell_C_IsUsableAction` `0x0080B5D0`; `CGUnit_C::GetPredictedPower` `0x0071C2E0`; `Spell_C_GetPowerDisplayMod` `0x007FDE00` | PARTIAL generic mana/source; UNKNOWN mage spell coefficients, proc/talent interactions, cast outcomes, and live acceptance. |
+| Priest | Mana power (type 0), generic spell usability, aura-state/control checks, and cast-failure text plumbing. | `benilla-app/src/spell/usable.rs:371-496,622-636`; `benilla-app/src/ui_action/cast_fail.rs:179-191,450-464`; `benilla-ui/src/script/wrath_unit.rs:5-43,85-105` | `Spell_C_IsUsableAction` `0x0080B5D0`; `Spell_C_GetPowerCost` `0x008012F0`; `CGUnit_C::GetPredictedPower` `0x0071C2E0`; `Spell_C_GetPowerDisplayMod` `0x007FDE00` | PARTIAL generic mana/refusal source; UNKNOWN priest-specific shadow/holy resource rules, talents, procs, dispels, server outcomes, and live behavior. |
+| Warlock | Mana power (type 0), generic spell usability, reagent/totem checks, and the shared dead/control/aura/power gates. Soul-shard inventory/consumption and class spell outcomes are not evidenced here. | `benilla-app/src/spell/usable.rs:371-496,622-636`; `benilla-app/src/spell/cast_send.rs:1082-1090`; `benilla-app/src/ui_action/cast_fail.rs:450-464` | `Spell_C_IsUsableAction` `0x0080B5D0`; `Spell_C_GetPowerCost` `0x008012F0`; `CGUnit_C::GetPredictedPower` `0x0071C2E0` | PARTIAL generic mana/source; UNKNOWN soul shards, demon/talent/proc behavior, fear/control outcomes, server outcomes, and live behavior. |
+| Hunter | Focus power (type 2), weapon/ammo requirements, ranged action usability, and pet-related target/control plumbing. The common ammo gate is source-backed; hunter-specific shot and pet outcomes are not. | `benilla-app/src/spell/usable.rs:162-200,371-496`; `benilla-app/src/ui_pet/usable.rs:1-160`; `benilla-app/src/spell/cast_target.rs:1-120` | `Spell_C_IsUsableAction` `0x0080B5D0`; `Spell_C_GetPowerCost` `0x008012F0`; `Spell_C_GetPowerDisplayMod` `0x007FDE00`; `PetInfo.cpp:238` | PARTIAL focus/ammo/pet source; UNKNOWN shot coefficients, ammo consumption, pet ability/talent behavior, server outcomes, and live behavior. |
+| Druid | Mana (type 0), rage (type 1), energy (type 3), shapeshift form masks, stance action-bar projection, and form-dependent usability. | `benilla-app/src/spell/usable.rs:419-426,502-636`; `benilla-app/src/ui_shapeshift.rs:167-270`; `benilla-ui/src/script/shapeshift.rs:37-65`; `benilla-ui/src/script/action.rs:603-607` | `CGUnit_C::GetShapeshiftForm` `0x0071AF70`; `SpellRec::UsableInShapeshift` `0x007FE850`; `SpellRec::NotUsableInShapeshiftForm` `0x007FE890`; `Spell_C_IsUsableAction` `0x0080B5D0` | PARTIAL form/resource/UI source; UNKNOWN druid form transitions, resource conversion, talents/procs, server outcomes, and live behavior. |
+| Paladin | Mana power (type 0), generic spell usability, equipped-item checks, and aura/control/refusal plumbing. Holy power is not a 3.3.5/12340 power type in the reference's seven-token table. | `benilla-app/src/spell/usable.rs:371-496,622-636`; `benilla-ui/src/script/wrath_unit.rs:5-43,85-105`; `benilla-app/src/ui_action/cast_fail.rs:179-191` | `GetPowerString` `0x007FE4B0` exposes only MANA/RAGE/FOCUS/ENERGY/HAPPINESS/RUNES/RUNIC_POWER; `Spell_C_IsUsableAction` `0x0080B5D0`; `Spell_C_GetPowerCost` `0x008012F0` | PARTIAL generic mana/source; UNKNOWN paladin seal/judgement/aura/talent/proc behavior, server outcomes, and live behavior; no holy-power claim is made. |
+| Death knight | Runes and runic power (types 5 and 6), rune-type conversion, resync/recharge state, and generic spell power gates; the current repo retains rune state but does not prove the complete rune-aware affordability/cooldown consumer. | `benilla-app/src/wrath.rs:2215-2221,2560-2588,9242-9271`; `benilla-app/src/wrath_native.rs:102-115`; `benilla-app/src/spell/usable.rs:371-496,622-636` | `CGRuneInfo::HasRunesForSpell` `0x005EE5B0`; `CGRuneInfo::ComputeRuneSpellCooldown` `0x005EE7E0`; `CGRuneInfo::ConvertRune` `0x005EE020`; `CGRuneInfo::ResyncRunes` `0x005EE440`; `CGRuneInfo::AddRunePower` `0x005EE520`; `Spell_C_IsUsableAction` `0x0080B5D0` | PARTIAL rune packet/state and generic power source; UNKNOWN complete rune affordability integration, runic-power spend/generation, diseases/presence/talents/procs, server outcomes, and live behavior. |
+
+The ledger deliberately leaves these cross-class questions UNKNOWN: exact spell coefficients and
+rank selection, talent and glyph effects, proc/aura ordering, resource gains and spends as observed
+by the server, combat-log correctness for each class, cooldown behavior under real combat, and
+visible stock-frame behavior. No class-specific row is promoted to WORKING from generic spell
+plumbing alone.
 
