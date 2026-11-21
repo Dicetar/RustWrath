@@ -1,10 +1,10 @@
 # Class combat ledger
 
-Status: ready to land
+Status: ready to land; synchronized with `origin/main` at `acc51d1b2`
 Owner: Pi
 Branch: pi/class-combat-ledger
 Issue: 18
-Next: Merge latest `origin/main`, push `HEAD:main`, delete the remote topic branch, and record the landing result.
+Next: Push `HEAD:main`, record the resulting landing commit, and delete the remote topic branch.
 
 What changed: Added the class-specific combat compatibility ledger to issue 18 for warrior, rogue,
 mage, priest, warlock, hunter, druid, paladin, and death knight. Each row names the current repo
