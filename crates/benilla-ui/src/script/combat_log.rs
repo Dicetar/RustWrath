@@ -940,7 +940,7 @@ mod tests {
 
     #[test]
     fn cursor_walks_newest_first_and_applies_source_and_dest_filters() {
-        let script = wrath();
+        let mut script = wrath();
         script
             .run(r#"CombatLogAddFilter("SPELL_HEAL", 17681, 2048)"#)
             .unwrap();
@@ -986,7 +986,7 @@ mod tests {
 
     #[test]
     fn unfiltered_heal_reaches_history_and_filtered_listeners() {
-        let script = wrath();
+        let mut script = wrath();
         script
             .run(
                 r#"
