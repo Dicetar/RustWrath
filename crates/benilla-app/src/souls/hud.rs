@@ -244,7 +244,7 @@ fn shown(visible: bool) -> Visibility {
 }
 
 /// Update the quads from the prediction and the Souls state.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn drive_hud(
     time: Res<Time>,
     view: Res<CombatModeView>,

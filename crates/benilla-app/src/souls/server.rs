@@ -423,7 +423,7 @@ type Bodies<'w, 's> = Query<
 >;
 
 /// Announce the mode, read the server, judge strikes, and send what is queued.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn drive_link(
     time: Res<Time>,
     view: Res<CombatModeView>,

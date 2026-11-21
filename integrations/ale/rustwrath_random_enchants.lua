@@ -14,8 +14,9 @@ the whole table, level-60 enchants included (owner report 2026-11-20: a crafted 
 rolled Fortitude of the Scourge 2716, which applies nothing below level 60). Nothing checked the
 enchant's level either.
 
-This roller keeps the module's behaviour (events, chances, quality-to-tier roll, slots PERM 0,
-TEMP 1, BONUS 5, the chat line) with the query fixed:
+This roller keeps the module's behaviour (events, chances, slots PERM 0, TEMP 1, BONUS 5, the
+chat line). The tier comes from the owner's window rule (`roll_tier`) instead of the module's
+quality roll, and the query is fixed:
   WHERE tier=? AND (exclusiveSubClass IS NULL OR exclusiveSubClass=?)
     AND (class=? OR class='ANY') ORDER BY RAND()
 and takes the first enchant whose `SpellItemEnchantment.RequiredLevel` is at most the higher of
@@ -82,27 +83,27 @@ local function chance(name, default)
     return tonumber(GetConfigValue(name)) or default
 end
 
--- The module's quality roll (`getRandEnchantment`): a number on a 0-93 scale, then a tier.
+-- Owner rule 2026-11-21: an item rolls a three-tier window starting at its quality (white 1-3,
+-- green 2-4, blue 3-5, epic 4-5, legendary 5), with a rare jackpot one tier above the window.
+-- Steps past the highest tier fold into it. Raise MAX_TIER when custom tier-6+ enchants are
+-- added to `item_enchantment_random_tiers`; epics then reach them without other changes.
+local MAX_TIER = 5
+local TIER_STEPS = { -- {tiers above the item's base tier, percent}
+    { 0, 50 },
+    { 1, 30 },
+    { 2, 15 },
+    { 3, 5 }, -- the jackpot
+}
+
 local function roll_tier(quality)
-    local r
-    if quality == 1 then
-        r = math.floor(math.random() * 50)
-    elseif quality == 2 then
-        r = math.floor(45 + math.random() * 20)
-    elseif quality == 3 then
-        r = math.floor(65 + math.random() * 15)
-    elseif quality == 4 then
-        r = math.floor(80 + math.random() * 14)
-    elseif quality == 5 then
-        r = 93
-    else
-        return nil
+    local r = math.random() * 100
+    for _, step in ipairs(TIER_STEPS) do
+        r = r - step[2]
+        if r < 0 then
+            return math.min(quality + step[1], MAX_TIER)
+        end
     end
-    if r <= 44 then return 1 end
-    if r <= 64 then return 2 end
-    if r <= 79 then return 3 end
-    if r <= 92 then return 4 end
-    return 5
+    return math.min(quality, MAX_TIER)
 end
 
 local function pick_enchant(item, class_name, max_level)

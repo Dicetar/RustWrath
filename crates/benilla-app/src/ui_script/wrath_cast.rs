@@ -24,6 +24,7 @@ pub(crate) struct CastMemo {
     displayed: BTreeMap<(u64, bool, Option<u64>), DisplayedCast>,
 }
 
+#[allow(clippy::type_complexity)]
 pub(crate) fn feed(
     mut vm: crate::script_calls::VmWith<(
         Option<Res<'static, Messages<WrathCastEvent>>>,

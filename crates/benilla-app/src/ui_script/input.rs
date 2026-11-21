@@ -154,6 +154,7 @@ pub(super) fn feed_ui_wheel(
 /// Feeds cursor, buttons, wheel and keys into the UI engine, publishing [`PlayerUiHover`] (the
 /// pointer arbiter yields to the UI) and [`UiKeyboardCapture`] (a key a box or frame ate never
 /// fires its binding). Runs in the `UiInput` set, before `WorldStage::Input` and every key reader.
+#[allow(clippy::type_complexity)]
 pub(super) fn feed_ui_input(
     script: Option<NonSendMut<UiScript>>,
     // Carries the `wl_display` the Wayland clipboard backend needs, once winit has a surface.
