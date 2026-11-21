@@ -203,9 +203,9 @@ mod tests {
             |_| true,
             items,
         );
-        assert_eq!(state.rows.len(), 2);
-        assert!(state.rows[1].is_header);
-        assert!(state.rows[1].shown);
+        assert_eq!(state.rows.len(), 1);
+        assert!(state.rows[0].is_header);
+        assert!(state.rows[0].shown);
     }
 
     #[test]
