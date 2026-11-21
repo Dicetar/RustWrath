@@ -28,6 +28,16 @@ pub(crate) struct CurrencyTables {
 #[derive(Default)]
 struct CurrencyMemo(Option<benilla_ui::script::WrathCurrencyState>);
 
+type CurrencyFeedResources = (
+    Option<Res<'static, CurrencyTables>>,
+    Res<'static, Items>,
+    Option<Res<'static, ItemDisplays>>,
+    Option<Res<'static, Cvars>>,
+    Res<'static, NetCommands>,
+    Query<'static, 'static, &'static WrathPlayerRaw, With<SelfPlayer>>,
+    Objects<'static, 'static>,
+);
+
 fn mask(cvars: Option<&Cvars>, name: &str) -> u32 {
     cvars
         .and_then(|c| c.get(name))
@@ -39,18 +49,7 @@ fn object_entry(fields: &ObjectFields) -> Option<u32> {
     fields.object_entry()
 }
 
-pub(crate) fn feed(
-    mut vm: VmWith<(
-        Option<Res<'static, CurrencyTables>>,
-        Res<'static, Items>,
-        Option<Res<'static, ItemDisplays>>,
-        Option<Res<'static, Cvars>>,
-        Res<'static, NetCommands>,
-        Query<'static, 'static, &'static WrathPlayerRaw, With<SelfPlayer>>,
-        Objects<'static, 'static>,
-    )>,
-    mut memo: Local<VmMemo<CurrencyMemo>>,
-) {
+fn feed(mut vm: VmWith<CurrencyFeedResources>, mut memo: Local<VmMemo<CurrencyMemo>>) {
     vm.turn(
         |script, (tables, items, displays, cvars, commands, raw, objects)| {
             let Some(script) = script else { return };
