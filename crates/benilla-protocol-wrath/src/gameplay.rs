@@ -6114,7 +6114,7 @@ mod tests {
         let mut body = caster.to_le_bytes().to_vec();
         body.extend_from_slice(&target.to_le_bytes());
         body.extend_from_slice(&133u32.to_le_bytes());
-        let event = parse(SMSG_SPELL_INSTAKILL_LOG, &body)
+        let event = parse(crate::opcode::SMSG_SPELL_INSTAKILL_LOG, &body)
             .expect("the instakill opcode is translated")
             .expect("the 20-byte instakill body is valid");
         assert_eq!(
@@ -6130,7 +6130,7 @@ mod tests {
         body.extend_from_slice(&[0x01, 0x11]); // packed caster 0x11
         body.extend_from_slice(&25u32.to_le_bytes()); // item
         body.extend_from_slice(&7u32.to_le_bytes()); // enchant
-        let event = parse(SMSG_ENCHANTMENTLOG, &body)
+        let event = parse(crate::opcode::SMSG_ENCHANTMENTLOG, &body)
             .expect("the enchant opcode is translated")
             .expect("the 12-byte enchant body is valid");
         assert_eq!(
@@ -6147,7 +6147,7 @@ mod tests {
         body.extend_from_slice(&[0x00]); // caster 0: the fade
         body.extend_from_slice(&25u32.to_le_bytes());
         body.extend_from_slice(&7u32.to_le_bytes());
-        let event = parse(SMSG_ENCHANTMENTLOG, &body)
+        let event = parse(crate::opcode::SMSG_ENCHANTMENTLOG, &body)
             .expect("the enchant opcode is translated")
             .expect("the 11-byte fade body is valid");
         assert_eq!(
@@ -6165,7 +6165,7 @@ mod tests {
         body.extend_from_slice(&120u32.to_le_bytes()); // damage
         body.extend_from_slice(&9u32.to_le_bytes()); // absorbed
         body.extend_from_slice(&5u32.to_le_bytes()); // resisted
-        let event = parse(SMSG_ENVIRONMENTALDAMAGELOG, &body)
+        let event = parse(crate::opcode::SMSG_ENVIRONMENTALDAMAGELOG, &body)
             .expect("the environmental opcode is translated")
             .expect("the 21-byte environmental body is valid");
         assert_eq!(
@@ -6192,7 +6192,7 @@ mod tests {
         body.extend_from_slice(&77u32.to_le_bytes()); // damage
         body.extend_from_slice(&3u32.to_le_bytes()); // overkill
         body.extend_from_slice(&4u32.to_le_bytes()); // school mask
-        let event = parse(SMSG_SPELLDAMAGESHIELD, &body)
+        let event = parse(crate::opcode::SMSG_SPELLDAMAGESHIELD, &body)
             .expect("the damage-shield opcode is translated")
             .expect("the 32-byte damage-shield body is valid");
         assert_eq!(
