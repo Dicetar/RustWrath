@@ -2258,7 +2258,8 @@ fn combat_log_flags(guid: u64) -> i64 {
         0x1000
     } else if guid::is_creature_or_pet(guid) {
         0x800
-    } else if guid::is_gameobject(guid) {
+    } else if guid::is_gameobject(guid) || (guid >> 48) as u16 == 0xF010 {
+        // 3.3.5 gameobjects carry 0xF010; the 1.12 helper only knows 0xF110.
         0x4000
     } else {
         0
@@ -3203,6 +3204,7 @@ mod tests {
         assert_eq!(combat_log_flags(0xF140_0000_0000_0011), 0x1000);
         assert_eq!(combat_log_flags(0xF130_0000_0000_0011), 0x800);
         assert_eq!(combat_log_flags(0xF110_0000_0000_0011), 0x4000);
+        assert_eq!(combat_log_flags(0xF010_0000_0000_0011), 0x4000);
         assert_eq!(combat_log_flags(0), 0);
     }
 

@@ -5,7 +5,7 @@ Owner: Beam Free
 Branch: oc/spell-dispel-family
 Issue: none
 Next: none
-CI run 44978107411 failed: the feed did not import `WrathSpellDispelLog`/`WrathSpellDispelFailed`, and the decoder carried an unused duplicate `DispelFailed` variant that made `translate_gameplay` non-exhaustive. The overseer added the imports and removed the duplicate. Re-run pending.
+CI run 44978107411 failed: the feed did not import `WrathSpellDispelLog`/`WrathSpellDispelFailed`, and the decoder carried an unused duplicate `DispelFailed` variant that made `translate_gameplay` non-exhaustive. The overseer added the imports and removed the duplicate. Re-run pending. The same branch also fixes `combat_log_flags` for 3.3.5's `0xF010` gameobject high guid (the 1.12 helper only knows `0xF110`), with a new assertion in the existing flag test.
 
 ## Scope
 
