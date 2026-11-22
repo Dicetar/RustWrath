@@ -91,6 +91,24 @@ Order:
   `dx serve --hot-patch` (that starts the client); ADR-0002 says live code must not combine with it,
   and subsecond resolves patch symbols against the exe, where dynamic Bevy's symbols are not.
 
+## After the split (benilla-client + benilla-souls)
+
+Same build and edits; the souls edit is now in `crates/benilla-souls/src/server.rs`. Per-unit
+compile+link work from `--timings`: an editor's rust-analyzer had this worktree open and held the
+build lock between runs, so wall clock here includes lock waits and is not comparable.
+
+| One-line edit | Before: work (units) | After: work (units) |
+|---|---|---|
+| souls, link.exe | 76 s (app 36.6 + link 39.6) | **22 s** (souls 2.9 + client 0.7 + link 18.1) |
+| souls, rust-lld | 58–64 s (app 42–48 + link 15–16) | **16–18 s** (souls 2.5–3.9 + client 1.2 + link 11.8–13.9); wall 17–18 s |
+| net (core), link.exe | 72 s (app 41.2 + link 30.9) | 64–70 s (app 26–31 + souls 3–7 + client 1–5 + link 30–33) |
+
+A souls edit no longer compiles benilla-app at all; what is left is the small crate and the link.
+A core edit costs what it did (the core is barely smaller yet; the crates above it are small).
+Not measured: a dx live-code patch. It replays the edited crate and the crates above it, so a souls
+patch should now compile benilla-souls + benilla-client instead of benilla-app, but that needs the
+client running.
+
 ## Checks run
 
 - `cargo check -p benilla -p benilla-client -p benilla-app --features hotpatch`: compiles (two
@@ -106,4 +124,6 @@ Order:
 - Tests of benilla-app not run locally (its test build is ~13 min); CI runs the changed crates'.
 - CI on commit 1 (run 45008817297): 6,917 benilla-app lib tests passed; `world_api_wall` failed
   (its source scan did not see the boot's engine calls in benilla-client), fixed in commit 2.
-- CI on the souls commit: not run yet.
+- CI on the souls commit 789c2909f (run 45013482959): windows passed (tests included); the Linux
+  gates job lost its runner mid test-build (GitHub infrastructure), rerun superseded by the merge.
+- Merge of main c4d139145: `cargo check` clean. CI on the merge tip: see the landing commit.
