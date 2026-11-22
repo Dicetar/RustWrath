@@ -8,7 +8,7 @@ use bevy::prelude::*;
 /// The twist state, on a unit's root when its model has either key bone (the client's
 /// `[+0xd58] & 0x80`/`0x100`).
 #[derive(Component)]
-pub(crate) struct BodyTwist {
+pub struct BodyTwist {
     /// `wrap(aim − rendered root yaw)` in radians; zero while the body faces its aim.
     pub(crate) yaw_gap: f32,
     spine: Option<Channel>,
@@ -25,7 +25,7 @@ impl BodyTwist {
     }
 
     /// The `(spine, head)` key bones the twist turns.
-    pub(crate) fn key_bones(&self) -> (Option<u16>, Option<u16>) {
+    pub fn key_bones(&self) -> (Option<u16>, Option<u16>) {
         (
             self.spine.as_ref().map(|c| c.bone),
             self.head.as_ref().map(|c| c.bone),
@@ -34,7 +34,7 @@ impl BodyTwist {
 
     /// The rotation the twist last wrote on `bone`, if it is one of its key bones: a pass before
     /// the twist that finds it there knows the evaluator did not re-key the bone.
-    pub(crate) fn last_written(&self, bone: usize) -> Option<Quat> {
+    pub fn last_written(&self, bone: usize) -> Option<Quat> {
         [&self.spine, &self.head]
             .into_iter()
             .flatten()
@@ -64,7 +64,7 @@ impl Channel {
 }
 
 /// Wrap an angle to `(−π, π]`, the shortest arc.
-pub(crate) fn wrap_pi(angle: f32) -> f32 {
+pub fn wrap_pi(angle: f32) -> f32 {
     use std::f32::consts::{PI, TAU};
     PI - (PI - angle).rem_euclid(TAU)
 }
@@ -93,7 +93,7 @@ fn armed_shares(gap: f32, mounted: bool) -> (f32, f32) {
 /// yaws its subtree about world up through the bone's pivot, `local' = local · Quat(g⁻¹·Y, θ)`
 /// with `g` the bone's rotation up to the unit. The head runs after the spine, so it turns relative
 /// to the twisted spine, as the client composes the residual gap.
-pub(crate) fn apply_body_twist(
+pub fn apply_body_twist(
     // A parked rig is skipped; on wake, `cur != last_out` re-seats `base`.
     mut units: Query<(Entity, &mut BodyTwist), Without<benilla_world::rig_anim::AnimParked>>,
     mut rigs: Query<&mut benilla_world::rig_anim::RigPose>,

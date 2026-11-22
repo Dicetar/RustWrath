@@ -143,7 +143,7 @@ pub(crate) fn player_kit_path() -> Option<PathBuf> {
 
 /// `benilla-config/combat/souls.toml`: the Souls combat feature switches and binds, hand-edited by
 /// the owner and re-read each time `F10` turns Souls combat on. Read only ([`crate::souls`]).
-pub(crate) fn souls_config_path() -> Option<PathBuf> {
+pub fn souls_config_path() -> Option<PathBuf> {
     home().map(|h| h.join("combat/souls.toml"))
 }
 

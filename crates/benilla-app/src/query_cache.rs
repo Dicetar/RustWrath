@@ -38,7 +38,7 @@ use crate::net::{EnteredWorldMessage, NetCommands};
 /// the runs of a reader that builds its view every frame between the events that stand for the
 /// reference's (the module's head).
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum Ask<'a> {
+pub enum Ask<'a> {
     /// The lookup with no callback (`0x556b1c` → `0x556bf9`): the record if held, never asking.
     Read,
     /// A reader's run between its events: asks a key the cache holds nothing for, once while it

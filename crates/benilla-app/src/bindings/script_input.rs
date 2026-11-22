@@ -13,7 +13,7 @@ use super::BindingsState;
 
 /// One engine input a binding function drives: a held bit of `[InputControl+4]` or a one-shot.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Input {
+pub enum Input {
     /// `MoveForwardStart`/`Stop`, bit `0x10`.
     MoveForward,
     /// `MoveBackwardStart`/`Stop`, bit `0x20`.

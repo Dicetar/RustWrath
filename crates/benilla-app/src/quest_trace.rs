@@ -1686,7 +1686,7 @@ struct Subject {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Interaction {
+pub struct Interaction {
     source: Source,
     subject: Subject,
 }

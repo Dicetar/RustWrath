@@ -107,7 +107,7 @@ pub(crate) use benilla_ui::messages::MsgKind;
 /// One argText argument; the list is ordered and mixed because a template's specifiers are:
 /// `ERR_USE_LOCKED_WITH_SPELL_KNOWN_SI` takes a string then an integer (`0x5f34a9`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum FillArg {
+pub enum FillArg {
     S(String),
     D(i64),
     /// The text of the VM global of this name, read when the line is shown (`0x703bf0`, the
@@ -124,7 +124,7 @@ pub(crate) enum FillArg {
 /// `0x5e745f`). Extra arguments are ignored and a starved specifier shows verbatim, as
 /// `SStrPrintf` does, so a short list is passed short.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct UiError {
+pub struct UiError {
     pub key: &'static str,
     pub args: Vec<FillArg>,
 }

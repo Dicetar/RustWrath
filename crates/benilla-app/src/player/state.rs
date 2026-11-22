@@ -34,33 +34,33 @@ pub(super) const STATIONARY_CHASE_RATE: f32 = 8.0;
 
 /// Capsule radius (yd), the `CMovement` ctor's placeholder 1/3. The reference overwrites it per
 /// model from `CreatureModelData` (`0x6174b0`: human male 0.30555, female 0.20835); not built here.
-pub(crate) const CAPSULE_RADIUS: f32 = 1.0 / 3.0;
+pub const CAPSULE_RADIUS: f32 = 1.0 / 3.0;
 /// Capsule total height (yd), one for every body: the swept shape and the head and feet offsets.
 /// Numerically [`DEFAULT_COLLISION_HEIGHT`], but a unit's depth lines use its per-model
 /// [`crate::entities::CollisionHeight`] instead.
-pub(crate) const CAPSULE_HEIGHT: f32 = 2.027_777_7;
+pub const CAPSULE_HEIGHT: f32 = 2.027_777_7;
 
 /// The `CMovement` ctor's collision height (`0x616fd8`), before `0x6174b0` sets the model's: the
 /// depth lines' fallback for a unit whose display id has no `CreatureModelData` row.
-pub(crate) const DEFAULT_COLLISION_HEIGHT: f32 = 2.027_777_7;
+pub const DEFAULT_COLLISION_HEIGHT: f32 = 2.027_777_7;
 /// Gravity (yd/s²), the reference's and vmangos's `Movement::gravity`; also avian's `Gravity`, and
 /// [`crate::net`] replays relayed jump arcs under it so an observer's arc matches the mover's.
-pub(crate) const GRAVITY: f32 = 19.291_105;
+pub const GRAVITY: f32 = 19.291_105;
 /// Jump take-off speed (yd/s), the reference's.
 pub(super) const JUMP_SPEED: f32 = 7.955_547;
 /// Terminal fall speed (yd/s), `[0x87d894]` and vmangos's `terminalVelocity`; [`crate::net`]'s arc
 /// replay caps at it too.
-pub(crate) const TERMINAL_VELOCITY: f32 = 60.148_003;
+pub const TERMINAL_VELOCITY: f32 = 60.148_003;
 /// Terminal fall speed under feather fall (yd/s), the whole of Slow Fall: `0x7c5d20` and
 /// `0x7c5f50` pick `[0x87d898]` over `[0x87d894]` while `MOVEFLAG_SAFE_FALL` is set (vmangos's
 /// `terminalSavefallVelocity`).
-pub(crate) const FEATHER_TERMINAL_VELOCITY: f32 = 7.0;
+pub const FEATHER_TERMINAL_VELOCITY: f32 = 7.0;
 /// Hover's clearance (yd), the whole of Hover: the walk resolver probes `[0x7ff9d8]` further down
 /// (`0x636dd2`) and writes the body's z a yard clear of the floor (`0x636e81`-`0x636ea9`).
-pub(crate) const HOVER_HEIGHT: f32 = 1.0;
+pub const HOVER_HEIGHT: f32 = 1.0;
 /// Hover's rise rate (yd/s): the snap only lowers the body (`0x636e52`), so the rise is a separate
 /// rate-limited pass (`0x636fa1`-`0x6370f1`) at `0x7c61b0`'s `[0x87d898]`, the feather-fall 7.0.
-pub(crate) const HOVER_CLIMB_RATE: f32 = 7.0;
+pub const HOVER_CLIMB_RATE: f32 = 7.0;
 /// Walkable iff the surface normal is within 50° of up, the reference's limit; steeper slides back.
 pub(super) const GROUND_COS: f32 = 0.642_788;
 /// Downward probe distance (yd) to decide whether we're standing on ground.
@@ -73,11 +73,11 @@ pub(super) const STEP_SLOPE_RATIO: f32 = 1.849_399;
 pub(super) const STEP_SNAP_SLACK: f32 = 0.027_777_8;
 /// The step-up rise ceiling (yd), the reference's `H`: `0x617430` returns `CMovement+0xb8`, the
 /// ratio `max(SCALE_X / CreatureModelScale, 1)`, which is 1.0 for the local player.
-pub(crate) const STEP_UP_HEIGHT: f32 = 1.0;
+pub const STEP_UP_HEIGHT: f32 = 1.0;
 /// The rise ceiling of a body the reference does not treat as player-controlled, `[0x801628]` on
 /// `0x5fa550`'s false leg of `0x617430`: a creature, a pet, or a charmed, possessed, feared,
 /// confused or rooted player.
-pub(crate) const CREATURE_STEP_UP_HEIGHT: f32 = 2.0;
+pub const CREATURE_STEP_UP_HEIGHT: f32 = 2.0;
 /// The step-up certify advance (yd), a floor under the frame's travel: the reference steps
 /// `max(H·tan50°, radius + 1/720)` into the face, 1.1918 yd at `H` = 1.0. The raised forward sweep
 /// is clipped by anything in the way, so the advance reaches only clear air.
@@ -120,18 +120,18 @@ pub(super) const SKIN_WIDTH: f32 = 0.02;
 /// so what the release can hand over early is a placement that never spawned. Deviation: the
 /// reference's blocking load (`0x694920`) waits out its reads before the frame goes on and has
 /// no such release; without one, a model that never loads would freeze our body for good.
-pub(crate) const SETTLE_TIMEOUT: f32 = 6.0;
+pub const SETTLE_TIMEOUT: f32 = 6.0;
 
 /// The player body's collision capsule, swept by avian's `MoveAndSlide`: origin at its centre, the
 /// player's `pos` at its feet. Every player body sweeps it, remote ones too, as the reference runs
 /// every mover through one controller (`0x616620`); the reference sizes each from its model.
 #[derive(Resource)]
-pub(crate) struct PlayerCapsule(pub(crate) Collider);
+pub struct PlayerCapsule(pub(crate) Collider);
 
 /// The run-speed fallback, the stock 7.0 until the server's speeds stream in, or the
 /// `$WOW_MOVE_SPEED` dev override (`env_override`), which replaces the server's speeds outright.
 #[derive(Resource)]
-pub(crate) struct MoveSpeed {
+pub struct MoveSpeed {
     pub(crate) value: f32,
     pub(super) env_override: bool,
 }
@@ -291,14 +291,14 @@ pub(crate) fn incapacitated_flags(flags: u32, translate_gated: bool, turn_gated:
 /// cursor gates, StartAttack, `HasFullControl` and `PLAYER_CONTROL_LOST` read this one. A resource
 /// of its own, so its many readers do not order against every other writer of [`Player`].
 #[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct OwnControlLost(pub(crate) bool);
+pub struct OwnControlLost(pub(crate) bool);
 
 /// A stand state committed locally, sent or from `SMSG_STANDSTATE_UPDATE`, whose echo into
 /// `UNIT_FIELD_BYTES_1` has not landed: the reference's predicted cache `[player+0x1d68]`
 /// (`0x5f0790`). A resource of its own, so a script call's stand change writes it inside the call
 /// while the call host's other readers of [`Player`] read on.
 #[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct StandPending(pub(super) Option<u8>);
+pub struct StandPending(pub(super) Option<u8>);
 
 impl StandPending {
     /// `CGPlayer_C::GetStandState` (`0x5ed570`) for the active player: the local state
@@ -316,39 +316,39 @@ impl StandPending {
 /// motion is a held movement axis (`MSG_MOVE_START_*` at the mover's own speed), a turn lock or
 /// lock-on is the facing the controller streams.
 #[derive(Default, Clone, Copy, Debug, PartialEq)]
-pub(crate) struct SoulsDrive {
+pub struct SoulsDrive {
     /// Replace the movement keys' forward and strafe axes (each `-1`, `0` or `1`; strafe right is
     /// positive): root motion, or `(0, 0)` while an action holds the body still.
-    pub(crate) axes: Option<(i32, i32)>,
+    pub axes: Option<(i32, i32)>,
     /// Move [`Self::axes`] at this many yards a second instead of the server's run speed: a roll
     /// covers its root motion at the clip's own pace, from its first frame, without waiting for
     /// a speed change from the server.
-    pub(crate) speed: Option<f32>,
+    pub speed: Option<f32>,
     /// Hold the facing at this yaw (Bevy radians) over the keyboard and mouse turns: a turn-lock
     /// window, or the bearing to the lock-on target.
-    pub(crate) face: Option<f32>,
+    pub face: Option<f32>,
     /// The turn keys strafe, as they do under right-mouse look: locked on, the facing is the
     /// target's, so A and D circle it.
-    pub(crate) turn_keys_strafe: bool,
+    pub turn_keys_strafe: bool,
     /// Cap the frame's whole turn (mouse hand-off, turn keys and [`Self::face`]) at this many
     /// radians a second: the running action's turn-rate window.
-    pub(crate) turn_rate: Option<f32>,
+    pub turn_rate: Option<f32>,
     /// The ER free camera: movement is camera-relative and the body faces where it moves, the
     /// body's turns do not carry the camera, and the auto-follow is off.
-    pub(crate) free_camera: bool,
+    pub free_camera: bool,
     /// Hold the free camera's orbit: the cursor is hidden and the mouse turns the camera. False
     /// while the Souls cursor key has the cursor up for the UI.
-    pub(crate) orbit: bool,
+    pub orbit: bool,
     /// Ease the camera's yaw toward this bearing (Bevy radians): the lock-on camera.
-    pub(crate) cam_yaw: Option<f32>,
+    pub cam_yaw: Option<f32>,
     /// Souls mode is on this frame.
-    pub(crate) active: bool,
+    pub active: bool,
 }
 
 /// Our avatar: until `active` the camera free-flies, then we drive the body the server placed.
 /// `PartialEq` serves the test that the session end resets the whole of it to `Player::default()`.
 #[derive(Resource, Default, PartialEq)]
-pub(crate) struct Player {
+pub struct Player {
     pub(crate) active: bool,
     /// The modes the server has granted our mover.
     pub(super) modes: MoveModes,
@@ -381,7 +381,7 @@ pub(crate) struct Player {
     /// at the take-control edge.
     pub(crate) reseat: bool,
     /// Feet position in Bevy coords, converted to WoW coords only for the wire.
-    pub(crate) pos: Vec3,
+    pub pos: Vec3,
     /// Vertical velocity (yd/s, Bevy +Y up), zeroed while grounded.
     pub(super) vel_y: f32,
     /// Horizontal velocity (yd/s): from input while grounded, the frozen take-off momentum while
@@ -483,10 +483,10 @@ pub(crate) struct Player {
     pub(super) face_yaw: f32,
     /// The Souls combat drive ([`crate::souls`]), rewritten every frame before `control` reads
     /// it; the default leaves the stock controller untouched.
-    pub(crate) souls: SoulsDrive,
+    pub souls: SoulsDrive,
     /// The hostile bodies the mover slides round this frame (Bevy position, bounding radius),
     /// gathered by the Souls drive ([`super::bodies`]); empty is the stock walk-through.
-    pub(crate) unit_bodies: Vec<(bevy::prelude::Vec3, f32)>,
+    pub unit_bodies: Vec<(bevy::prelude::Vec3, f32)>,
     /// Souls mode: frames left to stow once the attack the sheath key stopped is echoed off
     /// ([`super::posture`]); 0 is none pending.
     pub(crate) sheath_after_stop: u8,
@@ -634,12 +634,12 @@ impl Player {
 
     /// The facing (Bevy yaw) sent as orientation, not the rendered `model_yaw`; the 3D-audio
     /// listener faces it, not the camera (`0x483430`).
-    pub(crate) fn facing(&self) -> f32 {
+    pub fn facing(&self) -> f32 {
         self.face_yaw
     }
 
     /// Whether the body is in the air (a jump or a fall), which the Souls jump attacks read.
-    pub(crate) fn airborne(&self) -> bool {
+    pub fn airborne(&self) -> bool {
         self.airborne_since.is_some()
     }
 

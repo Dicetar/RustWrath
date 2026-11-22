@@ -33,8 +33,8 @@ use benilla_combat_core::{ActionKind, KitAction, Milli};
 use bevy::prelude::*;
 
 use super::{
-    current_kit, in_window, running_action, souls_on, ErControls, Instance, SoulsConfig,
-    SoulsState, YARDS_PER_METRE,
+    current_kit, in_window, running_action, souls_on, ErControls, SoulsConfig, SoulsState,
+    YARDS_PER_METRE,
 };
 use crate::bindings::{BindingsState, Input};
 use crate::combat_kit::PlayerKit;
@@ -44,6 +44,7 @@ use crate::combat_profiles::CombatProfiles;
 use crate::player::camera::FlyCam;
 use crate::player::{Player, SoulsDrive};
 use crate::target::RelationWorld;
+pub(super) use benilla_app::souls::DriveTrack;
 
 /// Debt below this many yards on an axis is not chased (the controller would overshoot it).
 const DEADBAND_YARDS: f32 = 0.25;
@@ -63,19 +64,6 @@ const FREE_TURN_DEGREES: f32 = 720.0;
 const FREE_SNAP_FRAMES: Milli = Milli(3000);
 /// An action with no turn-rate window of its own tracks the held bearing this fast.
 const FREE_TRACK_DEGREES: f32 = 240.0;
-
-/// Root-motion and turn-lock tracking of one running action.
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
-pub(super) struct DriveTrack {
-    instance: Option<Instance>,
-    /// The action's cumulative `[left, up, forward]` root motion at the last frame, metres.
-    last_motion: [Milli; 3],
-    /// Root motion still owed, yards: `x` left, `y` forward.
-    debt: Vec2,
-    last_pos: Vec3,
-    /// The facing held through the current no-turn window.
-    held_yaw: Option<f32>,
-}
 
 /// The facing's forward and left in Bevy axes for yaw `yaw`.
 fn basis(yaw: f32) -> (Vec3, Vec3) {

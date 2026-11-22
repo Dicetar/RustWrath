@@ -23,8 +23,7 @@ use super::drive::yaw_toward;
 use super::input::KeyRead;
 use super::server::SoulsLink;
 use super::{
-    current_kit, running_action, souls_on, ErControls, Instance, SoulsConfig, SoulsState,
-    YARDS_PER_METRE,
+    current_kit, running_action, souls_on, ErControls, SoulsConfig, SoulsState, YARDS_PER_METRE,
 };
 use crate::aura_visual::AnimRateFreeze;
 use crate::camera_shake::CameraShakes;
@@ -37,6 +36,7 @@ use crate::player::camera::FlyCam;
 use crate::player::Player;
 use crate::target::{RelationWorld, SelectCommit, Selection};
 use crate::ui_script::UiKeyboardCapture;
+pub(super) use benilla_app::souls::SwingTrack;
 
 /// A lock takes a unit this close.
 const LOCK_ACQUIRE_YARDS: f32 = 30.0;
@@ -53,16 +53,6 @@ const ARC_MIN_DEGREES: f32 = 30.0;
 const ARC_MAX_DEGREES: f32 = 100.0;
 /// The reach of a hit with no blade samples, metres.
 const BARE_REACH_METRES: f32 = 1.5;
-
-/// The hit test's tracking of one running attack.
-#[derive(Clone, PartialEq, Debug, Default)]
-pub(super) struct SwingTrack {
-    instance: Option<Instance>,
-    /// The frame the last test ran at; windows between it and now are caught up.
-    last_frame: Option<Milli>,
-    /// `(hit index, unit)` pairs already struck by this run.
-    struck: Vec<(usize, Entity)>,
-}
 
 /// The units the lock and the hit test consider.
 pub(super) type Units<'w, 's> = Query<

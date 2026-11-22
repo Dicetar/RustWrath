@@ -51,7 +51,7 @@ pub(crate) struct DisplayFacing {
 /// The signed yaw the facing pump applied this frame (positive turns left), the client's
 /// `0x607ed0` shuffle latch input; removed the frame the body stops moving.
 #[derive(Component)]
-pub(crate) struct FacingStep(pub(crate) f32);
+pub struct FacingStep(pub(crate) f32);
 
 /// Which goal-chain row won, for the `face` trace.
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -270,11 +270,17 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
     .add_plugins(perf::FpsJournalPlugin)
     // The game as one group on top of the engine; `game_plugins.rs` has its members, its
     // load-bearing ordering edges and the test that builds it headless.
-    .add_plugins(game_plugins::GamePlugins {
-        connect: !capturing && wrath_config.is_none(),
-        start: run_mode::start_state(),
-        wrath: wrath_config,
-    });
+    .add_plugins(
+        game_plugins::GamePlugins {
+            connect: !capturing && wrath_config.is_none(),
+            start: run_mode::start_state(),
+            wrath: wrath_config,
+        }
+        .build()
+        // Souls combat on the playback, at its place in the group: right after the state it
+        // writes, which the core reads.
+        .add_after::<benilla_app::souls::SoulsStatePlugin>(benilla_souls::SoulsPlugin),
+    );
 
     // benilla-assets' loaders go into the live `AssetServer`, so they register after `AssetPlugin`.
     benilla_assets::register_asset_loaders(&mut app);

@@ -27,9 +27,9 @@ mod approach;
 mod arc;
 mod net;
 // Writes the frame onto the body we drive: pose, `MovementState`, the counter-twist gap.
-pub(crate) mod bodies;
+pub mod bodies;
 mod body_pose;
-pub(crate) mod camera;
+pub mod camera;
 mod camera_axes;
 mod camera_channel;
 mod camera_clip;
@@ -107,7 +107,7 @@ pub(crate) use approach::{
 };
 /// `SetStandState` run inside a script call.
 pub(crate) use posture::{stand_up_for_attack, stand_up_refused, StandSetter};
-pub(crate) use state::{
+pub use state::{
     MoveSpeed, OwnControlLost, Player, PlayerCapsule, SoulsDrive, StandPending, CAPSULE_HEIGHT,
     CAPSULE_RADIUS, CREATURE_STEP_UP_HEIGHT, DEFAULT_COLLISION_HEIGHT, FEATHER_TERMINAL_VELOCITY,
     GRAVITY, HOVER_CLIMB_RATE, HOVER_HEIGHT, SETTLE_TIMEOUT, STEP_UP_HEIGHT, TERMINAL_VELOCITY,
@@ -274,7 +274,7 @@ pub(crate) struct WorldFocusSet;
 /// The controller's ordering handle, for anything that writes the aim or the camera rig before
 /// `control` reads them (`capture::probe_look`, `capture::probe_cam`).
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct PlayerControlSet;
+pub struct PlayerControlSet;
 
 /// The player and camera: spawns the camera and avatar resources, and runs the controller.
 pub(crate) struct PlayerPlugin;

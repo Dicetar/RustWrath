@@ -15,7 +15,7 @@ use super::{find_resolved, select, AnimDriver, Wielded};
 /// constructor seeds it from the byte, untested (`0x5fafa0`); every later write is the setter's
 /// (`0x611d64`).
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct CommittedSheath {
+pub struct CommittedSheath {
     /// 0 stowed, 1 melee, 2 ranged; `None` until the driver first seeds it.
     pub(super) cur: Option<u8>,
     /// The last descriptor sheath byte, to detect changes (`0x604c70`).
@@ -27,7 +27,7 @@ pub(crate) struct CommittedSheath {
 
 impl CommittedSheath {
     /// The client-side sheath state, `None` until driven.
-    pub(crate) fn state(&self) -> Option<u8> {
+    pub fn state(&self) -> Option<u8> {
         self.cur
     }
 
@@ -57,11 +57,11 @@ impl CommittedSheath {
 /// A unit's visual sheath state per arm while a draw/stow ceremony plays: each weapon moves at its
 /// own clip's `$SHL`/`$SHR` key, not when the state changes. Absent, the committed state rules.
 #[derive(Component, Clone, Copy)]
-pub(crate) struct VisualSheath(pub(crate) [u8; 2]);
+pub struct VisualSheath(pub(crate) [u8; 2]);
 
 impl VisualSheath {
     /// The state placing one held slot: mainhand right, offhand left, ranged by [`ranged_arm`].
-    pub(crate) fn for_slot(self, slot: usize, inv_type: u32) -> u8 {
+    pub fn for_slot(self, slot: usize, inv_type: u32) -> u8 {
         self.0[match slot {
             0 => ARM_RIGHT,
             1 => ARM_LEFT,
@@ -121,7 +121,7 @@ const SHEATH_OVERLAY_WEIGHT: f32 = 8.0;
 /// bFireEvent)` (`0x611cf0`), which `drive_animations` executes. Of its 24 call sites only the
 /// manual `ToggleSheath` passes `bInstant = 0`: every other change snaps.
 #[derive(Message, Clone, Copy)]
-pub(crate) struct SheathRequest {
+pub struct SheathRequest {
     pub(crate) entity: Entity,
     /// The requested state: 0 stowed, 1 melee drawn, 2 ranged drawn.
     pub(crate) state: u8,
@@ -134,7 +134,7 @@ pub(crate) struct SheathRequest {
 /// `0x5eb642`–`0x5eb6a8`, over the committed state `[unit+0xd40]`): melee, then ranged, then
 /// stowed, each gated on what is worn (`GetWeapon(0/1/2)` at `0x5eb5f0`–`0x5eb610`), the ranged
 /// candidate past the class test (`0x5eb616`–`0x5eb640`), which the caller applies.
-pub(crate) fn toggle_sheath_next(cur: u8, (melee, ranged): (bool, bool)) -> Option<u8> {
+pub fn toggle_sheath_next(cur: u8, (melee, ranged): (bool, bool)) -> Option<u8> {
     match cur {
         0 if melee => Some(1),
         0 if ranged => Some(2),
@@ -265,7 +265,7 @@ pub(super) fn sheath_phase1(prev: u8, cur: u8, w: &Wielded) -> [Option<ArmLeg>; 
 /// A ceremony arm crossing its `$SHL`/`$SHR` key, once per arm; `sound::sheathe` rings the slot's
 /// item off it. A snap plays no clip and so is silent, as in the reference.
 #[derive(Message, Clone, Copy)]
-pub(crate) struct SheathSwapMessage {
+pub struct SheathSwapMessage {
     pub(crate) entity: Entity,
     /// The held slot whose model just moved: 0 mainhand, 1 offhand, 2 ranged.
     pub(crate) slot: u8,
@@ -276,7 +276,7 @@ pub(crate) struct SheathSwapMessage {
 /// `AnimationData.dbc`'s rows, whose WeaponFlags drive the per-animation sheath reconcile; absent,
 /// only the engaged draw and the remote server-byte pull apply.
 #[derive(Resource)]
-pub(crate) struct AnimData(pub(crate) benilla_formats::AnimDataCatalog);
+pub struct AnimData(pub(crate) benilla_formats::AnimDataCatalog);
 
 /// Load `AnimationData.dbc` off the patch chain at startup.
 pub(super) fn load_anim_data(mut commands: Commands, assets: Option<Res<WorldAssets>>) {

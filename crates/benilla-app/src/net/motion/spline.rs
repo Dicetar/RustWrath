@@ -16,7 +16,7 @@ use super::super::{NetEntity, ObjectStore};
 /// A server-dictated path (`SMSG_MONSTER_MOVE`) in raw WoW coordinates, walked at constant speed
 /// over `duration` from `start`; present only while the unit is on it.
 #[derive(Component, Debug, Clone)]
-pub(crate) struct Spline {
+pub struct Spline {
     pub(crate) points: Vec<[f32; 3]>,
     pub(crate) start: Instant,
     pub(crate) duration: Duration,
@@ -41,7 +41,7 @@ pub(crate) struct Spline {
 /// `Unit.cpp:9325`) and drops every movement packet from it until an ack carries this id, not the
 /// interrupted path's (`MovementHandler.cpp:295`). [`crate::player::server_ride`] consumes it.
 #[derive(Component, Debug, Clone, Copy)]
-pub(crate) struct SplineStopped(pub(crate) u32);
+pub struct SplineStopped(pub(crate) u32);
 
 impl Spline {
     /// Average speed in yd/s (path length over duration); [`crate::creature_anim`] picks Walk or
@@ -447,12 +447,7 @@ const GROUND_CLAMP_DOWN: f32 = 4.0;
 ///   one walk trace (`0x63162e`), which the `max` reproduces.
 /// - `hover`: the reference ends at `z_before_snap − max(L − 1.0, 0)` (`0x636e81`-`0x636ea9`),
 ///   here `(y + 1.0).min(seat_y)`.
-pub(crate) fn grounded_y(
-    seat_y: f32,
-    floor: Option<f32>,
-    water_floor: Option<f32>,
-    hover: bool,
-) -> f32 {
+pub fn grounded_y(seat_y: f32, floor: Option<f32>, water_floor: Option<f32>, hover: bool) -> f32 {
     let mut y = floor.unwrap_or(seat_y);
     if let Some(w) = water_floor {
         y = y.max(w);
@@ -790,7 +785,7 @@ const CREATURE_SWIM_EXIT_BAND: f32 = 1.0 / 36.0;
 /// vmangos sets the bit on a creature only from a script (`boss_onyxia.cpp:679`). The splash
 /// (`sound::water`) sits outside the flag gate, as `0x60314a` does.
 #[derive(Component)]
-pub(crate) struct CreatureSwimming;
+pub struct CreatureSwimming;
 
 /// The last ground clamp this unit took: its seat and the cast gate's inputs, each compared by bit.
 #[derive(Component, Clone, Copy)]

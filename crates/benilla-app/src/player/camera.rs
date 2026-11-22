@@ -842,7 +842,7 @@ pub(super) fn send_world_right_press(
 
 #[derive(Component)]
 // `pub(crate)` for the scripted camera park's query; `FlyCam::park` is its one lever.
-pub(crate) struct FlyCam {
+pub struct FlyCam {
     pub(super) yaw: f32,
     pub(super) pitch: f32,
     pub(super) speed: f32,
@@ -850,7 +850,7 @@ pub(crate) struct FlyCam {
 
 impl FlyCam {
     /// The live camera yaw, which the movement hotpatch frame reports.
-    pub(crate) fn yaw(&self) -> f32 {
+    pub fn yaw(&self) -> f32 {
         self.yaw
     }
 

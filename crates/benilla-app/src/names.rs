@@ -53,7 +53,7 @@ pub(crate) mod type_flags {
 
 /// The name cache: players by guid, creatures by template entry, pets by pet number.
 #[derive(Resource, Default)]
-pub(crate) struct NameCache {
+pub struct NameCache {
     /// An empty wire name is a refusal: the server does not know the guid.
     players: QueryCache<u64, String>,
     /// `(race, class, gender)` from `SMSG_NAME_QUERY_RESPONSE`, the `$`-macro expander's fallback
@@ -170,7 +170,7 @@ impl NameCache {
     /// `0xc0e228`, which names a chat speaker (`0x49d560`), the summoner (`GetSummonConfirmSummoner`, `0x48b6a0`)
     /// and every roster, mail, auction and petition guid the server sends as a player's. A guid
     /// no player owns is asked and never answered. Read as `ask` says.
-    pub(crate) fn resolve_player(&self, guid_val: u64, ask: Ask<'_>) -> Option<&str> {
+    pub fn resolve_player(&self, guid_val: u64, ask: Ask<'_>) -> Option<&str> {
         self.players
             .read(guid_val, ask, |commands| {
                 Self::send_player(guid_val, commands)

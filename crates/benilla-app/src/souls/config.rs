@@ -82,36 +82,36 @@ use serde::Deserialize;
 /// leaves the stock path untouched.
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
-pub(crate) struct SoulsFeatures {
-    pub(crate) root_motion: bool,
-    pub(crate) turn_lock: bool,
-    pub(crate) lock_on: bool,
-    pub(crate) lock_targets: bool,
-    pub(crate) heavy: bool,
-    pub(crate) charge: bool,
-    pub(crate) sprint: bool,
-    pub(crate) running_attacks: bool,
-    pub(crate) guard: bool,
-    pub(crate) guard_counter: bool,
-    pub(crate) iframes: bool,
-    pub(crate) hits: bool,
-    pub(crate) hit_stop: bool,
-    pub(crate) engage_on_hit: bool,
-    pub(crate) hud: bool,
-    pub(crate) turn_rate: bool,
-    pub(crate) poise: bool,
-    pub(crate) crouch: bool,
-    pub(crate) jump_attacks: bool,
-    pub(crate) left_hand: bool,
-    pub(crate) parry: bool,
-    pub(crate) two_hand: bool,
-    pub(crate) server: bool,
-    pub(crate) enemy_strikes: bool,
-    pub(crate) retarget: bool,
-    pub(crate) retarget_locomotion: bool,
-    pub(crate) er_controls: bool,
-    pub(crate) free_camera: bool,
-    pub(crate) unit_collision: bool,
+pub struct SoulsFeatures {
+    pub root_motion: bool,
+    pub turn_lock: bool,
+    pub lock_on: bool,
+    pub lock_targets: bool,
+    pub heavy: bool,
+    pub charge: bool,
+    pub sprint: bool,
+    pub running_attacks: bool,
+    pub guard: bool,
+    pub guard_counter: bool,
+    pub iframes: bool,
+    pub hits: bool,
+    pub hit_stop: bool,
+    pub engage_on_hit: bool,
+    pub hud: bool,
+    pub turn_rate: bool,
+    pub poise: bool,
+    pub crouch: bool,
+    pub jump_attacks: bool,
+    pub left_hand: bool,
+    pub parry: bool,
+    pub two_hand: bool,
+    pub server: bool,
+    pub enemy_strikes: bool,
+    pub retarget: bool,
+    pub retarget_locomotion: bool,
+    pub er_controls: bool,
+    pub free_camera: bool,
+    pub unit_collision: bool,
 }
 
 impl Default for SoulsFeatures {
@@ -225,7 +225,7 @@ struct SoulsFile {
 
 /// A key or mouse button a Souls bind names.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum SoulsKey {
+pub enum SoulsKey {
     Key(KeyCode),
     Mouse(MouseButton),
 }
@@ -234,50 +234,50 @@ pub(crate) enum SoulsKey {
 /// Shift bind waits for Shift up ([`super::input::KeyRead`]), so `MouseLeft` and
 /// `Shift+MouseLeft` are two presses.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct SoulsBind {
-    pub(crate) key: SoulsKey,
-    pub(crate) shift: bool,
+pub struct SoulsBind {
+    pub key: SoulsKey,
+    pub shift: bool,
 }
 
 impl SoulsBind {
-    pub(crate) const fn plain(key: SoulsKey) -> Self {
+    pub const fn plain(key: SoulsKey) -> Self {
         Self { key, shift: false }
     }
 
-    pub(crate) const fn shifted(key: SoulsKey) -> Self {
+    pub const fn shifted(key: SoulsKey) -> Self {
         Self { key, shift: true }
     }
 }
 
 /// The resolved binds. The combat binds may carry Shift; the rest are bare keys.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct SoulsBinds {
-    pub(crate) light: SoulsBind,
-    pub(crate) heavy: SoulsBind,
-    pub(crate) dodge: SoulsBind,
-    pub(crate) guard: SoulsBind,
-    pub(crate) lock_on: SoulsBind,
-    pub(crate) lock_on_alt: SoulsBind,
-    pub(crate) crouch: SoulsBind,
-    pub(crate) left: SoulsBind,
-    pub(crate) parry: SoulsBind,
+pub struct SoulsBinds {
+    pub light: SoulsBind,
+    pub heavy: SoulsBind,
+    pub dodge: SoulsBind,
+    pub guard: SoulsBind,
+    pub lock_on: SoulsBind,
+    pub lock_on_alt: SoulsBind,
+    pub crouch: SoulsBind,
+    pub left: SoulsBind,
+    pub parry: SoulsBind,
     /// One hand or both: [`crate::combat_kit::PlayerKit::toggle_grip`].
-    pub(crate) grip: SoulsBind,
+    pub grip: SoulsBind,
     /// Runs the `JUMP` binding while the layout is on.
-    pub(crate) jump: SoulsKey,
+    pub jump: SoulsKey,
     /// Interacts with what is in front ([`super::controls`]).
-    pub(crate) interact: SoulsKey,
+    pub interact: SoulsKey,
     /// Runs [`SoulsControls::quick_item`].
-    pub(crate) use_item: SoulsKey,
+    pub use_item: SoulsKey,
     /// Hold to walk: `TOGGLERUN` on its press and on its release.
-    pub(crate) walk: SoulsKey,
+    pub walk: SoulsKey,
     /// Tap to bring the cursor up for the UI, tap again to orbit.
-    pub(crate) cursor: SoulsKey,
+    pub cursor: SoulsKey,
 }
 
 impl SoulsBinds {
     /// The combat binds, for the Shift pairing and the claims.
-    pub(crate) fn combat(&self) -> [SoulsBind; 10] {
+    pub fn combat(&self) -> [SoulsBind; 10] {
         [
             self.light,
             self.heavy,
@@ -295,19 +295,19 @@ impl SoulsBinds {
 
 /// The `[controls]` section, resolved.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub(crate) struct SoulsControls {
+pub struct SoulsControls {
     /// The WoW binding the use-item key runs (by default the twelfth action button's).
-    pub(crate) quick_item: String,
+    pub quick_item: String,
     /// Keys that open a panel: the cursor comes up with them.
-    pub(crate) cursor_keys: Vec<KeyCode>,
+    pub cursor_keys: Vec<KeyCode>,
 }
 
 /// The live Souls configuration.
 #[derive(Resource, Clone, PartialEq, Eq, Debug)]
-pub(crate) struct SoulsConfig {
-    pub(crate) features: SoulsFeatures,
-    pub(crate) binds: SoulsBinds,
-    pub(crate) controls: SoulsControls,
+pub struct SoulsConfig {
+    pub features: SoulsFeatures,
+    pub binds: SoulsBinds,
+    pub controls: SoulsControls,
 }
 
 impl Default for SoulsConfig {
@@ -342,14 +342,14 @@ impl Default for SoulsConfig {
 
 impl SoulsConfig {
     /// Parse the file's text; an unknown key name, switch or section is an error naming it.
-    pub(crate) fn from_text(text: &str) -> Result<Self, String> {
+    pub fn from_text(text: &str) -> Result<Self, String> {
         let file: SoulsFile = toml::from_str(text).map_err(|error| error.to_string())?;
         resolve(file)
     }
 
     /// Read the file again. No file is the defaults; a file that does not parse keeps the
     /// current configuration and says why.
-    pub(crate) fn reload(&mut self) {
+    pub fn reload(&mut self) {
         let Some(path) = crate::local_state::souls_config_path() else {
             return;
         };
@@ -385,7 +385,7 @@ impl SoulsConfig {
 }
 
 /// The startup read.
-pub(crate) fn load_souls_config(mut config: ResMut<SoulsConfig>) {
+pub fn load_souls_config(mut config: ResMut<SoulsConfig>) {
     config.reload();
 }
 
@@ -444,7 +444,7 @@ fn resolve(file: SoulsFile) -> Result<SoulsConfig, String> {
 }
 
 /// A combat bind's name: a key name, optionally after `Shift+`.
-pub(crate) fn parse_bind(name: &str) -> Option<SoulsBind> {
+pub fn parse_bind(name: &str) -> Option<SoulsBind> {
     let trimmed = name.trim();
     let (shift, rest) = match trimmed.split_once('+') {
         Some((modifier, rest)) if modifier.trim().eq_ignore_ascii_case("shift") => (true, rest),
@@ -460,7 +460,7 @@ pub(crate) fn parse_bind(name: &str) -> Option<SoulsBind> {
 }
 
 /// A bind's key name, case-insensitive.
-pub(crate) fn parse_key(name: &str) -> Option<SoulsKey> {
+pub fn parse_key(name: &str) -> Option<SoulsKey> {
     use KeyCode as K;
     let upper = name.trim().to_ascii_uppercase();
     let key = match upper.as_str() {

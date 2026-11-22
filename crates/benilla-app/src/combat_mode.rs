@@ -50,27 +50,27 @@ use crate::ui_action::Spells;
 use crate::wrath::WrathWorldView;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum CombatMode {
+pub enum CombatMode {
     #[default]
     Baseline,
     Experimental,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CombatModeUnavailable {
+pub enum CombatModeUnavailable {
     /// No installed server/mod owner accepts a mode request, carries stamina, or gates a hit
     /// outcome. Sending a request would be invented traffic.
     ServerModeChannelMissing,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CombatModeAvailability {
+pub enum CombatModeAvailability {
     Available,
     Unavailable(CombatModeUnavailable),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CombatModeRefusal {
+pub enum CombatModeRefusal {
     Unavailable(CombatModeUnavailable),
 }
 
@@ -86,7 +86,7 @@ pub(crate) enum CombatModeDecision {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CommittedAction {
+pub enum CommittedAction {
     Cast {
         spell_id: u32,
         item_guid: Option<u64>,
@@ -97,7 +97,7 @@ pub(crate) enum CommittedAction {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CombatResources {
+pub struct CombatResources {
     pub health: Option<u32>,
     pub max_health: Option<u32>,
     pub power_type: Option<u8>,
@@ -105,7 +105,7 @@ pub(crate) struct CombatResources {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CombatCooldown {
+pub struct CombatCooldown {
     pub spell_id: u32,
     pub remaining_ms: u32,
     pub duration_ms: u32,
@@ -114,7 +114,7 @@ pub(crate) struct CombatCooldown {
 }
 
 #[derive(Resource, Debug, PartialEq, Eq)]
-pub(crate) struct CombatModeView {
+pub struct CombatModeView {
     pub requested: Option<CombatMode>,
     pub effective: CombatMode,
     pub availability: CombatModeAvailability,

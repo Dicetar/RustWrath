@@ -23,7 +23,7 @@ pub enum ClientState {
 /// `Update` only: a set's conditions are per schedule, so a member elsewhere needs the set
 /// configured there too.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct InWorldGated;
+pub struct InWorldGated;
 
 /// The lifecycle state, its gate and its mirror.
 pub(crate) struct ClientStatePlugin {

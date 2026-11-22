@@ -79,7 +79,7 @@ impl ItemDisplays {
 /// `bodyslots` by bodyslot - 2, shirt to tabard. `settled` holds once every worn entry has a
 /// template answer, so the first composite is dressed rather than naked for a frame.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Default, Debug)]
-pub(crate) struct Equipment {
+pub struct Equipment {
     pub(crate) bodyslots: [u32; 8],
     /// A geoset and a runtime cape texture, no body region.
     pub(crate) cloak: u32,
@@ -189,8 +189,8 @@ pub(crate) enum ItemModelKind {
 /// A body model's attachment points and event markers, each a bone and a Bevy-space offset from
 /// its bind pivot; the joint entities are `RigPose::anchor_for`'s.
 #[derive(Component)]
-pub(crate) struct BoneAttach {
-    pub(crate) points: HashMap<u16, (u16, Vec3)>,
+pub struct BoneAttach {
+    pub points: HashMap<u16, (u16, Vec3)>,
     /// First record per FourCC (`0x7130e0`): the missile launch points `$CSL`/`$CSR`/`$CST`
     /// (`0x60c9b0`) and `$BWR`.
     pub(crate) markers: HashMap<[u8; 4], (u16, Vec3)>,
@@ -199,8 +199,8 @@ pub(crate) struct BoneAttach {
 /// The ThumbR and ThumbL key bones (KeyBoneID 12 and 17), `[right, left]`, on a unit whose model
 /// has either: the Souls retarget turns each hand so its palm faces where the ER hand's does.
 #[derive(Component, Clone, Copy, Debug)]
-pub(crate) struct HandKeyBones {
-    pub(crate) thumbs: [Option<u16>; 2],
+pub struct HandKeyBones {
+    pub thumbs: [Option<u16>; 2],
 }
 
 /// The item models spawned for a unit: the [`HeldItems`] they were built from and each slot's root.

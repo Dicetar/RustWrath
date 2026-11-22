@@ -13,7 +13,7 @@ use benilla_world::schedule::WorldStage;
 
 mod by_name;
 // `pub(crate)` for the chest live probe, which drives the mouse's own `click::resolve_go_action`.
-pub(crate) mod click;
+pub mod click;
 // `pub(crate)` for the hover inspector, which runs the cursor's `cursor_mode::go_highlightable`.
 pub(crate) mod cursor_mode;
 mod died;
@@ -67,7 +67,7 @@ pub(crate) use price_discount::vendor_price_discount;
 #[cfg(test)]
 pub(crate) use price_discount::{stormwind_fixture, HUMAN_WARRIOR};
 // The one relation model, two units in: reaction, attack, assist, cooperation, interaction.
-pub(crate) use relations::{
+pub use relations::{
     corpse_friendly, is_possessed_by, is_selectable, RelUnit, RelationWorld, Relations, UnitLookup,
     UNIT_FLAG_POSSESSED,
 };
@@ -83,7 +83,7 @@ pub(crate) use by_name::{
 };
 // The one SetSelection path, for the loot response's select (`0x48f3a0`), and what a selecting
 // call owes after its signals.
-pub(crate) use by_name::{SelectCommit, SelectDebt};
+pub use by_name::{SelectCommit, SelectDebt};
 // The selector's colour and the faction catalog it and the model read.
 #[cfg(test)]
 pub(crate) use ring::{ring_variant, PlayerPath, SelectorInput};
@@ -102,10 +102,10 @@ pub(crate) use click::{
 /// our `UNIT_FIELD_TARGET`. [`track::follow_selection_object`] keeps [`Self::target`] on the guid's
 /// object and ends the selection where the client's teardowns do.
 #[derive(Resource, Default, Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Selection {
+pub struct Selection {
     /// The object [`Self::guid`] names while the object manager holds it.
-    pub(crate) target: Option<Entity>,
-    pub(crate) guid: Option<u64>,
+    pub target: Option<Entity>,
+    pub guid: Option<u64>,
     /// The object `SetSelection` lit as the target (`SetLight` bit 0, `0x493701`) and the teardown
     /// unlights (`0x4939a7`): an object that streams in after the select is not lit.
     pub(crate) lit: Option<Entity>,

@@ -63,7 +63,7 @@ const RING_PARTY_PVP: Color = Color::linear_rgb(0.667, 1.0, 0.667); // 0xFFAAFFA
 /// The FactionTemplate.dbc catalog; absent if it failed to load, and the faction legs then read
 /// neutral. Shared, so the Lua API's copy of the relation inputs costs no table.
 #[derive(Resource, Clone)]
-pub(crate) struct Factions(std::sync::Arc<FactionCatalog>);
+pub struct Factions(std::sync::Arc<FactionCatalog>);
 
 impl Factions {
     pub(crate) fn catalog(&self) -> &FactionCatalog {

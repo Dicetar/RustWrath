@@ -237,11 +237,11 @@ pub(crate) type ProfileBuildKey = (bevy::prelude::Entity, Option<(u8, u8)>, u32)
 /// binding from action id to the clip id the local rig plays for it. `combat_playback.rs` fills
 /// it for the local player and plays requested actions through the one-shot driver path.
 #[derive(bevy::prelude::Resource, Debug, Default)]
-pub(crate) struct CombatProfiles {
+pub struct CombatProfiles {
     /// The compiled action table; empty until a world build fills it.
-    pub(crate) table: Option<ActionTable>,
+    pub table: Option<ActionTable>,
     /// Action id → the `AnimationData.dbc` id the local rig plays for that action.
-    pub(crate) anims: HashMap<ActionId, u16>,
+    pub anims: HashMap<ActionId, u16>,
     /// The `(entity, main-hand weapon, kit generation)` the current table was compiled for; a
     /// change here (rig load, weapon swap, a new kit file) recompiles.
     pub(crate) built_for: Option<ProfileBuildKey>,
@@ -249,7 +249,7 @@ pub(crate) struct CombatProfiles {
     /// stock clips, so presses resolve through the kit.
     pub(crate) from_kit: bool,
     /// The engine stamina the table was built with; `None` is the stock prediction config.
-    pub(crate) stamina: Option<benilla_combat_core::StaminaConfig>,
+    pub stamina: Option<benilla_combat_core::StaminaConfig>,
 }
 
 #[cfg(test)]

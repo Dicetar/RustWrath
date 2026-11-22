@@ -50,7 +50,7 @@ use motion::{
 };
 // `pub(crate)`: `creature_anim` reads the shuffle latch it produces, and a test runs both.
 pub(crate) use motion::drive_display_facing;
-pub(crate) use motion::{
+pub use motion::{
     grounded_y, jump_seed, CreatureSwimming, FacingStep, RemoteMotion, Spline, SplineStopped,
     UnitMoveModes,
 };
@@ -210,7 +210,7 @@ fn population_pulse(index: Res<GuidIndex>, time: Res<Time>, mut last: Local<f32>
 
 /// The server guid of a streamed entity.
 #[derive(Component, Clone, Copy)]
-pub(crate) struct Guid(pub(crate) u64);
+pub struct Guid(pub u64);
 
 /// A streamed entity's kind and display id, from which [`crate::entities`] builds its visual.
 #[derive(Component)]
@@ -259,7 +259,7 @@ pub(crate) fn current_speed(s: &MoveSpeeds, flags: u32) -> f32 {
 /// A streamed object's descriptor fields, seeded by the create block and merged with each
 /// `Values` delta. Speeds and pose are movement-block data, not here.
 #[derive(Component, Clone, Default)]
-pub(crate) struct ObjectStore(pub(crate) ObjectFields);
+pub struct ObjectStore(pub ObjectFields);
 
 impl ObjectStore {
     /// `UNIT_FIELD_BYTES_0`'s race and class bytes (`+0x78`, `+0x79`), 0 while unstreamed: what
@@ -273,7 +273,7 @@ impl ObjectStore {
 
     /// The object manager's unit lookup (`0x468460`, `ecx = 8`): a unit or a player, which share
     /// the unit block; a game object, corpse or item is not one.
-    pub(crate) fn is_unit(&self) -> bool {
+    pub fn is_unit(&self) -> bool {
         use benilla_protocol::messages::ObjectType;
         matches!(
             self.0.object_type(),
@@ -429,7 +429,7 @@ pub(crate) fn apply_fields_for_test(world: &mut World, entity: Entity, delta: Ob
 
 /// Our own character's entity (guid == [`SelfGuid`]): identity, not what we steer ([`Embodied`]).
 #[derive(Component)]
-pub(crate) struct SelfPlayer;
+pub struct SelfPlayer;
 
 /// The body this client is attached to: the reference's camera anchor (`camera+0x88`), written
 /// only by the constructor and `SetTarget 0x50d0f0`, never by a control update. Normally our own
@@ -472,7 +472,7 @@ impl NetEvents {
 
 /// The outbound command channel.
 #[derive(Resource, Debug)]
-pub(crate) struct NetCommands(pub(crate) Sender<ClientCommand>);
+pub struct NetCommands(pub Sender<ClientCommand>);
 
 /// The character-select channel to the IO thread parked at select: create and delete are served
 /// in place until an [`CharRequest::Enter`] moves into the world.
@@ -628,7 +628,7 @@ impl LoginAbandon {
 /// Guid to entity for every kind, items included, like the reference's one `ClntObjMgr` index.
 /// Written only by `net::objects`.
 #[derive(Resource, Default)]
-pub(crate) struct GuidIndex(pub(crate) HashMap<u64, Entity>);
+pub struct GuidIndex(pub HashMap<u64, Entity>);
 
 /// The streamed objects, whatever the kind, with their descriptor stores, our own player, and an
 /// item's countdown cells. Read-only. The by-guid lookups are `ClntObjMgrObjectPtr` (`0x468460`).
@@ -705,7 +705,7 @@ impl Objects<'_, '_> {
 
 /// Our own player's guid, once in the world.
 #[derive(Resource, Default)]
-pub(crate) struct SelfGuid(pub(crate) Option<u64>);
+pub struct SelfGuid(pub Option<u64>);
 
 /// Connection status; `last_reason` keeps the most recent failure.
 #[derive(Resource, Default)]
@@ -829,7 +829,7 @@ pub(crate) struct Proficiencies(pub(crate) std::collections::HashMap<u32, u32>);
 /// One self-movement event, each a `MSG_MOVE_*` opcode: the reference sends each axis transition,
 /// a jump, a standing facing change and a heartbeat while moving.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MoveKind {
+pub enum MoveKind {
     StartForward,
     StartBackward,
     Stop,
@@ -902,7 +902,7 @@ pub(crate) fn addon_wire_chat_type(distribution: benilla_ui::script::AddonDistri
 /// The `ChatMsg` type of a chat-bar line: the full sendable set (vmangos
 /// `HandleChatMessageOpcode`). `Whisper` and `Channel` name their target in `target`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum ChatKind {
+pub enum ChatKind {
     /// `/say`; GM dot-commands go out this way, parsed after the language gate.
     Say,
     /// `/yell` (`CHAT_MSG_YELL`, `SharedDefines.h:1199`).
@@ -966,7 +966,7 @@ pub(crate) static CAST_TRACE: std::sync::LazyLock<bool> =
 
 /// Local delivery evidence only; Written is not a server acknowledgement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-pub(crate) enum CommandDelivery {
+pub enum CommandDelivery {
     OutboxAdmitted,
     Written,
     Rejected(CommandRefusal),
@@ -975,7 +975,7 @@ pub(crate) enum CommandDelivery {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-pub(crate) enum CommandRefusal {
+pub enum CommandRefusal {
     OutboxFull,
     ScopeChanged,
     Cancelled,
@@ -985,7 +985,7 @@ pub(crate) enum CommandRefusal {
 
 /// One quest acceptance's bounded response route, carried with the command to its writer.
 #[derive(Debug, Clone)]
-pub(crate) struct CommandReceipt {
+pub struct CommandReceipt {
     pub trace: Option<crate::quest_trace::Interaction>,
     pub enforce_scope: bool,
     pub session_epoch: u64,
@@ -1014,7 +1014,7 @@ impl CommandReceipt {
 
 /// A message to the server through the write thread, carrying any pose it needs.
 #[derive(Debug, Clone)]
-pub(crate) enum ClientCommand {
+pub enum ClientCommand {
     /// A self-movement packet. Each tail is written iff its flag is set (`JUMPING`, `SWIMMING`,
     /// `ON_TRANSPORT`): a flag without its tail desyncs the server's parse.
     Move {

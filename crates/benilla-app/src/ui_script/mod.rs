@@ -130,12 +130,12 @@ pub(crate) struct PlayerUiHover(pub(crate) Option<u32>);
 /// and the world-enter cascade (`0x5144c0`) clear the direction bits, so W keeps running while
 /// you type.
 #[derive(Resource, Default)]
-pub(crate) struct UiKeyboardCapture {
+pub struct UiKeyboardCapture {
     /// A focused EditBox eats every key (`0x77b35e` returns 1 on every path but alt-arrow).
-    pub(crate) typing: bool,
+    pub typing: bool,
     /// Keys a shown keyboard-enabled frame consumed this frame (the existence gate, `0x76b7d0`),
     /// per key so the map eating `M` suppresses no other binding; raw codes, as read.
-    pub(crate) consumed: Vec<bevy::input::keyboard::KeyCode>,
+    pub consumed: Vec<bevy::input::keyboard::KeyCode>,
     /// The arrows fall through: the focused box is in alt-arrow mode and ALT is up, so the
     /// reference declines them at `0x77b1c4` and `CGWorldFrame` runs their bindings.
     pub(crate) arrows_fall_through: bool,
@@ -196,7 +196,7 @@ pub(crate) struct UiPaint;
 /// The player-UI input pass (tick, hit-test, handlers), before [`WorldStage::Input`] so its
 /// [`PlayerUiHover`] reaches `PointerOverUi` before `player::control` reads it.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct UiInput;
+pub struct UiInput;
 
 /// The frame's atomic (`Instant`, `GetTime`) pair, the one base for mapping a store `Instant` onto
 /// `GetTime`: `anchor`'s steps are the VM clock's deltas, so a mapped start is stable frame to

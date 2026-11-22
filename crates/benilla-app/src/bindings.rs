@@ -41,7 +41,7 @@ mod store;
 
 use chord::{BindKey, Chord};
 pub(crate) use layout::LayoutNames;
-pub(crate) use script_input::Input;
+pub use script_input::Input;
 
 /// The chord-to-command map, rebuilt whenever the engine table's generation moves. Probe it
 /// through [`BindingDispatch::resolve`]: the lookup is two probes.
@@ -75,7 +75,7 @@ impl BindingDispatch {
 /// This frame's binding activity, which engine-side consumers read instead of raw keys: the
 /// [`Input`]s the running bodies' Lua calls set.
 #[derive(Resource, Default)]
-pub(crate) struct BindingsState {
+pub struct BindingsState {
     /// Live latches, (base input, command): a press not yet released, whose release runs the
     /// command's `runOnUp` half. The reference replays the press-time chord at key-up (`0x483bd0`);
     /// latching the resolved command is equivalent.
@@ -148,11 +148,11 @@ enum Held {
 
 impl BindingsState {
     /// Is a held bit set right now (the reference's `[InputControl+4]`)?
-    pub(crate) fn pressed(&self, i: Input) -> bool {
+    pub fn pressed(&self, i: Input) -> bool {
         self.held.contains(&i)
     }
     /// Did this bit's Start, or this one-shot, come this frame (the key-down edge)?
-    pub(crate) fn just_pressed(&self, i: Input) -> bool {
+    pub fn just_pressed(&self, i: Input) -> bool {
         self.just.contains(&i)
     }
     /// Did this one-shot fire this frame?

@@ -2,9 +2,9 @@
 
 Status: in progress
 Owner: Claude Code / Opus 5.5
-Branch: refactor/split-benilla-app
+Branch: refactor/split-benilla-app-v2 (refactor/split-benilla-app is abandoned: its second commit captured staged renames without their contents)
 Issue: none
-Next: extract `souls` into `benilla-souls` on top of the core (plan below), then time the edit loop
+Next: land on main once CI is green; then `benilla-dev` (plan step 3)
 
 ## Why
 
@@ -25,6 +25,18 @@ each live-code patch.
    `gates.sh` (player-clippy, live-code-check) and `genmap.sh` name the new crate.
    `Cargo.lock` on main was missing the `bevy/hotpatching` packages (subsecond, dioxus-devtools…);
    every build added them locally, and this commit carries them.
+
+2. `benilla-souls` (new): the Souls systems (input, drive, targets, hud, retarget, the server
+   link) moved verbatim from `benilla-app/src/souls*`. What the core reads stayed in a core
+   `souls` module at its old paths: `souls/config.rs` unchanged, `ErControls` (+ methods),
+   `SoulsState` (+ `DriveTrack`, `SwingTrack`, `Instance`, `ChargeHold`), `SwingMute`,
+   `tap_addon` and its inbox. Their four `init_resource` calls moved from `SoulsPlugin` into a core
+   `SoulsStatePlugin` that takes `SoulsPlugin`'s old slot in `GamePlugins`; the client inserts
+   `SoulsPlugin` right after it (`add_after`), so the plugin and system order is unchanged and the
+   core's headless test client still has the resources its systems read. In the core only
+   visibility changed (items the souls crate names are `pub`, plus the types their signatures
+   expose); one `#[allow(clippy::should_implement_trait)]` on `PlaySeq::next`, now public.
+   `benilla-souls` joins player-clippy and player-tests (trigger and args) in CI and the scripts.
 
 ## Plan (the measured graph and timings are in Phase 1 below)
 
@@ -88,5 +100,10 @@ Order:
 - `cargo clippy -p benilla-client -p benilla --all-targets --features hotpatch`: no findings in
   the new crate.
 - `cargo fmt --all -- --check`: clean.
-- Tests: not run locally (the app's test build is ~13 min); CI runs the changed crates' tests.
-- CI: not run yet.
+- Souls commit: `cargo check -p benilla -p benilla-souls --features benilla/hotpatch` clean but
+  the two main warnings; player-clippy over benilla, client, souls and app with `-D warnings`
+  clean; `cargo test -p benilla-souls`: 29 passed, 1 ignored; fmt clean.
+- Tests of benilla-app not run locally (its test build is ~13 min); CI runs the changed crates'.
+- CI on commit 1 (run 45008817297): 6,917 benilla-app lib tests passed; `world_api_wall` failed
+  (its source scan did not see the boot's engine calls in benilla-client), fixed in commit 2.
+- CI on the souls commit: not run yet.

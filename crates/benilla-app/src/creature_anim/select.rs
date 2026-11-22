@@ -62,7 +62,7 @@ pub(crate) const LIFT_OFF: u16 = 192;
 pub(crate) const LAND: u16 = 200;
 
 /// The client's `MOVEMENTFLAGS` bits (cached at `unit+0x9e8`), tested as the binary tests them.
-pub(crate) mod move_flags {
+pub mod move_flags {
     pub const FORWARD: u32 = 0x1;
     pub const BACKWARD: u32 = 0x2;
     pub const STRAFE_LEFT: u32 = 0x4;
@@ -140,7 +140,7 @@ const STRAFE_BLEND_RATE: f32 = 17.26;
 
 /// Ease the rendered yaw toward `aim + offset` through the aim-relative offset, which swings round
 /// the front where the absolute shortest arc ties at the ±90° strafe flip.
-pub(crate) fn ease_strafe_yaw(current_yaw: f32, aim: f32, offset: f32, dt: f32) -> f32 {
+pub fn ease_strafe_yaw(current_yaw: f32, aim: f32, offset: f32, dt: f32) -> f32 {
     let cur = super::wrap_pi(current_yaw - aim);
     let eased = cur + (offset - cur) * (1.0 - (-STRAFE_BLEND_RATE * dt).exp());
     super::wrap_pi(aim + eased)
@@ -149,7 +149,7 @@ pub(crate) fn ease_strafe_yaw(current_yaw: f32, aim: f32, offset: f32, dt: f32) 
 /// The strafe body heading's offset from the aim (`0x607ed0`): ±π/2, ±π/4 with forward or back,
 /// left positive, mirrored while backpedaling. Both strafe bits give 0, as they cancel to no
 /// lateral motion, where the client's fold keys on the left bit alone: an unobservable edge.
-pub(crate) fn strafe_body_offset(flags: u32) -> f32 {
+pub fn strafe_body_offset(flags: u32) -> f32 {
     use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
     let left = flags & move_flags::STRAFE_LEFT != 0;
     let right = flags & move_flags::STRAFE_RIGHT != 0;
@@ -169,7 +169,7 @@ pub(crate) fn strafe_body_offset(flags: u32) -> f32 {
 /// The swim body pitch for every mover with a reported pitch (`0x60a110` to `0x710620`): the
 /// reference's `Rz(facing)·Ry(2π − pitch)` is `Ry(yaw)·Rx(pitch)` here, nose up positive, and
 /// only SWIMMING with forward or back pitches (`CMovement+0x40 & 3` at `0x60857d`).
-pub(crate) fn swim_body_rotation(yaw: f32, flags: u32, pitch: f32) -> Quat {
+pub fn swim_body_rotation(yaw: f32, flags: u32, pitch: f32) -> Quat {
     if flags & move_flags::SWIMMING != 0
         && flags & (move_flags::FORWARD | move_flags::BACKWARD) != 0
     {
@@ -181,7 +181,7 @@ pub(crate) fn swim_body_rotation(yaw: f32, flags: u32, pitch: f32) -> Quat {
 
 /// The per-frame movement state the selector `0x5fd8b0` reads.
 #[derive(Component, Clone, Copy, Default)]
-pub(crate) struct MovementState {
+pub struct MovementState {
     /// Live directional speed (yd/s); for a swimmer the flag-scalar swim speed whatever its pitch.
     pub(crate) speed: f32,
     /// Vertical speed (yd/s, up); its sign on the first airborne frame tells a jump from a fall.
@@ -511,7 +511,7 @@ pub(super) fn unarmed_special(id: u16, main: Option<(u8, u8)>, off: Option<(u8, 
 }
 
 /// The melee swing one-shot ids, the only clips the whiff slow-down touches on the overlay.
-pub(crate) fn is_swing_id(id: u16) -> bool {
+pub fn is_swing_id(id: u16) -> bool {
     matches!(id, 16..=19 | 85 | 87 | 88 | 117)
 }
 
@@ -557,7 +557,7 @@ pub(super) fn state_emote_anim(
 }
 
 /// The mainhand swing id (`0x6246a0`); anything but an equipped melee weapon swings unarmed (16).
-pub(crate) fn swing_anim_main(wielded: Option<(u8, u8)>) -> u16 {
+pub fn swing_anim_main(wielded: Option<(u8, u8)>) -> u16 {
     match wielded {
         Some((2, sub)) => match sub {
             0x0 | 0x4 | 0x7 | 0xb | 0xe => 17, // Attack1H: 1H axe/mace/sword/exotic/misc

@@ -73,7 +73,7 @@ impl VPlateMode {
 /// The units carrying a live plate this frame; the overhead-name driver draws no name for them
 /// (the reference's ShouldShowName).
 #[derive(Resource, Default)]
-pub(crate) struct VPlates(pub(crate) EntityHashSet);
+pub struct VPlates(pub EntityHashSet);
 
 /// The unit whose plate holds the hover after this frame's UI walk: the plate's OnEnter
 /// publishing the mouseover (`0x7cb850` into `[0xb4e2c8]`), since the world pick stands down
@@ -105,7 +105,7 @@ pub(crate) struct PlateClicks {
 /// The plate frame in gx units (`[0x87d9cc]`, `[0x87d9d0]`); child offsets from `0x7cb250` and
 /// `0x7cb6d0`.
 const PLATE_W: f32 = 0.1;
-pub(crate) const PLATE_H: f32 = 0.025;
+pub const PLATE_H: f32 = 0.025;
 /// The health bar: BOTTOMLEFT at the plate's BOTTOMLEFT plus the offset.
 const BAR_OFF_X: f32 = 0.0031;
 const BAR_OFF_Y: f32 = 0.003125;
@@ -123,7 +123,7 @@ const SKULL_SIZE: f32 = 0.01;
 /// left edge.
 const RAID_ICON_SIZE: f32 = 0.02;
 /// `[0x80abfc]`.
-pub(crate) const PLATE_LIFT: f32 = 2.0 / 3.0;
+pub const PLATE_LIFT: f32 = 2.0 / 3.0;
 /// 20 yd squared, `[0xc4d988]` (set from `0x5fa130`).
 const MAX_DIST_SQ: f32 = 20.0 * 20.0;
 /// `CreatureType.dbc` id 11, Totem: a friendly one gets no plate (`0x60f757` `cmp eax,0xb`).
@@ -336,7 +336,7 @@ const PLATE_GROWTH_DAMP: f32 = 0.5;
 
 /// One gx unit in pixels: the screen diagonal (`0x41ad10`), never uiScale, damped past
 /// [`PLATE_DIAG_KNEE`]. Shared with the chat bubble so its text holds the plate's em.
-pub(crate) fn plate_basis(viewport: Vec2) -> f32 {
+pub fn plate_basis(viewport: Vec2) -> f32 {
     let d = viewport.x.hypot(viewport.y);
     if d <= PLATE_DIAG_KNEE {
         d
@@ -346,7 +346,7 @@ pub(crate) fn plate_basis(viewport: Vec2) -> f32 {
 }
 
 /// gx units to pixels for frame geometry; text takes [`text_px`].
-pub(crate) fn gx_px(v: f32, basis: f32) -> f32 {
+pub fn gx_px(v: f32, basis: f32) -> f32 {
     (v * basis).round()
 }
 

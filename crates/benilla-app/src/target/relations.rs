@@ -61,7 +61,7 @@ const TYPE_FLAG_VISIBLE_TO_GHOSTS: u32 = 0x2;
 /// copied off its [`ObjectStore`] ([`RelUnit::of`]). A field the store has not streamed reads 0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(test, derive(Default))]
-pub(crate) struct RelUnit {
+pub struct RelUnit {
     /// `OBJECT_FIELD_GUID`, which the identity, party and persuaded tests compare. Never 0: the
     /// reference's units are live objects, so the persuaded test (`0x606449`) compares a field
     /// that reads 0 for none with a guid that never is, and a unit whose guid is not yet known is
@@ -153,7 +153,7 @@ impl RelUnit {
 
 /// The object manager's lookup by guid with the unit typemask (`0x468460`, `ecx = 8`): `None` for
 /// a guid it does not hold, or holds as anything but a unit.
-pub(crate) trait UnitLookup {
+pub trait UnitLookup {
     fn unit(&self, guid: u64) -> Option<RelUnit>;
 }
 
@@ -194,7 +194,7 @@ impl UnitLookup for NoUnits {
 
 /// What the relation functions read beside their two units.
 #[derive(Clone, Copy)]
-pub(crate) struct Relations<'a> {
+pub struct Relations<'a> {
     /// The faction tables; without them every faction leg reads neutral.
     pub(crate) factions: Option<&'a Factions>,
     /// The active player's reputation list and the server's forced reactions.
@@ -368,7 +368,7 @@ impl Relations<'_> {
     /// both are in one duel, `b`'s player is PvP-flagged, or both are free-for-all
     /// (`0x606b05`-`0x606b72`). A reaction is not this: an unflagged enemy player is hostile and
     /// not attackable, a same-faction duel opponent friendly and attackable.
-    pub(crate) fn can_attack(&self, a: &RelUnit, b: &RelUnit) -> bool {
+    pub fn can_attack(&self, a: &RelUnit, b: &RelUnit) -> bool {
         if b.is_player && b.player_flags & PLAYER_FLAGS_GHOST != 0 && !a.ghost_visible {
             return false;
         }
@@ -561,7 +561,7 @@ pub(crate) fn duel_rung(a: &RelUnit, b: &RelUnit) -> DuelRung {
 /// player, the published party slots, the name cache's creature records and the object manager.
 /// [`Self::get`] is the [`Relations`] over them.
 #[derive(SystemParam)]
-pub(crate) struct RelationWorld<'w, 's> {
+pub struct RelationWorld<'w, 's> {
     factions: Option<Res<'w, Factions>>,
     reputations: Res<'w, Reputations>,
     /// `Option`, as a UI-only harness has no net stack.
@@ -576,7 +576,7 @@ pub(crate) struct RelationWorld<'w, 's> {
 
 impl RelationWorld<'_, '_> {
     /// The relation functions' inputs, the units through [`Self::unit`].
-    pub(crate) fn get(&self) -> Relations<'_> {
+    pub fn get(&self) -> Relations<'_> {
         Relations {
             factions: self.factions.as_deref(),
             reputations: &self.reputations,
@@ -587,7 +587,7 @@ impl RelationWorld<'_, '_> {
     }
 
     /// The active player's guid (`0x468550`), else its object's.
-    pub(crate) fn me_guid(&self) -> Option<u64> {
+    pub fn me_guid(&self) -> Option<u64> {
         self.self_guid
             .as_ref()
             .and_then(|g| g.0)
@@ -613,19 +613,19 @@ impl RelationWorld<'_, '_> {
     }
 
     /// The active player's descriptor, once its object has streamed.
-    pub(crate) fn me_store(&self) -> Option<&ObjectStore> {
+    pub fn me_store(&self) -> Option<&ObjectStore> {
         self.self_q.single().ok().map(|(_, store)| store)
     }
 
     /// The active player, once its object has streamed and its guid is known.
-    pub(crate) fn me(&self) -> Option<RelUnit> {
+    pub fn me(&self) -> Option<RelUnit> {
         let guid = self.me_guid()?;
         let (_, store) = self.self_q.single().ok()?;
         Some(self.unit_of(guid, store))
     }
 
     /// The unit `guid` names, whose descriptor the caller already holds.
-    pub(crate) fn unit_of(&self, guid: u64, store: &ObjectStore) -> RelUnit {
+    pub fn unit_of(&self, guid: u64, store: &ObjectStore) -> RelUnit {
         let unit = RelUnit::of(guid, store);
         match self.names.as_deref() {
             Some(names) => unit.with_record(store, names),
@@ -678,7 +678,7 @@ impl UnitLookup for RelationWorld<'_, '_> {
 /// `None` passes: `SetSelection 0x493540` makes the call (`0x4935ee`) only on an object the
 /// manager resolved (`0x4935c8`), which keeps an out-of-range party member selectable. A store
 /// whose `OBJECT_FIELD_TYPE` has not streamed passes the same way.
-pub(crate) fn is_selectable(store: Option<&ObjectStore>, self_guid: Option<u64>) -> bool {
+pub fn is_selectable(store: Option<&ObjectStore>, self_guid: Option<u64>) -> bool {
     let Some(store) = store else {
         return true; // no resolved object: the reference skips the call (`0x4935c8`)
     };
@@ -695,14 +695,14 @@ pub(crate) fn is_selectable(store: Option<&ObjectStore>, self_guid: Option<u64>)
 
 /// `UNIT_FLAG_POSSESSED`, `UNIT_FIELD_FLAGS` bit 24 (vmangos `UnitDefines.h:569`), which the
 /// reference reads as `[[unit+0x110]+0xA3] & 1`.
-pub(crate) const UNIT_FLAG_POSSESSED: u32 = 0x0100_0000;
+pub const UNIT_FLAG_POSSESSED: u32 = 0x0100_0000;
 
 /// Whether the active player possesses this unit (Mind Control, an Eye of Kilrogg, Eyes of the
 /// Beast): `UNIT_FLAG_POSSESSED` set and `UNIT_FIELD_CHARMEDBY`, else `UNIT_FIELD_CREATEDBY`, the
 /// active player's guid. The own-pet resolver `0x5ee5a0` (`0x5ee626`, `0x5ee62f`) and the world
 /// pick's filter `0x480610` (`0x48064f`-`0x480674`) read this same clause. No store, no owner or
 /// no active player is no possession.
-pub(crate) fn is_possessed_by(store: Option<&ObjectStore>, self_guid: Option<u64>) -> bool {
+pub fn is_possessed_by(store: Option<&ObjectStore>, self_guid: Option<u64>) -> bool {
     let (Some(store), Some(me)) = (store, self_guid) else {
         return false;
     };
@@ -715,7 +715,7 @@ pub(crate) fn is_possessed_by(store: Option<&ObjectStore>, self_guid: Option<u64
 /// byte of `CORPSE_FIELD_BYTES_1`, then `ChrRaces.dbc` column 2) with the template comparator
 /// `0x606640` alone, no reputation, and passes at friendly (`setge` 4). A missing row on either
 /// side is neutral (`0x60651b`), so it fails, as does a missing catalog or player.
-pub(crate) fn corpse_friendly(
+pub fn corpse_friendly(
     corpse: &ObjectStore,
     factions: Option<&Factions>,
     self_store: Option<&ObjectStore>,

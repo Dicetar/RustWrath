@@ -16,7 +16,7 @@ use benilla_world::schedule::WorldStage;
 
 /// The pure selection logic: the `0x5fd100` tables, the gait, swing and ready picks, the rate math.
 pub(crate) mod select;
-pub(crate) use select::{
+pub use select::{
     ease_strafe_yaw, is_swing_id, move_flags, strafe_body_offset, swim_body_rotation,
     swing_anim_main, MovementState,
 };
@@ -24,7 +24,7 @@ use select::{Mode, Special};
 
 /// The strafe body counter-twist, composed onto SpineLow and Head after animation.
 mod twist;
-pub(crate) use twist::{apply_body_twist, wrap_pi, BodyTwist};
+pub use twist::{apply_body_twist, wrap_pi, BodyTwist};
 
 /// Parks an off-frustum rig's pose while its clocks run, as the reference does not tick one
 /// (`0x683dd0`); a parked unit's events fire only for a `MORE_AUDIBLE` template.
@@ -33,7 +33,7 @@ mod lod;
 /// Wielded `(item class, subclass)` per hand as worn (`GetWeapon(slot, 1)`, `0x605e30`, what the
 /// paperdoll shows); behaviour reads `armed_main`/`armed_off`, which apply the disarm ladder.
 #[derive(Component, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct Wielded {
+pub struct Wielded {
     pub(crate) main: Option<(u8, u8)>,
     pub(crate) off: Option<(u8, u8)>,
     /// The ranged-slot item's `(class, subclass)`, the auto-repeat idle's selector (`0x5fd530`).
@@ -88,12 +88,12 @@ impl Wielded {
 
     /// The main hand as `GetWeapon(0, 0)` sees it, read by the swing (`0x6246a0`), the Ready idle
     /// (`0x5fcdc0`), the parry table, the sheath machine and the swing sound.
-    pub(crate) fn armed_main(&self) -> Option<(u8, u8)> {
+    pub fn armed_main(&self) -> Option<(u8, u8)> {
         self.main.filter(|_| self.disarmed_hand() != Some(0))
     }
 
     /// The off hand as `GetWeapon(1, 0)` sees it.
-    pub(crate) fn armed_off(&self) -> Option<(u8, u8)> {
+    pub fn armed_off(&self) -> Option<(u8, u8)> {
         self.off.filter(|_| self.disarmed_hand() != Some(1))
     }
 }
@@ -105,7 +105,7 @@ impl Wielded {
 /// queue, which answers it for the VM pass ([`UnitEdits::attack_target`]).
 #[derive(Component)]
 #[component(on_insert = edits::engaged_inserted, on_replace = edits::engaged_replaced)]
-pub(crate) struct Engaged(pub(crate) u64);
+pub struct Engaged(pub u64);
 
 /// The stop in flight, the reference's `[+0xc54]`, kept for the one unit that sets it: only
 /// `SendAttackStop 0x624370` writes it nonzero (`0x6243b2`), and only on the active player.
@@ -628,10 +628,12 @@ pub(crate) struct Casting {
 /// animation-bearing message carries a stamp (the wire in packet order, scene-time emitters when
 /// they fire), and the driver resolves a same-frame collision by the highest.
 #[derive(Resource, Default)]
-pub(crate) struct PlaySeq(u64);
+pub struct PlaySeq(u64);
 
 impl PlaySeq {
-    pub(crate) fn next(&mut self) -> u64 {
+    // A stamp counter, not an iterator; public since `benilla-souls` stamps its relayed actions.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> u64 {
         self.0 += 1;
         self.0
     }
@@ -641,14 +643,14 @@ impl PlaySeq {
 /// Presentation only: the driver routes it exactly like a swing request, and nothing about it is
 /// authoritative.
 #[derive(Message, Clone, Copy)]
-pub(crate) struct ActionAnim {
-    pub(crate) entity: Entity,
+pub struct ActionAnim {
+    pub entity: Entity,
     /// For telegraphs, scale the clip so its impact key lands after this many seconds.
-    pub(crate) contact_in: Option<f32>,
+    pub contact_in: Option<f32>,
     /// The `AnimationData.dbc` id to play, resolved through the model's own lookups.
-    pub(crate) anim_id: u16,
+    pub anim_id: u16,
     /// `PlaySeq` stamp, so a same-frame collision with a network swing keeps reference order.
-    pub(crate) seq: u64,
+    pub seq: u64,
 }
 
 /// A cast lifecycle edge on a streamed unit, off the wire.
@@ -849,7 +851,7 @@ pub(crate) struct SpellGoTargets {
 /// The sheath policy: requests, ceremony overlays, the `AnimationData.dbc` table.
 mod sheath;
 use sheath::{load_anim_data, SheathSwap};
-pub(crate) use sheath::{
+pub use sheath::{
     toggle_sheath_next, AnimData, CommittedSheath, SheathRequest, SheathSwapMessage, VisualSheath,
 };
 
@@ -917,7 +919,7 @@ pub(crate) use spell_visual::{
 /// so is the unit's [`CommittedSheath`], which outlives a rebuilt driver.
 #[derive(Component)]
 #[require(Transform, CommittedSheath)]
-pub(crate) struct AnimDriver {
+pub struct AnimDriver {
     mode: Mode,
     /// The targeted gait id, to cross-fade only on a change; `None` forces a fresh pick.
     gait: Option<u16>,
@@ -991,7 +993,7 @@ pub(crate) struct AnimDriver {
 
 impl AnimDriver {
     /// The requested `(base, masked overlay)` ids, for the inspector.
-    pub(crate) fn playing(&self) -> (Option<u16>, Option<u16>) {
+    pub fn playing(&self) -> (Option<u16>, Option<u16>) {
         let base = match self.mode {
             Mode::Gait => self.gait,
             Mode::Entering(s) => Some(s.enter()),
@@ -1104,7 +1106,7 @@ impl AnimDriver {
     }
 
     /// A draw/stow ceremony is in flight: the toggle's debounce (`ToggleSheath` guards 11, 12).
-    pub(crate) fn sheath_ceremony_active(&self) -> bool {
+    pub fn sheath_ceremony_active(&self) -> bool {
         self.sheath_swap.is_some()
     }
 }

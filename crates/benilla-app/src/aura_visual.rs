@@ -229,7 +229,7 @@ fn tint_probe() -> Option<[u8; 3]> {
 /// per-bone save and restore (`0x6203e0`): here a rate belongs to a clip, and `transplant_up` arms
 /// clips under the freeze with speeds copied from frozen ones, so a saved speed restores as 0.
 #[derive(Component, Default, Debug)]
-pub(crate) struct AnimRateFreeze;
+pub struct AnimRateFreeze;
 
 /// Pause the clocks of every unit whose head proc-11 rate is 0, its own rig and its mount's (the
 /// two models `0x6201d0` writes), and resume them when the aura goes; effect models and global

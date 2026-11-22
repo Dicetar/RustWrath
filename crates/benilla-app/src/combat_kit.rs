@@ -41,7 +41,7 @@ use bevy::prelude::*;
 use crate::creature_anim::{move_flags, ITEM_CLASS_WEAPON};
 
 /// Kit stamina points become this many engine points: 45 points a second at 100 Hz is 9 a tick.
-pub(crate) const STAMINA_SCALE: i32 = 20;
+pub const STAMINA_SCALE: i32 = 20;
 /// Regeneration in kit points a second. The Elden Ring reference's own estimate (its
 /// `STAMINA_REGEN`, marked ESTIMATE there), taken as project policy, not extracted data.
 const REGEN_PER_SECOND: u64 = 45;
@@ -50,8 +50,8 @@ const LIGHT_OPENER: &str = "Light1";
 
 /// The local player's kit as last read; `None` when there is no usable file.
 #[derive(Resource, Debug, Default)]
-pub(crate) struct PlayerKit {
-    pub(crate) kit: Option<Kit>,
+pub struct PlayerKit {
+    pub kit: Option<Kit>,
     /// Bumped whenever a read changes [`Self::kit`], so the profile build compiles the new one.
     pub(crate) generation: u32,
     /// The weapon fought with: `(class, subclass)` ([`fighting_weapon`]).
@@ -73,18 +73,18 @@ impl PlayerKit {
 
     /// A one-handed weapon held in both hands. A two-handed weapon is always held so, and is not
     /// counted: the server's two-hand bonus is for the switch, as Elden Ring's is.
-    pub(crate) fn two_handing(&self) -> bool {
+    pub fn two_handing(&self) -> bool {
         self.two_handing && weapon_row(self.selected_main).is_some_and(|row| !row.two)
     }
 
     /// The weapon is in both hands: a two-handed one always, a one-handed one by the grip key.
-    pub(crate) fn held_in_both_hands(&self) -> bool {
+    pub fn held_in_both_hands(&self) -> bool {
         weapon_row(self.selected_main).is_some_and(|row| row.two || self.two_handing)
     }
 
     /// The grip key: switch a one-handed weapon between one and both hands. Returns the new
     /// grip, or `None` when the weapon has only one (a two-handed weapon).
-    pub(crate) fn toggle_grip(&mut self) -> Option<bool> {
+    pub fn toggle_grip(&mut self) -> Option<bool> {
         let row = weapon_row(self.selected_main).filter(|row| !row.two)?;
         self.two_handing = !self.two_handing;
         self.reload();
@@ -251,7 +251,7 @@ fn read_kit_file(path: &std::path::Path, last: bool) -> Option<Kit> {
 
 /// A Souls press, before the kit names the action it starts.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Press {
+pub enum Press {
     Light,
     Dodge,
 }
@@ -262,7 +262,7 @@ pub(crate) enum Press {
 ///   attack.
 /// - Dodge: the roll in the held direction (forward or back before a strafe), or the backstep
 ///   with no direction held; a kit without that one gives its first dodge.
-pub(crate) fn resolve_press(
+pub fn resolve_press(
     kit: &Kit,
     running: Option<ActionId>,
     press: Press,
@@ -286,12 +286,12 @@ pub(crate) fn resolve_press(
 
 /// The roll an equipment load gets: the kit rows it rolls with, how far it carries and how fast.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub(crate) struct RollLoad {
+pub struct RollLoad {
     /// The kit rows' prefix (`LightRoll…`, `MediumRoll…`, `HeavyRoll…`); a kit without them
     /// rolls its own `Roll…`.
     prefix: &'static str,
     /// The share of the roll's root motion the body travels.
-    pub(crate) distance: f32,
+    pub distance: f32,
 }
 
 /// The highest load of the light roll, Elden Ring's fast roll.
@@ -309,7 +309,7 @@ const HEAVY_DISTANCE: (f32, f32) = (0.95, 0.7);
 
 /// The roll for an equipment load score (the server's `LOAD`: 0-4 an armour slot, the weapons and
 /// gun on top); `None`, no score yet, rolls the kit's own roll the whole way.
-pub(crate) fn roll_load(score: Option<u8>) -> RollLoad {
+pub fn roll_load(score: Option<u8>) -> RollLoad {
     let Some(score) = score else {
         return RollLoad {
             prefix: "",
@@ -338,7 +338,7 @@ pub(crate) fn roll_load(score: Option<u8>) -> RollLoad {
 
 /// The dodge for the held direction at `load`: the load's own roll when the kit has it, else the
 /// kit's roll, else its first dodge.
-pub(crate) fn resolve_dodge(kit: &Kit, flags: u32, load: Option<RollLoad>) -> Option<ActionId> {
+pub fn resolve_dodge(kit: &Kit, flags: u32, load: Option<RollLoad>) -> Option<ActionId> {
     let name = dodge_name(flags);
     let prefix = load.map_or("", |load| load.prefix);
     let tiered = (!prefix.is_empty() && name.starts_with("Roll"))

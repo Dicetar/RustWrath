@@ -69,7 +69,7 @@ use crate::wrath::WrathWorldView;
 pub(crate) const PROFILE_REVISION: benilla_combat_core::ActionRevision =
     benilla_combat_core::ActionRevision(1);
 /// The compile rate: authored 100 Hz pending the server's authoritative tick rate.
-pub(crate) const PROFILE_TICK_RATE_HZ: u16 = 100;
+pub const PROFILE_TICK_RATE_HZ: u16 = 100;
 /// The authored predicted-stamina policy: full bar, one point per tick, 100 ticks (one second at
 /// the compile rate) before regeneration resumes. All three are Project B policy, not extracted
 /// values; the server replaces them with its own once the seam exists.
@@ -83,7 +83,7 @@ pub(crate) const BUFFER_TTL_TICKS: u64 = 50;
 
 /// Where a predicted action is in its compiled profile.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum ActionPhase {
+pub enum ActionPhase {
     /// Before the contact (or i-frame) window opens.
     Windup,
     /// Inside the half-open contact/active window: a melee strike, a spell release, i-frames.
@@ -114,8 +114,8 @@ pub(crate) fn phase_of(spec: &ActionSpec, elapsed: u64) -> ActionPhase {
 /// The playback read model: the core engine (prediction) plus the playback clock. Every field
 /// is presentation; the engine's authority note applies — the server owns the real outcomes.
 #[derive(Resource, Debug, Default)]
-pub(crate) struct CombatPlaybackState {
-    pub(crate) engine: Option<ActionEngine>,
+pub struct CombatPlaybackState {
+    pub engine: Option<ActionEngine>,
     pub(crate) last_refusal: Option<ActionRefusal>,
     /// The playback clock. `Time::delta` is a `Duration`; summing whole milliseconds per frame
     /// truncates every frame (about 4 % slow at 60 fps), so the full precision is carried here
@@ -123,33 +123,33 @@ pub(crate) struct CombatPlaybackState {
     clock: Duration,
     /// Hit-stop still owed: the playback clock stands still for this much frame time, so the
     /// running action (and its windows) freeze when a Souls hit lands ([`crate::souls`]).
-    pub(crate) hit_stop: Duration,
+    pub hit_stop: Duration,
     /// What protects the local player from an incoming hit this frame, written by the Souls
     /// systems; the default (nothing) is the stock rule, every landed hit interrupts.
-    pub(crate) defense: Defense,
+    pub defense: Defense,
     /// Landed hits the guard absorbed since the Souls systems last read them.
-    pub(crate) guarded_hits: u32,
+    pub guarded_hits: u32,
     /// Landed hits poise absorbed since the Souls systems last read them.
-    pub(crate) poised_hits: u32,
+    pub poised_hits: u32,
 }
 
 /// What stands between an incoming landed hit and the running action.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub(crate) struct Defense {
+pub struct Defense {
     /// The running dodge is inside its i-frame window: the hit does not interrupt.
-    pub(crate) iframes: bool,
+    pub iframes: bool,
     /// The guard is up: the hit costs stamina instead of interrupting ([`Self`] counts it in
     /// `guarded_hits` for the Souls systems to charge).
-    pub(crate) guarding: bool,
+    pub guarding: bool,
     /// Poise holds: the hit takes poise instead of interrupting ([`Self`] counts it in
     /// `poised_hits`; the Souls systems interrupt when the poise breaks).
-    pub(crate) poised: bool,
+    pub poised: bool,
 }
 
 /// The playback chain (profile fill, engine advance, the mode toggle). The Souls input and hit
 /// systems run after it, so they read this frame's engine.
 #[derive(SystemSet, Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct PlaybackSet;
+pub struct PlaybackSet;
 
 impl CombatPlaybackState {
     /// Advance the playback clock by one frame's delta, keeping the sub-millisecond remainder.
@@ -166,12 +166,12 @@ impl CombatPlaybackState {
     }
 
     /// Whole ticks at `now_ms` on the compile clock.
-    pub(crate) fn ticks_at(&self) -> Ticks {
+    pub fn ticks_at(&self) -> Ticks {
         Ticks::new(self.now_ms() * u64::from(PROFILE_TICK_RATE_HZ) / 1000)
     }
 
     /// The running action's phase, if any.
-    pub(crate) fn phase(&self, profiles: &CombatProfiles) -> Option<ActionPhase> {
+    pub fn phase(&self, profiles: &CombatProfiles) -> Option<ActionPhase> {
         let engine = self.engine.as_ref()?;
         let id = engine.active()?;
         let elapsed = engine.active_elapsed(self.ticks_at())?;
@@ -383,7 +383,7 @@ pub(crate) fn advance_bounded(engine: &mut ActionEngine, target: Ticks) -> Vec<E
 }
 
 /// Play the clip of every action the engine started in `events`.
-pub(crate) fn play_starts(
+pub fn play_starts(
     events: &[EngineEvent],
     entity: Entity,
     profiles: &CombatProfiles,
@@ -550,7 +550,7 @@ fn toggle_and_stage_action(
 
 /// Whether the profile table was compiled from the kit `kit` holds now. Until it is (the frame
 /// after a reload) the presses are the stock ones.
-pub(crate) fn kit_table_current(kit: &PlayerKit, profiles: &CombatProfiles) -> bool {
+pub fn kit_table_current(kit: &PlayerKit, profiles: &CombatProfiles) -> bool {
     kit.kit.is_some()
         && profiles.from_kit
         && profiles
@@ -559,7 +559,7 @@ pub(crate) fn kit_table_current(kit: &PlayerKit, profiles: &CombatProfiles) -> b
 }
 
 /// The stock action a press stands for when no kit table is compiled.
-pub(crate) fn stock_press(press: Press) -> ActionId {
+pub fn stock_press(press: Press) -> ActionId {
     match press {
         Press::Dodge => HOST_DODGE,
         Press::Light => PLAYER_MELEE_MAIN,
@@ -570,7 +570,7 @@ pub(crate) fn stock_press(press: Press) -> ActionId {
 /// A refusal is kept as `last_refusal`; the engine's events are returned for the caller.
 /// Requests go through the engine, so buffering, cancel windows, stamina and refusals are the
 /// same rules the server will run.
-pub(crate) fn submit_and_play(
+pub fn submit_and_play(
     state: &mut CombatPlaybackState,
     action: ActionId,
     entity: Entity,
@@ -602,7 +602,7 @@ pub(crate) fn submit_and_play(
 }
 
 /// Play one clip on `entity` outside the engine (the guard's raise, a guarded hit).
-pub(crate) fn play_clip(
+pub fn play_clip(
     anim_id: u16,
     entity: Entity,
     play_seq: &mut PlaySeq,

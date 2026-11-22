@@ -46,7 +46,7 @@ pub(crate) use item_glow::ItemGlowAttached;
 use item_glow::{attach_item_glows, ItemGlows};
 
 /// Mounts: a second creature visual the rider's model is re-parented onto, never rebuilt.
-pub(crate) mod mount;
+pub mod mount;
 use mount::reseat_mounts;
 
 /// The corpse object, drawn as the dressed body or, once it turns to bones, a skeleton prop.
@@ -89,7 +89,7 @@ use chain_beam::{simulate_chain_beams, spawn_chain_beams};
 pub(crate) use attach::equip_slot;
 pub(crate) use equipment::ItemDisplays;
 pub(crate) use equipment::{attach_id, DressKey, HeldAttached};
-pub(crate) use equipment::{BoneAttach, Equipment, HandKeyBones};
+pub use equipment::{BoneAttach, Equipment, HandKeyBones};
 // Only the tests that build a `DressKey` name this type.
 #[cfg(test)]
 pub(crate) use equipment::ItemModelKind;
@@ -128,7 +128,7 @@ pub(crate) struct StandBoxHeight(pub(crate) f32);
 /// The model's bbox z-extent (model-local, pre-scale) for [`overhead_anchor`]'s fallback; `0.0`
 /// until the model loads, which anchors at the feet as the client does with no model.
 #[derive(Component)]
-pub(crate) struct OverheadFallback(pub(crate) f32);
+pub struct OverheadFallback(pub(crate) f32);
 
 /// The client's per-attachment z-bias table (`0x862708`, ids `0..=0x24`): how far above the unit's
 /// position a sound plays when its model lacks the attachment asked for.
@@ -172,7 +172,7 @@ impl AttachPoints<'_, '_> {
 /// propagates in `PostUpdate`, which an `Update` reader sees a frame late (the chat bubble slid
 /// against the head). That is exact because a streamed unit is a world-root entity; a mounted
 /// rider or a conform-tilted model, rooted elsewhere, still reads the late propagated frame.
-pub(crate) fn overhead_anchor<F: bevy::ecs::query::QueryFilter>(
+pub fn overhead_anchor<F: bevy::ecs::query::QueryFilter>(
     entity: Entity,
     tf: &Transform,
     anchors: &Query<&BoneAttach>,

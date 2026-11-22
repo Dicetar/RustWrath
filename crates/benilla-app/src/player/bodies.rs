@@ -16,12 +16,12 @@ pub(crate) const SELF_BODY_YARDS: f32 = 0.4;
 /// reads 0, and a dragon's would hold a melee swing out of its own reach.
 pub(crate) const BODY_YARDS: (f32, f32) = (0.3, 2.0);
 /// A body above or below the feet by more than this many yards does not collide.
-pub(crate) const BODY_HEIGHT_YARDS: f32 = 3.0;
+pub const BODY_HEIGHT_YARDS: f32 = 3.0;
 /// Bodies further than this, yards, are not gathered.
-pub(crate) const GATHER_YARDS: f32 = 15.0;
+pub const GATHER_YARDS: f32 = 15.0;
 
 /// The contact distance between our centre and a body of bounding radius `radius`, yards.
-pub(crate) fn contact(radius: f32) -> f32 {
+pub fn contact(radius: f32) -> f32 {
     SELF_BODY_YARDS + radius.clamp(BODY_YARDS.0, BODY_YARDS.1)
 }
 

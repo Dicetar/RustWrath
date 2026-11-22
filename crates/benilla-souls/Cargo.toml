@@ -1,0 +1,24 @@
+[package]
+name = "benilla-souls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Souls (Elden Ring-style) combat on the action playback: presses, root motion, lock-on, guard, hits, the server link and the HUD; on top of the benilla-app core"
+
+[lints]
+workspace = true
+
+[features]
+# Forwarded so a player build (`--no-default-features`) builds the core without its instruments.
+default = ["dev"]
+dev = ["benilla-app/dev"]
+
+[dependencies]
+# `default-features = false`, or `--no-default-features` above still builds benilla-app with `dev`.
+benilla-app = { path = "../benilla-app", default-features = false }
+benilla-assets = { path = "../benilla-assets", default-features = false }
+benilla-combat-core = { path = "../benilla-combat-core" }
+benilla-formats = { path = "../benilla-formats", default-features = false }
+benilla-protocol = { path = "../benilla-protocol" }
+benilla-world = { path = "../benilla-world", default-features = false }
+bevy.workspace = true

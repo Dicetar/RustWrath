@@ -17,11 +17,11 @@ use super::{yaw_of, Spline};
 /// between; the WoW-space pose the `Transform` is derived from. While `FALLING` the horizontal is
 /// frozen at the launch and the height is a parabola, re-seeded by each jump packet's tail.
 #[derive(Component, Clone)]
-pub(crate) struct RemoteMotion {
+pub struct RemoteMotion {
     pub(crate) wow_pos: [f32; 3],
     pub(crate) orientation: f32,
     /// The `CMovement` `moveFlags` the mover last reported.
-    pub(crate) flags: u32,
+    pub flags: u32,
     /// The reported swim pitch, radians up, `0.0` unless `SWIMMING`.
     pub(crate) pitch: f32,
     /// The horizontal speed being applied, yd/s, which picks and rate-scales the gait.
@@ -555,7 +555,7 @@ pub(in crate::net) fn extrapolate_remote_units(
 /// The wire `zspeed` is down-positive (the 1.12 client sends -7.955547 rising; vmangos sets
 /// 7.958 up at `MovementHandler.cpp:322`), so the speed is `-zspeed - g * t`. `feather` picks
 /// `[0x87d898]` = 7.0 over `[0x87d894]` = 60.148 (`0x7c5d20`, on the mover's `SAFE_FALL`).
-pub(crate) fn jump_seed(jump: Option<JumpInfo>, fall_time: u32, feather: bool) -> (f32, [f32; 2]) {
+pub fn jump_seed(jump: Option<JumpInfo>, fall_time: u32, feather: bool) -> (f32, [f32; 2]) {
     let terminal = if feather {
         crate::player::FEATHER_TERMINAL_VELOCITY
     } else {

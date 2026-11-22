@@ -61,7 +61,7 @@ struct LiveShake {
 
 /// The live shake set.
 #[derive(Resource, Default)]
-pub(crate) struct CameraShakes {
+pub struct CameraShakes {
     live: Vec<LiveShake>,
 }
 
@@ -78,7 +78,7 @@ impl CameraShakes {
     /// Enqueue a Souls hit's impact at `pos` (`now` on the app clock, `Time::elapsed_secs`): a
     /// short decaying vertical jolt lasting the hit-stop. Project policy, not a `CameraShakes.dbc`
     /// row: the reference has no melee impact shake.
-    pub(crate) fn add_impact(&mut self, pos: Vec3, now: f32, seconds: f32) {
+    pub fn add_impact(&mut self, pos: Vec3, now: f32, seconds: f32) {
         let row = CameraShake {
             id: 0,
             shake_type: 1,

@@ -619,7 +619,7 @@ enum OwedSwing {
 /// `PLAYER_TARGET_CHANGED`, in the order owed.
 #[must_use]
 #[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct SelectDebt {
+pub struct SelectDebt {
     send: Option<scan::OwedSend>,
     swings: Vec<OwedSwing>,
 }
@@ -682,7 +682,7 @@ pub(super) struct Owing {
 /// Everything [`scan::commit_owing`], the one `SetSelection` path, needs.
 #[derive(SystemParam)]
 #[allow(clippy::type_complexity)] // one bundled param, the app's convention for big query sets
-pub(crate) struct SelectCommit<'w, 's> {
+pub struct SelectCommit<'w, 's> {
     pub(super) selection: ResMut<'w, Selection>,
     pub(crate) seam: crate::creature_anim::AttackSeam<'w, 's>,
     // Our own body: the guid and the store `can_attack` reads.
@@ -705,7 +705,7 @@ pub(crate) struct SelectCommit<'w, 's> {
 
 impl SelectCommit<'_, '_> {
     /// The selection as it stands, for a writer outside this module that reads before it selects.
-    pub(crate) fn selection(&self) -> &Selection {
+    pub fn selection(&self) -> &Selection {
         &self.selection
     }
 
@@ -872,7 +872,7 @@ impl SelectCommit<'_, '_> {
     }
 
     /// `0x48f3a0`'s select on a looted object, which tests `TYPEMASK_UNIT` first (`0x48f3af`).
-    pub(crate) fn select_unit(&mut self, guid: u64) {
+    pub fn select_unit(&mut self, guid: u64) {
         if let Some(entity) = self.held_unit(guid) {
             self.commit(entity, guid);
         }

@@ -26,26 +26,26 @@ mod area_poi;
 mod area_trigger;
 #[cfg(feature = "dev")]
 mod asset_churn;
-mod aura_visual;
-mod bindings;
+pub mod aura_visual;
+pub mod bindings;
 mod blob_shadow;
 mod bowstring;
-mod camera_shake;
+pub mod camera_shake;
 #[cfg(feature = "dev")]
 mod capture;
 mod chat_bubble;
 mod chr_classes;
 mod cinematic;
 pub mod client_state;
-mod combat_kit;
+pub mod combat_kit;
 mod combat_log;
-mod combat_mode;
-mod combat_playback;
-mod combat_profiles;
+pub mod combat_mode;
+pub mod combat_playback;
+pub mod combat_profiles;
 mod combat_text;
 mod console;
 pub mod crash;
-mod creature_anim;
+pub mod creature_anim;
 mod creature_type;
 mod cursor;
 mod cvars;
@@ -63,7 +63,7 @@ mod live_code;
 #[cfg(feature = "dev")]
 mod devtools;
 mod doodad_events;
-mod entities;
+pub mod entities;
 mod field_watch;
 mod fishing_line;
 mod footprints;
@@ -82,14 +82,14 @@ mod loading_screen;
 pub mod local_state;
 mod minimap;
 mod nameplates;
-mod names;
-mod net;
+pub mod names;
+pub mod net;
 pub mod no_install;
 mod npc_text;
 /// Ships in part (the FPS journal and the clocks it reads); the rest is `dev`.
 pub mod perf;
 mod pipe_warm;
-mod player;
+pub mod player;
 mod player_commands;
 mod poi_marker;
 mod portrait;
@@ -97,7 +97,7 @@ mod portrait;
 mod preflight;
 #[cfg(feature = "dev")]
 mod probe_shield;
-mod query_cache;
+pub mod query_cache;
 mod quest_markers;
 mod raid_marks;
 mod ranged_flex;
@@ -120,14 +120,14 @@ mod quest_trace;
 pub mod shutdown;
 mod smart_rect;
 /// Souls (Elden Ring–style) combat, hot-toggled with `F10`.
-mod souls;
+pub mod souls;
 mod sound;
 /// The two talent spell-modifier tables (`SMSG_SET_FLAT_/PCT_SPELL_MODIFIER`) and the read that
 /// puts them on a number.
 mod spell;
 /// The melee swing refusal's latch + 4 s repeat (`SMSG_ATTACKSWING_*`).
 mod swing_refusal;
-mod target;
+pub mod target;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod text_filter;
@@ -184,7 +184,7 @@ mod ui_quest_log;
 mod ui_quest_share;
 mod ui_reputation;
 mod ui_saved;
-mod ui_script;
+pub mod ui_script;
 #[path = "ui_script/wrath_currency_feed.rs"]
 mod ui_script_wrath_currency_feed;
 mod ui_session;
@@ -206,7 +206,7 @@ mod ui_unit;
 mod ui_world_map;
 pub mod video;
 mod vm_pass;
-mod vplates;
+pub mod vplates;
 mod wdb;
 mod weapon_trail;
 mod world_backdrop;
@@ -231,6 +231,8 @@ pub use net::Objects;
 pub use target::Interact;
 // The explicit Wrath session the assembler's boot reads from the environment.
 pub use wrath::WrathSessionConfig;
+// Whether `$WOW_WRATH` selects the Wrath session; the Souls server link reads it.
+pub use wrath::selected_from_env as wrath_selected_from_env;
 
 /// The state folder, `benilla-config/`, where a crate on top keeps its own files: an addon it ships
 /// goes in its `AddOns/`, where benilla finds addons and their art and fonts. `None` when
