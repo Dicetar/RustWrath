@@ -118,7 +118,7 @@ Client-side, not packets:
 - Damage classifications — not started. The confirmed facts are in this report; the next owner
   needs the `0x24F` decode plus the `0x250` split/range selection.
 
-Counts: six free-model attempts across five tickets; zero paid DeepSeek worker fallbacks.
+Counts: eight free-model attempts across five tickets; zero paid DeepSeek worker fallbacks.
 Reassignments: LongCat → Hy4 on a free limit, Tidepool → Beam on a no-edit failure, Flint →
 Nemotron on a free limit. The overseer's DeepSeek work was review/fix and integration only.
 
