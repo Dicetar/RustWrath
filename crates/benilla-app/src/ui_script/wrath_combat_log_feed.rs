@@ -61,6 +61,12 @@ pub(crate) struct CombatLogMemo {
     spell_execute_log_unresolved: u64,
     spell_dispel_log_dropped: u64,
     spell_dispel_log_unresolved: u64,
+    instakill_dropped: u64,
+    instakill_unresolved: u64,
+    enchant_dropped: u64,
+    enchant_unresolved: u64,
+    environmental_damage_dropped: u64,
+    environmental_damage_unresolved: u64,
 }
 
 /// The visible marker for an endpoint whose name never resolved inside the retry window. It is
@@ -316,6 +322,50 @@ pub(crate) fn feed(
             );
         }
         memo.spell_dispel_log_unresolved = world.spell_dispel_log_unresolved;
+
+        // Update memo counters for new events.
+        if world.instakill_dropped > memo.instakill_dropped {
+            debug!(
+                dropped = world.instakill_dropped,
+                "wrath: combat-log queue capacity lost instakill rows"
+            );
+        }
+        memo.instakill_dropped = world.instakill_dropped;
+        if world.instakill_unresolved > memo.instakill_unresolved {
+            debug!(
+                unresolved = world.instakill_unresolved,
+                "wrath: combat-log instakill rows delivered with an unknown endpoint after name resolution timed out"
+            );
+        }
+        memo.instakill_unresolved = world.instakill_unresolved;
+        if world.enchant_dropped > memo.enchant_dropped {
+            debug!(
+                dropped = world.enchant_dropped,
+                "wrath: combat-log queue capacity lost enchant rows"
+            );
+        }
+        memo.enchant_dropped = world.enchant_dropped;
+        if world.enchant_unresolved > memo.enchant_unresolved {
+            debug!(
+                unresolved = world.enchant_unresolved,
+                "wrath: combat-log enchant rows delivered with an unknown endpoint after name resolution timed out"
+            );
+        }
+        memo.enchant_unresolved = world.enchant_unresolved;
+        if world.environmental_damage_dropped > memo.environmental_damage_dropped {
+            debug!(
+                dropped = world.environmental_damage_dropped,
+                "wrath: combat-log queue capacity lost environmental-damage rows"
+            );
+        }
+        memo.environmental_damage_dropped = world.environmental_damage_dropped;
+        if world.environmental_damage_unresolved > memo.environmental_damage_unresolved {
+            debug!(
+                unresolved = world.environmental_damage_unresolved,
+                "wrath: combat-log environmental-damage rows delivered with an unknown endpoint after name resolution timed out"
+            );
+        }
+        memo.environmental_damage_unresolved = world.environmental_damage_unresolved;
 
         let now = clock.as_deref().map_or(0.0, |clock| clock.ui_now);
         let ask = match net.as_deref() {

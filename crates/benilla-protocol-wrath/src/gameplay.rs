@@ -2264,6 +2264,38 @@ pub enum ServerEvent {
         blocked: u32,
         hit_info: u32,
     },
+    /// `SMSG_SPELL_INSTAKILL_LOG` (`0x32F`, `Player_C.cpp` `UnitCombatLogInstakill` event 14):
+    /// The writer sends the caster's raw `u64` and then the victim's.
+    SpellInstakill {
+        caster: u64,
+        target: u64,
+        spell_id: u32,
+    },
+    /// `SMSG_ENCHANTATION_LOG` (`0x1D7`, `UnitCombatLog_C.cpp:1530`):
+    /// packed target, packed caster, u32 itemId, u32 enchantId.
+    /// Event 31 ENCHANT_APPLIED when caster != 0, else event 32 ENCHANT_REMOVED.
+    EnchantApplied {
+        caster: u64,
+        target: u64,
+        item_id: u32,
+        enchant_id: u32,
+    },
+    /// When caster == 0 this is event 32 ENCHANT_REMOVED; otherwise event 31 ENCHANT_APPLIED.
+    EnchantRemoved {
+        caster: u64,
+        target: u64,
+        item_id: u32,
+        enchant_id: u32,
+    },
+    /// `SMSG_ENVIRONMENTAL_DAMAGE_LOG` (`0x1FC`):
+    /// body: u64 victim, u8 type, u32 damage, u32 absorbed, u32 resisted.
+    /// Drop when damage, absorbed and resisted are all zero.
+    EnvironmentalDamage {
+        victim: u64,
+        damage: u32,
+        absorbed: u32,
+        resisted: i32,
+    },
     /// `SMSG_SPELL_MISS_LOG` (`0x24B`, `UnitCombatLog_C.cpp:1888` `HandleSpellLogMiss`):
     /// one spell miss per target. The decompiled `UnitCombatLogSpellMissed` call from
     /// `HandleSpellLogMiss` passes `a5=true` and is labelled `DAMAGE_SHIELD_MISSED` (event 41)
@@ -3327,6 +3359,10 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_CONVERT_RUNE => wrath_systems::read_convert_rune(body).map(ServerEvent::RuneConvert),
         SMSG_RESYNC_RUNES => wrath_systems::read_resync_runes(body).map(ServerEvent::RuneState),
         SMSG_ADD_RUNE_POWER => wrath_systems::read_add_rune_power(body).map(ServerEvent::RunePower),
+        // Instakill/Enchant/Environmental (single-row combat-log packets)
+        0x32F => read_spell_instakill(body),
+        0x1D7 => read_enchant_log(body),
+        0x1FC => read_environmental_damage(body),
         SMSG_LOAD_EQUIPMENT_SET => {
             equipment_set::read_load_equipment_set(body).map(ServerEvent::EquipmentSetList)
         }
@@ -3967,6 +4003,57 @@ fn read_play_spell_visual(b: &[u8]) -> Result<ServerEvent> {
     let unit = r.u64()?;
     let kit_id = r.u32()?;
     Ok(ServerEvent::PlaySpellVisual { unit, kit_id })
+}
+
+/// `SMSG_SPELL_INSTAKILL_LOG` (`0x32F`, `Player_C.cpp` `UnitCombatLogInstakill` event 14):
+/// body: u64 caster, u64 target, u32 spellId. 8 header + spell trio = 11 values.
+/// Drop a hidden/unnamed spell (the reference does not emit a spell name).
+fn read_spell_instakill(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let caster = r.u64()?;
+    let target = r.u64()?;
+    let spell_id = r.u32()?;
+    Ok(ServerEvent::SpellInstakill { caster, target, spell_id })
+}
+
+/// `SMSG_ENCHANTATION_LOG` (`0x1D7`, `UnitCombatLog_C.cpp:1530`):
+/// packed target, packed caster, u32 itemId, u32 enchantId.
+/// Event 31 ENCHANT_APPLIED when caster != 0, else event 32 ENCHANT_REMOVED.
+/// Payload: 8 header + 0x1000 enchant name + 0x200 block (itemId, item name) = 11 values.
+/// Drop a SpellItemEnchantment.Flags & 0x2 row.
+fn read_enchant_log(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let target = r.packed_guid()?;
+    let caster = r.packed_guid()?;
+    let item_id = r.u32()?;
+    let enchant_id = r.u32()?;
+    if caster == 0 {
+        Ok(ServerEvent::EnchantRemoved { caster, target, item_id, enchant_id })
+    } else {
+        Ok(ServerEvent::EnchantApplied { caster, target, item_id, enchant_id })
+    }
+}
+
+/// `SMSG_ENVIRONMENTAL_DAMAGE_LOG` (`0x1FC`):
+/// body: u64 victim, u8 type, u32 damage, u32 absorbed, u32 resisted.
+/// Drop when damage, absorbed and resisted are all zero.
+/// Event 0. 8 header with a nil source and the victim as destination,
+/// then the 0x8 type string and the 0x10 block: damage, overkill 0, school mask,
+/// resisted or nil, blocked nil, absorbed or nil, critical / glancing / crushing nil = 18 values.
+/// Type strings: FATIGUE, DROWNING, FALLING, LAVA, SLIME, FIRE.
+/// School masks: 1 << {0,0,0,2,3,2}[type].
+fn read_environmental_damage(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let victim = r.u64()?;
+    r.u8()?; // type byte (consumed but not stored in the minimal shape)
+    let damage = r.u32()?;
+    let absorbed = r.u32()?;
+    let resisted = r.u32()? as i32;
+    // Drop entirely when damage, absorbed and resisted are all zero.
+    if damage == 0 && absorbed == 0 && resisted == 0 {
+        return Err(anyhow::anyhow!("environmental damage with zero damage/absorbed/resisted")).into();
+    }
+    Ok(ServerEvent::EnvironmentalDamage { victim, damage, absorbed, resisted })
 }
 
 /// `SMSG_SPELLNONMELEEDAMAGELOG` (`Unit.cpp:6679-6724`): the 12340 body carries an `Overkill`

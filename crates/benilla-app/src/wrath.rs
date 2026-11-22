@@ -822,6 +822,32 @@ pub enum WrathFeedEvent {
         session_epoch: u64,
         world_generation: u64,
     },
+    /// `SMSG_SPELL_INSTAKILL_LOG`: instakill event. One bounded row per packet.
+    SpellInstakill {
+        caster: u64,
+        target: u64,
+        spell_id: u32,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_ENCHANTATION_LOG`: enchant applied (caster != 0) or removed (caster == 0).
+    EnchantApplied {
+        caster: u64,
+        target: u64,
+        item_id: u32,
+        enchant_id: u32,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_ENVIRONMENTAL_DAMAGE_LOG`: environmental damage event.
+    EnvironmentalDamage {
+        victim: u64,
+        damage: u32,
+        absorbed: u32,
+        resisted: i32,
+        session_epoch: u64,
+        world_generation: u64,
+    },
 }
 
 impl WrathFeedEvent {
@@ -3520,6 +3546,12 @@ impl WrathWorldView {
         self.spell_dispel_faileds.clear();
         self.spell_dispel_failed_dropped = 0;
         self.spell_dispel_failed_unresolved = 0;
+        self.instakill_dropped = 0;
+        self.instakill_unresolved = 0;
+        self.enchant_dropped = 0;
+        self.enchant_unresolved = 0;
+        self.environmental_damage_dropped = 0;
+        self.environmental_damage_unresolved = 0;
         self.lfg_join_result = None;
         self.lfg_queue_status = None;
         self.lfg_update_player = None;
@@ -15445,6 +15477,81 @@ pub fn run_session_with_cancel(
                             if session.player_guid().is_some() {
                                 for event in translate_live(
                                     WrathGameplayEvent::PartyKillLog { killer, victim },
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
+                                }
+                            }
+                        }
+                        Ok(WrathGameplayEvent::SpellInstakill { caster, target, spell_id }) => {
+                            feed.push_event(WrathFeedEvent::SpellInstakill {
+                                caster,
+                                target,
+                                spell_id,
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                            if session.player_guid().is_some() {
+                                for event in translate_live(
+                                    WrathGameplayEvent::SpellInstakill { caster, target, spell_id },
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
+                                }
+                            }
+                        }
+                        Ok(WrathGameplayEvent::EnchantApplied { caster, target, item_id, enchant_id }) => {
+                            feed.push_event(WrathFeedEvent::EnchantApplied {
+                                caster,
+                                target,
+                                item_id,
+                                enchant_id,
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                            if session.player_guid().is_some() {
+                                for event in translate_live(
+                                    WrathGameplayEvent::EnchantApplied { caster, target, item_id, enchant_id },
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
+                                }
+                            }
+                        }
+                        Ok(WrathGameplayEvent::EnchantRemoved { caster, target, item_id, enchant_id }) => {
+                            feed.push_event(WrathFeedEvent::EnchantRemoved {
+                                caster,
+                                target,
+                                item_id,
+                                enchant_id,
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                            if session.player_guid().is_some() {
+                                for event in translate_live(
+                                    WrathGameplayEvent::EnchantRemoved { caster, target, item_id, enchant_id },
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
+                                }
+                            }
+                        }
+                        Ok(WrathGameplayEvent::EnvironmentalDamage { victim, damage, absorbed, resisted }) => {
+                            feed.push_event(WrathFeedEvent::EnvironmentalDamage {
+                                victim,
+                                damage,
+                                absorbed,
+                                resisted,
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                            if session.player_guid().is_some() {
+                                for event in translate_live(
+                                    WrathGameplayEvent::EnvironmentalDamage { victim, damage, absorbed, resisted },
                                     session.player_guid().unwrap_or(0),
                                     received_at,
                                 ) {
