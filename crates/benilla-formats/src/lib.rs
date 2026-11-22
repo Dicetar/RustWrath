@@ -154,6 +154,11 @@ pub use pet_stats::{
 };
 mod items;
 pub use items::{load_item_display_catalog, ItemDisplay, ItemDisplayCatalog};
+mod currency;
+pub use currency::{
+    load_currency_category_catalog, load_currency_type_catalog, CurrencyCategory,
+    CurrencyCategoryCatalog, CurrencyType, CurrencyTypeCatalog,
+};
 mod item_sounds;
 pub use item_sounds::{load_item_group_sounds, ItemGesture, ItemGroupSoundsCatalog};
 mod item_visuals;

@@ -1100,18 +1100,6 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
     lua.globals().set(
-        "GetBackpackCurrencyInfo",
-        lua.create_function(|lua, _index: Option<i64>| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .record_unsupported_native_once(
-                    "GetBackpackCurrencyInfo",
-                    "no watched-currency tracker or CurrencyTypes.dbc consumer is wired yet",
-                );
-            Ok(Value::Nil)
-        })?,
-    )?;
-    lua.globals().set(
         "CanShowAchievementUI",
         lua.create_function(|lua, ()| {
             lua.app_data_mut::<Model>()
@@ -1727,6 +1715,124 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 }
                 model.calendar_fetches.push_back(scope);
             }
+            Ok(())
+        })?,
+    )?;
+
+    // `GetCurrencyListSize` / `GetCurrencyListInfo` / `ExpandCurrencyList` / `SetCurrencyUnused`
+    // / `SetCurrencyBackpack` / `GetBackpackCurrencyInfo` (`CurrencyTypes_Scripts.cpp`).
+    lua.globals().set(
+        "GetCurrencyListSize",
+        lua.create_function(|lua, ()| {
+            Ok(lua
+                .app_data_ref::<Model>()
+                .expect("model app_data")
+                .wrath_currency
+                .rows
+                .len() as i64)
+        })?,
+    )?;
+    lua.globals().set(
+        "GetCurrencyListInfo",
+        lua.create_function(|lua, index: f64| {
+            let row = (index.is_finite() && index >= 1.0)
+                .then(|| {
+                    lua.app_data_ref::<Model>()
+                        .expect("model app_data")
+                        .wrath_currency
+                        .rows
+                        .get(index as usize - 1)
+                        .cloned()
+                })
+                .flatten();
+            let Some(row) = row else {
+                return Ok(MultiValue::from_vec(vec![Value::Nil; 9]));
+            };
+            let mut values = MultiValue::new();
+            values.push_back(match row.name {
+                Some(s) => Value::String(lua.create_string(s)?),
+                None => Value::Nil,
+            });
+            values.push_back(Value::Boolean(row.is_header));
+            values.push_back(Value::Boolean(row.is_expanded));
+            values.push_back(Value::Boolean(row.shown));
+            values.push_back(Value::Boolean(row.is_watched));
+            values.push_back(Value::Integer(i64::from(row.count)));
+            values.push_back(Value::Integer(i64::from(row.extra_type)));
+            values.push_back(match row.icon {
+                Some(s) => Value::String(lua.create_string(s)?),
+                None => Value::Nil,
+            });
+            values.push_back(Value::Integer(i64::from(row.item_id)));
+            Ok(values)
+        })?,
+    )?;
+    lua.globals().set(
+        "GetBackpackCurrencyInfo",
+        lua.create_function(|lua, index: f64| {
+            let row = (index.is_finite() && index >= 1.0)
+                .then(|| {
+                    lua.app_data_ref::<Model>()
+                        .expect("model app_data")
+                        .wrath_currency
+                        .backpack
+                        .get(index as usize - 1)
+                        .cloned()
+                })
+                .flatten();
+            let Some(row) = row else {
+                return Ok(MultiValue::from_vec(vec![Value::Nil; 5]));
+            };
+            Ok(MultiValue::from_vec(vec![
+                row.name
+                    .map_or(Ok(Value::Nil), |s| lua.create_string(s).map(Value::String))?,
+                Value::Integer(i64::from(row.count)),
+                Value::Integer(i64::from(row.extra_type)),
+                match row.icon {
+                    Some(s) => Value::String(lua.create_string(s)?),
+                    None => Value::Nil,
+                },
+                Value::Integer(i64::from(row.item_id)),
+            ]))
+        })?,
+    )?;
+    lua.globals().set(
+        "GetNumWatchedTokens",
+        lua.create_function(|lua, ()| {
+            Ok(lua
+                .app_data_ref::<Model>()
+                .expect("model app_data")
+                .wrath_currency
+                .backpack
+                .len() as i64)
+        })?,
+    )?;
+    // These setters mutate the host-backed CVar masks; the next feed rebuilds the rows and signals
+    // CURRENCY_DISPLAY_UPDATE. Malformed and out-of-range rows are ignored.
+    lua.globals().set(
+        "SetCurrencyUnused",
+        lua.create_function(|lua, (index, enabled): (f64, f64)| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .set_wrath_currency_mask(index, enabled, true);
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set(
+        "SetCurrencyBackpack",
+        lua.create_function(|lua, (index, enabled): (f64, f64)| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .set_wrath_currency_mask(index, enabled, false);
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set(
+        "ExpandCurrencyList",
+        lua.create_function(|lua, (index, expanded): (f64, f64)| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .set_wrath_currency_expanded(index, expanded);
             Ok(())
         })?,
     )?;
@@ -4611,6 +4717,22 @@ mod tests {
             .eval("return GetInventoryItemsForSlot(1)[0x00600102]")
             .unwrap();
         assert_eq!(banked_open, Some(7003));
+    }
+
+    #[test]
+    fn currency_natives_return_exact_arities_for_empty_and_invalid_rows() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        assert_eq!(s.eval::<i64>("return GetCurrencyListSize()").unwrap(), 0);
+        assert_eq!(
+            s.eval::<i64>("return select('#', GetCurrencyListInfo(1))")
+                .unwrap(),
+            9
+        );
+        assert_eq!(
+            s.eval::<i64>("return select('#', GetBackpackCurrencyInfo(1))")
+                .unwrap(),
+            5
+        );
     }
 
     #[test]

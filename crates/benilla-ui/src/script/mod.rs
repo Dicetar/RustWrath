@@ -87,6 +87,7 @@ mod wrath_world;
 pub use client::FrameTimeRing;
 mod clock;
 mod companions;
+mod currency;
 mod cvar_checks;
 mod cvars;
 mod dressup;
@@ -344,6 +345,9 @@ pub use worldmap_arrow::ARROW_MODEL;
 
 pub(crate) use button::{refresh_label_lua, state_font_lua, LabelFont};
 pub use companions::CompanionView;
+pub use currency::{
+    build_currency_state, CurrencyCategoryInput, CurrencyTypeInput, ARENA_ITEM, HONOR_ITEM,
+};
 pub use equipment::{
     EquipmentItemPlace, EquipmentItemView, EquipmentSetCall, EquipmentSetIcon, EquipmentSetView,
     EquipmentSetsState, DEFAULT_SET_ICON, EQUIPMENT_SET_SLOTS,
@@ -385,6 +389,7 @@ pub use model::{
     WorldLocProjector, WrathLfgProposalMemberState, WrathLfgProposalState,
     WrathLfgQueueStatusState, WrathLfgState, WrathScopedCommand,
 };
+pub use model::{WrathCurrencyRow, WrathCurrencyState};
 pub use party::{
     PartyMemberInfo, PartyRequest, PartyState, RaidMemberInfo, ReadyCheckState, SavedInstanceInfo,
 };
