@@ -455,8 +455,32 @@ fn measure() -> BTreeMap<String, BTreeSet<String>> {
             out.entry(path).or_default().insert(rel.clone());
         }
     }
+    // The game crates split off this one are the game side too, keyed `<crate>/<path>`.
+    for name in GAME_CRATES {
+        let Some(src) = app.parent().map(|c| c.join(name).join("src")) else {
+            continue;
+        };
+        if !src.is_dir() {
+            continue;
+        }
+        let tests = test_module_files(&src);
+        for file in rs_files(&src) {
+            let rel = rel_to(&file, &src);
+            if tests.contains(&rel) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).unwrap();
+            for (path, _) in paths_in(&text, split, true) {
+                out.entry(path).or_default().insert(format!("{name}/{rel}"));
+            }
+        }
+    }
     drop_module_paths(out)
 }
+
+/// The crates split off `benilla-app` that sit on the game side of the engine: the assembler,
+/// whose boot names the engine's plugin groups, and the features moved on top of the core.
+const GAME_CRATES: &[&str] = &["benilla-client", "benilla-souls"];
 
 /// Drop every entry that is only the path to another entry: `particles::buffer` and
 /// `mesh_tag::spawn_tag` look alike, but a module path is a strict prefix of another named item
