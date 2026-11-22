@@ -24,15 +24,11 @@ pub mod addon_harness;
 mod area;
 mod area_poi;
 mod area_trigger;
-#[cfg(feature = "dev")]
-mod asset_churn;
 mod aura_visual;
 mod bindings;
 mod blob_shadow;
 mod bowstring;
 mod camera_shake;
-#[cfg(feature = "dev")]
-mod capture;
 mod chat_bubble;
 mod chr_classes;
 mod cinematic;
@@ -50,18 +46,11 @@ mod creature_type;
 mod cursor;
 mod cvars;
 mod death;
-#[cfg(feature = "dev")]
-mod debug_panel;
-/// The dev/player seam: the instrument groups and the boundary rule. Always compiled; what it holds
-/// is not.
-pub mod dev;
 #[cfg(feature = "hotpatch")]
 pub mod hotpatch;
 /// Whole-client native patches into the running process; inert without `live_code`.
 mod live_code;
 
-#[cfg(feature = "dev")]
-mod devtools;
 mod doodad_events;
 mod entities;
 mod field_watch;
@@ -71,8 +60,6 @@ pub mod game_plugins;
 mod glue_session;
 mod go_anim;
 mod go_templates;
-#[cfg(feature = "dev")]
-mod hover_log;
 mod item_lane;
 mod item_names;
 mod item_watch;
@@ -93,10 +80,6 @@ mod player;
 mod player_commands;
 mod poi_marker;
 mod portrait;
-#[cfg(feature = "dev")]
-mod preflight;
-#[cfg(feature = "dev")]
-mod probe_shield;
 mod query_cache;
 mod quest_markers;
 mod raid_marks;
@@ -310,6 +293,286 @@ pub mod souls_seam {
     }
     pub mod vplates {
         pub use crate::vplates::{gx_px, plate_basis, VPlates, PLATE_H, PLATE_LIFT};
+    }
+}
+
+/// What `benilla-dev` names in the core, by the module path it names it under, as [`souls_seam`]
+/// is for `benilla-souls`: only these items are reachable from outside the crate, never a whole hub
+/// module. The `test-support` rows are the fixtures the dev crate's tests build the client with.
+/// Regenerate from the dev crate's `crate::` paths when it changes.
+#[cfg(feature = "dev")]
+#[doc(hidden)]
+pub mod dev_seam {
+    pub mod area {
+        pub use crate::area::AreaTableRes;
+    }
+    pub mod client_state {
+        pub use crate::client_state::{ClientState, InWorldGated};
+    }
+    pub mod creature_anim {
+        #[cfg(feature = "test-support")]
+        pub use crate::creature_anim::{flush_unit_edits, UnitEdits};
+        pub use crate::creature_anim::{
+            move_flags, AnimData, AnimDriver, CastEvent, CastEventKind, Casting, FxStage,
+        };
+    }
+    pub mod cvars {
+        pub use crate::cvars::registered_pairs;
+    }
+    pub mod entities {
+        pub use crate::entities::{
+            BoneAttach, CollisionHeight, DisplayBuildSet, EntityVisualsSet, Equipment,
+            FallbackCube, HeldAttached, ItemDisplays, VisualAttached,
+        };
+        pub mod attach {
+            pub use crate::entities::attach::BodyPartsDesc;
+        }
+        pub mod display {
+            pub use crate::entities::display::{empty_shell, ModelHandle};
+        }
+        pub mod equipment {
+            pub use crate::entities::equipment::ATTACH_SLOT_NAMES;
+        }
+        pub mod mount {
+            pub use crate::entities::mount::MountChild;
+        }
+        pub mod spell_fx {
+            pub use crate::entities::spell_fx::{
+                attach_effect_visuals, EffectHost, FxMaterials, FxTintAnims, SpellFx, FALLBACK_SPAN,
+            };
+        }
+    }
+    #[cfg(feature = "test-support")]
+    pub mod game_plugins {
+        pub mod schedule_tests {
+            pub use crate::game_plugins::schedule_tests::{
+                census, headless_client_with, Census, SyncPoints,
+            };
+        }
+    }
+    pub mod glue_session {
+        pub mod login {
+            pub use crate::glue_session::login::LoginIntent;
+        }
+        pub mod roster {
+            pub use crate::glue_session::roster::press_enter_world;
+        }
+    }
+    pub mod go_anim {
+        pub use crate::go_anim::{armed_anim, go_state, GoAnim};
+    }
+    pub mod go_templates {
+        pub use crate::go_templates::{
+            has_column, GameObjectTemplates, GoColumn, MeetingStoneTemplate,
+        };
+    }
+    pub mod items {
+        pub use crate::items::{spawn_item, Items};
+    }
+    pub mod loading_screen {
+        pub use crate::loading_screen::{CoverInput, LoadingScreen};
+    }
+    pub mod local_state {
+        pub use crate::local_state::{diagnostics_dir, home};
+        #[cfg(feature = "test-support")]
+        pub mod test_env {
+            pub use crate::local_state::test_env::{EnvGuard, ENV_LOCK};
+        }
+    }
+    pub mod names {
+        pub use crate::names::{CreatureRecord, NameCache};
+    }
+    pub mod net {
+        pub use crate::net::{
+            CharActionResultMessage, CharListMessage, ChatKind, ClientCommand, CreatureSwimming,
+            DisconnectedMessage, DroppedOpcodes, Embodied, EnteredWorldMessage, Guid, GuidIndex,
+            HomeBind, NetCommands, NetEntity, NetOffline, NetStatus, ObjectStore, Objects,
+            PingShared, RealmListMessage, RemoteMotion, SelfGuid, SelfPlayer, ServerSaidMessage,
+            Spline, TeleportMessage, UnitMoveModes, WorldportMessage,
+        };
+        pub mod motion {
+            pub mod spline {
+                pub use crate::net::motion::spline::{ground_derived, GroundClamped};
+            }
+        }
+    }
+    pub mod perf {
+        pub use crate::perf::{
+            process_cpu_secs, process_faults, system_cpu_ticks, thread_cpu_table,
+            BlendMismatchShared, GpuMsShared, MainThreadSplit, PerfHud, PerfPlugin,
+            WgpuCensusShared, FRAME_BUDGET_MS,
+        };
+    }
+    pub mod player {
+        pub use crate::player::{Player, PlayerControlSet, UNIT_FLAG_IN_COMBAT};
+        pub mod camera {
+            pub use crate::player::camera::{CameraControl, FlyCam};
+        }
+        pub mod land {
+            pub use crate::player::land::LandHere;
+        }
+        pub mod step_probe {
+            pub use crate::player::step_probe::latest;
+        }
+    }
+    pub mod poi_marker {
+        pub use crate::poi_marker::PoiMarker;
+    }
+    pub mod portrait {
+        pub use crate::portrait::{BoothCam, BoothPanes, PortraitImages, PortraitSource};
+    }
+    pub mod query_cache {
+        pub use crate::query_cache::Ask;
+    }
+    pub mod quest_trace {
+        pub use crate::quest_trace::History;
+    }
+    pub mod run_mode {
+        pub use crate::run_mode::{
+            dev_source_dir, rig_suffix, scenario_active, CaptureMode, RigCharacter,
+        };
+    }
+    pub mod script_calls {
+        #[cfg(feature = "test-support")]
+        pub use crate::script_calls::ScriptCallHost;
+        pub use crate::script_calls::{HostedVm, VmWith};
+    }
+    pub mod sound {
+        pub use crate::sound::{kit_decodes, SoundConfig};
+    }
+    pub mod target {
+        pub use crate::target::{
+            AttackNearestRequest, HoveredObject, RelationWorld, Selection, SERVICE_RANGE_SQ,
+        };
+        pub mod click {
+            pub use crate::target::click::{
+                resolve_go_action, service_action, service_arm, GoAction, ServiceAction, ServiceArm,
+            };
+        }
+        pub mod cursor_mode {
+            pub use crate::target::cursor_mode::{
+                fishing_channel_owned, go_highlightable, go_reaction, meeting_stone_queued,
+                mouseover_eligible, npc_flags, questgiver_has_quest, GoOverrides,
+            };
+        }
+        pub mod hover {
+            pub use crate::target::hover::pick_model_roots;
+        }
+        pub mod lock {
+            pub use crate::target::lock::GoLockInputs;
+        }
+        pub mod relations {
+            pub use crate::target::relations::forced_rank;
+        }
+    }
+    pub mod transport {
+        pub use crate::transport::{ElevatorSeed, Transport, TransportAnchor};
+    }
+    pub mod ui_action {
+        pub use crate::ui_action::{PlayerActions, Spells};
+    }
+    pub mod ui_auction {
+        pub use crate::ui_auction::AuctionOpen;
+    }
+    pub mod ui_bank {
+        pub use crate::ui_bank::{BankOpen, BankPrices};
+    }
+    pub mod ui_battlefield {
+        pub use crate::ui_battlefield::Battlefield;
+    }
+    pub mod ui_binder {
+        pub use crate::ui_binder::BinderState;
+    }
+    pub mod ui_chat {
+        pub mod idle {
+            pub use crate::ui_chat::idle::LastInput;
+        }
+    }
+    pub mod ui_dialog_verbs {
+        pub use crate::ui_dialog_verbs::{BattlefieldQueue, MeetingStone, MeetingStoneUse};
+    }
+    pub mod ui_duel {
+        pub use crate::ui_duel::DuelState;
+    }
+    pub mod ui_gossip {
+        pub use crate::ui_gossip::GossipState;
+    }
+    pub mod ui_item_text {
+        pub use crate::ui_item_text::ItemTextOpen;
+    }
+    pub mod ui_items {
+        pub use crate::ui_items::{find_item, slot_guid_donor, ItemSearch, PACK_SLOTS};
+    }
+    pub mod ui_loot {
+        pub use crate::ui_loot::{LootConfig, LootKneel, LootLatch, LootState};
+    }
+    pub mod ui_mail {
+        pub use crate::ui_mail::{open_mailbox, MailOpen};
+    }
+    pub mod ui_merchant {
+        pub use crate::ui_merchant::MerchantOpen;
+    }
+    pub mod ui_models {
+        pub use crate::ui_models::{TilePerspectiveCamera, TileRoot, UiModelTiles};
+    }
+    pub mod ui_party {
+        pub use crate::ui_party::GroupState;
+    }
+    pub mod ui_pass {
+        pub use crate::ui_pass::{UiMeshCost, UiQuadBatch, UiQuadMaterial};
+    }
+    pub mod ui_petition {
+        pub use crate::ui_petition::GuildRegistrarState;
+    }
+    pub mod ui_quest {
+        pub use crate::ui_quest::{QuestGiver, QuestView};
+    }
+    pub mod ui_quest_log {
+        pub use crate::ui_quest_log::QuestLog;
+    }
+    pub mod ui_script {
+        pub use crate::ui_script::{
+            run_or_warn, EguiKeyboard, EguiPointerOver, InspectMode, PendingEntryUiLoad,
+            PlayerUiClickConsumed, PointerOverUi, SyntheticPointer, UiCostWanted, UiDrain,
+            UiFrameCost, VmMemo,
+        };
+        pub mod addons {
+            pub use crate::ui_script::addons::{root, LOAD_INSTRUCTION_BUDGET};
+        }
+        pub mod glue {
+            pub use crate::ui_script::glue::{StockGlueProbe, StockVm};
+        }
+        pub mod glue_create {
+            pub use crate::ui_script::glue_create::CreateSources;
+        }
+    }
+    pub mod ui_session {
+        pub use crate::ui_session::{InteractNpc, NpcSession};
+    }
+    pub mod ui_taxi {
+        pub use crate::ui_taxi::TaxiState;
+    }
+    pub mod ui_trainer {
+        pub use crate::ui_trainer::TrainerOpen;
+    }
+    pub mod ui_unit {
+        pub use crate::ui_unit::{NameTables, UnitFeed};
+    }
+    #[cfg(feature = "test-support")]
+    pub mod vm_pass {
+        pub use crate::vm_pass::shared_sinks;
+    }
+    pub mod vplates {
+        pub use crate::vplates::{VPlateMode, VPlates};
+    }
+    pub mod world_backdrop {
+        pub use crate::world_backdrop::WorldBackdrop;
+    }
+    pub mod world_state {
+        pub use crate::world_state::WorldStates;
+    }
+    pub mod wrath {
+        pub use crate::wrath::WrathInput;
     }
 }
 

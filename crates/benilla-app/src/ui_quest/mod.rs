@@ -51,7 +51,7 @@ use crate::ui_script::{SweepApp, SweepLeg, UiFeed};
 use crate::ui_session::{CoreCloses, LatchApp, LatchedWindow, NpcWindow};
 
 /// The wire packet that opened the current panel.
-pub(crate) enum QuestView {
+pub enum QuestView {
     Greeting(QuestGiverList),
     Detail(QuestDetails),
     Progress(QuestRequestItems),
@@ -60,15 +60,15 @@ pub(crate) enum QuestView {
 
 /// The open questgiver window; the per-guid dialog statuses survive a close.
 #[derive(Resource, Default)]
-pub(crate) struct QuestGiver {
+pub struct QuestGiver {
     pending_accepts: Vec<PendingQuestAccept>,
     pending_selection: Option<PendingQuestSelection>,
     delivery_error: Option<String>,
     pub(crate) completed_fanfare: bool,
     pub(crate) firing_panel_event: bool,
     /// The panel's source: an NPC, a GameObject, a quest-starter item or a sharing player.
-    pub(crate) npc: Option<u64>,
-    pub(crate) view: Option<QuestView>,
+    pub npc: Option<u64>,
+    pub view: Option<QuestView>,
     /// The reference's latch `0xbe0824`, written by DETAILS and OFFER_REWARD (`0x500ef0`) and by
     /// REQUEST_ITEMS' `closeOnCancel` (`0x501070`), and zeroed only on world enter (`0x500af0`).
     /// Non-zero turns a plain unit's decline into the silent teardown ([`decline_leg`]). vmangos
@@ -259,7 +259,7 @@ impl QuestPools {
 
 impl QuestGiver {
     /// Open (or replace) the window with a fresh wire view for `npc`.
-    pub(crate) fn open(&mut self, npc: u64, view: QuestView) {
+    pub fn open(&mut self, npc: u64, view: QuestView) {
         if let QuestView::Greeting(list) = &view {
             self.pools = QuestPools::of(list);
         }
@@ -286,7 +286,7 @@ impl QuestGiver {
 
     /// Zero the cell; the panel and its kind `[0xbe0818]` stay, as `0x501130` leaves them, for
     /// the panel verbs, and the feed shows nothing with the cell zero.
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.npc = None;
         self.pending_selection = None;
     }
@@ -316,7 +316,7 @@ impl QuestGiver {
     /// Re-ask every visible questgiver's status, as the reference does after
     /// `SMSG_SET_FACTION_STANDING`, `SMSG_GROUP_LIST`, a turn-in and `SMSG_QUESTUPDATE_*`. A
     /// counter, folded into the marker query's generation, so no bump is lost to ordering.
-    pub(crate) fn bump_reask(&mut self) {
+    pub fn bump_reask(&mut self) {
         self.reask = self.reask.wrapping_add(1);
     }
 
@@ -329,17 +329,17 @@ impl QuestGiver {
         self.refused_count = self.refused_count.saturating_add(1);
     }
 
-    pub(crate) fn refused_for(&self, npc: u64) -> Option<u32> {
+    pub fn refused_for(&self, npc: u64) -> Option<u32> {
         self.refused.get(&npc).copied()
     }
 
-    pub(crate) fn refused_count(&self) -> u32 {
+    pub fn refused_count(&self) -> u32 {
         self.refused_count
     }
 
     /// One guid's stored dialog status; the markers read the whole map instead.
     #[allow(dead_code)]
-    pub(crate) fn status(&self, npc: u64) -> Option<u32> {
+    pub fn status(&self, npc: u64) -> Option<u32> {
         self.statuses.get(&npc).copied()
     }
 

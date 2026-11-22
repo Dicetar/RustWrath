@@ -18,7 +18,7 @@ use benilla_assets::{m2_url, skin_url, wmo_url};
 
 /// A display's model asset: an M2 (creatures, most GameObjects), a WMO (building GameObjects), or
 /// none when the display names no model.
-pub(crate) enum ModelHandle {
+pub enum ModelHandle {
     M2(Handle<M2Model>),
     Wmo(Handle<WmoModel>),
     None,
@@ -111,8 +111,8 @@ impl EntityPart {
 
 /// Everything needed to render one display id, built once and shared by its entities; `parts` is
 /// `None` while the asset loads, and empty for a model with no geometry.
-pub(crate) struct DisplayModel {
-    pub(crate) handle: ModelHandle,
+pub struct DisplayModel {
+    pub handle: ModelHandle,
     /// The model's directory, where its skin textures live.
     pub(super) dir: String,
     /// The creature's `Monster1/2/3` skin variation names.
@@ -142,7 +142,7 @@ pub(crate) struct DisplayModel {
     pub(super) animations: Option<ModelAnimations>,
     /// The first sequence's authored duration, the spell-effect clock for a model whose sequences
     /// build no clip (the eat/drink tankard: 6.667 s, no bone keys).
-    pub(crate) first_seq_span: Option<f32>,
+    pub first_seq_span: Option<f32>,
     /// The camera framing pivot's height in model-local yards before scale (`0x50cbc0`), stamped on
     /// each instance as `CameraPivot`; `0.0` without bounds.
     pub(super) pivot_height_local: f32,
@@ -261,7 +261,7 @@ pub(super) fn new_gameobject_display(
 }
 
 /// A blank [`DisplayModel`] awaiting [`build_parts`], for constructors to override.
-pub(crate) fn empty_shell() -> DisplayModel {
+pub fn empty_shell() -> DisplayModel {
     DisplayModel {
         handle: ModelHandle::None,
         dir: String::new(),

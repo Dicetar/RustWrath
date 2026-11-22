@@ -66,7 +66,7 @@ enum IoPark {
 /// The credential policy's memory: the session's credentials, the in-flight and park state, and
 /// the resubmit timer.
 #[derive(Resource, Default)]
-pub(crate) struct LoginIntent {
+pub struct LoginIntent {
     /// Kept in-world so an unattended reconnect re-authenticates silently; cleared by select's
     /// Back, a refusal, a Cancel and a lost session.
     creds: Option<(String, String)>,
@@ -90,7 +90,7 @@ impl LoginIntent {
 
     /// The account this session authenticated as, from the env fast path or a screen; it
     /// decides whether the probe shield applies.
-    pub(crate) fn account(&self) -> Option<&str> {
+    pub fn account(&self) -> Option<&str> {
         self.creds.as_ref().map(|(user, _)| user.as_str())
     }
 }

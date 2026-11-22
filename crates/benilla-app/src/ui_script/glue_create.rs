@@ -11,7 +11,7 @@ use benilla_ui::script::{
 
 /// The catalogs the create screen's verbs and the roster's strings read.
 #[derive(SystemParam)]
-pub(crate) struct CreateSources<'w> {
+pub struct CreateSources<'w> {
     pub(crate) races: Option<Res<'w, crate::chr_classes::ChrRaceTable>>,
     pub(crate) create: Option<Res<'w, crate::entities::CharCreate>>,
     pub(crate) classes: Option<Res<'w, crate::chr_classes::ChrClassTable>>,
@@ -21,7 +21,7 @@ pub(crate) struct CreateSources<'w> {
 
 impl CreateSources<'_> {
     /// One of the catalogs arrived or changed since the system last ran.
-    pub(crate) fn changed(&self) -> bool {
+    pub fn changed(&self) -> bool {
         self.create.as_ref().is_some_and(|r| r.is_changed())
             || self.classes.as_ref().is_some_and(|r| r.is_changed())
             || self.factions.as_ref().is_some_and(|r| r.is_changed())
@@ -30,7 +30,7 @@ impl CreateSources<'_> {
 
     /// Every catalog has arrived, so the verbs' catalog is whole: a create screen shown before
     /// then lists races with no faction, whose `OnShow` raises.
-    pub(crate) fn complete(&self) -> bool {
+    pub fn complete(&self) -> bool {
         self.create.is_some()
             && self.classes.is_some()
             && self.factions.is_some()

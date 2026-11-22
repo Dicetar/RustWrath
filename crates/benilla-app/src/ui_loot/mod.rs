@@ -258,7 +258,7 @@ enum Step {
 /// The loot session: the window, the loot lane, the pushes waiting on their records, which outlive
 /// the window, and what the loot calls owe.
 #[derive(Resource, Default)]
-pub(crate) struct LootState {
+pub struct LootState {
     window: Window,
     /// The pushes waiting on their item templates, each queued again at its answer.
     waiting: Vec<PendingReceive>,
@@ -299,7 +299,7 @@ pub(crate) struct LootState {
 impl LootState {
     /// The copier (`0x4c1cb0`) at a response: it ends the session in progress, then fills the
     /// window; quest items ride the same rows at `slot = items.len() + i`.
-    pub(crate) fn open(&mut self, source: u64, loot_type: u8, gold: u32, items: Vec<LootItem>) {
+    pub fn open(&mut self, source: u64, loot_type: u8, gold: u32, items: Vec<LootItem>) {
         // The ending unlocks an item source (`0x5ebc35` → `0x48f3a0` → `0x4c1d36`) and clears
         // the money line's flag (`0x4c1d95`).
         if let Some(old) = self.window.source {
@@ -616,7 +616,7 @@ impl LootState {
     }
 
     /// The open loot's guid; the chest lid watcher in [`crate::go_anim`] reads it too.
-    pub(crate) fn source(&self) -> Option<u64> {
+    pub fn source(&self) -> Option<u64> {
         self.window.source
     }
 
@@ -688,8 +688,8 @@ pub(crate) struct AutoLootByte(pub(crate) bool);
 /// which no interaction stores the byte for, takes it at its copier's end from the Shift held
 /// then.
 #[derive(Resource)]
-pub(crate) struct LootConfig {
-    pub(crate) auto_loot: bool,
+pub struct LootConfig {
+    pub auto_loot: bool,
     pub(crate) show_loot_spam: bool,
 }
 
@@ -713,14 +713,14 @@ impl Default for LootConfig {
 /// Deviation: our close paths clear it guid-matched, where `CloseInteraction` clears it
 /// unconditionally (`0x48f2c9`), so closing an old window keeps a newer `CMSG_LOOT`'s latch.
 #[derive(Resource, Default)]
-pub(crate) struct LootLatch(pub(crate) Option<u64>);
+pub struct LootLatch(pub Option<u64>);
 
 /// Whether the character kneels at the latched object, the reference's predicate B `0x612710`:
 /// yes for a corpse or any GameObject but a fishing bobber, no for a live unit, an item or an
 /// unresolved guid. Recomputed each frame between the net drain and the anim driver, as the
 /// reference force-plays the pose at the arm itself (`0x5ed619`).
 #[derive(Resource, Default)]
-pub(crate) struct LootKneel(pub(crate) bool);
+pub struct LootKneel(pub bool);
 
 /// `GAMEOBJECT_TYPE_ID` 17, `FISHINGNODE`: the one GameObject type that does not kneel
 /// (`0x612772`).

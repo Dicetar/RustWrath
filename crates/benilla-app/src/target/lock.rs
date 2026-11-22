@@ -24,7 +24,7 @@ use crate::net::ObjectStore;
 /// (the item's for a key's name and ON_USE spell), `Lock.dbc`, `LockType.dbc` and the spell
 /// catalog. The `Option` members are absent without client data.
 #[derive(bevy::ecs::system::SystemParam)]
-pub(crate) struct GoLockInputs<'w, 's> {
+pub struct GoLockInputs<'w, 's> {
     // `Res`: a miss's ask-once template request marks itself through `&self`.
     pub(crate) templates: Res<'w, crate::go_templates::GameObjectTemplates>,
     pub(crate) locks: Option<Res<'w, crate::go_templates::Locks>>,

@@ -410,7 +410,7 @@ pub(crate) fn screenshots_dir() -> Option<PathBuf> {
 
 /// `benilla-config/Diagnostics/`: the stuck-thread sampler's profiles ([`crate::perf::stall`]) and
 /// the FPS journal; `None` on a capture run like every path here, so a capture has no sampler.
-pub(crate) fn diagnostics_dir() -> Option<PathBuf> {
+pub fn diagnostics_dir() -> Option<PathBuf> {
     home().map(|h| h.join("Diagnostics"))
 }
 
@@ -457,18 +457,18 @@ pub(crate) fn write_atomic_bytes(path: &Path, contents: &[u8]) -> std::io::Resul
 
 /// Test plumbing for the persistence env vars: `set_var` is process-global, so every such test
 /// takes [`ENV_LOCK`] and scopes its overrides in [`EnvGuard`]s.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_env {
-    pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    pub(crate) struct EnvGuard(&'static str, Option<std::ffi::OsString>);
+    pub struct EnvGuard(&'static str, Option<std::ffi::OsString>);
     impl EnvGuard {
-        pub(crate) fn set(key: &'static str, value: &str) -> Self {
+        pub fn set(key: &'static str, value: &str) -> Self {
             let old = std::env::var_os(key);
             std::env::set_var(key, value);
             Self(key, old)
         }
-        pub(crate) fn unset(key: &'static str) -> Self {
+        pub fn unset(key: &'static str) -> Self {
             let old = std::env::var_os(key);
             std::env::remove_var(key);
             Self(key, old)

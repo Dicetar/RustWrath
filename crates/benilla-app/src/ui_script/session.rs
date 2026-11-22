@@ -9,7 +9,7 @@ use benilla_ui::script::UiScript;
 
 /// A host-side memo valid only for the VM that wrote it: [`VmMemo::get`] resets it to
 /// `T::default()` when read against another.
-pub(crate) struct VmMemo<T> {
+pub struct VmMemo<T> {
     /// The VM this memory is about; 0 is no VM, as [`UiScript::session`] counts from 1.
     session: u64,
     /// The world it is about, for [`VmMemo::get_in_world`]: the sweeps run before it was written.
@@ -32,7 +32,7 @@ impl<T: Default> Default for VmMemo<T> {
 
 impl<T: Default> VmMemo<T> {
     /// The memory, cleared first against a different VM.
-    pub(crate) fn get(&mut self, script: &UiScript) -> &mut T {
+    pub fn get(&mut self, script: &UiScript) -> &mut T {
         self.get_for(Some(script))
     }
 

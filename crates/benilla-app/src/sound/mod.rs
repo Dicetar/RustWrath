@@ -46,13 +46,13 @@ mod weather;
 mod zone;
 pub(crate) use emote::EmoteSounds;
 /// First-play kit decodes so far, for the probe's tail line.
-pub(crate) fn kit_decodes() -> u32 {
+pub fn kit_decodes() -> u32 {
     kit::DECODES.load(std::sync::atomic::Ordering::Relaxed)
 }
 pub(crate) use glue::GlueMusicRequest;
 pub(crate) use greeting::NpcGreetingRequest;
 /// Named by the schedule tests' class table (`game_plugins::schedule_tests::Classes`).
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) use kit::SoundKits;
 pub(crate) use message::MessageSounds;
 pub(crate) use mixer::Mixer;
@@ -64,7 +64,7 @@ pub(crate) use zone::ExplorationSounds;
 /// The sound CVars. Defaults are the reference's registrations (`0x456fe0`, `0x460a60`):
 /// `MusicVolume` 0.4 and `AmbienceVolume` 0.6, every other volume 1.0.
 #[derive(Resource)]
-pub(crate) struct SoundConfig {
+pub struct SoundConfig {
     /// `MasterSoundEffects` (default "1", `0x45737a`). The reference pauses the engine
     /// (`0x457500` → `0x7a6570`); benilla zeroes every category in [`Self::category_amp`] and
     /// channels run on silently, which sounds the same.

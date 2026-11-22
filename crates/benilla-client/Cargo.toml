@@ -11,7 +11,7 @@ workspace = true
 [features]
 # `dev` compiles in the instruments; the player build (`scripts/gates.sh`) has no defaults.
 default = ["dev"]
-dev = ["benilla-app/dev", "benilla-souls/dev"]
+dev = ["benilla-app/dev", "benilla-dev/dev", "benilla-souls/dev"]
 tracy = ["benilla-app/tracy"]
 trace_chrome = ["benilla-app/trace_chrome"]
 # Links Bevy as a shared library (`benilla-app`'s feature of the same name).
@@ -24,6 +24,7 @@ live_code = ["dev", "benilla-app/live_code"]
 # `default-features = false`, or `--no-default-features` here still builds benilla-app with `dev`.
 benilla-app = { path = "../benilla-app", default-features = false }
 benilla-souls = { path = "../benilla-souls", default-features = false }
+benilla-dev = { path = "../benilla-dev", default-features = false }
 benilla-assets = { path = "../benilla-assets", default-features = false }
 benilla-formats = { path = "../benilla-formats", default-features = false }
 benilla-world = { path = "../benilla-world", default-features = false }

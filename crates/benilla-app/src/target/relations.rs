@@ -242,7 +242,7 @@ impl Relations<'_> {
     /// ([`Self::reputation_leg`]); anything else by `a`'s template toward `b`
     /// ([`Self::template_reaction`]), capped at 6 (`0x606439`) and raised a rank when `a` is
     /// persuaded by `b` (`0x606449`-`0x6064aa`).
-    pub(crate) fn reaction(&self, a: &RelUnit, b: &RelUnit) -> u8 {
+    pub fn reaction(&self, a: &RelUnit, b: &RelUnit) -> u8 {
         if a.same_object(b) {
             return FRIENDLY;
         }
@@ -486,7 +486,7 @@ impl Relations<'_> {
 ///
 /// Deviation: the rank is held to 7, the top of the ring scale's eight entries (`0..=7`), where the
 /// reference keeps any value; a server rank past 7 would index outside our palette.
-pub(crate) fn forced_rank(reputations: &Reputations, faction: u32) -> Option<u8> {
+pub fn forced_rank(reputations: &Reputations, faction: u32) -> Option<u8> {
     reputations
         .forced
         .iter()
@@ -654,12 +654,12 @@ impl RelationWorld<'_, '_> {
     }
 
     /// The faction tables.
-    pub(crate) fn factions(&self) -> Option<&Factions> {
+    pub fn factions(&self) -> Option<&Factions> {
         self.factions.as_deref()
     }
 
     /// The reputation list and forced reactions.
-    pub(crate) fn reputations(&self) -> &Reputations {
+    pub fn reputations(&self) -> &Reputations {
         &self.reputations
     }
 }

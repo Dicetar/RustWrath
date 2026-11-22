@@ -40,10 +40,10 @@ field() { grep -m1 "^$2" "$1" 2>/dev/null | sed -E "s/^$2[[:space:]]*=[[:space:]
     | sed -E 's/add_plugins\(//; s/([a-z_]+::)+//' | awk '!seen[$0]++ {print "- " $0}'
   echo
 
-  # `lib.rs` adds each dev group in one line, so their members are read out of `dev.rs`.
-  echo "### Behind the \`dev\` feature (\`crates/benilla-app/src/dev.rs\` — compiled out by \`--no-default-features\`)"
+  # `lib.rs` adds each dev group in one line, so their members are read out of `benilla-dev`'s root.
+  echo "### Behind the \`dev\` feature (\`crates/benilla-dev/src/lib.rs\` — compiled out by \`--no-default-features\`)"
   echo
-  grep -oE 'add_plugins\(([a-z_]+::)*[A-Za-z_]+Plugins?' crates/benilla-app/src/dev.rs \
+  grep -oE 'add_plugins\(([a-z_]+::)*[A-Za-z_]+Plugins?' crates/benilla-dev/src/lib.rs \
     | sed -E 's/add_plugins\(//; s/([a-z_]+::)+//' | awk '!seen[$0]++ {print "- " $0}'
   echo
 
@@ -94,7 +94,7 @@ field() { grep -m1 "^$2" "$1" 2>/dev/null | sed -E "s/^$2[[:space:]]*=[[:space:]
   # doc comments write the unquoted form. The probe registry `capture/probe_env.rs` is a table,
   # not a read site, so it is left out.
   grep -rHoE '"WOW_[A-Z0-9_]+"' crates --include='*.rs' 2>/dev/null \
-    | grep -v '^crates/benilla-app/src/capture/probe_env\.rs:' \
+    | grep -v '^crates/benilla-dev/src/capture/probe_env\.rs:' \
     | sed -E 's@^crates/@@; s/:"/\t/; s/"$//' \
     | awk -F'\t' '{print $2 "\t" $1}' | sort -u \
     | awk -F'\t' '$1 != v { if (v) print line; v = $1; line = "- `" $1 "` — " $2; next }

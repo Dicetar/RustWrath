@@ -463,14 +463,16 @@ mod tests {
         );
     }
 
-    /// Every `.rs` under this crate's `src/`, as `(path under src/, text)`, and under the
+    /// Every `.rs` under this crate's `src/`, as `(path under src/, text)`, under the
     /// assembler's (`benilla-client`, whose boot dispatches `WOW_PROBE=list`), as
-    /// `(benilla-client/<path under src/>, text)`.
+    /// `(benilla-client/<path under src/>, text)`, and under the core's (`benilla-app`, whose
+    /// gameplay reads probe variables too), as `(benilla-app/<path under src/>, text)`.
     fn crate_sources() -> Vec<(String, String)> {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let roots = [
             (manifest.join("src"), ""),
             (manifest.join("../benilla-client/src"), "benilla-client/"),
+            (manifest.join("../benilla-app/src"), "benilla-app/"),
         ];
         let mut out = Vec::new();
         for (src, prefix) in roots {

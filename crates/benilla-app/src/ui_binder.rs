@@ -28,7 +28,7 @@ use crate::ui_session::{close_npc_session_out_of_range, NpcSession};
 
 /// The innkeeper's pending bind question; everything the dialog reads rides the event's argument.
 #[derive(Resource, Default)]
-pub(crate) struct BinderState {
+pub struct BinderState {
     /// The innkeeper who asked, sent back on the wire; vmangos binds only a live one in range.
     npc: Option<u64>,
     /// A dialog the feed still owes, set per packet: asking again after a decline is a second

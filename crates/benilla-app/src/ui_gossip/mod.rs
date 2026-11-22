@@ -18,16 +18,16 @@ use crate::ui_session::{LatchApp, LatchedWindow, NpcWindow};
 /// The open gossip menu, plus the NPC-text records by id, which outlive it. The cache holds whole
 /// records: the reference draws the greeting afresh at each open, from the NPC's gender and a roll.
 #[derive(Resource, Default)]
-pub(crate) struct GossipState {
-    pub(crate) npc: Option<u64>,
-    pub(crate) text_id: u32,
+pub struct GossipState {
+    pub npc: Option<u64>,
+    pub text_id: u32,
     /// This open's drawn greeting; `None` while its text query is out.
-    pub(crate) greeting: Option<String>,
-    pub(crate) options: Vec<GossipOption>,
+    pub greeting: Option<String>,
+    pub options: Vec<GossipOption>,
     /// The packet's quest rows, `(quest_id, dialog-status icon, level, title)`. The level is kept
     /// because `GetGossipAvailableQuests` and `GetGossipActiveQuests` return `(title, level)`
     /// pairs, walked in twos by stock `GossipFrame.lua` (lines 66 and 90).
-    pub(crate) quests: Vec<(u32, u32, u32, String)>,
+    pub quests: Vec<(u32, u32, u32, String)>,
     /// The NPC-text store (`0xc0e264`), which [`crate::wdb`] saves; the menu sends its own query.
     records: QueryCache<u32, Vec<NpcTextBlock>>,
     /// The drawn record had no line for the NPC's gender: the close core is owed.
@@ -140,7 +140,7 @@ fn greeting_roll() -> f32 {
 
 impl GossipState {
     /// Forget the menu, its slots and its latches; the records stay.
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.npc = None;
         self.text_id = 0;
         self.greeting = None;

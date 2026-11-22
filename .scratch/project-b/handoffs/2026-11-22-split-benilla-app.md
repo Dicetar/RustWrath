@@ -4,7 +4,7 @@ Status: in progress
 Owner: Claude Code / Opus 5.5
 Branch: refactor/split-benilla-app-v2 (refactor/split-benilla-app is abandoned: its second commit captured staged renames without their contents)
 Issue: none
-Next: land on main once CI is green; then `benilla-dev` (plan step 3)
+Next: `benilla-panes` (plan step 4)
 
 ## Why
 
@@ -38,6 +38,33 @@ each live-code patch.
    expose); one `#[allow(clippy::should_implement_trait)]` on `PlaySeq::next`, now public.
    `benilla-souls` joins player-clippy and player-tests (trigger and args) in CI and the scripts.
 
+3. `benilla-dev` (new): the instruments (`capture`, `debug_panel`, `devtools`, `hover_log`,
+   `asset_churn`, `preflight`, `probe_shield`) moved verbatim; `dev.rs` is the crate root. The core
+   reaches nothing of it. The dev crate names the core only through `benilla_app::dev_seam` (201
+   re-exports under the module paths it names them by, plus the `test-support` rows); every core
+   module stays private. In the core only visibility changed (the named items, the fields and
+   methods the instruments read, the types their signatures expose; grouped `pub(crate) use`
+   lines split so only the named items are `pub`).
+   - Boot cycle: `run_mode::capture_ui_opted_in` and `start_state` read the capture harness
+     through `run_mode::CaptureHooks` (two fn pointers in a `OnceLock`); `benilla_dev::install_boot_hooks`
+     installs them as the first line of `benilla-client`'s `launch()`. Until then they answer as a
+     player's (`false`, `Login`).
+   - `benilla-client` adds `DevToolsPlugin` and `DevProbesPlugin` where it did (`use benilla_dev as dev`).
+   - `test-support` on benilla-app (`dep:indexmap`) compiles `game_plugins::schedule_tests`,
+     `local_state::test_env`, `vm_pass::PassOrder` and `sound::SoundKits`' re-export outside
+     `cfg(test)`. The three `vm_pass` tests and the `script_calls` test that build the client with
+     `add_every_instrument` moved to `benilla-dev/src/fleet_tests.rs` (with `vm_writers_and_the_unhosted`;
+     `after`/`successors` copied, the core's tests still use them).
+   - `capture::probe_env`'s scan also reads `../benilla-app/src` (prefix `benilla-app/`).
+     `capture/probes`' clock scan reads only `src/capture`, which moved whole: adding the core would
+     flag every core system on `Res<Time>`, so it is unchanged.
+   - `benilla-dev` joins player-clippy and player-tests in CI, `check.sh` and `gates.sh`;
+     `genmap.sh` reads the dev groups from `benilla-dev/src/lib.rs`; `world_api_wall` counts it.
+   - Left as is: `docs/MAP.md` (generated, not regenerated); the ignored
+     `every_one_shot_consumer_that_holds_the_vm_is_gated_or_argued` keeps its two `capture/…` EXEMPT
+     rows, and the ignored `the_dev_plane_has_exactly_one_door` its DEV_ROOTS, both of which now
+     name files outside the crate.
+
 ## Plan (the measured graph and timings are in Phase 1 below)
 
 Layering: `benilla` → `benilla-client` (assembler) → feature crates → `benilla-app` (core) → engine
@@ -56,7 +83,7 @@ Order:
    upper crate uses 19 core modules (89 refs): those items go `pub`. The client inserts
    `SoulsPlugin` after `CombatPlaybackPlugin`. Add `benilla-souls` to player-clippy and the
    player-tests trigger/args.
-3. **benilla-dev** — capture, debug_panel, devtools, hover_log, asset_churn, preflight,
+3. **benilla-dev** — done (item 3 above). capture, debug_panel, devtools, hover_log, asset_churn, preflight,
    probe_shield, dev.rs: 27.9k lines, 449 refs out, 2 in. Cut `run_mode` → capture
    (`capture_ui_opted_in`, `start_state` read the scenario table at boot) with a boot hook the
    client installs first, or by moving the scenario names down. Four core tests build the client
@@ -127,3 +154,9 @@ client running.
 - CI on the souls commit 789c2909f (run 45013482959): windows passed (tests included); the Linux
   gates job lost its runner mid test-build (GitHub infrastructure), rerun superseded by the merge.
 - Merge of main c4d139145: `cargo check` clean. CI on the merge tip: see the landing commit.
+- benilla-dev (main 521e49a89, own target dir, sccache): `cargo check -p benilla -p benilla-client
+  -p benilla-dev -p benilla-app --features benilla/hotpatch` compiles (the two warnings above, already
+  on main); player-clippy over benilla, client, souls, dev and app with `-D warnings`: clean;
+  `cargo test -p benilla-dev`: 57 passed, 1 ignored (the moved `script_calls` test, ignored on main);
+  fmt, `doc-links.py`, `pass-span-lint.py` clean. benilla-app's own tests not run locally. Client not
+  run. CI: see the landing commit.

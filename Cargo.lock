@@ -586,6 +586,7 @@ version = "0.2.0"
 dependencies = [
  "benilla-app",
  "benilla-assets",
+ "benilla-dev",
  "benilla-formats",
  "benilla-souls",
  "benilla-world",
@@ -602,6 +603,23 @@ name = "benilla-dbc"
 version = "0.2.0"
 dependencies = [
  "benilla-bytes",
+]
+
+[[package]]
+name = "benilla-dev"
+version = "0.2.0"
+dependencies = [
+ "avian3d",
+ "benilla-app",
+ "benilla-assets",
+ "benilla-formats",
+ "benilla-protocol",
+ "benilla-ui",
+ "benilla-world",
+ "bevy",
+ "bevy_egui",
+ "bytemuck",
+ "image",
 ]
 
 [[package]]

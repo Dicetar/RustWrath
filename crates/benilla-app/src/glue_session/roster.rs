@@ -256,7 +256,7 @@ pub(super) fn apply_roster_policy(
 /// selected and Enter World pressed (`CharacterSelect.lua`'s
 /// `CharacterSelectButton_OnDoubleClick`), whose `EnterWorld` reaches `CGlueMgr::EnterWorld`
 /// (`0x46b500`): `lastCharacterIndex` written and saved, state 8, then the pick.
-pub(crate) fn press_enter_world(vm: StockVm, row: usize) {
+pub fn press_enter_world(vm: StockVm, row: usize) {
     let n = row + 1;
     vm.press(&format!(
         "CharacterSelect_SelectCharacter({n}) CharSelectEnterWorldButton:Click()"

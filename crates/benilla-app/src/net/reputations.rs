@@ -52,7 +52,7 @@ impl Default for Slots {
 /// A clone shares the slots and copies the rest: the shared handle is there for the Lua API's
 /// relation snapshot alone, which reads the slots live between pushes.
 #[derive(Resource, Default, Clone)]
-pub(crate) struct Reputations {
+pub struct Reputations {
     slots: Arc<Slots>,
     pub(crate) forced: Vec<(u32, u32)>,
     /// What each message did to the pane's list, in arrival order, for the reputation feed to

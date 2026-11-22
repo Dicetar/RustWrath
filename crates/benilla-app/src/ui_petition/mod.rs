@@ -33,7 +33,7 @@ pub(crate) use steps::PetitionSteps;
 
 /// The open registrar, apart from [`PetitionState`] so a close of the registrar leaves the charter.
 #[derive(Resource, Default)]
-pub(crate) struct GuildRegistrarState {
+pub struct GuildRegistrarState {
     open: Option<Registrar>,
 }
 
@@ -96,7 +96,7 @@ impl GuildRegistrarState {
 
 impl GuildRegistrarState {
     /// The registrar's NPC, the cell `[0xbdceb0]`; `None` when it is closed.
-    pub(crate) fn npc(&self) -> Option<u64> {
+    pub fn npc(&self) -> Option<u64> {
         self.open.as_ref().map(|r| r.npc)
     }
 

@@ -34,14 +34,14 @@ use super::reference_ui;
 /// The glue screens as a dev instrument reaches them, so no instrument names the VM: through
 /// [`StockVm`] the glue VM's frames and verbs.
 #[derive(bevy::ecs::system::SystemParam)]
-pub(crate) struct StockGlueProbe<'w> {
+pub struct StockGlueProbe<'w> {
     script: Option<NonSend<'w, UiScript>>,
 }
 
 impl StockGlueProbe<'_> {
     /// The glue VM; with none standing (the world's VM, or a build that failed), a [`StockVm`]
     /// that shows nothing and presses nothing.
-    pub(crate) fn vm(&self) -> StockVm<'_> {
+    pub fn vm(&self) -> StockVm<'_> {
         StockVm(
             self.script
                 .as_deref()
@@ -52,22 +52,22 @@ impl StockGlueProbe<'_> {
 
 /// The glue VM an instrument reads and presses.
 #[derive(Clone, Copy)]
-pub(crate) struct StockVm<'a>(Option<&'a UiScript>);
+pub struct StockVm<'a>(Option<&'a UiScript>);
 
 impl StockVm<'_> {
     /// The glue VM is standing.
-    pub(crate) fn is_up(&self) -> bool {
+    pub fn is_up(&self) -> bool {
         self.0.is_some()
     }
 
     /// `IsVisible()` of the frame with this global name; false with no VM.
-    pub(crate) fn frame_visible(&self, name: &str) -> bool {
+    pub fn frame_visible(&self, name: &str) -> bool {
         self.0.is_some_and(|s| s.frame_visible(name))
     }
 
     /// A Lua chunk's string value, as a stock function's caller reads it; `None` with no VM, for
     /// `nil`, and on a raise, which is logged.
-    pub(crate) fn text(&self, chunk: &str) -> Option<String> {
+    pub fn text(&self, chunk: &str) -> Option<String> {
         self.0?
             .eval::<Option<String>>(chunk)
             .inspect_err(|e| error!("glue probe: {chunk} raised: {e}"))
@@ -76,7 +76,7 @@ impl StockVm<'_> {
     }
 
     /// A Lua chunk's number value; `None` with no VM and on a raise, which is logged.
-    pub(crate) fn number(&self, chunk: &str) -> Option<f64> {
+    pub fn number(&self, chunk: &str) -> Option<f64> {
         self.0?
             .eval::<f64>(chunk)
             .inspect_err(|e| error!("glue probe: {chunk} raised: {e}"))
@@ -85,12 +85,12 @@ impl StockVm<'_> {
 
     /// The create screen's character as its verbs left it (`[0xb42078]`), `None` with no VM or
     /// no character built.
-    pub(crate) fn create_look(&self) -> Option<benilla_ui::script::GlueCreateLook> {
+    pub fn create_look(&self) -> Option<benilla_ui::script::GlueCreateLook> {
         self.0?.glue_create_look()
     }
 
     /// Run a Lua chunk, the way a button's handler calls a stock function; a raise is logged.
-    pub(crate) fn press(&self, chunk: &str) {
+    pub fn press(&self, chunk: &str) {
         if let Some(Err(e)) = self.0.map(|s| s.run(chunk)) {
             error!("glue probe: {chunk} raised: {e}");
         }

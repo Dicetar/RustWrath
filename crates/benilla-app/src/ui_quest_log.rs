@@ -38,7 +38,7 @@ const GO_OBJECTIVE_BIT: u32 = 0x8000_0000;
 
 /// The template cache, asked once per quest id, and what the packets leave for the feed.
 #[derive(Resource, Default)]
-pub(crate) struct QuestLog {
+pub struct QuestLog {
     templates: QueryCache<u32, QuestTemplate>,
     /// The quests whose template landed, and those refused, since the feed last ran.
     fresh: Vec<u32>,
@@ -97,7 +97,7 @@ impl QuestLog {
     /// title's first byte (`0x555410`): an empty title is a refusal, which runs the callbacks with
     /// status 0 and frees the node (`0x55543c` → `0x563150`), and only a titled one is stored
     /// (`0x562c80`).
-    pub(crate) fn insert_template(&mut self, template: QuestTemplate) {
+    pub fn insert_template(&mut self, template: QuestTemplate) {
         let quest_id = template.quest_id;
         if template.title.is_empty() {
             self.templates.refuse(quest_id);

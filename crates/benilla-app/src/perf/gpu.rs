@@ -36,16 +36,16 @@ pub(crate) fn enabled() -> bool {
 /// The freshest whole-frame GPU duration in nanoseconds, written by the render app's readback;
 /// 0 until the first reading.
 #[derive(Resource, Clone)]
-pub(crate) struct GpuMsShared(pub Arc<AtomicU64>);
+pub struct GpuMsShared(pub Arc<AtomicU64>);
 
 /// The wgpu resource census: live buffers, textures and bind groups from wgpu-core's registry
 /// report, refreshed once a frame. Every pass wgpu encodes sizes its usage trackers to these
 /// counts, so pass-encode CPU scales with residency as well as with what is drawn.
 #[derive(Resource, Clone)]
-pub(crate) struct WgpuCensusShared(pub Arc<WgpuCensus>);
+pub struct WgpuCensusShared(pub Arc<WgpuCensus>);
 
 #[derive(Default)]
-pub(crate) struct WgpuCensus {
+pub struct WgpuCensus {
     pub buffers: AtomicU64,
     pub textures: AtomicU64,
     pub bind_groups: AtomicU64,

@@ -34,7 +34,7 @@ pub(crate) struct AdditiveMaterials(pub(crate) Arc<HashSet<AssetId<WowModelMater
 
 /// Draws this frame whose bound blend state contradicted their material's additive marker.
 #[derive(Resource, Clone)]
-pub(crate) struct BlendMismatchShared(pub(crate) Arc<AtomicU64>);
+pub struct BlendMismatchShared(pub Arc<AtomicU64>);
 
 /// Consecutive frames a mismatch must last to warn: a one-frame run is the pipeline
 /// specialization catching up with a material swap.

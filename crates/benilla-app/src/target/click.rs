@@ -1662,7 +1662,7 @@ fn act_on_arrival_with(
 }
 
 /// The right-click action for a hovered GameObject, chosen by its lock ([`super::lock`]).
-pub(crate) enum GoAction {
+pub enum GoAction {
     /// No lock, or no lock data: `CMSG_GAMEOBJ_USE`.
     Use,
     /// A lock a known skill spell opens (`OPEN_LOCK`): cast it at the object.
@@ -1686,7 +1686,7 @@ enum KeyFact {
 /// A hovered GameObject's action from its lock, the reference's use sender `0x5f33e0` over the
 /// resolver [`super::lock::resolve_lock`] (`0x5f83d0`) the cursor's `usable` also asks. An uncached
 /// template or no `Lock.dbc` counts as lockless.
-pub(crate) fn resolve_go_action(
+pub fn resolve_go_action(
     guid: u64,
     inputs: &mut GoLockInputs,
     openers: &[u32],
@@ -1908,7 +1908,7 @@ fn unit_branch(attack: bool, dead_fork: bool, leg: DeadUnitLeg) -> UnitBranch {
 /// low bit to high. The cursor classifier `0x482200` walks the same bits but projects them lossily
 /// (Speak is bits 0, 1, 5, 6, 9, 10, 11 and 13; Buy is 8 and 12), so the send keys on the bit.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum ServiceArm {
+pub enum ServiceArm {
     /// Bit 0: `0x5f02a4` → `0x5df4d0`.
     Gossip,
     /// Bit 1, and the target's cached questgiver status ∉ {0, 1} (`0x5f02c0` → `0x5df490`).
@@ -1941,7 +1941,7 @@ pub(crate) enum ServiceArm {
 
 /// The ladder; `None` when no consulted bit is set (`0x5f05ca`). REPAIR (bit 14) has no arm, and
 /// the reference's redundant `bits 9 AND 10` test reaches bit 9's handler, so it is omitted.
-pub(crate) fn service_arm(npc_flags: u32, quest_status: Option<u32>) -> Option<ServiceArm> {
+pub fn service_arm(npc_flags: u32, quest_status: Option<u32>) -> Option<ServiceArm> {
     use cursor_mode::npc_flags as f;
     let bit = |m: u32| npc_flags & m != 0;
     Some(if bit(f::GOSSIP) {
@@ -1979,7 +1979,7 @@ pub(crate) fn service_arm(npc_flags: u32, quest_status: Option<u32>) -> Option<S
 }
 
 /// What a taken [`ServiceArm`] does.
-pub(crate) enum ServiceAction {
+pub enum ServiceAction {
     /// The arm's own opcode.
     Send(ClientCommand),
     /// The vendor arm's cursor fork (`0x5df5d7`): sell the held item, then clear the cursor.
@@ -2001,7 +2001,7 @@ pub(crate) enum ServiceAction {
 /// the reference's `GetCursorItem 0x494c60`. The spirit arms are ghost-gated (`0x5df74a`,
 /// `0x5df962`: `PLAYER_FLAGS` bit 4), silent for the living. The tabard arm's shapeshift refusal
 /// (`ERR_EMBLEMERROR_NOTABARDGEOSET`) and same-vendor no-op are not built.
-pub(crate) fn service_action(
+pub fn service_action(
     arm: ServiceArm,
     guid: u64,
     ghost: bool,

@@ -41,7 +41,7 @@ use feed::{
 };
 
 /// The backpack's capacity (`PLAYER_FIELD_PACK_SLOT_1..`).
-pub(super) const PACK_SLOTS: u8 = 16;
+pub const PACK_SLOTS: u8 = 16;
 /// Worn equipment, `INV_SLOT` 0..18 (head through tabard): the first region of the walker
 /// `0x622420`.
 pub(super) const EQUIPMENT_SLOTS: u8 = 19;
@@ -221,7 +221,7 @@ pub(crate) fn slot_guid(
 /// [`slot_guid`] with the donor descriptor only. For paths that do not carry the typed owner
 /// (cursor sale/drop, probes, the worn-item use): they resolve the shared bands and the 32
 /// keyring slots, but not the four extra bank slots or the seventh bank bag.
-pub(crate) fn slot_guid_donor(
+pub fn slot_guid_donor(
     store: &ObjectFields,
     bag: i64,
     slot0: u8,
@@ -615,7 +615,7 @@ pub(crate) fn stack_counts_in_player(
 /// How far [`find_item`] looks and which copies count: the two mode bits the reference's callers
 /// pass the walker `0x622420`.
 #[derive(Clone, Copy, Default)]
-pub(crate) struct ItemSearch {
+pub struct ItemSearch {
     /// Mode `1` alone: equipment slots 0-18 only, the equip-vs-use fork's "already worn?" stage
     /// (`0x4e5fe7`).
     pub(crate) equipment_only: bool,
@@ -626,7 +626,7 @@ pub(crate) struct ItemSearch {
 
 /// Where a copy of `entry` is: the wire `(bag_index, slot)` and the instance guid, the first hit
 /// of the walk (predicate `OBJECT_FIELD_ENTRY` equality). The bank is not in scope.
-pub(crate) fn find_item(
+pub fn find_item(
     store: &ObjectFields,
     objects: &Objects,
     entry: u32,
@@ -805,7 +805,7 @@ pub(crate) const PLAYER_ARRAY: u8 = 255;
 
 /// One resolved item-use click, as [`send_item_use`] needs it.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ItemUse {
+pub struct ItemUse {
     /// The live instance's guid; `None` falls through to a plain use.
     pub(crate) guid: Option<u64>,
     /// Template `StartQuest`: non-zero diverts to the quest offer, ahead of the cast tail.

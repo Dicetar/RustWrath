@@ -64,7 +64,7 @@ pub(super) fn update_pick_occlusion(
 /// its mount. The reference's `0x480d90` walks the CM2 attachment tree (`[model+0x1dc]` head,
 /// `[+0x1e4]` sibling) and registers each model (`0x713cb0`) under one candidate, so a hit on a
 /// held axe is a hit on its wielder. `pub(crate)` for the capture census, which counts the same.
-pub(crate) fn pick_model_roots(
+pub fn pick_model_roots(
     unit: Entity,
     worn: &[Option<Entity>],
     mount: Option<Entity>,

@@ -173,7 +173,7 @@ out of scope is closed with the reason.
     `hex=<withheld>`, with `len=` kept, unless `WOW_MOVE_TRACE_CHAT=1` is set, for a developer who
     needs those bodies and will read the file before sharing it.
   - A capture runs through `scripts/visual.sh`, whose recipe is the header of
-    `crates/benilla-app/src/capture/mod.rs`. Pixel questions go through `benilla-visual crop`,
+    `crates/benilla-dev/src/capture/mod.rs`. Pixel questions go through `benilla-visual crop`,
     `series` and `hotspot`.
 - **Asking the UI without a server.** The addon harness's probe loads the interface into a VM
   with no window, server or login, and answers in under a second. Build it once with

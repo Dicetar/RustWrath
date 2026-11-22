@@ -155,7 +155,7 @@ pub(crate) fn self_controlled(unit_flags: u32) -> bool {
 /// `UNIT_FLAG_IN_COMBAT`, bit 19 of `UNIT_FIELD_FLAGS` (vmangos `UnitDefines.h:564`), read by the
 /// client as `shr reg,0x13; test rl,1`. The local player has no separate combat latch: its two
 /// hardcoded readers (`0x482f70`, `0x4d6038`) and `UnitAffectingCombat("player")` read this bit.
-pub(crate) const UNIT_FLAG_IN_COMBAT: u32 = 0x0008_0000;
+pub const UNIT_FLAG_IN_COMBAT: u32 = 0x0008_0000;
 
 /// `UNIT_FLAG_TAXI_FLIGHT`, bit 20 of `UNIT_FIELD_FLAGS` (vmangos `UnitDefines.h:565`), read by the
 /// client as `shr reg,0x14; test rl,1` at 20 sites with no shared gate, among them

@@ -21,7 +21,7 @@ use super::Creatures;
 /// transform keeps the unit's own depth lines. Not the movement capsule,
 /// [`crate::player::CAPSULE_HEIGHT`].
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
-pub(crate) struct CollisionHeight(pub(crate) f32);
+pub struct CollisionHeight(pub f32);
 
 impl Default for CollisionHeight {
     /// The `CMovement` ctor's default, never `0.0`, at which every depth line collapses and the

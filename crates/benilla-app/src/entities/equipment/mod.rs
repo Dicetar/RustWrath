@@ -59,8 +59,8 @@ pub(crate) mod attach_id {
 
 /// The `ItemDisplayInfo.dbc` catalog and the item model cache; absent if the DBC fails to load.
 #[derive(Resource)]
-pub(crate) struct ItemDisplays {
-    pub(crate) catalog: ItemDisplayCatalog,
+pub struct ItemDisplays {
+    pub catalog: ItemDisplayCatalog,
     /// Keyed by model kind too: a helm display has a file per race and sex, a shoulder a pair.
     pub(super) models: HashMap<(u32, ItemModelKind), DisplayModel>,
 }
@@ -82,14 +82,14 @@ impl ItemDisplays {
 pub struct Equipment {
     pub(crate) bodyslots: [u32; 8],
     /// A geoset and a runtime cape texture, no body region.
-    pub(crate) cloak: u32,
+    pub cloak: u32,
     /// An attach model plus the masks that hide hair, facial hair and ears (`0x4799a0`).
-    pub(crate) helm: u32,
+    pub helm: u32,
     /// The guild emblem off `PLAYER_GUILDID`; `None` for no guild, or until its query answers.
     pub(crate) emblem: Option<benilla_formats::GuildEmblem>,
     /// The tabard designer's preview on our own body (`[cc+0xc]`, `0x5e07d0`).
     pub(crate) tabard_preview: bool,
-    pub(crate) settled: bool,
+    pub settled: bool,
 }
 
 /// The [`Equipment`] a player's visual was dressed with; a change re-dresses it in place.
@@ -205,14 +205,14 @@ pub struct HandKeyBones {
 
 /// The item models spawned for a unit: the [`HeldItems`] they were built from and each slot's root.
 #[derive(Component, Default)]
-pub(crate) struct HeldAttached {
+pub struct HeldAttached {
     applied: HeldItems,
     spawned: [Option<Entity>; ATTACH_SLOTS],
 }
 
 impl HeldAttached {
     /// The spawned root per attach slot: the models actually on the body, not the resolution.
-    pub(crate) fn spawned_slots(&self) -> &[Option<Entity>; ATTACH_SLOTS] {
+    pub fn spawned_slots(&self) -> &[Option<Entity>; ATTACH_SLOTS] {
         &self.spawned
     }
 
@@ -226,7 +226,7 @@ impl HeldAttached {
 }
 
 /// The attach slots' names, in [`HeldAttached::spawned_slots`] order.
-pub(crate) const ATTACH_SLOT_NAMES: [&str; ATTACH_SLOTS] = [
+pub const ATTACH_SLOT_NAMES: [&str; ATTACH_SLOTS] = [
     "main", "off", "ranged", "helm", "shL", "shR", "ammo", "quiver",
 ];
 

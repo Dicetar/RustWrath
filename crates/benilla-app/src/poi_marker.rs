@@ -37,9 +37,9 @@ const MARKER_TTL_SECS: f64 = 480.0;
 /// The live directions as the reference's synthetic `AreaPOI` record, read by
 /// [`crate::minimap::blips`] and [`crate::ui_world_map`].
 #[derive(Resource, Default)]
-pub(crate) struct PoiMarker {
+pub struct PoiMarker {
     /// Its z is 0: the wire carries x/y only, and the reference leaves `+0x18 Z` unwritten.
-    pub(crate) poi: Option<AreaPoi>,
+    pub poi: Option<AreaPoi>,
     /// `Time<Real>` seconds at which the marker expires.
     expires_at: f64,
 }

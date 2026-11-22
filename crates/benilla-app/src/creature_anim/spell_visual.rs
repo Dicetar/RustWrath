@@ -125,7 +125,7 @@ pub(crate) enum FxClass {
 /// The kit stage an instance's model runs its animation lifecycle as: `0x60edf0`'s per-stage
 /// completion callback (jump table `0x60f4f8`). Independent of [`FxClass`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FxStage {
+pub enum FxStage {
     /// Stages 0 and 1: destroyed at the first completion (`0x5fbf50`).
     OneShot,
     /// Stage 2: after birth, loop `Hold` (158) if the model has one, `Decay` (159) on reap; a

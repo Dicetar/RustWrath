@@ -35,8 +35,8 @@ pub(crate) struct RepairTables(pub(crate) benilla_formats::DurabilityTables);
 /// last `SMSG_LIST_INVENTORY` with its guid `[0xc4d498]`, which every list writes (`0x5db9c7`) and
 /// only the world reset zeroes (`0x5e2515`): a close keeps them.
 #[derive(Resource, Default)]
-pub(crate) struct MerchantOpen {
-    pub(crate) vendor: Option<u64>,
+pub struct MerchantOpen {
+    pub vendor: Option<u64>,
     /// The list cache's guid, which `SMSG_BUY_ITEM` matches (`0x5dcf20`).
     pub(crate) listed: Option<u64>,
     /// In wire order, which is the 1-based display order.
@@ -44,7 +44,7 @@ pub(crate) struct MerchantOpen {
 }
 
 impl MerchantOpen {
-    pub(crate) fn open(&mut self, vendor: u64, items: Vec<VendorItem>) {
+    pub fn open(&mut self, vendor: u64, items: Vec<VendorItem>) {
         self.vendor = Some(vendor);
         self.listed = Some(vendor);
         self.items = items;
@@ -79,7 +79,7 @@ impl MerchantOpen {
     }
 
     /// A client-side close (`0x4fadf0`): the cell alone; the list cache stays.
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.vendor = None;
     }
 

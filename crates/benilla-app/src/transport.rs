@@ -97,7 +97,7 @@ pub(crate) struct TransportLegLeft {
 /// The create-block anchor: the server's path-progress ms and the local instant it arrived,
 /// inserted on every create that carries `UPDATE_FLAG_TRANSPORT`.
 #[derive(Component, Clone, Copy)]
-pub(crate) struct TransportAnchor {
+pub struct TransportAnchor {
     pub(crate) progress_ms: u32,
     pub(crate) at: Instant,
 }
@@ -105,7 +105,7 @@ pub(crate) struct TransportAnchor {
 /// A pending type-11 lift, captured off the create block: its keyframe path is keyed by the
 /// template entry, which `OBJECT_FIELD_ENTRY` carries, so no template query is needed.
 #[derive(Component)]
-pub(crate) struct ElevatorSeed {
+pub struct ElevatorSeed {
     /// `gameobject_template` entry, `TransportAnimation.dbc`'s `TransportID` key.
     pub(crate) entry: u32,
     /// Spawn position (raw WoW coords), from the movement block: a transport create carries no
@@ -120,7 +120,7 @@ pub(crate) struct ElevatorSeed {
 
 /// A ticking transport, armed by [`arm_transports`].
 #[derive(Component)]
-pub(crate) struct Transport {
+pub struct Transport {
     drive: Drive,
     /// Last frame's `moving`, for the dock and depart log lines.
     was_moving: bool,
@@ -219,14 +219,14 @@ struct Lift {
 
 impl Transport {
     /// Which drive is underneath, for the instruments only (`WOW_LIFT_CENSUS`).
-    pub(crate) fn drive_label(&self) -> &'static str {
+    pub fn drive_label(&self) -> &'static str {
         match &self.drive {
             Drive::Taxi(_) => "taxi",
             Drive::Lift(_) => "lift",
         }
     }
 
-    pub(crate) fn period_ms(&self) -> u32 {
+    pub fn period_ms(&self) -> u32 {
         match &self.drive {
             Drive::Taxi(t) => t.period_ms,
             Drive::Lift(l) => l.period_ms,
@@ -234,7 +234,7 @@ impl Transport {
     }
 
     /// The live cycle position for an anchor, shared by the tick and the rider math.
-    pub(crate) fn cycle_ms(&self, anchor: &TransportAnchor) -> u32 {
+    pub fn cycle_ms(&self, anchor: &TransportAnchor) -> u32 {
         let progress = u64::from(anchor.progress_ms) + anchor.at.elapsed().as_millis() as u64;
         (progress % u64::from(self.period_ms().max(1))) as u32
     }
@@ -242,7 +242,7 @@ impl Transport {
     /// Whether any leg of the cycle lies on `map_id`, the cross-map worldport's spare predicate. A
     /// lift answers no: the server re-sends the destination's transports on arrival
     /// (`SendInitTransports`), so a lift despawns and streams back like any object.
-    pub(crate) fn touches_map(&self, map_id: u32) -> bool {
+    pub fn touches_map(&self, map_id: u32) -> bool {
         match &self.drive {
             Drive::Taxi(t) => t.touches_map(map_id),
             Drive::Lift(_) => false,
@@ -273,7 +273,7 @@ impl Transport {
     }
 
     /// The live sample for an anchor, the pose the tick writes this frame; for instruments.
-    pub(crate) fn sample_at(&self, anchor: &TransportAnchor, here: u32) -> TransportSample {
+    pub fn sample_at(&self, anchor: &TransportAnchor, here: u32) -> TransportSample {
         self.sample(self.cycle_ms(anchor), here)
     }
 }

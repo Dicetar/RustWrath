@@ -102,9 +102,9 @@ pub(crate) struct AuctionHouses(pub(crate) benilla_formats::AuctionHouseCatalog)
 
 /// One of the three lists.
 #[derive(Debug, Default, Clone)]
-pub(crate) struct AuctionListSlot {
+pub struct AuctionListSlot {
     /// The current page in wire order.
-    pub(crate) entries: Vec<AuctionListEntry>,
+    pub entries: Vec<AuctionListEntry>,
     /// `totalCount`, the match count before the page cap; the pager reads it.
     pub(crate) total: u32,
     /// Which result `entries` came from, from [`AuctionOpen::next_page`].
@@ -145,23 +145,23 @@ impl Default for SortStacks {
 /// What the live probe (`crate::capture::ProbeAuctionPlugin`) reads to tell an empty answer from
 /// none; the client never reads it, and [`AuctionOpen::clear`] does not reset it.
 #[derive(Default, Clone)]
-pub(crate) struct AuctionWireLog {
+pub struct AuctionWireLog {
     /// List results landed, per list, in [`LIST`]/[`BIDDER`]/[`OWNER`] order.
-    pub(crate) list_results: [u32; 3],
+    pub list_results: [u32; 3],
     /// Browse queries that went out; a throttled one does not count.
-    pub(crate) browse_sent: u32,
+    pub browse_sent: u32,
     /// The latest `SMSG_AUCTION_COMMAND_RESULT` as `(auction_id, action, error)`.
-    pub(crate) last_command: Option<(u32, u32, u32)>,
+    pub last_command: Option<(u32, u32, u32)>,
 }
 
 /// The auctioneer session, closed by its close core and on disconnect, and the three lists, which
 /// outlive it.
 #[derive(Resource, Default, Clone)]
-pub(crate) struct AuctionOpen {
-    pub(crate) auctioneer: Option<u64>,
+pub struct AuctionOpen {
+    pub auctioneer: Option<u64>,
     /// The `AuctionHouse.dbc` row (1..=7), which keys the deposit rate.
-    pub(crate) house_id: u32,
-    pub(crate) lists: [AuctionListSlot; 3],
+    pub house_id: u32,
+    pub lists: [AuctionListSlot; 3],
     /// Fire `AUCTION_HOUSE_SHOW` next feed: a hello reply landed.
     show_requested: bool,
     /// Per list, a result landed this frame: the feed's lookups of its items stand for the
@@ -209,7 +209,7 @@ pub(crate) struct AuctionOpen {
     pub(crate) sorts: SortStacks,
     /// A multisell in flight (Wrath `m_havePendingSell`), which the close drops.
     pub(crate) multisell: Option<Multisell>,
-    pub(crate) wire: AuctionWireLog,
+    pub wire: AuctionWireLog,
 }
 
 /// `StartAuction` over more than one stack (Wrath `CGAuctionHouse::SellNextItem`): the stacks

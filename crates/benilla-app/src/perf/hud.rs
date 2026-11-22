@@ -40,8 +40,8 @@ const HUD_REFRESH_SECS: f32 = 0.25;
 /// HUD state. The dev chord + `P` (Ctrl+Shift+P) toggles `visible`; it starts hidden unless
 /// `WOW_PERF_HUD=1`. The capture harness ([`crate::capture`]) forces it off for UI-free shots.
 #[derive(Resource)]
-pub(crate) struct PerfHud {
-    pub(crate) visible: bool,
+pub struct PerfHud {
+    pub visible: bool,
     /// The meters as of the last [`HUD_REFRESH_SECS`] tick, the view the pill draws.
     snap: FrameStats,
     /// The clock `snap` was taken at, which is also the refresh timer.

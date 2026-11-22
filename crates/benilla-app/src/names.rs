@@ -74,27 +74,27 @@ pub struct NameCache {
 
 /// One cached creature template head.
 #[derive(Clone, Debug)]
-pub(crate) struct CreatureRecord {
-    pub(crate) name: String,
-    pub(crate) subname: Option<String>,
-    pub(crate) creature_type: u32,
+pub struct CreatureRecord {
+    pub name: String,
+    pub subname: Option<String>,
+    pub creature_type: u32,
     /// `CreatureFamily.dbc` id, 0 for anything not a tameable beast or warlock minion (the table
     /// has no row 0).
-    pub(crate) pet_family: u32,
+    pub pet_family: u32,
     /// Elite rank 0..4 as the template declares it; read it through [`gated_rank`].
-    pub(crate) rank: u32,
+    pub rank: u32,
     /// Read bit by bit through [`type_flags`].
-    pub(crate) type_flags: u32,
+    pub type_flags: u32,
     /// `CreatureSpellData.dbc` id of the abilities a tamed one brings (`[record+0x28]`), 0 for
     /// none: the studied-creature block's ability line (`0x529d56`).
-    pub(crate) pet_spell_list: u32,
-    pub(crate) civilian: bool,
+    pub pet_spell_list: u32,
+    pub civilian: bool,
     /// The tooltip's LEADER line (`0x6125c0`).
-    pub(crate) racial_leader: bool,
+    pub racial_leader: bool,
     /// `CreatureDisplayInfo.dbc` id, the first of the template's display ids, 0 when it has none.
     /// The only model for a unit with no world object, such as a stabled pet; an on-screen unit's
     /// own `UNIT_FIELD_DISPLAYID` wins.
-    pub(crate) display_id: u32,
+    pub display_id: u32,
 }
 
 /// The 1.12 client's creature-rank getter (`0x605620`): 0 before the record is queried and 0 for
@@ -162,7 +162,7 @@ impl NameCache {
     /// by `[descriptor+0xc]`), so a streamed guid goes through [`Self::resolve_unit`] with its
     /// store, and only a guid that is not streamed falls to its bits ([`NameKey::of`]). A game
     /// object is `None` without a query.
-    pub(crate) fn resolve(&self, objects: &Objects, guid_val: u64, ask: Ask<'_>) -> Option<&str> {
+    pub fn resolve(&self, objects: &Objects, guid_val: u64, ask: Ask<'_>) -> Option<&str> {
         self.resolve_unit(guid_val, objects.store(guid_val), ask)
     }
 
@@ -189,7 +189,7 @@ impl NameCache {
     /// ([`Self::lookup_fields`], [`Self::resolve_creature`] with [`Ask::Event`]). A creature with no descriptor, which
     /// `GetUnitName` never sees, is asked by its guid bits, as the combat log's namer does
     /// (`0x6265e0`).
-    pub(crate) fn resolve_unit(
+    pub fn resolve_unit(
         &self,
         guid_val: u64,
         unit: Option<&ObjectStore>,
@@ -282,7 +282,7 @@ impl NameCache {
     /// Record a player-name answer; an empty name is a refusal (`0x55f6f0`). `traits` is `None` for
     /// a name learned without `SMSG_NAME_QUERY_RESPONSE`, and then clears any traits filed for the
     /// guid, since they belonged to the name being replaced.
-    pub(crate) fn insert_player(&mut self, guid: u64, name: String, traits: Option<(u8, u8, u8)>) {
+    pub fn insert_player(&mut self, guid: u64, name: String, traits: Option<(u8, u8, u8)>) {
         match traits.filter(|_| !name.is_empty()) {
             Some(t) => self.player_traits.insert(guid, t),
             None => self.player_traits.remove(&guid),
@@ -346,7 +346,7 @@ impl NameCache {
     /// Record a creature-name answer; `None` is a refusal (an entry the server flagged unknown).
     /// A refusal redisplays only a record it took away: the status-0 callback `0x604660` finds
     /// no record and sets nothing (`0x60469c`).
-    pub(crate) fn insert_creature(&mut self, entry: u32, record: Option<CreatureRecord>) {
+    pub fn insert_creature(&mut self, entry: u32, record: Option<CreatureRecord>) {
         let moved = match record {
             Some(record) => {
                 self.creatures.insert(entry, record);
@@ -396,7 +396,7 @@ impl NameCache {
     }
 
     /// The cached `CreatureType.dbc` id; the TAB-target scan treats `None` as targetable.
-    pub(crate) fn creature_type(&self, entry: u32) -> Option<u32> {
+    pub fn creature_type(&self, entry: u32) -> Option<u32> {
         Some(self.creatures.get(entry)?.creature_type)
     }
 

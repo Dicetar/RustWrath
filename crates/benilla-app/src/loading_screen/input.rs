@@ -34,7 +34,7 @@ use super::LoadingScreen;
 /// The set [`swallow_input_under_the_cover`] runs in, between `InputSystems` and
 /// `UiSystems::Focus`; the capture probes that write input in `PreUpdate` order after it.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct CoverInput;
+pub struct CoverInput;
 
 /// Where the OS pointer is while the cover has the window's cursor position blanked, re-read every
 /// covered frame and handed back when the cover drops, so hover works without a mouse move.

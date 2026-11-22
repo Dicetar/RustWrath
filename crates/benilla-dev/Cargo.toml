@@ -1,0 +1,40 @@
+[package]
+name = "benilla-dev"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The developer instruments on top of the benilla-app core: the debug panel, the capture harness and live probes, the hover log, asset churn, the preflight, the probe shield and the dev tools. Compiled out of a player build"
+
+[lints]
+workspace = true
+
+[features]
+# `dev` compiles in the instruments; the player build (`scripts/gates.sh`) has no defaults.
+default = ["dev"]
+dev = [
+    "benilla-app/dev",
+    "benilla-assets/dev",
+    "benilla-formats/dev",
+    "benilla-world/dev",
+    "dep:bevy_egui",
+]
+
+[dependencies]
+# `default-features = false`, or `--no-default-features` above still builds benilla-app with `dev`.
+benilla-app = { path = "../benilla-app", default-features = false }
+benilla-assets = { path = "../benilla-assets", default-features = false }
+benilla-formats = { path = "../benilla-formats", default-features = false }
+benilla-protocol = { path = "../benilla-protocol" }
+benilla-ui = { path = "../benilla-ui" }
+benilla-world = { path = "../benilla-world", default-features = false }
+bevy.workspace = true
+bevy_egui = { version = "0.39", optional = true }
+# Collision queries of the ground and lift censuses; benilla-app's version.
+avian3d = "0.6"
+bytemuck = { version = "1", features = ["derive"] }
+# PNG encoding of the captures; benilla-app's version and features.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# The tests build the whole client with the core's fixtures (`fleet_tests`, `capture::scenarios`).
+[dev-dependencies]
+benilla-app = { path = "../benilla-app", default-features = false, features = ["test-support"] }

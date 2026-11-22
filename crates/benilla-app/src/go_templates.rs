@@ -20,24 +20,24 @@ pub(crate) struct LockTypes(pub(crate) LockTypeCatalog);
 
 /// A cached GameObject template, as the interact routing and the hover tooltip need it.
 #[derive(Clone)]
-pub(crate) struct GoTemplate {
+pub struct GoTemplate {
     /// The query response's `GAMEOBJECT_TYPE` (19 mailbox); the Wrath feed's store carries no
     /// type field, so the minimap's mailbox tracking reads it here.
     pub(crate) type_id: u32,
     /// The `Lock.dbc` id; `0` is no lock.
-    pub(crate) lock_id: u32,
+    pub lock_id: u32,
     /// The hover tooltip's first line.
-    pub(crate) name: String,
+    pub name: String,
     /// Mouseover eligibility for the two types that read a column: GENERIC(5) `data[1]`
     /// (`0x5f4830`) and CAPTURE_POINT(29) `data[19]` (`0x5f6d80`).
-    pub(crate) highlight_column: bool,
+    pub highlight_column: bool,
     /// GENERIC(5) `data[0]` (`0x5f8630`, semantic `0x13`, which no other type has): the tooltip
     /// follows the cursor (`0x492a01`, SetOwner `0x52ffe0` at anchor state 6) or takes the default
     /// corner (`0x492a42`).
     /// Placement, not eligibility: a hoverable object can still be corner-seated.
     pub(crate) floating_tooltip: bool,
     /// MEETINGSTONE (type 23) only.
-    pub(crate) meeting_stone: Option<MeetingStoneTemplate>,
+    pub meeting_stone: Option<MeetingStoneTemplate>,
     /// MO_TRANSPORT (type 15) only: the transport timetable's inputs.
     pub(crate) mo_transport: Option<MoTransport>,
     /// The 24 data dwords (`[rec+0x1c]`), read by semantic through [`GoTemplate::column`].
@@ -57,7 +57,7 @@ impl GoTemplate {
 
     /// The first `PageText` id the reader opens on, the pageID column (`GetPageTextId 0x5f5900`):
     /// TEXT's `data[0]`, GOOBER's `data[7]`; 0 is nothing to read.
-    pub(crate) fn page_id(&self, go: &ObjectFields) -> u32 {
+    pub fn page_id(&self, go: &ObjectFields) -> u32 {
         self.column(go, GoColumn::PageId).max(0) as u32
     }
 
@@ -71,7 +71,7 @@ impl GoTemplate {
 
 /// The data-column semantic ids benilla reads, by their names in the record table at `0x80c9fc`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum GoColumn {
+pub enum GoColumn {
     /// `startOpen` (1).
     StartOpen,
     /// `autoClose` (3).
@@ -87,7 +87,7 @@ pub(crate) enum GoColumn {
 }
 
 /// Whether the object's own type has an `id` column at all (`0x621b00` gives no −1).
-pub(crate) fn has_column(go: &ObjectFields, id: GoColumn) -> bool {
+pub fn has_column(go: &ObjectFields, id: GoColumn) -> bool {
     u32::try_from(go.gameobject_type_id())
         .ok()
         .and_then(|t| data_column(t, id))
@@ -126,13 +126,13 @@ fn data_column(type_id: u32, id: GoColumn) -> Option<usize> {
 /// `GameObjectInfo::meetingstone`). The area feeds the type's highlightable slot `0x5f6990`, the
 /// levels the use refusal `ERR_MEETING_STONE_INVALID_LEVEL`.
 #[derive(Clone, Copy)]
-pub(crate) struct MeetingStoneTemplate {
+pub struct MeetingStoneTemplate {
     /// `data[0]`.
-    pub(crate) min_level: u32,
+    pub min_level: u32,
     /// `data[1]`.
-    pub(crate) max_level: u32,
+    pub max_level: u32,
     /// `data[2]`, the `AreaTable` id the stone queues for.
-    pub(crate) area: u32,
+    pub area: u32,
 }
 
 /// A MO_TRANSPORT template's path tuple (`gameobject_template.data0..2`).
@@ -146,7 +146,7 @@ pub(crate) struct MoTransport {
 
 /// Entry to template, asked once while in flight.
 #[derive(Resource, Default)]
-pub(crate) struct GameObjectTemplates {
+pub struct GameObjectTemplates {
     templates: QueryCache<u32, GoTemplate>,
 }
 
@@ -265,7 +265,7 @@ impl GameObjectTemplates {
     }
 
     /// The cached template for a GameObject, found through its own descriptor.
-    pub(crate) fn of(&self, fields: &ObjectFields) -> Option<&GoTemplate> {
+    pub fn of(&self, fields: &ObjectFields) -> Option<&GoTemplate> {
         Self::key(fields).and_then(|e| self.templates.get(e))
     }
 

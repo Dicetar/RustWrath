@@ -65,7 +65,7 @@ pub(crate) struct NetPlugin {
 /// This process has no IO thread ([`NetPlugin::connect`] false); `crate::preflight` announces it.
 /// Not [`NetStatus`]'s `connected`, which a dropped connection also clears.
 #[derive(Resource)]
-pub(crate) struct NetOffline;
+pub struct NetOffline;
 
 impl Plugin for NetPlugin {
     fn build(&self, app: &mut App) {
@@ -214,13 +214,13 @@ pub struct Guid(pub u64);
 
 /// A streamed entity's kind and display id, from which [`crate::entities`] builds its visual.
 #[derive(Component)]
-pub(crate) struct NetEntity {
-    pub(crate) kind: EntityKind,
-    pub(crate) display_id: Option<u32>,
+pub struct NetEntity {
+    pub kind: EntityKind,
+    pub display_id: Option<u32>,
     /// `OBJECT_FIELD_SCALE_X`, the complete render scale: the server already folds in the DBC
     /// scale, so it is never multiplied by ours. A live change eases over 2 s with a cosine
     /// smoothstep (`0x614bbf`), through `entities::live_display`.
-    pub(crate) scale: f32,
+    pub scale: f32,
 }
 
 /// A unit's movement speeds (yd/s) from its `LIVING` movement block. The animation selector runs
@@ -439,7 +439,7 @@ pub struct SelfPlayer;
 /// `MSG_MOVE_*` carry no guid, so a fallback to our body would write our pose onto the creature.
 /// Whether it may move is [`ActiveMover`]. [`crate::player`] owns the placement.
 #[derive(Component)]
-pub(crate) struct Embodied;
+pub struct Embodied;
 
 /// The unit this client authors motion for: the reference's active-mover global
 /// (`0xc4da98`/`0xc4da9c`, written only by `SetActiveMover 0x6006e0`). A control update that
@@ -709,27 +709,27 @@ pub struct SelfGuid(pub Option<u64>);
 
 /// Connection status; `last_reason` keeps the most recent failure.
 #[derive(Resource, Default)]
-pub(crate) struct NetStatus {
-    pub(crate) connected: bool,
-    pub(crate) last_reason: Option<String>,
+pub struct NetStatus {
+    pub connected: bool,
+    pub last_reason: Option<String>,
 }
 
 /// The ping clock and RTT history, shared with both net threads: the write thread stamps each
 /// `CMSG_PING`, the read thread times `SMSG_PONG` on arrival. The app only reads and clears it,
 /// never times a pong from the drain.
 #[derive(Resource)]
-pub(crate) struct PingShared(pub(crate) std::sync::Arc<std::sync::Mutex<io::PingClock>>);
+pub struct PingShared(pub std::sync::Arc<std::sync::Mutex<io::PingClock>>);
 
 /// Server packets the codec dropped, by opcode: `unknown` has no parse arm, `unparseable` failed
 /// its parser. Never cleared on reconnect.
 #[derive(Resource, Default)]
-pub(crate) struct DroppedOpcodes(pub(crate) HashMap<u16, DropTally>);
+pub struct DroppedOpcodes(pub HashMap<u16, DropTally>);
 
 /// Per-opcode drop counts.
 #[derive(Default, Clone, Copy)]
-pub(crate) struct DropTally {
-    pub(crate) unknown: u64,
-    pub(crate) unparseable: u64,
+pub struct DropTally {
+    pub unknown: u64,
+    pub unparseable: u64,
 }
 
 /// The server's unix wall clock (`SMSG_QUERY_TIME_RESPONSE`), advanced monotonically. Descriptor
@@ -812,7 +812,7 @@ pub(crate) fn send_query_time(
 /// The hearthstone bind point (`SMSG_BINDPOINTUPDATE`): the AreaTable id the tooltip's `$z`
 /// token names.
 #[derive(Resource, Default)]
-pub(crate) struct HomeBind(pub(crate) Option<u32>);
+pub struct HomeBind(pub Option<u32>);
 
 /// The undelivered `/played` answer (`SMSG_PLAYED_TIME`): total seconds and seconds this level.
 /// One slot: the server sends one reply per request.
@@ -2480,15 +2480,15 @@ impl ClientCommand {
 /// The realm list (`CMD_REALM_LIST`); the IO thread waits for a [`RealmRequest`]. `failed` is a
 /// query that got no answer (`REALM_LIST_FAILED`), `realms` then the list last held.
 #[derive(Message)]
-pub(crate) struct RealmListMessage {
-    pub(crate) realms: Vec<benilla_protocol::RealmInfo>,
-    pub(crate) failed: bool,
+pub struct RealmListMessage {
+    pub realms: Vec<benilla_protocol::RealmInfo>,
+    pub failed: bool,
 }
 
 /// The character roster (`SMSG_CHAR_ENUM`); the IO thread waits for the select screen to pick. `realm` is the realm this session connected to.
 #[derive(Message)]
-pub(crate) struct CharListMessage {
-    pub(crate) characters: Vec<benilla_protocol::Character>,
+pub struct CharListMessage {
+    pub characters: Vec<benilla_protocol::Character>,
     pub(crate) realm: Option<benilla_protocol::RealmInfo>,
     /// What the roster was fetched for.
     pub(crate) cause: benilla_protocol::RosterCause,
@@ -2525,9 +2525,9 @@ pub(crate) struct AddonInfoMessage {
 /// A character create or delete result; a refreshed [`CharListMessage`] precedes a success.
 /// `code` is the raw `WorldResult` byte.
 #[derive(Message, Clone, Copy)]
-pub(crate) struct CharActionResultMessage {
-    pub(crate) action: benilla_protocol::CharAction,
-    pub(crate) code: u8,
+pub struct CharActionResultMessage {
+    pub action: benilla_protocol::CharAction,
+    pub code: u8,
 }
 
 #[derive(Message, Clone)]
@@ -2554,7 +2554,7 @@ pub(crate) struct CharacterLoginFailedMessage {
 
 /// We entered the world.
 #[derive(Message)]
-pub(crate) struct EnteredWorldMessage {
+pub struct EnteredWorldMessage {
     /// The tutorial flags, if `SMSG_TUTORIAL_FLAGS` came during the login handshake.
     pub(crate) tutorial_flags: Option<Vec<u8>>,
 }
@@ -2586,8 +2586,8 @@ pub(crate) struct CinematicTriggeredMessage {
 /// One `CHAT_MSG_SYSTEM` line, such as a GM command's answer: the only evidence of server state
 /// with no field, like vmangos god mode (`Unit::m_invincibilityHpThreshold`).
 #[derive(Message, Clone)]
-pub(crate) struct ServerSaidMessage {
-    pub(crate) text: String,
+pub struct ServerSaidMessage {
+    pub text: String,
 }
 
 /// `SMSG_LOGOUT_COMPLETE`: back to character select. The drain tears down our own entity.
@@ -2611,7 +2611,7 @@ pub(crate) struct LoginQueuedMessage {
 /// benilla_protocol::SessionEnd::LoggedOut)) the IO thread is back at character select on the
 /// same link; after a loss, at its pre-logon park.
 #[derive(Message, Clone)]
-pub(crate) struct DisconnectedMessage {
+pub struct DisconnectedMessage {
     pub(crate) reason: String,
     pub(crate) end: benilla_protocol::SessionEnd,
     /// The reference's `DISCONNECTED_FROM_SERVER`: back at the account screen, nothing retried.
@@ -2649,7 +2649,7 @@ pub(crate) struct LoginFailedMessage {
 
 /// A same-map teleport of our player: snap, then ack. Read by the controller in `Input`.
 #[derive(Message, Clone, Copy)]
-pub(crate) struct TeleportMessage {
+pub struct TeleportMessage {
     pub(crate) guid: u64,
     pub(crate) counter: u32,
     pub(crate) position: [f32; 3],
@@ -2716,7 +2716,7 @@ pub(crate) struct KnockBackMessage {
 
 /// A cross-map worldport: snap, swap the map, ack if required.
 #[derive(Message, Clone, Copy)]
-pub(crate) struct WorldportMessage {
+pub struct WorldportMessage {
     pub(crate) map_id: u32,
     /// Boat-local when `transport_entry` is set (vmangos `SendNewWorld` sends
     /// `GetTransportPos()`); world otherwise.

@@ -25,7 +25,7 @@ pub struct RemoteMotion {
     /// The reported swim pitch, radians up, `0.0` unless `SWIMMING`.
     pub(crate) pitch: f32,
     /// The horizontal speed being applied, yd/s, which picks and rate-scales the gait.
-    pub(crate) speed: f32,
+    pub speed: f32,
     /// Yd/s, +Z up, while airborne; `0` on the ground.
     pub(crate) vertical_velocity: f32,
     /// The launch's `(cos, sin) * xyspeed`, frozen for the arc; `[0; 2]` on the ground.

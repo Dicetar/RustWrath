@@ -113,13 +113,14 @@ jobs:
       - name: pass-span-lint
         run: scripts/pass-span-lint.py
       - name: player-clippy
-        run: cargo clippy -p benilla -p benilla-client -p benilla-souls -p benilla-app --no-default-features -- -D warnings
+        run: cargo clippy -p benilla -p benilla-client -p benilla-souls -p benilla-dev -p benilla-app --no-default-features -- -D warnings
       - name: player-tests
         if: >-
           contains(steps.changed.outputs.packages, ' benilla-app ')
           || contains(steps.changed.outputs.packages, ' benilla-souls ')
+          || contains(steps.changed.outputs.packages, ' benilla-dev ')
           || contains(steps.changed.outputs.packages, ' benilla-formats ')
-        run: cargo test -p benilla-formats -p benilla-app -p benilla-souls --no-default-features --lib
+        run: cargo test -p benilla-formats -p benilla-app -p benilla-souls -p benilla-dev --no-default-features --lib
       # The live-code build (`launch-client.ps1 -LiveCode`), checked only: `bevy/hotpatching` changes
       # bevy_ecs and bevy_app, so this rebuilds the Bevy stack once more. It runs after an earlier
       # gate's failure too: it is the only compile of the feature, and fmt alone must not hide it.

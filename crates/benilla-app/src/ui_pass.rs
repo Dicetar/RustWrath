@@ -205,7 +205,7 @@ pub(crate) struct PlayerUiCamera;
 /// Marker on each pooled batch entity, one `Mesh2d` draw per run; the FPS probe's `ui_batches=`
 /// counts them.
 #[derive(Component)]
-pub(crate) struct UiQuadBatch;
+pub struct UiQuadBatch;
 
 /// The shared 1×1 opaque white that texture-less quads sample.
 #[derive(Resource)]
@@ -216,7 +216,7 @@ struct UiWhiteTexture(Handle<Image>);
 /// holds no colour, so it is its identity key alone and a steady frame re-prepares none.
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
 #[bind_group_data(UiQuadKey)]
-pub(crate) struct UiQuadMaterial {
+pub struct UiQuadMaterial {
     /// The EGxBlend, 0 to 4 ([`UiQuad::blend`]).
     #[uniform(0)]
     blend: u32,
@@ -254,7 +254,7 @@ pub(crate) struct UiQuadMaterial {
 /// The pipeline axis of [`UiQuadMaterial`]: `MOD` alone needs a blend state of its own, since the
 /// shader folds the other four modes into the one premultiplied state.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct UiQuadKey {
+pub struct UiQuadKey {
     modulate: bool,
 }
 
@@ -793,17 +793,17 @@ static UI_PROBE: std::sync::LazyLock<bool> =
 /// script-side `[ui-cost]` phases do not see. Its own resource, not a `UiFrameCost` field: the two
 /// systems are unordered in `Update`, and whichever ran second would wipe a shared field.
 #[derive(Resource, Default, Clone)]
-pub(crate) struct UiMeshCost {
-    pub(crate) rebuilt: bool,
-    pub(crate) total: u128,
-    pub(crate) sort: u128,
-    pub(crate) split: u128,
-    pub(crate) write: u128,
-    pub(crate) quads: usize,
-    pub(crate) runs: usize,
+pub struct UiMeshCost {
+    pub rebuilt: bool,
+    pub total: u128,
+    pub sort: u128,
+    pub split: u128,
+    pub write: u128,
+    pub quads: usize,
+    pub runs: usize,
     /// Pooled meshes rewritten rather than left or panned, each re-extracted in
     /// `RenderExtractApp`; `rewrites == runs` every frame means the skip gate is defeated.
-    pub(crate) rewrites: usize,
+    pub rewrites: usize,
 }
 
 fn rebuild_ui_mesh(

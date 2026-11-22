@@ -2935,7 +2935,7 @@ fn is_panel_stage(stage: Stage) -> bool {
 
 #[cfg(feature = "dev")]
 #[derive(Clone, Debug)]
-pub(crate) struct InspectorSnapshot {
+pub struct InspectorSnapshot {
     pub built_at: Instant,
     pub received: u64,
     pub evicted: u64,
@@ -2993,7 +2993,7 @@ struct RetainedSessionState {
 }
 
 #[derive(Resource)]
-pub(crate) struct History {
+pub struct History {
     source: Source,
     incoming: Receiver<Event>,
     /// Retained rows in global sequence order. A `BTreeMap` keeps ordered iteration for every
@@ -5150,7 +5150,7 @@ impl History {
         }
     }
 
-    pub(crate) fn inspector_snapshot(&mut self) -> &InspectorSnapshot {
+    pub fn inspector_snapshot(&mut self) -> &InspectorSnapshot {
         let stale = self
             .inspector_snapshot
             .as_ref()
@@ -6471,7 +6471,7 @@ impl History {
         out
     }
 
-    pub(crate) fn export_status(&self) -> &'static str {
+    pub fn export_status(&self) -> &'static str {
         match *self
             .source
             .0
@@ -6486,7 +6486,7 @@ impl History {
         }
     }
 
-    pub(crate) fn counters(&self) -> (u64, u64, u64) {
+    pub fn counters(&self) -> (u64, u64, u64) {
         // The class counters are the authoritative breakdown of rejected ingress (every drop is
         // classified before the nonblocking send is attempted), so the reported global drop
         // count is their sum. This keeps `dropped == sum(per-class dropped)` exact for any
@@ -6720,7 +6720,7 @@ impl History {
         lines.into_iter().map(bound).collect()
     }
 
-    pub(crate) fn source_gaps(&self) -> u64 {
+    pub fn source_gaps(&self) -> u64 {
         self.source_gaps
     }
 
@@ -6893,7 +6893,7 @@ impl History {
         self.hotpatch_attempt_correlation()
     }
 
-    pub(crate) fn sampled_updates(&self) -> u64 {
+    pub fn sampled_updates(&self) -> u64 {
         self.source
             .0
             .update_packets_sampled_out
@@ -7462,7 +7462,7 @@ impl History {
     }
 
     /// Save an allowlisted snapshot away from the frame thread.
-    pub(crate) fn export(
+    pub fn export(
         &self,
         build: benilla_world::build_id::BuildId,
         protocol_mode: &'static str,

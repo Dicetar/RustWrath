@@ -479,8 +479,9 @@ fn measure() -> BTreeMap<String, BTreeSet<String>> {
 }
 
 /// The crates split off `benilla-app` that sit on the game side of the engine: the assembler,
-/// whose boot names the engine's plugin groups, and the features moved on top of the core.
-const GAME_CRATES: &[&str] = &["benilla-client", "benilla-souls"];
+/// whose boot names the engine's plugin groups, and the features and instruments moved on top of
+/// the core.
+const GAME_CRATES: &[&str] = &["benilla-client", "benilla-souls", "benilla-dev"];
 
 /// Drop every entry that is only the path to another entry: `particles::buffer` and
 /// `mesh_tag::spawn_tag` look alike, but a module path is a strict prefix of another named item

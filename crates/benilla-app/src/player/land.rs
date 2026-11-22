@@ -16,7 +16,7 @@ use benilla_world::view::WorldCamera;
 /// Asks to land the avatar at the free-flying camera, from the debug panel's button; the dev
 /// chord's `G` is read directly by [`land_here`].
 #[derive(Message)]
-pub(crate) struct LandHere;
+pub struct LandHere;
 
 /// Seconds to wait for the teleport before reporting the command refused (no GM rights,
 /// coordinates off the map).

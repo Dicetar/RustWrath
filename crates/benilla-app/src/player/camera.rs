@@ -551,7 +551,7 @@ impl PivotGlide {
 /// The camera rig's state: the zoom, the collided arm, the mouse-look session and the pose
 /// channels. `pub(crate)` so [`crate::cursor`] can hide the cursor while looking.
 #[derive(Resource, Default)]
-pub(crate) struct CameraControl {
+pub struct CameraControl {
     /// Third-person orbit distance (yd), gliding toward `target_distance`.
     pub(super) distance: f32,
     pub(super) target_distance: f32,
@@ -603,7 +603,7 @@ pub(crate) struct CameraControl {
 impl CameraControl {
     /// Park the orbit distance at `d`, both the live value and the wheel target, or the glide
     /// drifts back; for the scripted camera park (`capture::probe_cam`).
-    pub(crate) fn park_distance(&mut self, d: f32) {
+    pub fn park_distance(&mut self, d: f32) {
         self.distance = d;
         self.target_distance = d;
     }
@@ -855,7 +855,7 @@ impl FlyCam {
     }
 
     /// Point the rig at an absolute world yaw and pitch, for `capture::probe_cam`.
-    pub(crate) fn park(&mut self, yaw: f32, pitch: f32) {
+    pub fn park(&mut self, yaw: f32, pitch: f32) {
         self.yaw = yaw;
         self.pitch = pitch;
     }

@@ -349,7 +349,7 @@ pub struct SoulsDrive {
 /// `PartialEq` serves the test that the session end resets the whole of it to `Player::default()`.
 #[derive(Resource, Default, PartialEq)]
 pub struct Player {
-    pub(crate) active: bool,
+    pub active: bool,
     /// The modes the server has granted our mover.
     pub(super) modes: MoveModes,
     /// Autorun: the reference's input bit `0x1000` at `[MOVE+4]`, flipped by `ToggleAutoRun`
@@ -366,7 +366,7 @@ pub struct Player {
     /// controller reads it.
     pub(super) auto_forward: bool,
     /// Free-fly (`F`): the camera moves on its own and the avatar/server position is frozen.
-    pub(crate) detached: bool,
+    pub detached: bool,
     /// `SMSG_CLIENT_CONTROL_UPDATE` with `allowMove = 0` named the unit we drive: us, while someone
     /// mind-controls us, or our possessed creature when feared or confused, the possession
     /// standing. The reference zeroes its mover; vmangos neither roots a charmed player nor refuses
@@ -401,7 +401,7 @@ pub struct Player {
     /// Holding the body still, gravity off, after a teleport, summon or login until the
     /// destination's colliders stream in. Released by the terrain streamer on residency or at
     /// [`SETTLE_TIMEOUT`], never by ground contact, which a flyer or a swimmer never makes.
-    pub(crate) settling: bool,
+    pub settling: bool,
     /// When to give up settling (`Time::elapsed_secs`), pushed on while the world is stale or
     /// still loading.
     pub(crate) settle_deadline: f32,
@@ -620,14 +620,14 @@ impl Player {
 
     /// Turn the aim by `radians`, the scripted mouse turn (`capture::probe_look`): the same
     /// `face_yaw` a real mouse turn writes and the facing stream diffs.
-    pub(crate) fn turn_aim(&mut self, radians: f32) {
+    pub fn turn_aim(&mut self, radians: f32) {
         self.face_yaw += radians;
     }
 
     /// Set the mover pitch, the scripted dive (`capture::probe_pitch`), under the mouse-look
     /// hand-off's ±89° clamp (`0x5103e0`) but without `SetPitch`'s 2^-20 deadband (`[0x8026bc]`);
     /// returns the value stored.
-    pub(crate) fn aim_pitch(&mut self, radians: f32) -> f32 {
+    pub fn aim_pitch(&mut self, radians: f32) -> f32 {
         self.mover_pitch = radians.clamp(-MOUSELOOK_PITCH_CLAMP, MOUSELOOK_PITCH_CLAMP);
         self.mover_pitch
     }
@@ -712,7 +712,7 @@ impl Player {
     }
 
     /// The guid of the transport we stand on, for instruments.
-    pub(crate) fn riding(&self) -> Option<u64> {
+    pub fn riding(&self) -> Option<u64> {
         self.ride.as_ref().map(|r| r.guid)
     }
 
@@ -724,7 +724,7 @@ impl Player {
 
     /// Whether a server spline drives the avatar ([`super::server_ride`]), for instruments. Not
     /// `UnitOnTaxi`, which reads [`crate::player::UNIT_FLAG_TAXI_FLIGHT`] (`0x517a86`).
-    pub(crate) fn server_riding(&self) -> bool {
+    pub fn server_riding(&self) -> bool {
         self.server_riding
     }
 }

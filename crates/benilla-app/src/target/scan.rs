@@ -922,7 +922,7 @@ pub(super) fn attack_target_valid(
 
 /// The melee probe's press with nothing selected: the player's Attack, which acquires.
 #[derive(Message)]
-pub(crate) struct AttackNearestRequest;
+pub struct AttackNearestRequest;
 
 /// `TargetLastEnemy`'s memory, the reference's last-attackable guid `[0xb4e2e8]`, read at
 /// `0x489b45` and written at `0x49377d` in `SetSelection`. Never cleared: an unresolved guid is a

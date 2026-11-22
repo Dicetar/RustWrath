@@ -41,9 +41,10 @@ mod table;
 #[cfg(test)]
 pub(crate) use listing::list_rank;
 pub(crate) use listing::reference_help;
+pub use table::registered_pairs;
 #[cfg(test)]
 use table::Reference;
-pub(crate) use table::{all_rows, registered_pairs, REGISTERED};
+pub(crate) use table::{all_rows, REGISTERED};
 
 /// `config.toml`: a `[cvars]` table of `Name = "value"` strings, sorted so every save is stable.
 #[derive(serde::Serialize, serde::Deserialize, Default)]

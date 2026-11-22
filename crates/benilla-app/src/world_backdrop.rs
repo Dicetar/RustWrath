@@ -91,7 +91,7 @@ fn mip_bias(effective: f32) -> f32 {
 /// The world camera's target, the size-carrier, in physical px × [`RenderScale`]; at 1.0 the
 /// combine's read of the world is an identity resample.
 #[derive(Resource)]
-pub(crate) struct WorldBackdrop {
+pub struct WorldBackdrop {
     /// The image the world camera targets. Nothing writes or samples it (the camera's final pass
     /// is the UI camera's, [`FfxBackdrop`]); it gives the view its size and logical viewport.
     pub(crate) image: Handle<Image>,
@@ -104,7 +104,7 @@ pub(crate) struct WorldBackdrop {
 
 impl WorldBackdrop {
     /// The world's render size in physical px, after the rounding and the axis ceiling.
-    pub(crate) fn render_size(&self) -> UVec2 {
+    pub fn render_size(&self) -> UVec2 {
         self.size
     }
 }

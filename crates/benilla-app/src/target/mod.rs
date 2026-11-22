@@ -50,9 +50,8 @@ mod track;
 #[cfg(test)]
 mod unheld_tests;
 
-pub(crate) use cursor_mode::{
-    corpse_mouseover_eligible, CursorKind, WorldCursor, GO_TYPE_GENERIC, SERVICE_RANGE_SQ,
-};
+pub use cursor_mode::SERVICE_RANGE_SQ;
+pub(crate) use cursor_mode::{corpse_mouseover_eligible, CursorKind, WorldCursor, GO_TYPE_GENERIC};
 /// `GO_FLAG_LOCKED`, the bit the lock chain and the GameObject tooltip's "Locked" line read.
 pub(crate) use lock::GO_FLAG_LOCKED;
 // This frame's combat-flash verdict, for the ring's material and the nameplate colour gate.
@@ -73,9 +72,10 @@ pub use relations::{
 };
 // The attack validator's target half, run in the call that asks, for the player's Attack and the
 // pet bar's; the melee probe's press with nothing selected.
+pub use scan::AttackNearestRequest;
 #[cfg(test)]
 pub(crate) use scan::LastEnemy;
-pub(crate) use scan::{AttackNearestRequest, AttackPick, CreatureTypes, Owed};
+pub(crate) use scan::{AttackPick, CreatureTypes, Owed};
 // The chat layer's by-name asks (`/target`, `/assist`), and the typemask `TargetByName`'s
 // candidate feed shares.
 pub(crate) use by_name::{
@@ -108,7 +108,7 @@ pub struct Selection {
     pub guid: Option<u64>,
     /// The object `SetSelection` lit as the target (`SetLight` bit 0, `0x493701`) and the teardown
     /// unlights (`0x4939a7`): an object that streams in after the select is not lit.
-    pub(crate) lit: Option<Entity>,
+    pub lit: Option<Entity>,
     /// The last-target pair `[0xb4e2e0]` that `TargetLastTarget` reads: `SetSelection` stamps the
     /// outgoing selection, none included, on every change it makes, a select or a deselect
     /// (`0x49361d`-`0x493628`); a teardown clear (`0x493910` alone) leaves it.
@@ -159,9 +159,9 @@ impl Hovered {
 /// The GameObject under the cursor this frame, by [`hover::update_hovered_object`]: usable, never
 /// selected. It acts only when nearer than the character pick ([`go_is_nearest`]).
 #[derive(Resource, Default, Clone, Copy)]
-pub(crate) struct HoveredObject {
+pub struct HoveredObject {
     pub(crate) target: Option<Entity>,
-    pub(crate) guid: Option<u64>,
+    pub guid: Option<u64>,
     /// World-space ray distance, compared against [`Hovered::distance`].
     pub(crate) distance: f32,
 }

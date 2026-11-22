@@ -7,7 +7,7 @@ use bevy::prelude::*;
 use super::clock::main_thread_cpu_secs;
 
 #[derive(Resource, Default)]
-pub(crate) struct MainThreadSplit {
+pub struct MainThreadSplit {
     at_first: Option<f64>,
     /// Sum of per-frame main-thread CPU inside `First..Last`, seconds, and the frames summed.
     pub inside_secs: f64,

@@ -427,7 +427,7 @@ fn ui_wanted(world: &World) -> bool {
 /// whole duration. The wait is [`crate::loading_screen::EntryCover`]'s, and the loading
 /// screen does not clear while this exists, so the reveal never precedes the UI.
 #[derive(Resource, Default)]
-pub(crate) struct PendingEntryUiLoad;
+pub struct PendingEntryUiLoad;
 
 /// The glue VM, parked between the world-entry edge and the deferred load, out of every feed's
 /// reach: each feed takes the VM as an `Option` and returns on `None`.

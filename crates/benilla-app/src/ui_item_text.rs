@@ -265,7 +265,7 @@ struct ItemTextTold {
 }
 
 #[derive(Resource, Default)]
-pub(crate) struct ItemTextOpen {
+pub struct ItemTextOpen {
     pub(crate) pending: Option<ReadSession>,
     /// Reads a click or a bag use asked for, in order; [`apply_reads`] runs each as `0x4e32e0`
     /// with flag 0, with the world in hand for the latch.
@@ -289,7 +289,7 @@ impl ItemTextOpen {
 
     /// Read a page chain; the begin asks the object's template for the first page. `true` when
     /// it is the open one, which the read closes.
-    pub(crate) fn read_pages(&mut self, object_guid: u64) -> bool {
+    pub fn read_pages(&mut self, object_guid: u64) -> bool {
         self.read(
             object_guid,
             ReadSource::Pages {

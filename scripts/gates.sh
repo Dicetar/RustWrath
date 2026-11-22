@@ -171,7 +171,7 @@ run pass-span-lint scripts/pass-span-lint.py
 # feature set and player-tests compiles under `cfg(test)`, where test code uses imports and items
 # the shipped library does not; this lints the shipped library and the launcher, with no
 # `--all-targets`, so a warning confined to the player graph fails here.
-run player-clippy cargo clippy -p benilla -p benilla-client -p benilla-souls -p benilla-app --no-default-features -- -D warnings
+run player-clippy cargo clippy -p benilla -p benilla-client -p benilla-souls -p benilla-dev -p benilla-app --no-default-features -- -D warnings
 
 # player-tests: the player build, `benilla-app` without `dev`, which compiles out the debug panel,
 # perf HUD, inspector, capture harness and probes, so it fails when any other code names one of
@@ -185,7 +185,7 @@ run player-clippy cargo clippy -p benilla -p benilla-client -p benilla-souls -p 
 run player-tests env ${wow_data:+WOW_DATA="$wow_data"} \
     ${corpus:+BENILLA_ADDON_CORPUS="$root/wow-addons-vanilla"} \
     ${require_data:+BENILLA_REQUIRE_DATA=1} BENILLA_SKIP_LOG="$skips" \
-    "$root/scripts/unit-tests.sh" -p benilla-formats -p benilla-app -p benilla-souls --no-default-features --lib
+    "$root/scripts/unit-tests.sh" -p benilla-formats -p benilla-app -p benilla-souls -p benilla-dev --no-default-features --lib
 report_skips player-tests
 
 # enforcer: `benilla-worldview` boots the engine plugins with no server, login, UI or player, in a

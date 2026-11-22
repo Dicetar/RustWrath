@@ -19,13 +19,13 @@ use super::super::{NetEntity, ObjectStore};
 pub struct Spline {
     pub(crate) points: Vec<[f32; 3]>,
     pub(crate) start: Instant,
-    pub(crate) duration: Duration,
+    pub duration: Duration,
     /// The server's spline id, echoed in `CMSG_MOVE_SPLINE_DONE` when the spline drives our own
     /// body; the server accepts only its newest id (vmangos `MovementHandler.cpp:807`).
     pub(crate) id: u32,
     /// The `FLYING` bit was clear: the 1.12 client zeroes the spline's Δz (`0x616cec`) and takes Z
     /// from the terrain, so [`ground_clamp_creatures`] re-grounds this unit. Flying keeps its Z.
-    pub(crate) grounded: bool,
+    pub grounded: bool,
     /// `SPLINEFLAG_RUNMODE`: the 1.12 client's commit `0x7c6a50` passes it to
     /// `CMovement::SetRunMode` (`0x7c71c0`, from `0x7c6ac2`), so a spline without it sets
     /// `MOVEFLAG_WALK_MODE`. Only the body we drive reads it ([`crate::player::server_ride`]); a
@@ -46,7 +46,7 @@ pub struct SplineStopped(pub(crate) u32);
 impl Spline {
     /// Average speed in yd/s (path length over duration); [`crate::creature_anim`] picks Walk or
     /// Run from it.
-    pub(crate) fn speed(&self) -> f32 {
+    pub fn speed(&self) -> f32 {
         let length: f32 = self
             .points
             .windows(2)
@@ -59,7 +59,7 @@ impl Spline {
     }
 
     /// Elapsed over duration, clamped to `0..=1`; the inspector's motion line reads it.
-    pub(crate) fn elapsed_frac(&self) -> f32 {
+    pub fn elapsed_frac(&self) -> f32 {
         (Instant::now()
             .saturating_duration_since(self.start)
             .as_secs_f32()
@@ -415,7 +415,7 @@ fn trace_ride(guid: u64, spline: &Spline, pos: [f32; 3], was: [f32; 3], now: Ins
 /// spline has moved, until the relay takes it back (`derived_before` is [`GroundClamped`]'s
 /// presence); never the body we steer ([`crate::net::Embodied`]); nothing else. A relayed player's
 /// Z comes grounded by its own client, and a down-ray would flatten its dead-reckoned jump arc.
-pub(crate) fn ground_derived(
+pub fn ground_derived(
     kind: EntityKind,
     splined: bool,
     derived_before: bool,
@@ -789,16 +789,16 @@ pub struct CreatureSwimming;
 
 /// The last ground clamp this unit took: its seat and the cast gate's inputs, each compared by bit.
 #[derive(Component, Clone, Copy)]
-pub(crate) struct GroundClamped {
+pub struct GroundClamped {
     /// Where the last cast stood.
     xz: [f32; 2],
     /// The Y the answer came from: the pose the unit's position owner last wrote, never the
     /// clamp's own output.
-    pub(crate) seat_y: f32,
+    pub seat_y: f32,
     /// The Y standing after that cast; a different Y here is an external write, which re-seats.
     pub(crate) y_written: f32,
     /// Only a hit caches; a miss keeps casting until the collider streams in.
-    pub(crate) hit: bool,
+    pub hit: bool,
     /// The collider-set stamp the answer was computed against.
     epoch: u64,
     /// The granted modes the answer was computed under (HOVER and WATERWALKING change it).
@@ -810,7 +810,7 @@ pub(crate) struct GroundClamped {
 
 impl GroundClamped {
     /// Whether the walker's swept step produced this answer rather than the idle settle.
-    pub(crate) fn walking(&self) -> bool {
+    pub fn walking(&self) -> bool {
         self.path.is_some()
     }
 }

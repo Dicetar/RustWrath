@@ -66,7 +66,7 @@ const RING_PARTY_PVP: Color = Color::linear_rgb(0.667, 1.0, 0.667); // 0xFFAAFFA
 pub struct Factions(std::sync::Arc<FactionCatalog>);
 
 impl Factions {
-    pub(crate) fn catalog(&self) -> &FactionCatalog {
+    pub fn catalog(&self) -> &FactionCatalog {
         &self.0
     }
 

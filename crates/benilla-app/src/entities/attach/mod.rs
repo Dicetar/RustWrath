@@ -42,7 +42,7 @@ mod redress;
 
 /// One body's drawn parts as `WOW_DRESS_CENSUS` prints them: index, merge group, blend, material.
 #[derive(bevy::ecs::system::SystemParam)]
-pub(crate) struct BodyPartsDesc<'w, 's> {
+pub struct BodyPartsDesc<'w, 's> {
     parts: Query<
         'w,
         's,
@@ -57,7 +57,7 @@ pub(crate) struct BodyPartsDesc<'w, 's> {
 
 impl BodyPartsDesc<'_, '_> {
     /// One line per drawn part under `unit`, sorted by part index.
-    pub(crate) fn describe(&self, unit: Entity, children: &Query<&Children>) -> Vec<String> {
+    pub fn describe(&self, unit: Entity, children: &Query<&Children>) -> Vec<String> {
         let mut rows: Vec<(u32, String)> = children
             .iter_descendants(unit)
             .filter_map(|e| self.parts.get(e).ok())

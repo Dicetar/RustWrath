@@ -26,7 +26,7 @@ pub(crate) struct ItemObject {
 
 /// Spawn an item object into the index with `fields` as its store, notifying nothing: the update
 /// pass runs its create hook or its watches ([`crate::net::FieldChanged`]).
-pub(crate) fn spawn_item(
+pub fn spawn_item(
     commands: &mut Commands,
     index: &mut GuidIndex,
     guid: u64,
@@ -601,7 +601,7 @@ impl RollCatalogs<'_> {
 
 /// Item templates by entry, asked once, and the enchant times queued for items not yet held.
 #[derive(Resource, Default)]
-pub(crate) struct Items {
+pub struct Items {
     /// A refused entry is the server's unknown one, read as such by
     /// [`Items::template_answered_unknown`] and asked again by the next event's lookup
     /// ([`QueryCache::refuse`]); it is never kept as a record.
@@ -747,7 +747,7 @@ impl Items {
     /// The template for `entry` if known, read as `ask` says; an ask goes once while in flight
     /// (`guid` rides along, `0` for template-only). A refused entry is also `None`.
     /// A read that asks first releases an ask of `entry` gone stale ([`TEMPLATE_REASK_AFTER`]).
-    pub(crate) fn template(&self, entry: u32, guid: u64, ask: Ask<'_>) -> Option<&ItemInfo> {
+    pub fn template(&self, entry: u32, guid: u64, ask: Ask<'_>) -> Option<&ItemInfo> {
         if !matches!(ask, Ask::Read) {
             self.release_stale(entry);
         }
@@ -813,7 +813,7 @@ impl Items {
     }
 
     /// Record a template answer (`SMSG_ITEM_QUERY_SINGLE_RESPONSE`); `None` = a refusal.
-    pub(crate) fn insert_template(&mut self, entry: u32, info: Option<ItemInfo>) {
+    pub fn insert_template(&mut self, entry: u32, info: Option<ItemInfo>) {
         match info {
             Some(info) => {
                 self.asked

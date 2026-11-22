@@ -2,7 +2,7 @@
 
 /// Whole-process CPU seconds so far, user + system across every thread: work per frame, which
 /// other load on the machine barely moves, unlike wall frame time. `None` off Unix and Windows.
-pub(crate) fn process_cpu_secs() -> Option<f64> {
+pub fn process_cpu_secs() -> Option<f64> {
     #[cfg(unix)]
     {
         // SAFETY: `getrusage` fully writes the out-param and reads nothing from it; zeroed is
@@ -59,7 +59,7 @@ fn filetime_secs(t: windows_sys::Win32::Foundation::FILETIME) -> f64 {
 
 /// The process's `(minor, major)` page faults so far. Minor faults are kernel time no user-mode
 /// sampler sees; per frame they say whether [`thread_cpu_table`]'s `sys` is allocator churn.
-pub(crate) fn process_faults() -> Option<(u64, u64)> {
+pub fn process_faults() -> Option<(u64, u64)> {
     #[cfg(unix)]
     {
         // SAFETY: as in `process_cpu_secs`: `getrusage` fills the out-param completely.
@@ -130,7 +130,7 @@ pub(crate) fn main_thread_cpu_secs() -> Option<f64> {
 /// The `deprecated` allow is `libc::mach_host_self`: `mach2` has the port but not
 /// `host_statistics64` or its types, so `libc` stays the one source for the call.
 #[allow(deprecated)]
-pub(crate) fn system_cpu_ticks() -> Option<(u64, u64)> {
+pub fn system_cpu_ticks() -> Option<(u64, u64)> {
     #[cfg(target_os = "macos")]
     {
         // SAFETY: `host_statistics64` fills at most `count` u32s and reads nothing; the struct is
@@ -178,7 +178,7 @@ pub(crate) fn system_cpu_ticks() -> Option<(u64, u64)> {
 /// CPU seconds so far per thread of this process, as `(pthread id, name, user, system)`, keyed so
 /// two snapshots subtract; an unnamed thread reads `"?"`. macOS only; one kernel round-trip per
 /// thread, so taken per probe window, never per frame.
-pub(crate) fn thread_cpu_table() -> Option<Vec<(usize, String, f64, f64)>> {
+pub fn thread_cpu_table() -> Option<Vec<(usize, String, f64, f64)>> {
     // Declared here rather than taken from `libc`'s deprecated mach bindings; both are
     // libSystem's.
     #[cfg(target_os = "macos")]

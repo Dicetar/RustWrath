@@ -266,7 +266,8 @@ impl PluginGroup for GamePlugins {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub(crate) mod schedule_tests {
     use std::any::TypeId;
     use std::collections::{BTreeMap, HashMap, HashSet};
@@ -285,7 +286,7 @@ pub(crate) mod schedule_tests {
 
     /// [`headless_client`] with `more` added before it finishes, as the binary adds its
     /// instruments and probes.
-    pub(crate) fn headless_client_with(more: impl FnOnce(&mut App)) -> App {
+    pub fn headless_client_with(more: impl FnOnce(&mut App)) -> App {
         let mut app = finished_client(more);
         app.cleanup();
         app
@@ -357,7 +358,7 @@ pub(crate) mod schedule_tests {
     /// One system as the schedule graph knows it: its name, every set it is under
     /// (transitively), and every run condition on it or on one of those sets, by name.
     #[derive(Debug, Clone)]
-    pub(crate) struct SystemInfo {
+    pub struct SystemInfo {
         pub name: String,
         pub sets: Vec<String>,
         pub conditions: Vec<String>,
@@ -365,7 +366,7 @@ pub(crate) mod schedule_tests {
 
     /// One schedule, read two ways: the graph before it builds (names, sets, conditions move
     /// into the executable when it does), and the conflict list after.
-    pub(crate) struct Census {
+    pub struct Census {
         pub systems: HashMap<SystemKey, SystemInfo>,
         /// Pairs of systems with conflicting access and no path between them, each with what
         /// they fight over.
@@ -471,7 +472,7 @@ pub(crate) mod schedule_tests {
     /// systems sharing a barrier read as ordered through it, and one upstream edge can re-home
     /// whole groups and move unrelated pairs.
     #[derive(Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum SyncPoints {
+    pub enum SyncPoints {
         /// The schedule as it runs, barriers included: a barrier is a real wave boundary.
         Built,
         /// The declared graph only, no barriers: "no path" means "nobody declared an order".
@@ -481,7 +482,7 @@ pub(crate) mod schedule_tests {
 
     /// Take the census of one schedule. Initializing it can insert `Schedules` itself, so this
     /// goes through bevy's `schedule_scope`, not a `resource_scope` on that resource.
-    pub(crate) fn census(app: &mut App, label: impl ScheduleLabel, sync: SyncPoints) -> Census {
+    pub fn census(app: &mut App, label: impl ScheduleLabel, sync: SyncPoints) -> Census {
         let label = label.intern();
         app.world_mut().schedule_scope(label, |world, schedule| {
             schedule.set_build_settings(ScheduleBuildSettings {
@@ -810,7 +811,7 @@ pub(crate) mod schedule_tests {
     /// explained when everything it fights over is in a class; only actionable pairs are
     /// ratcheted. A row is a claim about every writer of that type, made in review with its
     /// reason. Resolved by `TypeId`, so it works in the player build, which carries no names.
-    pub(crate) struct Classes {
+    pub struct Classes {
         /// The VM's own id, for the executor census.
         pub vm: Option<ComponentId>,
         pub non_send: HashSet<ComponentId>,

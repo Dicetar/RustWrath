@@ -84,7 +84,7 @@ pub(crate) struct ActionSlots {
 
 /// The known spells and the book's lists the registrar keeps.
 #[derive(Resource, Default)]
-pub(crate) struct PlayerActions {
+pub struct PlayerActions {
     /// The known spells (`SMSG_INITIAL_SPELLS` and the learns since), the reference's known-spell
     /// bits `0xb710fc` (`0x4b2603`): a set, which keeps no learn order.
     pub spells: BTreeSet<u32>,
@@ -163,8 +163,8 @@ pub(crate) enum ClickCast {
 
 /// The spell DBC catalogs, absent without client data; the cast-visual router shares the catalog.
 #[derive(Resource)]
-pub(crate) struct Spells {
-    pub(crate) catalog: SpellCatalog,
+pub struct Spells {
+    pub catalog: SpellCatalog,
     /// Form id to its `SpellShapeshiftForm.dbc` row: `BonusActionBar` pages the bar
     /// (`GetBonusBarOffset 0x4e7620`), `flags1` holds the stance and cancel bits.
     pub(crate) forms: std::collections::HashMap<u32, benilla_formats::ShapeshiftForm>,

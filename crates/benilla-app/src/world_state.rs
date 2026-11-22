@@ -18,7 +18,7 @@ use bevy::prelude::*;
 
 /// The live world-state table, keyed and valued by raw wire dwords.
 #[derive(Resource, Default)]
-pub(crate) struct WorldStates {
+pub struct WorldStates {
     values: HashMap<u32, u32>,
     generation: u64,
     scope: Option<(u32, u32)>,
@@ -39,13 +39,13 @@ impl WorldStates {
 
     /// Every pair, unordered, for instruments only (`capture::ProbeBgPlugin`); the reference
     /// never enumerates the table.
-    pub(crate) fn pairs(&self) -> impl Iterator<Item = (u32, i32)> + '_ {
+    pub fn pairs(&self) -> impl Iterator<Item = (u32, i32)> + '_ {
         self.values.iter().map(|(&k, &v)| (k, v as i32))
     }
 
     /// The `(map, area)` of the last init, `[0xb71e84]`/`[0xb71ea8]`; `None` before any init, the
     /// reference's `-1`.
-    pub(crate) fn scope(&self) -> Option<(u32, u32)> {
+    pub fn scope(&self) -> Option<(u32, u32)> {
         self.scope
     }
 

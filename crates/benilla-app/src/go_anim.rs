@@ -39,7 +39,7 @@ const ANIM_DESPAWN: u16 = 157;
 /// An animated GameObject's client-side state, tagged by [`crate::entities::attach`] in place of a
 /// creature's `AnimDriver`, and driven by [`drive_go_anim`].
 #[derive(Component, Default)]
-pub(crate) struct GoAnim {
+pub struct GoAnim {
     /// The stored `GAMEOBJECT_STATE` (`go+0x27c`), the one truth for animation and collision;
     /// `None` until first sight.
     state: Option<u32>,
@@ -229,7 +229,7 @@ pub(crate) fn owned_anims(ids: &[u16]) -> ModelAnimations {
 /// The stored state (`go+0x27c`) every consumer reads (the animation, `usable`, the lock chain's
 /// per-slot Action gate): [`GoAnim::state`] when animated, since it holds what the wire never
 /// sends, else the wire field, else `0`, ACTIVE, the value vmangos omits.
-pub(crate) fn go_state(anim: Option<&GoAnim>, store: &ObjectStore) -> u32 {
+pub fn go_state(anim: Option<&GoAnim>, store: &ObjectStore) -> u32 {
     anim.and_then(|a| a.state)
         .or_else(|| store.0.gameobject_state())
         .unwrap_or(GO_STATE_ACTIVE)
@@ -253,7 +253,7 @@ pub(crate) const ANIM_OPENED: u16 = 0x95;
 
 /// The inspector's readout: the armed id (the newest arm, the smallest seek), whether it is a
 /// transient, and its repeat mode; `None` for a static mesh or before any arm.
-pub(crate) fn armed_anim(
+pub fn armed_anim(
     go: &GoAnim,
     player: &AnimationPlayer,
     anims: &ModelAnimations,

@@ -70,11 +70,11 @@ pub(crate) fn talk_to_trainer(world: &mut World, trainer: u64) {
 
 /// The open trainer as `SMSG_TRAINER_LIST` delivered it.
 #[derive(Resource, Default)]
-pub(crate) struct TrainerOpen {
-    pub(crate) trainer: Option<u64>,
+pub struct TrainerOpen {
+    pub trainer: Option<u64>,
     /// In wire order, which is the 1-based display order.
-    pub(crate) services: Vec<TrainerSpell>,
-    pub(crate) trainer_type: u32,
+    pub services: Vec<TrainerSpell>,
+    pub trainer_type: u32,
     pub(crate) greeting: String,
     /// A list landed and the engine's filter, collapse set and selection are not yet reset, as
     /// the reference's builder resets them per list (`0x4d7b42` for the selection); an open window
@@ -94,12 +94,12 @@ pub(crate) struct TrainerOpen {
     pub(crate) item_waits: Vec<u32>,
     /// The trainer `TalkToTrainer` last asked for its list (`0xc4d788`), which a list's open tests
     /// (`0x5dcc85`): written by every ask, never cleared, 0 before the first.
-    pub(crate) asked: u64,
+    pub asked: u64,
 }
 
 impl TrainerOpen {
     /// Open (or replace) the window with a trainer's freshly-listed services.
-    pub(crate) fn open(
+    pub fn open(
         &mut self,
         trainer: u64,
         trainer_type: u32,
@@ -133,7 +133,7 @@ impl TrainerOpen {
     }
 
     /// A client-side close; a re-open re-lists.
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.trainer = None;
         self.services.clear();
         self.trainer_type = 0;

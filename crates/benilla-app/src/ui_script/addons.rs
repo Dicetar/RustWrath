@@ -22,7 +22,7 @@ const ADDONS_DIR: &str = "AddOns";
 
 /// The VM instruction bound for one addon's load, shared with the addon harness: about 50x the
 /// corpus's heaviest (4M), so an addon that crosses it is in a runaway loop and fails alone.
-pub(crate) const LOAD_INSTRUCTION_BUDGET: u64 = 200_000_000;
+pub const LOAD_INSTRUCTION_BUDGET: u64 = 200_000_000;
 
 /// Where one interface's files come from.
 pub(super) enum Source {
@@ -366,7 +366,7 @@ const ADDONS_PREFIX: &str = "Interface/AddOns/";
 /// Wrath uses the data install's Interface/AddOns first and falls back to the client's local
 /// state AddOns folder (`benilla-config/AddOns`). Vanilla uses the client's own state folder.
 /// Capture mode suppresses either loose source; saved-state writes use local_state.
-pub(crate) fn root() -> Option<PathBuf> {
+pub fn root() -> Option<PathBuf> {
     roots().into_iter().next()
 }
 

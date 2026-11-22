@@ -172,7 +172,7 @@ pub(super) const fn ours(
 }
 
 /// The table as the script VM's registrar wants it: `(name, default)` pairs in table order.
-pub(crate) fn registered_pairs() -> impl Iterator<Item = (&'static str, &'static str)> {
+pub fn registered_pairs() -> impl Iterator<Item = (&'static str, &'static str)> {
     let locale = crate::ui_script::client_locale().index();
     all_rows().map(move |r| (r.name, r.default_for(locale)))
 }

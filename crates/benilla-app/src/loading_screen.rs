@@ -27,7 +27,7 @@ use benilla_world::terrain_stream::WorldLoadProgress;
 
 /// The cover's input half: while it is up the client takes no input (a source cut in `PreUpdate`).
 mod input;
-pub(crate) use input::CoverInput;
+pub use input::CoverInput;
 /// A transport transfer's route screen.
 mod route;
 
@@ -192,7 +192,7 @@ pub(crate) enum TipEdge {
 
 /// Loading-screen state machine (event-raised, readiness-cleared).
 #[derive(Resource, Default)]
-pub(crate) struct LoadingScreen {
+pub struct LoadingScreen {
     active: bool,
     /// A raise from an entry edge holds until the destination snap lands, so the old location's
     /// residency cannot clear a screen raised for the new one (at world entry the login vista is
@@ -232,7 +232,7 @@ pub(crate) struct LoadingScreen {
 
 impl LoadingScreen {
     /// Whether the opaque cover is up; the world camera renders under it, never behind the glue.
-    pub(crate) fn covering(&self) -> bool {
+    pub fn covering(&self) -> bool {
         self.active
     }
 
@@ -252,7 +252,7 @@ impl LoadingScreen {
 
     /// The capture instrument (`WOW_CAPTURE=loading-tip`): raise as the glue→world entry does,
     /// with art, bar and a `Pick` tip, and never clear. `map` latches the art as a raise's does.
-    pub(crate) fn hold_for_capture(&mut self, map: Option<u32>) {
+    pub fn hold_for_capture(&mut self, map: Option<u32>) {
         self.active = true;
         self.blackout = false;
         self.awaiting_snap = false;

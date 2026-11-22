@@ -46,7 +46,8 @@ pub(crate) enum VmPass {
 }
 
 /// The systems of `Update`'s pass in the order it runs them, by system name, for the tests.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Resource, Debug, Default)]
 pub(crate) struct PassOrder(pub(crate) Vec<String>);
 
@@ -153,7 +154,7 @@ fn flush_unit_edits_elsewhere(world: &mut World) {
 /// them only, so [`order_the_pass`] takes every user in as though it wrote them: one runs at a
 /// time, a call's refusals ([`crate::ui_cast::CallReports`]) are the call's alone, and the edits
 /// apply in the order they were made.
-pub(crate) fn shared_sinks(world: &World) -> Vec<ComponentId> {
+pub fn shared_sinks(world: &World) -> Vec<ComponentId> {
     [
         std::any::TypeId::of::<crate::ui_chat::ChatLog>(),
         std::any::TypeId::of::<crate::ui_action::UiErrorKeys>(),
@@ -590,9 +591,7 @@ pub(crate) fn order_the_pass(world: &mut World, label: impl ScheduleLabel) -> Ve
 mod tests {
     use std::collections::{HashMap, HashSet};
 
-    use crate::game_plugins::schedule_tests::{
-        census, headless_client, headless_client_with, Census, SyncPoints,
-    };
+    use crate::game_plugins::schedule_tests::{census, headless_client, Census, SyncPoints};
     use bevy::ecs::component::ComponentId;
     use bevy::ecs::schedule::graph::Direction;
     use bevy::ecs::schedule::{NodeId, SystemKey};
@@ -691,32 +690,6 @@ mod tests {
         );
     }
 
-    /// Every two hosts are ordered, the probes' and the instruments' too: no two systems that lend
-    /// the call host run in an order the executor picks.
-    #[test]
-    fn every_two_hosts_run_in_a_declared_order() {
-        let mut app = headless_client_with(crate::dev::add_every_instrument);
-        let update = census(&mut app, Update, SyncPoints::Declared);
-        let mut unordered: Vec<String> = update
-            .conflicts
-            .iter()
-            .filter(|(a, b, _)| update.hosted.contains(a) && update.hosted.contains(b))
-            .map(|(a, b, _)| format!("{} <-> {}", update.name(*a), update.name(*b)))
-            .collect();
-        unordered.sort();
-        assert!(
-            update.hosted.len() > 150,
-            "the census finds the hosts: {}",
-            update.hosted.len()
-        );
-        assert!(
-            unordered.is_empty(),
-            "{} pairs of hosts in no declared order:\n  {}",
-            unordered.len(),
-            unordered.join("\n  ")
-        );
-    }
-
     /// The call host carries no deferred buffer: what its seams change on a unit (a cast's reap,
     /// the auto-repeat arm and clear, [`crate::creature_anim::UnitEdit`]) waits in a queue the
     /// pass's end flushes, and no link of the pass reads what any kind of edit writes, so none
@@ -777,149 +750,6 @@ mod tests {
             found.is_empty(),
             "a link of the pass reads what a unit edit changes after the pass:\n  {}",
             found.join("\n  ")
-        );
-    }
-
-    /// A unit edit applies where it is made: every system that can queue one runs ahead of a
-    /// flush in its own schedule, `Update`'s at the pass's end. An exclusive system applies its
-    /// own ([`crate::creature_anim::apply_unit_edits`]); outside `Update` the flush follows it as
-    /// well, so a one-shot it ran that left an edit does not carry it into the next frame.
-    #[test]
-    fn every_unit_edit_is_flushed_in_the_schedule_that_makes_it() {
-        use bevy::ecs::schedule::ScheduleLabel as _;
-        #[derive(PartialEq)]
-        enum Kind {
-            User,
-            Flush,
-            Exclusive,
-        }
-        let mut app = headless_client_with(crate::dev::add_every_instrument);
-        let edits = app
-            .world()
-            .components()
-            .get_resource_id(std::any::TypeId::of::<crate::creature_anim::UnitEdits>())
-            .expect("the queue is registered");
-        let labels: Vec<_> = app
-            .world()
-            .resource::<Schedules>()
-            .iter()
-            .map(|(_, schedule)| schedule.label())
-            .collect();
-        // By identity, not by name: a build without type names has none.
-        let flush = System::type_id(&IntoSystem::into_system(
-            crate::creature_anim::flush_unit_edits,
-        ));
-        let (mut users, mut exclusives) = (0, 0);
-        let mut late = Vec::new();
-        for label in labels {
-            let in_update = label == Update.intern();
-            let queues: Vec<(SystemKey, String, Kind)> =
-                app.world_mut().schedule_scope(label, |world, schedule| {
-                    schedule.graph_mut().systems.initialize(world);
-                    let graph = schedule.graph();
-                    graph
-                        .systems
-                        .iter()
-                        .filter_map(|(key, system, _)| {
-                            let access = &graph.systems.get(key).expect("initialized").access;
-                            let kind = if system.is_exclusive() {
-                                Kind::Exclusive
-                            } else if System::type_id(&**system) == flush {
-                                Kind::Flush
-                            } else if access.combined_access().has_resource_read(edits) {
-                                Kind::User
-                            } else {
-                                return None;
-                            };
-                            Some((key, system.name().to_string(), kind))
-                        })
-                        .collect()
-                });
-            if !queues.iter().any(|(_, _, kind)| *kind == Kind::User) {
-                continue;
-            }
-            let schedule = census(&mut app, label, SyncPoints::Declared);
-            let next = successors(&schedule);
-            let flushes: Vec<SystemKey> = queues
-                .iter()
-                .filter(|(_, _, kind)| *kind == Kind::Flush)
-                .map(|(key, _, _)| *key)
-                .collect();
-            for (key, name, kind) in &queues {
-                match kind {
-                    Kind::Flush => continue,
-                    Kind::Exclusive if in_update => continue,
-                    Kind::Exclusive => exclusives += 1,
-                    Kind::User => users += 1,
-                }
-                if !flushes.iter().any(|f| after(&next, *key).contains(f)) {
-                    late.push(format!("{label:?}: {name}"));
-                }
-            }
-        }
-        assert!(users > 20, "the census finds the queue's users: {users}");
-        assert!(
-            exclusives > 10,
-            "and the exclusive systems beside them: {exclusives}"
-        );
-        assert!(
-            late.is_empty(),
-            "systems that can queue unit edits after their schedule's flush, or where none \
-             runs:\n  {}",
-            late.join("\n  ")
-        );
-    }
-
-    /// The host's shared sinks ([`super::shared_sinks`]) are written through `&self`, so their
-    /// users declare reads and no conflict orders them: every two users run in a declared order,
-    /// so the refusals a call reads back ([`crate::ui_cast::CallReports`]) are its own, and the
-    /// lines and sounds land in one order every frame.
-    #[test]
-    fn every_user_of_a_shared_sink_runs_in_one_order() {
-        let mut app = headless_client_with(crate::dev::add_every_instrument);
-        let sinks = super::shared_sinks(app.world());
-        assert_eq!(sinks.len(), 5, "the sinks are registered");
-        let users: Vec<SystemKey> = app.world_mut().schedule_scope(Update, |world, schedule| {
-            schedule.graph_mut().systems.initialize(world);
-            let graph = schedule.graph();
-            graph
-                .systems
-                .iter()
-                .filter(|(key, system, _)| {
-                    let combined = graph
-                        .systems
-                        .get(*key)
-                        .expect("initialized")
-                        .access
-                        .combined_access();
-                    !system.is_exclusive() && sinks.iter().any(|id| combined.has_resource_read(*id))
-                })
-                .map(|(key, _, _)| key)
-                .collect()
-        });
-        let update = census(&mut app, Update, SyncPoints::Declared);
-        let next = successors(&update);
-        let reach: HashMap<SystemKey, HashSet<SystemKey>> =
-            users.iter().map(|u| (*u, after(&next, *u))).collect();
-        let mut unordered = Vec::new();
-        for (i, a) in users.iter().enumerate() {
-            for b in &users[i + 1..] {
-                if !reach[a].contains(b) && !reach[b].contains(a) {
-                    unordered.push(format!("{} <-> {}", update.name(*a), update.name(*b)));
-                }
-            }
-        }
-        unordered.sort();
-        assert!(
-            users.len() > 50,
-            "the census finds the sinks' users: {}",
-            users.len()
-        );
-        assert!(
-            unordered.is_empty(),
-            "{} pairs of a shared sink's users in no declared order:\n  {}",
-            unordered.len(),
-            unordered.join("\n  ")
         );
     }
 

@@ -21,21 +21,21 @@ pub(crate) use calls::TaxiSteps;
 use routing::{build_nodes_for, load_taxi_catalogs, taxi_error_key, TaxiCatalogs, TaxiRouteCache};
 
 /// The open map, `SMSG_SHOWTAXINODES` as the wire gave it.
-pub(crate) struct TaxiOpen {
-    pub(crate) flightmaster: u64,
+pub struct TaxiOpen {
+    pub flightmaster: u64,
     /// The node nearest the flight master, typed `Current`.
-    pub(crate) nearest_node: u32,
+    pub nearest_node: u32,
     /// The known nodes: the only ones listed, and the only ones a route passes through.
-    pub(crate) known: TaxiMask,
+    pub known: TaxiMask,
 }
 
 /// The taxi session: the open map, plus the one-shot replies [`feed_taxi`] consumes.
 #[derive(Resource, Default)]
-pub(crate) struct TaxiState {
-    pub(crate) open: Option<TaxiOpen>,
+pub struct TaxiState {
+    pub open: Option<TaxiOpen>,
     /// The last `SMSG_ACTIVATETAXIREPLY` code, for [`feed_taxi`] to show, or on `OK` to close the
     /// map.
-    pub(crate) reply: Option<u32>,
+    pub reply: Option<u32>,
     /// A first-visit learn (`SMSG_NEW_TAXI_PATH`) for [`feed_taxi`] to announce.
     pub(crate) discovered: bool,
     /// An open whose `TAXIMAP_OPENED` has yet to fire, and the Travel tutorial with it.

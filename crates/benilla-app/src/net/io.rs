@@ -111,14 +111,14 @@ const RTT_RING: usize = 15;
 /// it in the frame drain would add a client frame to every reading; the app reads
 /// [`Self::avg_latency_ms`].
 #[derive(Default)]
-pub(crate) struct PingClock {
+pub struct PingClock {
     /// Sequence of the latest ping sent, counting from 1 for the process: `+0x1a68` is zeroed only
     /// when the one `NetClient` is built (`0x53745e`), never per link.
     pub(crate) sequence: u32,
     /// When that ping went out.
     pub(crate) sent_at: Option<Instant>,
     /// The last round trip (ms), sent as the next ping's `lastRtt` as the reference does.
-    pub(crate) last_rtt_ms: Option<u32>,
+    pub last_rtt_ms: Option<u32>,
     /// The latest [`RTT_RING`] round trips (ms), oldest first.
     rtt_ring: std::collections::VecDeque<u32>,
     /// The last world link's byte counts and connect time (`conn+0x1ab4`-`+0x1abc`), set when

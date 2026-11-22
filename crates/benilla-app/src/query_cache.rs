@@ -81,7 +81,7 @@ pub(crate) enum Released {
 }
 
 /// The ask-once cache.
-pub(crate) struct QueryCache<K, V> {
+pub struct QueryCache<K, V> {
     answered: HashMap<K, V>,
     /// The keys in flight, locked so the read that asks is `&self`; uncontended on the main
     /// thread.
@@ -158,7 +158,7 @@ impl<K: Copy + Eq + Hash + Default, V> QueryCache<K, V> {
 
     /// The lookup that only reads: the record if it is here, never asking (`0x556b1c` →
     /// `0x556bf9`).
-    pub(crate) fn get(&self, key: K) -> Option<&V> {
+    pub fn get(&self, key: K) -> Option<&V> {
         (key != K::default())
             .then(|| self.answered.get(&key))
             .flatten()

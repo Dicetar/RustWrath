@@ -47,18 +47,18 @@ mod trace;
 use bevy::prelude::*;
 
 #[cfg(feature = "dev")]
-pub(crate) use blend_check::BlendMismatchShared;
+pub use blend_check::BlendMismatchShared;
 #[cfg(feature = "dev")]
-pub(crate) use clock::{process_cpu_secs, process_faults, system_cpu_ticks, thread_cpu_table};
+pub use clock::{process_cpu_secs, process_faults, system_cpu_ticks, thread_cpu_table};
 #[cfg(feature = "dev")]
-pub(crate) use gpu::{GpuMsShared, WgpuCensusShared};
+pub use gpu::{GpuMsShared, WgpuCensusShared};
 #[cfg(feature = "dev")]
-pub(crate) use hud::PerfHud;
+pub use hud::PerfHud;
 pub use journal::FpsJournalPlugin;
 #[cfg(test)]
 pub(crate) use journal::{on_cvar, FpsJournalSetting};
 #[cfg(feature = "dev")]
-pub(crate) use main_split::MainThreadSplit;
+pub use main_split::MainThreadSplit;
 
 /// The frame budget: a 60 fps floor. No frame should exceed this.
 pub const FRAME_BUDGET_MS: f32 = 1000.0 / 60.0;

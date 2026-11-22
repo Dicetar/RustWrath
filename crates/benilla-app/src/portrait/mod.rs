@@ -239,7 +239,7 @@ pub(crate) struct PortraitStandIn(pub(crate) u32);
 /// What a portrait slot shows: the booth's bake, or a 2D stand-in file, for a unit with no object
 /// (`0x525ba0`) and while a unit's model streams in (the reference shows blank then, `0x519fcc`).
 #[derive(Clone, PartialEq, Debug)]
-pub(crate) enum PortraitSource {
+pub enum PortraitSource {
     /// The slot's off-screen render target (the model bake).
     Live(Handle<Image>),
     /// A flat portrait BLP (`Interface\CharacterFrame\TemporaryPortrait-…`), resolved by the UI
@@ -380,7 +380,7 @@ fn unseen_source(
 /// Unit token to what its portrait region shows: the booth writes it, and the UI extract
 /// ([`crate::ui_script`]) reads it for a `SetPortraitTexture`-bound region.
 #[derive(Resource, Default)]
-pub(crate) struct PortraitImages(pub(crate) HashMap<String, PortraitSource>);
+pub struct PortraitImages(pub HashMap<String, PortraitSource>);
 
 /// What a booth has baked; any change to the unit's dressed look re-bakes.
 #[derive(PartialEq)]
@@ -628,7 +628,7 @@ struct Booths(HashMap<String, Booth>);
 /// extract publishes the round portraits; [`panes::sync_panes`] marks each character pane it
 /// draws, which renders only while marked.
 #[derive(Resource, Default)]
-pub(crate) struct BoothPanes(pub(crate) HashMap<String, f32>);
+pub struct BoothPanes(pub HashMap<String, f32>);
 
 /// Both directions of the booth-UI bridge: the bake a region samples and the pane geometry the
 /// extract publishes.
@@ -665,7 +665,7 @@ pub(crate) struct PartyBooths<'w, 's> {
 
 /// Tags a booth camera with its slot token (not the M2 rig, `benilla_assets::PortraitCamera`).
 #[derive(Component)]
-pub(crate) struct BoothCam(pub(crate) String);
+pub struct BoothCam(pub String);
 
 /// The display aspect the client's `screencoord` scale uses (`0x4901e0`): `gxResolution`'s
 /// width/height with `widescreen` on (its default), `4/3` off. Read by

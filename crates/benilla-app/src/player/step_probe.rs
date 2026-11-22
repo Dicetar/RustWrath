@@ -45,7 +45,7 @@ static PROBE: Mutex<Probe> = Mutex::new(Probe {
 });
 
 /// The last blocked report's lines and the app-elapsed time it was taken, for the debug panel.
-pub(crate) fn latest() -> (Vec<String>, f32) {
+pub fn latest() -> (Vec<String>, f32) {
     PROBE
         .lock()
         .map(|p| (p.report.clone(), p.at))

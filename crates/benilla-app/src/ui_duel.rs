@@ -41,12 +41,12 @@ enum OwedLine {
 /// The duel session: written by the net handlers, read by [`feed_duel`], which fires the events on
 /// its edges, and by [`tick_countdown`].
 #[derive(Resource, Default)]
-pub(crate) struct DuelState {
+pub struct DuelState {
     owed: Vec<OwedLine>,
     /// The duel flag's guid, `[0xb73240]`: set by the request, echoed on accept and cancel, and
     /// cleared by completion, which fires `DUEL_FINISHED`, and silently by the leave-world sweep
     /// ([`clear_duel_on_leave_world`]). `0` is no duel.
-    pub(crate) arbiter: u64,
+    pub arbiter: u64,
     /// Set while the challenge popup is owed; the challenger never gets one.
     challenger: Option<u64>,
     /// The owed popup's name has been looked up once, as the challenge packet's: the frames that
@@ -75,7 +75,7 @@ impl DuelState {
 
     /// The partner probe's accept hook (`WOW_PROBE=partner`): taking the challenger discharges the
     /// popup as the feed's `DUEL_REQUESTED` edge does.
-    pub(crate) fn take_challenger(&mut self) -> Option<u64> {
+    pub fn take_challenger(&mut self) -> Option<u64> {
         self.challenger.take()
     }
 

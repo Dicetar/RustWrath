@@ -11,13 +11,13 @@ use bevy::prelude::*;
 /// Something other than the player authors the camera and the avatar this run. Only the capture
 /// harness inserts it; the type lives here because non-dev run conditions name it.
 #[derive(Resource)]
-pub(crate) struct CaptureMode;
+pub struct CaptureMode;
 
 /// The rig's derived character name when `$WOW_RIG` names a body, inserted by
 /// `capture::ProbeRigPlugin`. While present the roster ignores `$WOW_CHAR`: the rig may have to
 /// create its body first, and the `WOW_CHAR` one-shot cannot wait for that.
 #[derive(Resource)]
-pub(crate) struct RigCharacter(pub(crate) String);
+pub struct RigCharacter(pub String);
 
 /// Is a capture running (`$WOW_CAPTURE` set)? Read before any plugin builds: it decides whether
 /// the net thread starts, the window size, and whether clutter and anim-LOD randomness is pinned.
@@ -25,11 +25,33 @@ pub fn scenario_active() -> bool {
     std::env::var("WOW_CAPTURE").is_ok()
 }
 
-/// Is the player UI opted into this capture? Forwards [`crate::capture::ui_opted_in`] for readers
-/// outside the harness; `false` in a player build, which has no capture to opt into.
+/// The capture harness's two boot answers. The harness lives in `benilla-dev`, above the core, so
+/// the client installs them ([`install_capture_hooks`]) at the top of its boot, before anything
+/// here reads them; until then a run answers as a player's.
+#[cfg(feature = "dev")]
+#[derive(Clone, Copy)]
+pub struct CaptureHooks {
+    /// `benilla-dev`'s `capture::ui_opted_in`.
+    pub ui_opted_in: fn() -> bool,
+    /// `benilla-dev`'s `capture::start_state`.
+    pub start_state: fn() -> crate::client_state::ClientState,
+}
+
+#[cfg(feature = "dev")]
+static CAPTURE_HOOKS: std::sync::OnceLock<CaptureHooks> = std::sync::OnceLock::new();
+
+/// Installs the harness's [`CaptureHooks`]; the first install wins.
+#[cfg(feature = "dev")]
+pub fn install_capture_hooks(hooks: CaptureHooks) {
+    let _ = CAPTURE_HOOKS.set(hooks);
+}
+
+/// Is the player UI opted into this capture? Forwards the harness's `capture::ui_opted_in`
+/// ([`CaptureHooks`]) for readers outside the harness; `false` in a player build, which has no
+/// capture to opt into.
 #[cfg(feature = "dev")]
 pub fn capture_ui_opted_in() -> bool {
-    crate::capture::ui_opted_in()
+    CAPTURE_HOOKS.get().is_some_and(|h| (h.ui_opted_in)())
 }
 
 #[cfg(not(feature = "dev"))]
@@ -91,7 +113,11 @@ pub fn start_state() -> crate::client_state::ClientState {
     }
     #[cfg(feature = "dev")]
     {
-        crate::capture::start_state()
+        CAPTURE_HOOKS
+            .get()
+            .map_or(crate::client_state::ClientState::Login, |h| {
+                (h.start_state)()
+            })
     }
     #[cfg(not(feature = "dev"))]
     {
@@ -135,7 +161,7 @@ pub(crate) fn free_fly_hint() -> String {
 /// be absent from a player binary. Read by [`crate::ui_script`] for the live `assets/ui`, which are
 /// benilla's own files whoever the launcher is; the launcher's folder is
 /// [`benilla_formats::project_folder`]. Held by [`tests::the_dev_plane_has_exactly_one_door`].
-pub(crate) fn dev_source_dir() -> Option<&'static std::path::Path> {
+pub fn dev_source_dir() -> Option<&'static std::path::Path> {
     #[cfg(feature = "dev")]
     {
         Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
@@ -204,7 +230,7 @@ fn guard_for(declared: Option<&DeclaredIdentity>, user: &str) -> Result<(), Stri
 /// The word a rig appends to this checkout's bodies (`<Race3><Class3><word>[f]`) so checkouts
 /// never collide on a name: the declared character, lowercased, without a leading `probe`. `None`
 /// without a declaration; the rig then configures the body it logged in as.
-pub(crate) fn rig_suffix() -> Option<String> {
+pub fn rig_suffix() -> Option<String> {
     Some(suffix_of(&declared_identity()?.character))
 }
 

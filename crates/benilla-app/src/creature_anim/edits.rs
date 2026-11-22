@@ -178,7 +178,7 @@ impl UnitEdit {
 /// The queue, pushed through `&self` as the chat log is: its users run one at a time, in the VM
 /// pass's order ([`crate::vm_pass::shared_sinks`]) or inside the net drain.
 #[derive(Resource, Default)]
-pub(crate) struct UnitEdits {
+pub struct UnitEdits {
     queue: Mutex<Vec<UnitEdit>>,
     /// Every unit's [`Precast`] as applied, kept by the component's hooks.
     precasts: Mutex<EntityHashMap<Precast>>,
@@ -288,7 +288,7 @@ pub(crate) fn apply_unit_edits(world: &mut World) {
 
 /// The pass's end: the queue as one command, so it applies at the sync point ahead of the systems
 /// ordered after the pass, the readers of what it changes.
-pub(crate) fn flush_unit_edits(edits: Res<UnitEdits>, mut commands: Commands) {
+pub fn flush_unit_edits(edits: Res<UnitEdits>, mut commands: Commands) {
     let edits = std::mem::take(&mut *edits.queue());
     if !edits.is_empty() {
         commands.queue(move |world: &mut World| apply(world, edits));

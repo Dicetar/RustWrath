@@ -24,12 +24,12 @@ use super::feed::ChatLog;
 /// [`stamp_input`]. Process-global, zero at start and never reset, not even at world entry, so a
 /// client untouched from launch is idle at five minutes.
 #[derive(Resource, Debug, Clone, Copy, Default)]
-pub(crate) struct LastInput(Duration);
+pub struct LastInput(Duration);
 
 impl LastInput {
     /// Stamp the clock for an unattended probe standing in for a present player, as vmangos
     /// removes an AFK player from a battleground (`Player.cpp:1740-1742`).
-    pub(crate) fn stamp_present(&mut self, now: Duration) {
+    pub fn stamp_present(&mut self, now: Duration) {
         self.0 = now;
     }
 }

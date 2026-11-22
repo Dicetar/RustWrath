@@ -37,7 +37,7 @@ const GROUP_JOIN_DESERTERS: u32 = 0xFFFF_FFFE;
 /// The list window's state: the last list, the leash anchor, and what the handlers still owe
 /// the next feed.
 #[derive(Resource, Default)]
-pub(crate) struct Battlefield {
+pub struct Battlefield {
     list: Option<BattlefieldList>,
     show: bool,
     dirty: bool,
@@ -80,7 +80,7 @@ impl Battlefield {
 
     /// The last list's battlemaster. A character under the bracket floor gets no list at all
     /// (vmangos `BattleGroundHandler.cpp:59`).
-    pub(crate) fn battlemaster(&self) -> Option<u64> {
+    pub fn battlemaster(&self) -> Option<u64> {
         self.list.as_ref().map(|l| l.battlemaster)
     }
 

@@ -109,7 +109,7 @@ impl WorldCursor {
 
 /// `UNIT_NPC_FLAGS` bits, 1.12 values (vmangos `UnitDefines.h`); REPAIR (`0x4000`) is left out
 /// because the ladder never tests it.
-pub(crate) mod npc_flags {
+pub mod npc_flags {
     pub const GOSSIP: u32 = 0x1;
     pub const QUESTGIVER: u32 = 0x2;
     pub const VENDOR: u32 = 0x4;
@@ -147,7 +147,7 @@ pub(crate) fn player_attack_legs(own: &ObjectStore, own_control_lost: bool) -> b
 
 /// NPC-service range, squared: gray beyond 5.5556 yd (`0xb4b32c` = `[0x804328]²`, checked
 /// boundary-inclusive at `0x482320`). The NPC windows' walk-away close uses the same constant.
-pub(crate) const SERVICE_RANGE_SQ: f32 = 30.864;
+pub const SERVICE_RANGE_SQ: f32 = 30.864;
 /// Attack's range, squared: gray beyond a fixed 10.45 yd (`0x80447c`, checked at `0x4826a7`), not
 /// the melee reach.
 const ATTACK_RANGE_SQ: f32 = 109.2025;
@@ -372,11 +372,11 @@ const GO_TYPE_CAPTURE_POINT: i32 = 29;
 /// Inputs of the two types whose `+0x14` is a predicate of its own rather than `0x5f2f80` or a
 /// constant; the caller resolves them, and each is ignored for every other type.
 #[derive(Clone, Copy, Default)]
-pub(crate) struct GoOverrides {
+pub struct GoOverrides {
     /// FISHINGNODE: the local player is channeling at this bobber.
-    pub(crate) channel_owned: bool,
+    pub channel_owned: bool,
     /// MEETINGSTONE: this stone's area is the one we are queued at.
-    pub(crate) meeting_stone_queued: bool,
+    pub meeting_stone_queued: bool,
 }
 
 /// `GAMEOBJECT_TYPE_MEETINGSTONE` (23): its `+0x14` (`0x5f6990`) is only
@@ -432,7 +432,7 @@ const GO_TYPE_TRAP: i32 = 6;
 /// (`0x5f8025`); `None` when unresolvable, which callers pass. Only the template comparator runs:
 /// every shipped GameObject faction (114, 35, 14 and 1375) resolves through it, so the reference's
 /// reputation arm and a `GAMEOBJECT_CREATED_BY` creator's reaction are not applied.
-pub(crate) fn go_reaction(
+pub fn go_reaction(
     factions: Option<&Factions>,
     go_faction: u32,
     self_store: Option<&ObjectStore>,
@@ -451,7 +451,7 @@ pub(crate) fn go_reaction(
 /// GameObject it is the type's slot `+0xc` (`0x5f8620`), not the cursor's slot. `highlight_column`
 /// is GENERIC's `data[1]` or CAPTURE_POINT's `data[19]` (`0x5f4830`, `0x5f6d80`); `None`, a
 /// template not yet answered, reads eligible.
-pub(crate) fn mouseover_eligible(
+pub fn mouseover_eligible(
     type_id: i32,
     flags: u32,
     dyn_flags: u32,
@@ -475,11 +475,7 @@ pub(crate) fn mouseover_eligible(
 /// wire default 0, DOOR. This slot gates the cursor, the right-click use (`OnUse 0x5f8660`) and
 /// the pick's pass-2 priority (`0x480c90` via `0x5f8800`); the tooltip and the brighten follow the
 /// mouseover slot, [`mouseover_eligible`].
-pub(crate) fn go_highlightable(
-    store: &ObjectStore,
-    reaction: Option<u8>,
-    overrides: GoOverrides,
-) -> bool {
+pub fn go_highlightable(store: &ObjectStore, reaction: Option<u8>, overrides: GoOverrides) -> bool {
     highlightable_flags(
         store.0.gameobject_type_id(),
         store.0.gameobject_flags(),
@@ -493,16 +489,13 @@ pub(crate) fn go_highlightable(
 /// reference's global: 0 until the `SMSG_MEETINGSTONE_SETQUEUE` handler (`0x4ca230`) writes it
 /// (zeroed at `0x4c9eec`). An unanswered template reads not queued; a `data[2]` of 0 matches the
 /// unqueued 0, as in the reference.
-pub(crate) fn meeting_stone_queued(area: Option<u32>, queued_area: u32) -> bool {
+pub fn meeting_stone_queued(area: Option<u32>, queued_area: u32) -> bool {
     area.is_some_and(|a| a == queued_area)
 }
 
 /// The FISHINGNODE override's input (`0x5f6710`): our `UNIT_FIELD_CHANNEL_OBJECT` is this
 /// GameObject. False when either is unknown, as the reference answers false with no active player.
-pub(crate) fn fishing_channel_owned(
-    self_store: Option<&ObjectStore>,
-    go_guid: Option<u64>,
-) -> bool {
+pub fn fishing_channel_owned(self_store: Option<&ObjectStore>, go_guid: Option<u64>) -> bool {
     match (self_store, go_guid) {
         (Some(s), Some(g)) => s.0.unit_channel_object() == Some(g),
         _ => false,
@@ -550,7 +543,7 @@ fn go_cursor_kind(type_id: i32, lock_cursor: Option<CursorKind>) -> CursorKind {
 /// (`[unit+0xcb8]`) is neither NONE nor UNAVAILABLE, and a missing one reads as NONE since the
 /// server sends it unprompted. Without the gate a quest-less questgiver opens an empty gossip frame
 /// that vmangos fills with placeholder "Greetings $N" text (`QueryHandler.cpp:313-319`).
-pub(crate) fn questgiver_has_quest(quest_status: Option<u32>) -> bool {
+pub fn questgiver_has_quest(quest_status: Option<u32>) -> bool {
     use benilla_protocol::messages::dialog_status::{NONE, UNAVAILABLE};
     !matches!(quest_status, None | Some(NONE) | Some(UNAVAILABLE))
 }

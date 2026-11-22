@@ -62,7 +62,7 @@ mod conform;
 /// The per-unit collision height, the `h` the swim, wade, splash and foam depths are fractions of.
 mod collision_height;
 use collision_height::stamp_collision_heights;
-pub(crate) use collision_height::CollisionHeight;
+pub use collision_height::CollisionHeight;
 
 /// Spell missiles: the projectile a cast with a `Spell.dbc` Speed above 0 flies at each target.
 mod missile;
@@ -87,8 +87,9 @@ pub(crate) use chain_beam::ChainHops;
 use chain_beam::{simulate_chain_beams, spawn_chain_beams};
 // `equip_slot` is the one InventoryType → slot table; the dressing room places items by it.
 pub(crate) use attach::equip_slot;
-pub(crate) use equipment::ItemDisplays;
-pub(crate) use equipment::{attach_id, DressKey, HeldAttached};
+pub use equipment::HeldAttached;
+pub use equipment::ItemDisplays;
+pub(crate) use equipment::{attach_id, DressKey};
 pub use equipment::{BoneAttach, Equipment, HandKeyBones};
 // Only the tests that build a `DressKey` name this type.
 #[cfg(test)]
@@ -205,7 +206,7 @@ pub fn overhead_anchor<F: bevy::ecs::query::QueryFilter>(
 /// Marks the cube spawned for an entity whose display named no loadable model, so
 /// `WOW_UNIT_VISUALS` can count the cubes and their displays.
 #[derive(Component)]
-pub(crate) struct FallbackCube;
+pub struct FallbackCube;
 
 /// The fallback cube mesh and per-kind materials. There is no GameObject cube: a model-less
 /// GameObject is an invisible effect or trigger in the reference.
@@ -479,16 +480,16 @@ fn stamp_arrivals(
 
 /// Marks a net entity whose visual is attached; the `waterfx` rig pre-marks its dummy unit.
 #[derive(Component)]
-pub(crate) struct VisualAttached;
+pub struct VisualAttached;
 
 /// The per-frame entity-visuals chain as one set; [`crate::creature_anim::VisualSheath`] must land
 /// before it, or a sheath change places the weapon twice in one frame.
 #[derive(SystemSet, Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct EntityVisualsSet;
+pub struct EntityVisualsSet;
 
 /// [`update_display_models`]' set: a creator of display-cache entries orders before it.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct DisplayBuildSet;
+pub struct DisplayBuildSet;
 
 /// Drop every display and skin cache on a map change; an entry rebuilds on its next use.
 fn evict_display_caches(

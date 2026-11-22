@@ -31,7 +31,7 @@ pub(crate) use held::{traits_from_name_cache, unheld_state, unit_reach};
 /// The unit-feed pass, gated so none of its login one-shots or per-VM memos runs before the in-game
 /// interface exists; the demo override orders itself after it.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct UnitFeed;
+pub struct UnitFeed;
 
 /// The feeds that seat a new VM with what the reference's caches hold across a `/reload`, ahead of
 /// the world-enter cascade whose handlers read it: the quest log's records, slots and creature
@@ -550,7 +550,7 @@ pub(crate) fn fire_unit_combat(script: &mut UiScript, ev: &UnitCombatFeedback) {
 /// `UnitRace` (`0x5182e0`) and `UnitClass` (`0x518430`) push. A table that did not load names
 /// nothing.
 #[derive(Clone, Copy, Default)]
-pub(crate) struct UnitNames<'a> {
+pub struct UnitNames<'a> {
     pub(crate) races: Option<&'a ChrRaces>,
     pub(crate) classes: Option<&'a ChrClasses>,
     /// Each race's PvP side off the chain.
@@ -659,14 +659,14 @@ pub(crate) fn world_unit_names(world: &World) -> UnitNames<'_> {
 
 /// The two tables as a system holds them: [`UnitNames`] once borrowed.
 #[derive(bevy::ecs::system::SystemParam)]
-pub(crate) struct NameTables<'w> {
+pub struct NameTables<'w> {
     races: Option<Res<'w, crate::chr_classes::ChrRaceTable>>,
     classes: Option<Res<'w, crate::chr_classes::ChrClassTable>>,
     teams: Option<Res<'w, crate::chr_classes::RacePvpTeams>>,
 }
 
 impl NameTables<'_> {
-    pub(crate) fn get(&self) -> UnitNames<'_> {
+    pub fn get(&self) -> UnitNames<'_> {
         UnitNames {
             races: self.races.as_deref().map(|t| &t.0),
             classes: self.classes.as_deref().map(|t| &t.0),
@@ -678,7 +678,7 @@ impl NameTables<'_> {
 impl<'a> UnitNames<'a> {
     /// The race byte's display name and its token (`"Night Elf"`, `"NightElf"`; `$R`/`$r` expand
     /// the name); `None` for a race with no row.
-    pub(crate) fn race(&self, race: u8) -> Option<(&'a str, &'a str)> {
+    pub fn race(&self, race: u8) -> Option<(&'a str, &'a str)> {
         self.races?.names(u32::from(race))
     }
 
@@ -699,7 +699,7 @@ impl<'a> UnitNames<'a> {
 
     /// The class byte's display name and its uppercase token (`"Warrior"`, `"WARRIOR"`); `None`
     /// for a class with no row. A row with a blank column pushes the blank (`0x518451`).
-    pub(crate) fn class(&self, class: u8) -> Option<(&'a str, &'a str)> {
+    pub fn class(&self, class: u8) -> Option<(&'a str, &'a str)> {
         let classes = self.classes?;
         let class = u32::from(class);
         classes.has_row(class).then(|| {

@@ -51,9 +51,9 @@ pub(crate) mod border;
 /// `NAMEPLATES_ON`/`FRIENDNAMEPLATES_ON` saved variables through the verbs
 /// (`UIOptionsFrame.lua:768-780`, `UIParent.lua:234`, `:367`).
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct VPlateMode {
-    pub(crate) enemies: bool,
-    pub(crate) friends: bool,
+pub struct VPlateMode {
+    pub enemies: bool,
+    pub friends: bool,
 }
 
 impl VPlateMode {

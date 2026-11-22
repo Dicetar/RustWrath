@@ -58,7 +58,7 @@ pub(crate) fn trace_on() -> bool {
 /// One pane's tile request, published by the extract's `ModelPane` arm: its device size, the unit
 /// ladder `0x76d1a0` derives from it, and the Lua-set scene.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct TileRequest {
+pub struct TileRequest {
     /// The `SetModel` path, as written.
     pub path: String,
     /// The pane's rect in whole device pixels: the tile's cell size.
@@ -99,14 +99,14 @@ pub(crate) struct TileRequest {
 
 /// Where a tile sits in the atlas, in texels, `y` down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Cell {
+pub struct Cell {
     pub origin: UVec2,
     pub size: UVec2,
 }
 
 /// The extract-to-renderer bridge, reached through `crate::portrait::BoothBridge`.
 #[derive(Resource, Default)]
-pub(crate) struct UiModelTiles {
+pub struct UiModelTiles {
     /// The last request per pane. An entry outlives its pane, since the memoized conversion never
     /// says it vanished, so which panes draw is the engine's paint list, never this map.
     pub requests: HashMap<FrameHandle, TileRequest>,
@@ -375,13 +375,13 @@ struct TileCamera;
 
 /// A perspective pool camera, aimed each frame at whichever pane holds its `slot`.
 #[derive(Component)]
-pub(crate) struct TilePerspectiveCamera {
+pub struct TilePerspectiveCamera {
     slot: usize,
 }
 
 /// A tile's model root.
 #[derive(Component)]
-pub(crate) struct TileRoot;
+pub struct TileRoot;
 
 /// A batch whose alpha the file animates, sampled off the pane's play head: a hosted `MatAnim`
 /// reads the paused player, which has no node for a sequence that keys no bone, the cooldown's.

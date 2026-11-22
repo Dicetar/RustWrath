@@ -50,7 +50,8 @@ mod session;
 /// The feed gate: a UI feed's input-side early-out, audited by `WOW_FEED_GATE_CHECK=1`.
 pub(crate) mod gate;
 
-pub(crate) use session::{VmMemo, WindowMemo};
+pub use session::VmMemo;
+pub(crate) use session::WindowMemo;
 
 // Not test-only: the addon harness loads the whole shipped interface under each addon.
 pub(crate) use manifest::default_bindings;
@@ -63,12 +64,12 @@ pub(crate) use reference_ui::{boot_client_locale, client_locale, client_region};
 /// Whether the pointer is over any UI (the egui dev overlay or a player-UI frame), combined by
 /// [`arbitrate_pointer_over_ui`]; gameplay reads it, so it is not the dev plugin's.
 #[derive(Resource, Default)]
-pub(crate) struct PointerOverUi(pub(crate) bool);
+pub struct PointerOverUi(pub bool);
 
 /// A synthetic pointer owns the mouse this frame (the drag probe's gesture), so
 /// [`input::feed_ui_input`] skips its mouse half and never feeds the real cursor.
 #[derive(Resource, Default)]
-pub(crate) struct SyntheticPointer(pub(crate) bool);
+pub struct SyntheticPointer(pub bool);
 
 /// A capture never reads the OS pointer: set for a whole `$WOW_CAPTURE`/`$WOW_CAPTURE_UI` run, so
 /// its pixels never depend on where the real cursor rests.
@@ -78,47 +79,47 @@ pub(crate) struct CapturePointerPinned(pub(crate) bool);
 /// The egui dev overlay's half of the pointer arbitration, written by `track_pointer_over_ui`;
 /// defined here so a build without dev overlays still has the type.
 #[derive(Resource, Default)]
-pub(crate) struct EguiPointerOver(pub(crate) bool);
+pub struct EguiPointerOver(pub bool);
 
 /// Whether a dev overlay's text field has the keyboard: the UI and the bindings get no keys, as
 /// when an EditBox has focus.
 #[derive(Resource, Default)]
-pub(crate) struct EguiKeyboard(pub(crate) bool);
+pub struct EguiKeyboard(pub bool);
 
 /// Whether the dev `I` inspector's world picking is armed; `player::control` and `target::click`
 /// read it every frame, so it lives here, and the default (disarmed) is the player's.
 #[derive(Resource, Default)]
-pub(crate) struct InspectMode {
-    pub(crate) enabled: bool,
+pub struct InspectMode {
+    pub enabled: bool,
 }
 
 /// One frame's UI-pass phase split in μs, as the `[ui-cost]` line prints it; owned by the
 /// producer so it exists whether or not its reader, `hover_log`, is compiled in.
 #[derive(Resource, Default, Clone)]
-pub(crate) struct UiFrameCost {
+pub struct UiFrameCost {
     /// FontStrings the layout had the font engine shape this frame, and the first few by name.
-    pub(crate) measured: usize,
-    pub(crate) measured_texts: Vec<String>,
-    pub(crate) tick: u128,
-    pub(crate) resolve: u128,
-    pub(crate) measure: u128,
-    pub(crate) extract: u128,
-    pub(crate) convert: u128,
-    pub(crate) diff: u128,
-    pub(crate) quads: usize,
-    pub(crate) solves: u64,
+    pub measured: usize,
+    pub measured_texts: Vec<String>,
+    pub tick: u128,
+    pub resolve: u128,
+    pub measure: u128,
+    pub extract: u128,
+    pub convert: u128,
+    pub diff: u128,
+    pub quads: usize,
+    pub solves: u64,
     /// Full layout-graph derivations this frame, each about 30× a solve; expected zero.
-    pub(crate) derives: u64,
-    pub(crate) skipped: bool,
+    pub derives: u64,
+    pub skipped: bool,
     /// Entries the splice re-converted this frame; 0 on a settled or full-conversion frame.
-    pub(crate) spliced: usize,
+    pub spliced: usize,
     /// Entries the splice dropped (drawn last frame, not now); `[ui-cost] dropped=` prints it.
-    pub(crate) dropped: usize,
+    pub dropped: usize,
 }
 
 /// Whether [`UiFrameCost`] is wanted this run: `WOW_UI_COST=1` or the hover recorder.
 #[derive(Resource, Default)]
-pub(crate) struct UiCostWanted(pub(crate) bool);
+pub struct UiCostWanted(pub bool);
 
 /// The mouse-enabled player-UI frame under the cursor; world pick and camera look yield to it.
 #[derive(Resource, Default)]
@@ -145,7 +146,7 @@ pub struct UiKeyboardCapture {
 /// world click-pick and orbit-start yield to. Over a world object the reference keeps an item
 /// payload and runs SELECT instead.
 #[derive(Resource, Default)]
-pub(crate) struct PlayerUiClickConsumed(pub(crate) bool);
+pub struct PlayerUiClickConsumed(pub bool);
 
 /// A press the UI consumed this frame, whatever is under the pointer: the layout drag's press
 /// returns at `0x766353`–`0x76635b`, and a right press with a payload held at the world input
@@ -187,7 +188,7 @@ pub(crate) struct UiFeed;
 /// the input pass and after every later host they are free to follow: the reference applies each
 /// inside its call, so an ask is drained the frame it is made, wherever in the pass its Lua ran.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct UiDrain;
+pub struct UiDrain;
 
 /// The player-UI paint pass, after the camera so world-anchored widgets use this frame's view.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -228,7 +229,7 @@ pub(crate) fn framexml_digest() -> String {
 }
 
 /// Run a Lua chunk and log a failure: the form for any run whose `Result` is not consumed.
-pub(crate) fn run_or_warn(script: &benilla_ui::script::UiScript, chunk: &str) {
+pub fn run_or_warn(script: &benilla_ui::script::UiScript, chunk: &str) {
     if let Err(e) = script.run(chunk) {
         warn!("ui_script: chunk failed: {e}");
     }
@@ -558,9 +559,10 @@ fn arbitrate_pointer_over_ui(
 
 /// The session lifecycle: the VM's birth, identity, death and reload.
 mod lifecycle;
+pub use lifecycle::PendingEntryUiLoad;
 pub(crate) use lifecycle::{
-    ingame_ui_up, run_pending_reload, setup_script, strings_vm, AddOnIdentity, PendingEntryUiLoad,
-    ReloadUiPending, SessionEnd,
+    ingame_ui_up, run_pending_reload, setup_script, strings_vm, AddOnIdentity, ReloadUiPending,
+    SessionEnd,
 };
 /// The leave-world sweep `0x490a80`: its latch, its schedule and its legs' order.
 mod sweep;

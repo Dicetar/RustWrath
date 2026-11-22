@@ -104,12 +104,12 @@ pub(crate) struct MailResult {
 /// rows, as the reference's close does (`0x4acd71`); the world-enter init (`0x4acb10`) and a
 /// disconnect clear everything but the bodies.
 #[derive(Resource, Default)]
-pub(crate) struct MailOpen {
+pub struct MailOpen {
     pub(crate) mailbox: Option<u64>,
     /// Wire order, which is the 1-based display order.
-    pub(crate) mails: Vec<MailListEntry>,
+    pub mails: Vec<MailListEntry>,
     /// Letter bodies by `item_text_id`, asked once.
-    pub(crate) bodies: QueryCache<u32, String>,
+    pub bodies: QueryCache<u32, String>,
     /// `MAIL_SHOW` owed: every mailbox use re-shows the window (`0x4acd10`).
     show_requested: bool,
     /// A list or send answer landed since the last feed: the VM's request lock clears.
@@ -239,7 +239,7 @@ impl LatchedWindow for MailOpen {
 /// A mailbox use (`0x5f6820` → `0x4acd10`): the latch first, with no test of the cell
 /// (`0x4acd1c`), so a use of the open mailbox closes the window and opens it again; then the cell
 /// (`0x4acd27`); the feed resets the compose tab and fires `MAIL_SHOW` (`0x4acd38`, `0x4acd42`).
-pub(crate) fn open_mailbox(world: &mut World, mailbox: u64) {
+pub fn open_mailbox(world: &mut World, mailbox: u64) {
     crate::ui_session::register(world, mailbox);
     world.resource_mut::<MailOpen>().click(mailbox);
 }

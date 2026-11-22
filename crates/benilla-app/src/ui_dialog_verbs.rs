@@ -186,7 +186,7 @@ impl AreaSpiritHealer {
 /// The three battleground queue slots (`0xb6e9d0`, stride `0x20`), each stamped with the moment
 /// its status landed. Kept across an in-session world enter (`0x4a9db0`), zeroed at session end.
 #[derive(Resource, Default)]
-pub(crate) struct BattlefieldQueue {
+pub struct BattlefieldQueue {
     slots: [Option<(BattlefieldStatus, Instant)>; 3],
     changed: bool,
     /// The slot the player is in (`[0x8457cc]`, set by status 3) and its map.
@@ -252,7 +252,7 @@ impl BattlefieldQueue {
         self.changed = true;
     }
 
-    pub(crate) fn slots(&self) -> &[Option<(BattlefieldStatus, Instant)>; 3] {
+    pub fn slots(&self) -> &[Option<(BattlefieldStatus, Instant)>; 3] {
         &self.slots
     }
 
@@ -266,7 +266,7 @@ impl BattlefieldQueue {
     }
 
     /// The map of the battleground the player is in, `LeaveBattlefield`'s payload (0 for `None`).
-    pub(crate) fn active_map(&self) -> Option<u32> {
+    pub fn active_map(&self) -> Option<u32> {
         self.active.map(|(_, map)| map)
     }
 
@@ -307,9 +307,9 @@ const STONE_TEXT_BYTES: usize = 255;
 
 /// The meeting-stone queue: the two globals and what the wire still owes the screen.
 #[derive(Resource, Default)]
-pub(crate) struct MeetingStone {
+pub struct MeetingStone {
     /// `[0xb72038]`, the queued area id, 0 for none.
-    pub(crate) area: u32,
+    pub area: u32,
     text: StoneText,
     /// `0x295` arrivals as `(previous area, status)`; the handler stores the new area before it
     /// switches, so that one is already in `area`.
@@ -547,8 +547,8 @@ pub(crate) fn meeting_stone_enter_world(
 
 /// A right-click on a `GAMEOBJECT_TYPE_MEETINGSTONE` (23) that passed the shared click gates.
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct MeetingStoneUse {
-    pub(crate) go_guid: u64,
+pub struct MeetingStoneUse {
+    pub go_guid: u64,
 }
 
 /// What the meeting stone's use slot `0x5f69d0` does with one click.

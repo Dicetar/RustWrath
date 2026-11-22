@@ -15,9 +15,9 @@ use bevy::prelude::*;
 // module paths read as they did inside `benilla-app`.
 #[cfg(feature = "hotpatch")]
 use benilla_app::hotpatch;
-use benilla_app::{
-    crash, dev, game_plugins, local_state, no_install, perf, run_mode, shutdown, video,
-};
+use benilla_app::{crash, game_plugins, local_state, no_install, perf, run_mode, shutdown, video};
+// The instruments, a crate of their own on top of the core.
+use benilla_dev as dev;
 
 /// The Wrath session's config, under the path the boot names it by.
 mod wrath {
@@ -48,6 +48,9 @@ type Extension<'a> = Box<dyn FnOnce(&mut App) + 'a>;
 
 /// The one body behind [`run`] and [`run_with`], not generic, so a launcher compiles none of it.
 fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
+    // The capture harness's boot answers (`run_mode::capture_ui_opted_in`, `start_state`), before
+    // anything below reads them.
+    dev::install_boot_hooks();
     // `WOW_HOVER_LOG_REPORT=<csv>` and `WOW_CAPTURE=list` print and exit before any setup.
     if let Ok(path) = std::env::var("WOW_HOVER_LOG_REPORT") {
         dev::report_recorded_hover_log(&path);

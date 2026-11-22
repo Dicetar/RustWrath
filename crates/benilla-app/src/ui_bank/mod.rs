@@ -16,20 +16,20 @@ use crate::ui_session::{CoreCloses, LatchApp, LatchedWindow, NpcWindow};
 /// `BankBagSlotPrices.dbc`, the client's own slot prices; absent, the purchase row shows 0 and
 /// the server still charges its own price.
 #[derive(Resource)]
-pub(crate) struct BankPrices(pub(crate) benilla_formats::BankBagSlotPrices);
+pub struct BankPrices(pub benilla_formats::BankBagSlotPrices);
 
 /// The open bank: the banker from `SMSG_SHOW_BANK`, until a close or a disconnect.
 #[derive(Resource, Default)]
-pub(crate) struct BankOpen {
+pub struct BankOpen {
     pub(crate) banker: Option<u64>,
 }
 
 impl BankOpen {
-    pub(crate) fn open(&mut self, banker: u64) {
+    pub fn open(&mut self, banker: u64) {
         self.banker = Some(banker);
     }
 
-    pub(crate) fn is_open(&self) -> bool {
+    pub fn is_open(&self) -> bool {
         self.banker.is_some()
     }
 

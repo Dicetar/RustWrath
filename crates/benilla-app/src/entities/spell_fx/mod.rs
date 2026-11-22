@@ -37,15 +37,15 @@ use lifecycle::{decay_span, FxAnimLife, FxDecay};
 const ATTACH_FALLBACKS: [u16; 2] = [0xf, 0x13];
 
 /// The self-termination span of a model with no sequence table; [`super::dest_fx`] shares it.
-pub(crate) const FALLBACK_SPAN: f32 = 1.0;
+pub const FALLBACK_SPAN: f32 = 1.0;
 
 /// How long a self-terminating instance may wait for a model that never loads.
 const PENDING_TIMEOUT: f32 = 10.0;
 
 /// The effect-model cache by path; `super::update_display_models` builds each entry's parts.
 #[derive(Resource, Default)]
-pub(crate) struct SpellFx {
-    pub(crate) models: HashMap<String, DisplayModel>,
+pub struct SpellFx {
+    pub models: HashMap<String, DisplayModel>,
 }
 
 /// Get-or-insert this path's cache entry and start its load: the only way to reach
@@ -62,7 +62,7 @@ pub(super) fn ensure_model(fx: &mut SpellFx, asset_server: &AssetServer, path: &
 /// Per-instance tint clones, material id → `(RGB loop, attach time)`: one cast is one phase, so an
 /// animated M2Color cannot share the doodad lane's global clock. An entry drops with its material.
 #[derive(Resource, Default)]
-pub(crate) struct FxTintAnims(
+pub struct FxTintAnims(
     HashMap<
         bevy::asset::AssetId<WowModelMaterial>,
         (std::sync::Arc<benilla_formats::RgbAnim>, f32),
@@ -91,11 +91,11 @@ pub(crate) fn tick_fx_tint(
 }
 
 /// The material store and the per-instance animation registries a part's clone joins.
-pub(crate) struct FxMaterials<'a> {
-    pub(crate) store: &'a mut Assets<WowModelMaterial>,
-    pub(crate) tint: &'a mut FxTintAnims,
-    pub(crate) uv: &'a mut benilla_world::doodad_anim::UvAnimMaterials,
-    pub(crate) table: &'a mut benilla_world::mat_anim_table::MatAnimTable,
+pub struct FxMaterials<'a> {
+    pub store: &'a mut Assets<WowModelMaterial>,
+    pub tint: &'a mut FxTintAnims,
+    pub uv: &'a mut benilla_world::doodad_anim::UvAnimMaterials,
+    pub table: &'a mut benilla_world::mat_anim_table::MatAnimTable,
 }
 
 /// One part's material for a new instance: the shared handle, or a per-instance clone when its RGB
@@ -147,7 +147,7 @@ fn fx_part_material(
 
 /// Where an effect-model instance sits in the client's model graph.
 #[derive(Clone, Copy, Default)]
-pub(crate) struct EffectHost {
+pub struct EffectHost {
     /// The model this instance is chained to ([`benilla_world::model_fade::ParentModel`]), if any.
     pub parent: Option<Entity>,
 }
@@ -156,7 +156,7 @@ pub(crate) struct EffectHost {
 /// since a bind-pose bound is wrong for a billboarded subtree; a `ground_anchor` instance's flat
 /// ground quads become projected decals ([`crate::ground_fx`]). Returns `false` while the model's
 /// parts still build.
-pub(crate) fn attach_effect_visuals(
+pub fn attach_effect_visuals(
     commands: &mut Commands,
     root: Entity,
     dm: &DisplayModel,

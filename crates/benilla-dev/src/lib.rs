@@ -1,3 +1,10 @@
+//! `benilla-dev`: the developer instruments on top of the `benilla-app` core: the debug panel, the
+//! capture harness and the scripted live probes, the hover log, asset churn, the world-entry
+//! preflight, the probe shield and the dev tools (hot reload, the addon profiler, the Lua
+//! inspector). `benilla-client` adds [`DevToolsPlugin`] and [`DevProbesPlugin`] at their places in
+//! the boot and installs [`install_boot_hooks`] first. A player build (`--no-default-features`)
+//! compiles them all out.
+//!
 //! The dev/player seam and its two instrument groups. Dev may see anything; nothing may depend on
 //! dev. The player build (`cargo build -p benilla --no-default-features` in `scripts/gates.sh`)
 //! holds the direction: a fact gameplay needs from an instrument goes to [`crate::run_mode`], never
@@ -7,7 +14,54 @@
 //! `pipe_warm` (without it a player on macOS eats every synchronous pipeline stall) and `art_scope`
 //! (engine, it travels with `WorldPlugins`).
 
+// A player build's dead code is the seam working (see `benilla-app`'s root).
+#![cfg_attr(not(feature = "dev"), allow(dead_code))]
+
 use bevy::prelude::*;
+
+#[cfg(feature = "dev")]
+mod asset_churn;
+#[cfg(feature = "dev")]
+mod capture;
+#[cfg(feature = "dev")]
+mod debug_panel;
+#[cfg(feature = "dev")]
+mod devtools;
+#[cfg(all(test, feature = "dev"))]
+mod fleet_tests;
+#[cfg(feature = "dev")]
+mod hover_log;
+#[cfg(feature = "dev")]
+mod preflight;
+#[cfg(feature = "dev")]
+mod probe_shield;
+
+// The core modules the instruments name, imported at the root so their `crate::…` paths read as
+// they did inside `benilla-app`, through the core's narrow `dev_seam` re-exports.
+#[cfg(feature = "dev")]
+use benilla_app::dev_seam::{
+    area, client_state, creature_anim, cvars, entities, glue_session, go_anim, go_templates, items,
+    loading_screen, local_state, names, net, perf, player, poi_marker, portrait, query_cache,
+    quest_trace, run_mode, script_calls, sound, target, transport, ui_action, ui_auction, ui_bank,
+    ui_battlefield, ui_binder, ui_chat, ui_dialog_verbs, ui_duel, ui_gossip, ui_item_text,
+    ui_items, ui_loot, ui_mail, ui_merchant, ui_models, ui_party, ui_pass, ui_petition, ui_quest,
+    ui_quest_log, ui_script, ui_session, ui_taxi, ui_trainer, ui_unit, vplates, world_backdrop,
+    world_state, wrath,
+};
+// The core's test fixtures, behind its `test-support` feature.
+#[cfg(all(test, feature = "dev"))]
+use benilla_app::dev_seam::{game_plugins, vm_pass};
+
+/// Installs the capture harness's boot answers into the core's `run_mode`
+/// (`benilla_app::run_mode::CaptureHooks`); `benilla-client` calls it first in its boot, before
+/// anything reads them. Nothing in a player build.
+pub fn install_boot_hooks() {
+    #[cfg(feature = "dev")]
+    benilla_app::run_mode::install_capture_hooks(benilla_app::run_mode::CaptureHooks {
+        ui_opted_in: crate::capture::ui_opted_in,
+        start_state: crate::capture::start_state,
+    });
+}
 
 /// `WOW_CAPTURE=list`: prints the harness scenario names `scripts/visual.sh` reads, before any
 /// window or asset setup; nothing in a player build.
@@ -368,7 +422,7 @@ mod tests {
     /// capture harness, so a test over it reads the fleet as the binary can build it.
     #[test]
     fn every_instrument_lists_the_whole_probe_fleet() {
-        let src = include_str!("dev.rs");
+        let src = include_str!("lib.rs");
         let plugins = |from: &str, to: &str| -> std::collections::BTreeSet<&str> {
             let at = src.find(from).expect("the start marker");
             let body = &src[at..at + src[at..].find(to).expect("the end marker")];

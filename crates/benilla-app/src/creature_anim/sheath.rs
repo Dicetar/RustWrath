@@ -276,7 +276,7 @@ pub struct SheathSwapMessage {
 /// `AnimationData.dbc`'s rows, whose WeaponFlags drive the per-animation sheath reconcile; absent,
 /// only the engaged draw and the remote server-byte pull apply.
 #[derive(Resource)]
-pub struct AnimData(pub(crate) benilla_formats::AnimDataCatalog);
+pub struct AnimData(pub benilla_formats::AnimDataCatalog);
 
 /// Load `AnimationData.dbc` off the patch chain at startup.
 pub(super) fn load_anim_data(mut commands: Commands, assets: Option<Res<WorldAssets>>) {

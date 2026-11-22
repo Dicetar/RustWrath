@@ -617,8 +617,8 @@ impl AttackSeam<'_, '_> {
 /// Mid-cast (`SMSG_SPELL_START` to GO or failure), inserted only for a nonzero cast time and
 /// removed by the same spell id (the reference's reap `0x614150(spellId, 0)` is keyed).
 #[derive(Component, Clone, Copy)]
-pub(crate) struct Casting {
-    pub(crate) spell_id: u32,
+pub struct Casting {
+    pub spell_id: u32,
     #[allow(dead_code)]
     pub(crate) until: Option<Instant>,
 }
@@ -655,10 +655,10 @@ pub struct ActionAnim {
 
 /// A cast lifecycle edge on a streamed unit, off the wire.
 #[derive(Message, Clone, Copy)]
-pub(crate) struct CastEvent {
-    pub(crate) entity: Entity,
-    pub(crate) spell_id: u32,
-    pub(crate) kind: CastEventKind,
+pub struct CastEvent {
+    pub entity: Entity,
+    pub spell_id: u32,
+    pub kind: CastEventKind,
     /// `SMSG_SPELL_GO`'s cast flags, 0 on every other edge: the tradeskill repeat's hook skips a
     /// GO with `0x41` set (`0x6e81de`, vmangos `Spell.h:54`).
     pub(crate) cast_flags: u16,
@@ -671,7 +671,7 @@ pub(crate) struct CastEvent {
 
 /// Which cast edge fired.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub(crate) enum CastEventKind {
+pub enum CastEventKind {
     /// `SMSG_SPELL_START`: the precast kit persists from here.
     Start,
     /// `SMSG_SPELL_GO`: reaps the precast, plays the cast kit.
@@ -887,7 +887,8 @@ pub(crate) use impact::{impact_tag, DefenseAnim, PendingImpacts, SwingImpact, Sw
 
 /// The cast and auto-repeat state the seams queue for after the pass.
 mod edits;
-pub(crate) use edits::{apply_unit_edits, flush_unit_edits, UnitEdit, UnitEdits};
+pub(crate) use edits::{apply_unit_edits, UnitEdit};
+pub use edits::{flush_unit_edits, UnitEdits};
 
 /// The unit's precast spell and its busy bit.
 mod precast;
@@ -910,9 +911,10 @@ use spell_visual::{
 // `crate::aura_visual`'s tests drive the aura-slot watcher directly.
 #[cfg(test)]
 pub(crate) use spell_visual::arm_aura_state_fx as arm_aura_state_fx_for_test;
+pub use spell_visual::FxStage;
 pub(crate) use spell_visual::{
-    held_strike_sound, ChainProcPlay, FxClass, FxStage, GroundList, KitPush, MissileSpawn,
-    PrecastTables, PrecastVisuals, SpellKitFx, SpellKitShake, SpellKitSound, SpellVisuals,
+    held_strike_sound, ChainProcPlay, FxClass, GroundList, KitPush, MissileSpawn, PrecastTables,
+    PrecastVisuals, SpellKitFx, SpellKitShake, SpellKitSound, SpellVisuals,
 };
 
 /// The per-unit animation state machine; `Transform` is required, its scale divides the rate, and
@@ -1006,7 +1008,7 @@ impl AnimDriver {
     }
 
     /// The base slot's playback rate, for the inspector.
-    pub(crate) fn rate(&self) -> f32 {
+    pub fn rate(&self) -> f32 {
         self.gait_rate
     }
 }
@@ -1073,7 +1075,7 @@ impl Default for AnimDriver {
 
 impl AnimDriver {
     /// The requested id playing now; the mouse pick's bounds follow it (`0x7089c0`).
-    pub(crate) fn active_anim(&self) -> Option<u16> {
+    pub fn active_anim(&self) -> Option<u16> {
         match self.mode {
             Mode::Gait => self.gait,
             Mode::Entering(sp) => Some(sp.enter()),

@@ -12,7 +12,7 @@ use crate::creature_anim::move_flags;
 /// a creature sends none. Absent means no modes; once inserted it lives as long as the entity, as
 /// the reference's word lives as long as the unit (`0x7c4850`).
 #[derive(Component, Default, Clone, Copy, PartialEq, Eq, Debug)]
-pub struct UnitMoveModes(pub(crate) u32);
+pub struct UnitMoveModes(pub u32);
 
 impl UnitMoveModes {
     /// `apply` is the bit's direction; the run/walk opcodes' inversion is folded at the parse

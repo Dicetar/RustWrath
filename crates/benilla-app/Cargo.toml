@@ -24,6 +24,9 @@ hotpatch = ["dev", "dep:benilla-hotpatch-bevy", "bevy/embedded_watcher"]
 # every edited workspace crate into the running process. Patches apply only with debug assertions,
 # so on the `dev` profile, never `play` or `ship`. Not with `bevy_dynamic_linking`.
 live_code = ["dev", "bevy/hotpatching"]
+# The whole-client test fixtures (`game_plugins::schedule_tests`, `local_state::test_env`) for the
+# tests of a crate on top (`benilla-dev`), reached through `dev_seam`.
+test-support = ["dep:indexmap"]
 
 [dependencies]
 anyhow.workspace = true
@@ -68,6 +71,8 @@ serde_json = { version = "1", optional = true }
 tempfile = { version = "3", optional = true }
 toml = "0.8"
 sha1 = { workspace = true }
+# `test-support`'s schedule census (`game_plugins::schedule_tests`), as in the dev-dependencies.
+indexmap = { version = "2.14.0", optional = true }
 # Collision for our kinematic character controller; 0.6 targets Bevy 0.18, 0.7 moves to 0.19.
 avian3d = "0.6"
 # Shapes and rasterizes `FontString` text standalone (`ui_text`), at bevy_text's own 0.16.

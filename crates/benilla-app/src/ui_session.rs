@@ -81,7 +81,7 @@ pub(crate) struct NpcWindowFeed;
 /// talent-wipe questions and the pet trainer's, as the reference re-runs its interact-range test
 /// against each one's latched guid. Each registers [`close_npc_session_out_of_range::<T>`] ahead
 /// of its feed.
-pub(crate) trait NpcSession: Resource {
+pub trait NpcSession: Resource {
     /// The bound NPC's guid; `None` when nothing is open.
     fn npc(&self) -> Option<u64>;
     /// The client-side close, with no packet.
@@ -130,7 +130,7 @@ pub(crate) fn close_npc_session_out_of_range<T: NpcSession>(
 /// The `"npc"` unit: the latched object's world entity and guid, read by the portrait booth as it
 /// reads [`crate::target::Selection`] for `"target"`.
 #[derive(Resource, Default, PartialEq, Eq, Debug)]
-pub(crate) struct InteractNpc(pub(crate) Option<Entity>, pub(crate) Option<u64>);
+pub struct InteractNpc(pub(crate) Option<Entity>, pub Option<u64>);
 
 /// Publish the latch as [`InteractNpc`]. The reference's `"npc"` is the latch itself (`0x515c00`),
 /// a trade's partner included, but a quest panel opened from a bag item, the mailbox and the text

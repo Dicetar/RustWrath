@@ -135,7 +135,7 @@ disjoint::disjoint_set! {
 
 /// The engine half of every script call: one applier per owner of the state a call touches.
 #[derive(SystemParam)]
-pub(crate) struct ScriptCallHost<'w, 's> {
+pub struct ScriptCallHost<'w, 's> {
     appliers: Appliers<'w, 's>,
     /// The channel the census counts sends on ([`benilla_ui::script::census`]).
     #[cfg(test)]
@@ -929,7 +929,7 @@ pub(crate) fn lent<R>(
 /// system that holds the VM takes, so whatever Lua it runs (an event's handlers, a widget's
 /// script, an `OnUpdate`, a chunk) makes calls that apply inside the verb.
 #[derive(SystemParam)]
-pub(crate) struct HostedVm<'w, 's> {
+pub struct HostedVm<'w, 's> {
     script: Option<NonSendMut<'w, UiScript>>,
     host: Option<ScriptCallHost<'w, 's>>,
 }
@@ -937,7 +937,7 @@ pub(crate) struct HostedVm<'w, 's> {
 impl HostedVm<'_, '_> {
     /// Run `f` on the VM with the host lent around all of it ([`hosted`]); `f` gets `None` with
     /// no VM.
-    pub(crate) fn run<R>(&mut self, f: impl FnOnce(Option<&mut UiScript>) -> R) -> R {
+    pub fn run<R>(&mut self, f: impl FnOnce(Option<&mut UiScript>) -> R) -> R {
         hosted(&mut self.script, &mut self.host, f)
     }
 }
@@ -962,20 +962,20 @@ pub(crate) fn hosted<R>(
 /// an engine turn ([`VmWith::turn`]), whose calls apply as the turn ends; `P` alone is
 /// [`VmWith::own`].
 #[derive(SystemParam)]
-pub(crate) struct VmWith<'w, 's, P: SystemParam + 'static> {
+pub struct VmWith<'w, 's, P: SystemParam + 'static> {
     script: Option<NonSendMut<'w, UiScript>>,
     set: disjoint::Pair<'w, 's, P, Option<ScriptCallHost<'w, 's>>>,
 }
 
 impl<P: SystemParam + 'static> VmWith<'_, '_, P> {
     /// `P`, read or written outside any Lua.
-    pub(crate) fn own(&mut self) -> SystemParamItem<'_, '_, P> {
+    pub fn own(&mut self) -> SystemParamItem<'_, '_, P> {
         self.set.p0()
     }
 
     /// Run `f` on the VM with the host lent around all of it, as [`HostedVm::run`]; `P` waits
     /// outside, so what a call does to it is there for the next [`Self::own`].
-    pub(crate) fn run<R>(&mut self, f: impl FnOnce(Option<&mut UiScript>) -> R) -> R {
+    pub fn run<R>(&mut self, f: impl FnOnce(Option<&mut UiScript>) -> R) -> R {
         let mut host = self.set.p1();
         match self.script.as_deref_mut() {
             Some(script) => lent(script, host.as_mut(), |script| f(Some(script))),
@@ -988,7 +988,7 @@ impl<P: SystemParam + 'static> VmWith<'_, '_, P> {
     /// turn ends, with the host lent. With no VM `f` gets `None`; with no host what waited is
     /// dropped.
     #[track_caller]
-    pub(crate) fn turn<R>(
+    pub fn turn<R>(
         &mut self,
         f: impl FnOnce(Option<&mut UiScript>, SystemParamItem<'_, '_, P>) -> R,
     ) -> R {
@@ -4436,101 +4436,5 @@ mod tests {
             .eval::<Vec<String>>("return ORDER")
             .expect("the order reads");
         assert_eq!(order, ["target DODGE", "CHAT_MSG_SYSTEM"]);
-    }
-
-    /// The systems of `app` that write the VM, and those of them whose declared access does not
-    /// cover the call host's, by schedule and name. An exclusive system declares no access and is
-    /// left out.
-    fn vm_writers_and_the_unhosted(app: &mut App) -> (Vec<String>, Vec<String>) {
-        use bevy::ecs::system::{IntoSystem, System};
-        let world = app.world_mut();
-        let host = System::initialize(&mut IntoSystem::into_system(|_: ScriptCallHost| {}), world);
-        let host = host.combined_access();
-        // Each system's access with the host's summed in, into one buffer reused across them.
-        let mut with_host = bevy::ecs::query::Access::new();
-        let labels: Vec<_> = world
-            .resource::<bevy::ecs::schedule::Schedules>()
-            .iter()
-            .map(|(_, s)| s.label())
-            .collect();
-        let (mut writers, mut unhosted) = (Vec::new(), Vec::new());
-        for label in labels {
-            world.schedule_scope(label, |world, schedule| {
-                schedule.graph_mut().systems.initialize(world);
-                let Some(vm) = world
-                    .components()
-                    .get_resource_id(std::any::TypeId::of::<UiScript>())
-                else {
-                    return;
-                };
-                let graph = schedule.graph();
-                for (key, system, _) in graph.systems.iter() {
-                    let Some(declared) = graph.systems.get(key) else {
-                        continue;
-                    };
-                    let access = declared.access.combined_access();
-                    if system.is_exclusive() || !access.has_resource_write(vm) {
-                        continue;
-                    }
-                    writers.push(system.name().to_string());
-                    with_host.clone_from(access);
-                    with_host.extend(host);
-                    if with_host != *access {
-                        unhosted.push(format!("{label:?}: {}", system.name()));
-                    }
-                }
-            });
-        }
-        unhosted.sort();
-        (writers, unhosted)
-    }
-
-    /// Every system that writes the VM holds its call host, so a call its Lua makes applies inside
-    /// the verb whatever entry the script came in by, as `TargetByName` (`0x489d60`) commits
-    /// through `SetSelection` (`0x493540`) before it returns. Read off each system's declared
-    /// access in every schedule of the client with every instrument and probe added, where a
-    /// system whose own parameters collide with the host's also fails to initialize. An exclusive
-    /// entry lends through [`with_hosted_vm`].
-    #[test]
-    #[ignore = "known failure on main (2026-11-18 CI baseline); run with --ignored"]
-    fn every_system_that_writes_the_vm_holds_its_call_host() {
-        // The census tells a bare writer from a hosted one.
-        let mut probe = App::new();
-        probe.add_systems(
-            Update,
-            (
-                |_: Option<NonSendMut<UiScript>>| {},
-                |_: HostedVm| {},
-                |_: VmWith<Res<'static, Time>>| {},
-            ),
-        );
-        let (writers, unhosted) = vm_writers_and_the_unhosted(&mut probe);
-        assert_eq!((writers.len(), unhosted.len()), (3, 1), "{unhosted:?}");
-
-        let mut app = crate::game_plugins::schedule_tests::headless_client_with(
-            crate::dev::add_every_instrument,
-        );
-        let (writers, unhosted) = vm_writers_and_the_unhosted(&mut app);
-        // The census reads the client's systems: a hundred writers at least in either build, and
-        // where the build carries type names, a feed, a death feed and a frame poll among them.
-        assert!(
-            writers.len() >= 100,
-            "the census reads the client's VM writers: {} read",
-            writers.len()
-        );
-        if writers.iter().any(|w| w.contains("benilla_app::")) {
-            for name in ["feed_dialog_verbs", "feed_death", "poll_area_spirit_healer"] {
-                assert!(
-                    writers.iter().any(|w| w.contains(name)),
-                    "the census reads the client's VM writers, `{name}` among them"
-                );
-            }
-        }
-        assert!(
-            unhosted.is_empty(),
-            "these systems write the VM without holding its call host (`HostedVm` or `VmWith`), \
-             so a call their Lua makes is refused:\n  {}",
-            unhosted.join("\n  ")
-        );
     }
 }
