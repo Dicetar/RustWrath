@@ -19,9 +19,12 @@ other agents, so the owner should never have to carry it between them by hand.
    integration checkout; do not edit, build or switch branches in it.
 4. **Write the task note first.** `.scratch/project-b/handoffs/<date>-<slug>.md`, committed on
    the branch, starting with the header below. Push it with the first commit.
-5. **Check in at every stopping point.** When a step is done, when the session or quota is about
-   to end, and before waiting on the owner: update the note, commit your own paths, push the
-   branch. Unfinished work is welcome on a task branch; see the rules below.
+5. **Check in at every stopping point, pushing code once.** Commit your own paths locally when a
+   step is done. Every push of code starts a 25–40 minute CI run, and the owner allows **one CI
+   run per task, at the end**: no code push per step, no extra branches, no pushed mid-task
+   merges, no re-runs or dispatches. Note-only updates may be pushed any time (Markdown-only
+   pushes run no CI). When the session or quota ends with the task unfinished, push the branch
+   once at that stop. Unfinished work is welcome on a task branch; see the rules below.
 6. **Finish.** Set `Status: ready to merge`, push, and say so on the issue. The integrator lands
    it on `main`.
 
@@ -59,7 +62,8 @@ update it in place rather than adding a new file per session.
 
 ## Reading CI
 
-Every push of code to any branch runs [CI](../../.github/workflows/ci.yml) on GitHub: `fmt`,
+Run CI once per task, on its final push (step 5 of [the loop](#the-loop)); verify locally before
+that. Every push of code to any branch runs [CI](../../.github/workflows/ci.yml) on GitHub: `fmt`,
 clippy and the workspace tests on Linux (`gates`), and the workspace tests on Windows
 (`windows`). Pushes that change only `.scratch/`, `docs/` or Markdown are skipped. This is the
 first place an agent's tests are compiled and run, and it uses no local Cargo slot.

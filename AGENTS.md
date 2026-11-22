@@ -27,15 +27,21 @@ do not authorize broad test runs, builds or live sessions.
 - Use one owner per ticket across whichever crates the fix needs. Permanent Astra/OC
   crate lockouts are retired. Agree disjoint edits or sequence a shared file explicitly.
 - Work on a task branch in your own worktree or clone, never in the integration checkout.
-  Commit and push that branch, with its task note, at every stopping point, finished or not;
-  work that is not on `origin` does not exist for the other agents. `origin` is public.
+  Commit locally as you go. Push the task note when you start (Markdown-only pushes run no CI)
+  and push code once: at the end of the task, or once when you stop unfinished; work that is
+  not on `origin` does not exist for the other agents. `origin` is public.
   The full loop is in [sync](docs/agents/sync.md).
+- **CI runs once per task, at the end (owner rule).** Never trigger intermediate CI: no code push
+  per commit, no extra or helper branches, no pushed mid-task merges, no job re-runs, no workflow
+  dispatches to see what CI says. Verify locally in between (the smallest check that covers the
+  change); at the end merge `origin/main` once, push once, read that one run. A failure is fixed
+  and pushed once more, never explored with extra runs.
 - When collaboration is authorized, use AutoSwarm to assign, communicate and collect work.
   Inspect tracked calls and manually opened sessions before starting duplicate work.
   Handle routine coordination directly; do not make the owner relay messages.
 - The owner builds and launches the client by hand, after a batch of changes has landed. Do not
   run Cargo or start the client unless the owner asks for it in that session. GitHub CI
-  compiles and tests every pushed branch; report its result as in
+  compiles and tests the task's one final push; report its result as in
   [reading CI](docs/agents/sync.md#reading-ci), or compilation and tests as not run.
 - One coordinator owns Cargo and client slots. Never start a competing build/client or
   terminate another session to acquire a slot. Revalidate stale notes and PIDs.
