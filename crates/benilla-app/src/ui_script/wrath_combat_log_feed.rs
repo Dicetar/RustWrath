@@ -4019,7 +4019,7 @@ mod tests {
         use bevy::ecs::system::RunSystemOnce;
         use bevy::prelude::App;
 
-        let mut script = script_with_units();
+        let script = script_with_units();
         script
             .run(r#"SPELL_FAILED_OUT_OF_RANGE = "Out of range""#)
             .unwrap();
@@ -4158,7 +4158,7 @@ mod tests {
             (VISIBLE, cast_display(VISIBLE, "Fireball")),
         ]);
 
-        let mut script = script_with_units();
+        let script = script_with_units();
         script
             .run(
                 r#"
