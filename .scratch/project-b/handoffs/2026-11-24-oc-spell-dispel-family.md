@@ -5,7 +5,7 @@ Owner: Beam Free
 Branch: oc/spell-dispel-family
 Issue: none
 Next: none
-CI: not run yet
+CI run 44978107411 failed: the feed did not import `WrathSpellDispelLog`/`WrathSpellDispelFailed`, and the decoder carried an unused duplicate `DispelFailed` variant that made `translate_gameplay` non-exhaustive. The overseer added the imports and removed the duplicate. Re-run pending.
 
 ## Scope
 

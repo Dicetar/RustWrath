@@ -3533,18 +3533,21 @@ impl WrathWorldView {
             received_at,
             ..hit
         });
-        self.spell_dispel_failed_log_revision = self.spell_dispel_failed_log_revision.saturating_add(1);
+        self.spell_dispel_failed_log_revision =
+            self.spell_dispel_failed_log_revision.saturating_add(1);
         if self.spell_dispel_failed_logs.len() >= SPELL_LOG_CAPACITY {
             self.spell_dispel_failed_logs.pop_front();
-            self.spell_dispel_failed_log_dropped = self.spell_dispel_failed_log_dropped.saturating_add(1);
+            self.spell_dispel_failed_log_dropped =
+                self.spell_dispel_failed_log_dropped.saturating_add(1);
         }
-        self.spell_dispel_failed_logs.push_back(WrathSpellDispelFailed {
-            session_epoch,
-            world_generation,
-            revision: self.spell_dispel_failed_log_revision,
-            received_at,
-            ..hit
-        });
+        self.spell_dispel_failed_logs
+            .push_back(WrathSpellDispelFailed {
+                session_epoch,
+                world_generation,
+                revision: self.spell_dispel_failed_log_revision,
+                received_at,
+                ..hit
+            });
     }
 
     pub(crate) fn apply_dispel_failed(

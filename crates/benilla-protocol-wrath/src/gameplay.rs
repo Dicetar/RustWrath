@@ -2312,12 +2312,6 @@ pub enum ServerEvent {
         dispel_spell_id: u32,
         failed_spell_ids: Vec<u32>,
     },
-    DispelFailed {
-        caster: u64,
-        victim: u64,
-        dispel_spell_id: u32,
-        failed_spell_ids: Vec<u32>,
-    },
     /// `MSG_CORPSE_QUERY`'s answer: the corpse's adjusted display map/position and real map.
     CorpseQuery {
         found: bool,

@@ -18,10 +18,11 @@ use crate::script_calls::VmWith;
 use crate::ui_script::UiClock;
 use crate::wrath::{
     WrathPartyKill, WrathSpellCastFailed, WrathSpellCastStart, WrathSpellCastSuccess,
-    WrathSpellDamage, WrathSpellEnergize, WrathSpellExecuteLog, WrathSpellExecuteLogRow,
-    WrathSpellHeal, WrathSpellMiss, WrathSpellPeriodicDamage, WrathSpellPeriodicDrain,
-    WrathSpellPeriodicEnergize, WrathSpellPeriodicHeal, WrathSpellPeriodicMiss, WrathSwing,
-    WrathWorldView, COMBAT_LOG_NAME_RETRY_SECONDS,
+    WrathSpellDamage, WrathSpellDispelFailed, WrathSpellDispelLog, WrathSpellEnergize,
+    WrathSpellExecuteLog, WrathSpellExecuteLogRow, WrathSpellHeal, WrathSpellMiss,
+    WrathSpellPeriodicDamage, WrathSpellPeriodicDrain, WrathSpellPeriodicEnergize,
+    WrathSpellPeriodicHeal, WrathSpellPeriodicMiss, WrathSwing, WrathWorldView,
+    COMBAT_LOG_NAME_RETRY_SECONDS,
 };
 
 /// Capacity loss and unresolved-name counts already reported, so each diagnostic is logged once
@@ -1992,7 +1993,11 @@ fn spell_dispel_log_args(
     spells: Option<&crate::ui_action::Spells>,
     ask: Ask<'_>,
 ) -> Vec<ScriptValue> {
-    let subevent = if hit.stolen { "SPELL_STOLEN" } else { "SPELL_DISPEL" };
+    let subevent = if hit.stolen {
+        "SPELL_STOLEN"
+    } else {
+        "SPELL_DISPEL"
+    };
     let mut args = combat_log_header(
         timestamp,
         subevent,
