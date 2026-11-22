@@ -61,14 +61,8 @@ pub(crate) struct CombatLogMemo {
     spell_execute_log_unresolved: u64,
     spell_dispel_log_dropped: u64,
     spell_dispel_log_unresolved: u64,
-    spell_dispel_dropped: u64,
-    spell_dispel_unresolved: u64,
-    spell_stolen_dropped: u64,
-    spell_stolen_unresolved: u64,
     spell_dispel_failed_dropped: u64,
     spell_dispel_failed_unresolved: u64,
-    spell_dispel_failed_log_dropped: u64,
-    spell_dispel_failed_log_unresolved: u64,
 }
 
 /// The visible marker for an endpoint whose name never resolved inside the retry window. It is
@@ -2034,28 +2028,6 @@ fn spell_dispel_log_args(
     args
 }
 
-fn spell_dispel_args(
-    timestamp: f64,
-    hit: &WrathSpellDispelLog,
-    source_name: &str,
-    target_name: &str,
-    spells: Option<&crate::ui_action::Spells>,
-    ask: Ask<'_>,
-) -> Vec<ScriptValue> {
-    spell_dispel_log_args(timestamp, hit, source_name, target_name, spells, ask)
-}
-
-fn spell_stolen_args(
-    timestamp: f64,
-    hit: &WrathSpellDispelLog,
-    source_name: &str,
-    target_name: &str,
-    spells: Option<&crate::ui_action::Spells>,
-    ask: Ask<'_>,
-) -> Vec<ScriptValue> {
-    spell_dispel_log_args(timestamp, hit, source_name, target_name, spells, ask)
-}
-
 fn spell_dispel_failed_args(
     timestamp: f64,
     hit: &WrathSpellDispelFailed,
@@ -2092,28 +2064,6 @@ fn spell_dispel_failed_args(
     args.push(failed_name.map_or(ScriptValue::Nil, ScriptValue::Str));
     args.push(ScriptValue::Int(i64::from(failed_school)));
     args
-}
-
-fn spell_dispel_failed_log_args(
-    timestamp: f64,
-    hit: &WrathSpellDispelFailed,
-    source_name: &str,
-    target_name: &str,
-    spells: Option<&crate::ui_action::Spells>,
-    ask: Ask<'_>,
-) -> Vec<ScriptValue> {
-    spell_dispel_failed_args(timestamp, hit, source_name, target_name, spells, ask)
-}
-
-fn dispel_failed_args(
-    timestamp: f64,
-    hit: &WrathSpellDispelFailed,
-    source_name: &str,
-    target_name: &str,
-    spells: Option<&crate::ui_action::Spells>,
-    ask: Ask<'_>,
-) -> Vec<ScriptValue> {
-    spell_dispel_failed_args(timestamp, hit, source_name, target_name, spells, ask)
 }
 
 fn spell_periodic_drain_args(

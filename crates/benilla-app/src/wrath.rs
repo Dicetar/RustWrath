@@ -2562,9 +2562,6 @@ pub struct WrathSpellDispelLog {
     pub received_at: f64,
 }
 
-pub type WrathSpellDispel = WrathSpellDispelLog;
-pub type WrathSpellStolen = WrathSpellDispelLog;
-
 /// One decoded `SMSG_DISPEL_FAILED` failed aura row.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WrathSpellDispelFailed {
@@ -2577,8 +2574,6 @@ pub struct WrathSpellDispelFailed {
     pub revision: u64,
     pub received_at: f64,
 }
-
-pub type WrathDispelFailed = WrathSpellDispelFailed;
 
 /// The decoded `SMSG_CALENDAR_SEND_CALENDAR` snapshot, kept as the wire delivered it. The UI
 /// reads the date from `zone_time` and pending invites from `invites`; the other rows stay here
@@ -2761,23 +2756,11 @@ pub struct WrathWorldView {
     pub spell_dispel_log_revision: u64,
     pub spell_dispel_log_dropped: u64,
     pub spell_dispel_log_unresolved: u64,
-    pub spell_dispels: VecDeque<WrathSpellDispelLog>,
-    pub spell_dispel_revision: u64,
-    pub spell_dispel_dropped: u64,
-    pub spell_dispel_unresolved: u64,
-    pub spell_stolens: VecDeque<WrathSpellDispelLog>,
-    pub spell_stolen_revision: u64,
-    pub spell_stolen_dropped: u64,
-    pub spell_stolen_unresolved: u64,
     /// Dispel-failed rows (`SMSG_DISPEL_FAILED`) waiting for the UI feed.
     pub spell_dispel_faileds: VecDeque<WrathSpellDispelFailed>,
     pub spell_dispel_failed_revision: u64,
     pub spell_dispel_failed_dropped: u64,
     pub spell_dispel_failed_unresolved: u64,
-    pub spell_dispel_failed_logs: VecDeque<WrathSpellDispelFailed>,
-    pub spell_dispel_failed_log_revision: u64,
-    pub spell_dispel_failed_log_dropped: u64,
-    pub spell_dispel_failed_log_unresolved: u64,
     /// Presentation mirror of the authority's active casts, keyed by caster, retaining 12340
     /// identity/timing beyond the vanilla cast-bar edges. Written only from resolved snapshots;
     /// never re-resolves wire facts. UI clocks are stamped here, not in the authority.
@@ -2891,22 +2874,10 @@ impl Default for WrathWorldView {
             spell_dispel_log_revision: 0,
             spell_dispel_log_dropped: 0,
             spell_dispel_log_unresolved: 0,
-            spell_dispels: VecDeque::new(),
-            spell_dispel_revision: 0,
-            spell_dispel_dropped: 0,
-            spell_dispel_unresolved: 0,
-            spell_stolens: VecDeque::new(),
-            spell_stolen_revision: 0,
-            spell_stolen_dropped: 0,
-            spell_stolen_unresolved: 0,
             spell_dispel_faileds: VecDeque::new(),
             spell_dispel_failed_revision: 0,
             spell_dispel_failed_dropped: 0,
             spell_dispel_failed_unresolved: 0,
-            spell_dispel_failed_logs: VecDeque::new(),
-            spell_dispel_failed_log_revision: 0,
-            spell_dispel_failed_log_dropped: 0,
-            spell_dispel_failed_log_unresolved: 0,
             casts: BTreeMap::new(),
             channels: BTreeMap::new(),
             last_cast_end: None,
@@ -3468,50 +3439,6 @@ impl WrathWorldView {
             received_at,
             ..hit
         });
-        self.spell_dispel_revision = self.spell_dispel_revision.saturating_add(1);
-        if self.spell_dispels.len() >= SPELL_LOG_CAPACITY {
-            self.spell_dispels.pop_front();
-            self.spell_dispel_dropped = self.spell_dispel_dropped.saturating_add(1);
-        }
-        self.spell_dispels.push_back(WrathSpellDispelLog {
-            session_epoch,
-            world_generation,
-            revision: self.spell_dispel_revision,
-            received_at,
-            ..hit
-        });
-        self.spell_stolen_revision = self.spell_stolen_revision.saturating_add(1);
-        if self.spell_stolens.len() >= SPELL_LOG_CAPACITY {
-            self.spell_stolens.pop_front();
-            self.spell_stolen_dropped = self.spell_stolen_dropped.saturating_add(1);
-        }
-        self.spell_stolens.push_back(WrathSpellDispelLog {
-            session_epoch,
-            world_generation,
-            revision: self.spell_stolen_revision,
-            received_at,
-            ..hit
-        });
-    }
-
-    pub(crate) fn apply_spell_dispel(
-        &mut self,
-        hit: WrathSpellDispelLog,
-        session_epoch: u64,
-        world_generation: u64,
-        received_at: f64,
-    ) {
-        self.apply_spell_dispel_log(hit, session_epoch, world_generation, received_at);
-    }
-
-    pub(crate) fn apply_spell_stolen(
-        &mut self,
-        hit: WrathSpellDispelLog,
-        session_epoch: u64,
-        world_generation: u64,
-        received_at: f64,
-    ) {
-        self.apply_spell_dispel_log(hit, session_epoch, world_generation, received_at);
     }
 
     pub(crate) fn apply_spell_dispel_failed(
@@ -3533,31 +3460,6 @@ impl WrathWorldView {
             received_at,
             ..hit
         });
-        self.spell_dispel_failed_log_revision =
-            self.spell_dispel_failed_log_revision.saturating_add(1);
-        if self.spell_dispel_failed_logs.len() >= SPELL_LOG_CAPACITY {
-            self.spell_dispel_failed_logs.pop_front();
-            self.spell_dispel_failed_log_dropped =
-                self.spell_dispel_failed_log_dropped.saturating_add(1);
-        }
-        self.spell_dispel_failed_logs
-            .push_back(WrathSpellDispelFailed {
-                session_epoch,
-                world_generation,
-                revision: self.spell_dispel_failed_log_revision,
-                received_at,
-                ..hit
-            });
-    }
-
-    pub(crate) fn apply_dispel_failed(
-        &mut self,
-        hit: WrathSpellDispelFailed,
-        session_epoch: u64,
-        world_generation: u64,
-        received_at: f64,
-    ) {
-        self.apply_spell_dispel_failed(hit, session_epoch, world_generation, received_at);
     }
 
     /// Clear every scoped rune/calendar/combat-log/LFG fact on a session end or world transfer.
@@ -3615,18 +3517,9 @@ impl WrathWorldView {
         self.spell_dispel_logs.clear();
         self.spell_dispel_log_dropped = 0;
         self.spell_dispel_log_unresolved = 0;
-        self.spell_dispels.clear();
-        self.spell_dispel_dropped = 0;
-        self.spell_dispel_unresolved = 0;
-        self.spell_stolens.clear();
-        self.spell_stolen_dropped = 0;
-        self.spell_stolen_unresolved = 0;
         self.spell_dispel_faileds.clear();
         self.spell_dispel_failed_dropped = 0;
         self.spell_dispel_failed_unresolved = 0;
-        self.spell_dispel_failed_logs.clear();
-        self.spell_dispel_failed_log_dropped = 0;
-        self.spell_dispel_failed_log_unresolved = 0;
         self.lfg_join_result = None;
         self.lfg_queue_status = None;
         self.lfg_update_player = None;
