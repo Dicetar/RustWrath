@@ -20,7 +20,7 @@ use mlua::{Lua, MultiValue, Value};
 
 use super::binding_abi::{number_arg, string_arg};
 use super::unit::{check_unit_token_in, is_civilian_kill};
-use super::Model;
+use super::{Model, WrathCurrencyState};
 
 /// The local player's honor snapshot, decoded by the app from the private honor descriptor
 /// fields. Kill counts are halves of `TWO_SHORT` fields, low honorable and high dishonorable.
@@ -100,6 +100,56 @@ pub enum PvpCall {
     Toggle,
 }
 
+impl super::Model {
+    pub(crate) fn set_wrath_currency_mask(&mut self, index: f64, enabled: f64, unused: bool) {
+        if !index.is_finite() || index < 1.0 {
+            return;
+        }
+        let Some(row) = self.wrath_currency.rows.get(index as usize - 1).cloned() else {
+            return;
+        };
+        if row.is_header || row.bit_index == 0 || row.bit_index > 64 {
+            return;
+        }
+        let (word, bit) = if row.bit_index <= 32 {
+            (0, row.bit_index - 1)
+        } else {
+            (1, row.bit_index - 33)
+        };
+        let names = if unused {
+            ["currencyTokensUnused1", "currencyTokensUnused2"]
+        } else {
+            ["currencyTokensBackpack1", "currencyTokensBackpack2"]
+        };
+        let name = names[word];
+        let current = self
+            .cvars
+            .get(name)
+            .map(|slot| super::binding_abi::s_str_to_int(&slot.value) as u32)
+            .unwrap_or(0);
+        let mask = 1u32 << bit;
+        let next = if enabled != 0.0 {
+            current | mask
+        } else {
+            current & !mask
+        };
+        super::cvars::set_from_engine(self, name, next.to_string());
+    }
+
+    pub(crate) fn set_wrath_currency_expanded(&mut self, index: f64, expanded: f64) {
+        if !index.is_finite() || index < 1.0 {
+            return;
+        }
+        let Some(row) = self.wrath_currency.rows.get(index as usize - 1).cloned() else {
+            return;
+        };
+        if row.is_header {
+            self.wrath_currency_expanded
+                .insert(row.category_id, expanded != 0.0);
+        }
+    }
+}
+
 impl super::UiScript {
     /// The `TogglePVP` calls a harness's VM kept ([`Self::keep_calls`]).
     pub fn take_pvp_toggles(&mut self) -> u32 {
@@ -119,6 +169,32 @@ impl super::UiScript {
     /// no event: the app fires `PLAYER_PVP_KILLS_CHANGED`/`PLAYER_PVP_RANK_CHANGED` alongside.
     pub fn set_honor(&mut self, honor: Option<HonorState>) {
         self.model_mut().honor = honor;
+    }
+
+    /// Push the app-resolved 3.3.5 TokenFrame list and backpack rows.
+    pub fn set_wrath_currency(&mut self, state: WrathCurrencyState) {
+        self.model_mut().wrath_currency = state;
+    }
+
+    /// Read the persisted expansion state for a sorted currency category.
+    pub fn wrath_currency_expanded(&self, category_id: u32) -> bool {
+        self.model_ref()
+            .wrath_currency_expanded
+            .get(&category_id)
+            .copied()
+            .unwrap_or(true)
+    }
+
+    /// Apply one stock currency display setting through the VM CVar write queue.
+    pub fn set_wrath_currency_mask(&mut self, index: f64, enabled: f64, unused: bool) {
+        self.model_mut()
+            .set_wrath_currency_mask(index, enabled, unused);
+    }
+
+    /// Apply the stock category expansion state.
+    pub fn set_wrath_currency_expanded(&mut self, index: f64, expanded: f64) {
+        self.model_mut()
+            .set_wrath_currency_expanded(index, expanded);
     }
 
     /// Push the player's melee crit percentage from `PLAYER_CRIT_PERCENTAGE`; `GetCritChanceFromAgility("player")` reads it.

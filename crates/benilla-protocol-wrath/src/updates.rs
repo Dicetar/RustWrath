@@ -32,6 +32,18 @@ pub mod move_flags {
 /// The extra movement flags carrying `MOVEMENTFLAG2_INTERPOLATED_MOVEMENT`.
 pub const MOVE2_INTERPOLATED: u16 = 0x1;
 
+/// `MOVEMENTFLAG2_ALWAYS_ALLOW_PITCHING` (`UnitDefines.h:435`), set on every vehicle whose
+/// Vehicle.dbc row allows pitching (`Vehicle.cpp:604-605`).
+pub const MOVE2_ALWAYS_ALLOW_PITCHING: u16 = 0x20;
+
+/// Whether a living movement block carries the pitch float: SWIMMING or FLYING, or the
+/// always-allow-pitching extra flag (`Unit::BuildMovementPacket`, `Unit.cpp:16114-16117`).
+/// Reading it on the move flags alone misaligns every later field of such a vehicle's block.
+fn has_pitch(move_flags: u32, extra_flags: u16) -> bool {
+    move_flags & move_flags::SWIMMING_OR_FLYING != 0
+        || extra_flags & MOVE2_ALWAYS_ALLOW_PITCHING != 0
+}
+
 /// Object type ids as the create block writes them (`Object.cpp:230`).
 pub mod type_id {
     pub const OBJECT: u8 = 0;
@@ -181,7 +193,7 @@ pub fn movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
         if snap.move_flags & move_flags::ON_TRANSPORT != 0 {
             snap.transport = Some(read_transport(r, snap.extra_flags)?);
         }
-        if snap.move_flags & move_flags::SWIMMING_OR_FLYING != 0 {
+        if has_pitch(snap.move_flags, snap.extra_flags) {
             r.f32()?; // pitch
         }
         r.u32()?; // fall time
@@ -313,7 +325,7 @@ pub fn standalone_movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
     if snap.move_flags & move_flags::ON_TRANSPORT != 0 {
         snap.transport = Some(read_transport(r, snap.extra_flags)?);
     }
-    if snap.move_flags & move_flags::SWIMMING_OR_FLYING != 0 {
+    if has_pitch(snap.move_flags, snap.extra_flags) {
         r.f32()?;
     }
     r.u32()?;
@@ -345,4 +357,53 @@ pub fn values_block(r: &mut Reader) -> Result<Vec<(u16, u32)>> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The head of a living block (`Unit::BuildMovementPacket`) for an object standing still,
+    /// up to and including the fall time; `pitch` is written only when given.
+    fn living_head(move_flags: u32, extra_flags: u16, pitch: Option<f32>) -> Vec<u8> {
+        let mut p = move_flags.to_le_bytes().to_vec();
+        p.extend(extra_flags.to_le_bytes());
+        p.extend(7u32.to_le_bytes()); // time
+        for v in [1.0f32, 2.0, 3.0, 0.5] {
+            p.extend(v.to_le_bytes());
+        }
+        if let Some(pitch) = pitch {
+            p.extend(pitch.to_le_bytes());
+        }
+        p.extend(0u32.to_le_bytes()); // fall time
+        p
+    }
+
+    /// A vehicle whose row allows pitching gets `MOVEMENTFLAG2_ALWAYS_ALLOW_PITCHING`, and the
+    /// server writes its pitch with no SWIMMING or FLYING flag. The create block must still read
+    /// the speeds and the vehicle id from their own bytes and end where the builder ended.
+    #[test]
+    fn pitching_vehicle_reads_its_pitch_without_swim_or_fly() {
+        let mut p = (update_flags::LIVING | update_flags::VEHICLE)
+            .to_le_bytes()
+            .to_vec();
+        p.extend(living_head(0, MOVE2_ALWAYS_ALLOW_PITCHING, Some(0.25)));
+        let speeds = [2.5f32, 7.0, 4.5, 2.5, 4.72, 7.0, 4.5, 3.5, 3.5];
+        for s in speeds {
+            p.extend(s.to_le_bytes());
+        }
+        p.extend(321u32.to_le_bytes()); // vehicle id
+        p.extend(0.5f32.to_le_bytes()); // vehicle orientation
+        let mut r = Reader::new(&p);
+        let snap = movement_block(&mut r).unwrap();
+        assert!(r.done());
+        assert_eq!(snap.speeds, Some(speeds));
+        assert_eq!(snap.vehicle_id, Some(321));
+
+        // The standalone movement shape gates the pitch the same way.
+        let p = living_head(0, MOVE2_ALWAYS_ALLOW_PITCHING, Some(0.25));
+        let mut r = Reader::new(&p);
+        standalone_movement_block(&mut r).unwrap();
+        assert!(r.done());
+    }
 }
