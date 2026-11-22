@@ -243,8 +243,8 @@ pub(crate) mod xml_layout;
 mod zone_text;
 
 pub use action::{
-    macro_slot_id, macro_slot_word, ActionBarCall, ActionSlot, ActionState, ActionUse, CastView,
-    OpenProfessions, Profession,
+    equipment_set_slot_id, macro_slot_id, macro_slot_word, ActionBarCall, ActionSlot, ActionState,
+    ActionUse, CastView, OpenProfessions, Profession,
 };
 pub use addon::{addon_load_context, AddOnInfo, AddonLoad, AddonReply, AddonSecurity};
 pub use addon_enable::{AddonStateFiles, EnableHash, EnableStore};
@@ -291,9 +291,9 @@ pub use cursor::equip::{AutoEquip, BIND_WHEN_EQUIPPED};
 pub use cursor::money::coin_icon;
 pub use cursor::swap::Swap;
 pub use cursor::{
-    CursorAction, CursorItem, CursorMacro, CursorMerchantItem, CursorMoney, CursorPayload,
-    CursorPetAction, CursorSpell, CursorStablePet, EnchantAnswer, EnchantConfirm, HeldCursor,
-    ItemPick, WorldPick, EQUIPMENT_BAG,
+    CursorAction, CursorEquipmentSet, CursorItem, CursorMacro, CursorMerchantItem, CursorMoney,
+    CursorPayload, CursorPetAction, CursorSpell, CursorStablePet, EnchantAnswer, EnchantConfirm,
+    HeldCursor, ItemPick, WorldPick, EQUIPMENT_BAG,
 };
 pub use cvar_checks::{
     check_base_mip, check_camera_decay, check_camera_distance_max, check_camera_pitch,

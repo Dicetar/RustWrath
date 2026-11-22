@@ -185,6 +185,8 @@ fn play_item_gesture_sounds(
         | CursorPayload::Action(_)
         | CursorPayload::Macro(_)
         | CursorPayload::PetAction(_)
+        // 12340's set grab and its clear arm play the same pair (`0x520DC0`, `GameUI.cpp:2554`).
+        | CursorPayload::EquipmentSet(_)
         // Mode 10: the stabled-pet grab `0x495010` calls the same generic path.
         | CursorPayload::StablePet(_)
         // Mode 2: money pickup and drop both play `LOOTWINDOWCOINSOUND`, never the generic drop

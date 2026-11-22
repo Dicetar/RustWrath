@@ -16,6 +16,9 @@ use super::Model;
 pub(crate) const ACTION_KIND_SPELL: u8 = 0x00;
 pub(crate) const ACTION_KIND_MACRO: u8 = 0x40;
 pub(crate) const ACTION_KIND_ITEM: u8 = 0x80;
+/// 12340's set tag, `0x20000000 | setId` (`PutActionInSlot` `0x5AB120`), AzerothCore's
+/// `ACTION_BUTTON_EQSET` (`Player.h:224`), which `HandleSetActionButtonOpcode` stores.
+pub(crate) const ACTION_KIND_EQUIPMENT_SET: u8 = 0x20;
 
 /// The icon directory a macro's basename is formatted after (`0x84c988`, the string at
 /// `0x84ca64`).
@@ -26,6 +29,14 @@ const MACRO_ICON_DIR: &str = "Interface\\Icons\\";
 /// macro's id has bit 24 set, so its slot's kind byte is 0x41 (vmangos `ACTION_BUTTON_CMACRO`).
 pub fn macro_slot_id(kind: u8, action: u32) -> Option<u32> {
     const TAG: u32 = (ACTION_KIND_MACRO as u32) << 24;
+    let word = (u32::from(kind) << 24) | (action & 0x00ff_ffff);
+    (word & 0xf000_0000 == TAG).then_some(word & !TAG)
+}
+
+/// The equipment set id a slot word holds, if it is a set's: 12340
+/// `CGActionBar::GetEquipmentSetID` (`0x5A7950`), `action & 0xDFFFFFFF` when the top nibble is 2.
+pub fn equipment_set_slot_id(kind: u8, action: u32) -> Option<u32> {
+    const TAG: u32 = (ACTION_KIND_EQUIPMENT_SET as u32) << 24;
     let word = (u32::from(kind) << 24) | (action & 0x00ff_ffff);
     (word & 0xf000_0000 == TAG).then_some(word & !TAG)
 }
@@ -394,17 +405,21 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             // macro with no icon gives the directory alone.
             let tex = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model
-                    .actions
-                    .get(&action)
-                    .and_then(|s| match macro_slot_id(s.kind, s.action) {
+                model.actions.get(&action).and_then(|s| {
+                    // 12340's set arm (`0x5A7A90`) formats the set's icon live through
+                    // `GetFullIconPath` (`0x5AE6B0`), the empty string for a set gone.
+                    if let Some(set_id) = equipment_set_slot_id(s.kind, s.action) {
+                        return Some(super::equipment::set_icon_path(&model, set_id));
+                    }
+                    match macro_slot_id(s.kind, s.action) {
                         Some(id) => model.macros.by_id(id).map(|m| {
                             m.texture
                                 .clone()
                                 .unwrap_or_else(|| MACRO_ICON_DIR.to_string())
                         }),
                         None => s.texture.clone(),
-                    })
+                    }
+                })
             };
             match tex {
                 Some(t) => Ok(Value::String(lua.create_string(&t)?)),
@@ -428,6 +443,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let action = binding_abi::index_arg32(lua, action, "Usage: GetActionInfo(slot)")?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let mut out = MultiValue::new();
+            // 12340's last arm (`0x5A8F10`, `ActionBarFrame_Scripts.cpp:130-142`): a set slot
+            // answers `"equipmentset"` and the set's name, nothing once the set is gone.
+            if let Some(set_id) = model
+                .actions
+                .get(&action)
+                .and_then(|s| equipment_set_slot_id(s.kind, s.action))
+            {
+                if let Some(set) = model.equipment_sets.sets.iter().find(|s| s.id == set_id) {
+                    out.push_back(Value::String(lua.create_string("equipmentset")?));
+                    out.push_back(Value::String(lua.create_string(&set.name)?));
+                }
+                return Ok(out);
+            }
             if let Some(slot) = model.actions.get(&action) {
                 let (kind, id, sub_type) = match macro_slot_id(slot.kind, slot.action) {
                     Some(id) => ("macro", id, ""),
@@ -496,12 +524,21 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let slot = super::binding_abi::number_arg(lua, slot, "Usage: GetActionText(slot)")?;
             let name = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
-                u32::try_from(slot)
-                    .ok()
-                    .and_then(|s| model.actions.get(&s))
-                    .and_then(|s| macro_slot_id(s.kind, s.action))
-                    .and_then(|id| model.macros.by_id(id))
-                    .map(|m| m.name.clone())
+                let held = u32::try_from(slot).ok().and_then(|s| model.actions.get(&s));
+                // 12340 adds the set arm (`0x5A7D90`, `ActionBarFrame_Scripts.cpp:252`): the
+                // set's name, nil once it is gone.
+                match held.and_then(|s| equipment_set_slot_id(s.kind, s.action)) {
+                    Some(set_id) => model
+                        .equipment_sets
+                        .sets
+                        .iter()
+                        .find(|s| s.id == set_id)
+                        .map(|s| s.name.clone()),
+                    None => held
+                        .and_then(|s| macro_slot_id(s.kind, s.action))
+                        .and_then(|id| model.macros.by_id(id))
+                        .map(|m| m.name.clone()),
+                }
             };
             match name {
                 Some(n) => Ok(Value::String(lua.create_string(&n)?)),
@@ -569,6 +606,30 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 },
                 None => None,
             };
+            // 12340 `CGActionBar::UseAction`'s set arm (`0x5ABBC0`) calls
+            // `CGEquipmentManager::EquipSet` (`0x5AE660`): `WEAR_EQUIPMENT_SET` with the set's name
+            // while the set exists, and nothing else; the stock handler does the use.
+            if let Some(set_id) = model
+                .actions
+                .get(&action)
+                .and_then(|s| equipment_set_slot_id(s.kind, s.action))
+            {
+                let name = model
+                    .equipment_sets
+                    .sets
+                    .iter()
+                    .find(|s| s.id == set_id)
+                    .map(|s| s.name.clone());
+                drop(model);
+                if let Some(name) = name {
+                    super::tick::fire_event_into(
+                        lua,
+                        "WEAR_EQUIPMENT_SET",
+                        vec![super::ScriptValue::Str(name)],
+                    );
+                }
+                return Ok(());
+            }
             let item_locks = model.item_locks.iter().copied().collect();
             drop(model);
             super::calls::submit(
@@ -698,6 +759,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, action: Value| {
             // `is-number` else `Usage: IsUsableAction(slot)` (`0x84c0f0`, `0x4e744f`).
             let action = binding_abi::index_arg32(lua, action, "Usage: IsUsableAction(slot)")?;
+            // 12340 `UpdateUsableAction`'s set arm (`0x5A9E20`): the set gates are read here,
+            // live; the app's state carries the control and stun legs.
+            let set_id = lua
+                .app_data_ref::<Model>()
+                .expect("model app_data")
+                .actions
+                .get(&action)
+                .and_then(|s| equipment_set_slot_id(s.kind, s.action));
+            if let Some(set_id) = set_id {
+                let usable = super::equipment::set_usable_on_bar(lua, set_id)
+                    && matches!(state_flag(lua, action, |s| s.usable), Value::Integer(_));
+                return Ok((flag(usable), Value::Nil));
+            }
             Ok((
                 state_flag(lua, action, |s| s.usable),
                 state_flag(lua, action, |s| s.not_enough_mana),

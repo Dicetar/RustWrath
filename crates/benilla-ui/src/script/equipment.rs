@@ -5,9 +5,12 @@
 //! copy back before it signals. The ignored-slot marks (`m_ignoredSlots[19]`, `0xC1E908`) are
 //! the VM's: only the natives below write them, and a save carries them.
 //!
-//! Not supported: `PickupEquipmentSet` and `PickupEquipmentSetByName` (`0x5AF2C0`,
-//! `0x5AF250`) put a set on the cursor (`CGGameUI::SetCursorEquipmentSet`), and the cursor has
-//! no equipment-set payload yet; both are recorded as unsupported and do nothing.
+//! `PickupEquipmentSet` and `PickupEquipmentSetByName` (`0x5AF2C0`, `0x5AF250`) put a set on the
+//! cursor (`CGGameUI::SetCursorEquipmentSet`, `0x520DC0`) as
+//! [`super::cursor::CursorPayload::EquipmentSet`], which the action bar stores as
+//! `0x20000000 | id` ([`super::action::ACTION_KIND_EQUIPMENT_SET`]); the bar's set queries read
+//! the list here live. Not modelled: `CanPerformAction(14)`, the tainted-call refusal of the
+//! by-name pickup, which the bar's own pickup and place verbs do not model either.
 
 use mlua::{Lua, Table, Value};
 
@@ -141,6 +144,27 @@ impl UiScript {
         self.model_ref().equipment_sets.clone()
     }
 
+    /// 12340 `CGActionBar::UpdateEquipmentSet` (`0x5AAA00`), which `SaveSet` (`0x5ADE50`) runs for
+    /// a set the server has numbered, past its copy and before its send: each slot holding set `id`,
+    /// lowest first, signals `ACTIONBAR_SLOT_CHANGED`. The usable refresh it also runs is the app's
+    /// next state push.
+    pub fn signal_equipment_set_slots(&mut self, id: u32) {
+        let mut held: Vec<u32> = self
+            .model_ref()
+            .actions
+            .iter()
+            .filter(|(_, s)| super::action::equipment_set_slot_id(s.kind, s.action) == Some(id))
+            .map(|(&slot, _)| slot)
+            .collect();
+        held.sort_unstable();
+        for slot in held {
+            self.fire_event(
+                "ACTIONBAR_SLOT_CHANGED",
+                vec![ScriptValue::Int(i64::from(slot))],
+            );
+        }
+    }
+
     /// The ignored-slot marks, for a harness.
     pub fn equipment_ignored_slots(&self) -> [bool; EQUIPMENT_SET_SLOTS] {
         self.model_ref().equipment_ignored
@@ -196,6 +220,80 @@ fn can_use(model: &Model) -> bool {
             .cvars
             .get("equipmentmanager")
             .is_some_and(|c| super::binding_abi::s_str_to_int(&c.value) != 0)
+}
+
+/// `CGEquipmentManager::GetFullIconPath` (`0x5AE6B0`) of a set's stored icon: the inventory icon
+/// directory and the file name, `None` for an empty icon, which formats the empty string.
+pub(crate) fn full_icon_path(icon: &str) -> Option<String> {
+    (!icon.is_empty()).then(|| format!("{ICON_PATH}{icon}"))
+}
+
+/// `GetFullIconPath` of set `id`, the empty string for a set gone or an empty icon: what the
+/// bar's texture getter answers for a set slot (`0x5A7A90`).
+pub(crate) fn set_icon_path(model: &Model, id: u32) -> String {
+    model
+        .equipment_sets
+        .sets
+        .iter()
+        .find(|s| s.id == id)
+        .and_then(|s| full_icon_path(&s.icon))
+        .unwrap_or_default()
+}
+
+/// `CGEquipmentManager::SetContainsLockedItems` (`0x5AD940`): a held item of `set` carries the
+/// client lock and is not on the buyback list.
+fn contains_locked_items(lua: &Lua, set: &EquipmentSetView) -> bool {
+    let locks = model(lua).item_locks.clone();
+    set.items.iter().any(|&guid| {
+        guid > IGNORED
+            && locks.contains(&guid)
+            && super::host::with_host(lua, |host| host.equipment_item(guid))
+                .flatten()
+                .is_some_and(|item| item.place != EquipmentItemPlace::Buyback)
+    })
+}
+
+/// `CGEquipmentManager::SetUsesLockedSlots` (`0x5AE040`): an item worn in a slot the set does not
+/// ignore carries the client lock.
+fn uses_locked_slots(model: &Model, set: &EquipmentSetView) -> bool {
+    set.items.iter().enumerate().any(|(slot, &guid)| {
+        guid != IGNORED
+            && model
+                .inventory_slots
+                .get(slot + 1)
+                .and_then(Option::as_ref)
+                .is_some_and(|worn| super::cursor::item_locked(model, worn.guid))
+    })
+}
+
+/// The set gates of 12340 `CGActionBar::UpdateUsableAction` (`0x5A9E20`, lines 333-349) for a
+/// slot holding set `id`: the manager usable (`CanUseEquipmentSets(false)`), the set listed, none
+/// of its items locked and none of its worn slots locked. The control and stun legs that follow
+/// are the app's, in the slot's pushed state.
+pub(crate) fn set_usable_on_bar(lua: &Lua, id: u32) -> bool {
+    let set = {
+        let m = model(lua);
+        if !can_use(&m) {
+            return false;
+        }
+        let Some(set) = m.equipment_sets.sets.iter().find(|s| s.id == id).cloned() else {
+            return false;
+        };
+        if uses_locked_slots(&m, &set) {
+            return false;
+        }
+        set
+    };
+    !contains_locked_items(lua, &set)
+}
+
+/// `SetCursorEquipmentSet(id)` (`0x520DC0`) from a Lua verb: refused before its clear for an id
+/// no set holds, else the clear and the set ([`super::cursor::set_cursor`]).
+fn pick_up_set(lua: &Lua, id: u32) {
+    let known = model(lua).equipment_sets.sets.iter().any(|s| s.id == id);
+    if known {
+        super::cursor::set_cursor(lua, true, |m| super::cursor::equipment_set_payload(m, id));
+    }
 }
 
 fn signal_error(lua: &Lua, key: &str) {
@@ -376,23 +474,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 name,
                 r#"Usage: EquipmentSetContainsLockedItems("setName")"#,
             )?;
-            let (set, locks) = {
-                let m = model(lua);
-                (
-                    set_by_name(&m.equipment_sets, &name).cloned(),
-                    m.item_locks.clone(),
-                )
-            };
+            let set = set_by_name(&model(lua).equipment_sets, &name).cloned();
             let Some(set) = set else {
                 return Ok(mlua::MultiValue::new());
             };
-            let locked = set.items.iter().any(|&guid| {
-                guid > IGNORED
-                    && locks.contains(&guid)
-                    && super::host::with_host(lua, |host| host.equipment_item(guid))
-                        .flatten()
-                        .is_some_and(|item| item.place != EquipmentItemPlace::Buyback)
-            });
+            let locked = contains_locked_items(lua, &set);
             // `0x5AF320` pushes `true` or returns nothing.
             Ok(if locked {
                 mlua::MultiValue::from_vec(vec![Value::Boolean(true)])
@@ -463,9 +549,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "DeleteEquipmentSet",
         lua.create_function(|lua, name: Value| {
             let name = name_arg(lua, name, r#"Usage: DeleteEquipmentSet("setName")"#)?;
-            if name.is_empty() || set_by_name(&model(lua).equipment_sets, &name).is_none() {
+            let id = set_by_name(&model(lua).equipment_sets, &name).map(|s| s.id);
+            let Some(id) = id.filter(|_| !name.is_empty()) else {
                 return Ok(());
-            }
+            };
+            // `0x5AE260` empties the bar's slots of the set first (`RemoveEquipmentSet`,
+            // `0x5AAE20`), each sent and signalled, then drops the set and sends the delete.
+            super::tick::verb(lua, |m| super::cursor::clear_equipment_set_slots(m, id));
             super::calls::submit(
                 lua,
                 super::ScriptCall::EquipmentSet(EquipmentSetCall::Delete { name }),
@@ -543,18 +633,36 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             }]))
         })?,
     )?;
-    for verb in ["PickupEquipmentSet", "PickupEquipmentSetByName"] {
-        g.set(
-            verb,
-            lua.create_function(move |lua, _: mlua::MultiValue| {
-                model(lua).record_unsupported_native_once(
-                    verb,
-                    "the cursor has no equipment-set payload (SetCursorEquipmentSet) yet",
-                );
-                Ok(())
-            })?,
-        )?;
-    }
+    // `PickupEquipmentSetByName(name)` (`0x5AF250`): a non-empty name of a listed set goes on the
+    // cursor; anything else does nothing.
+    g.set(
+        "PickupEquipmentSetByName",
+        lua.create_function(|lua, name: Value| {
+            let name = name_arg(lua, name, r#"Usage: PickupEquipmentSetByName("setName")"#)?;
+            let id = set_by_name(&model(lua).equipment_sets, &name).map(|s| s.id);
+            if let Some(id) = id.filter(|_| !name.is_empty()) {
+                pick_up_set(lua, id);
+            }
+            Ok(())
+        })?,
+    )?;
+    // `PickupEquipmentSet(index)` (`0x5AF2C0`): the set at 1-based list `index`
+    // (`GetSetByIndex(trunc(index) - 1)`), nothing for a free row.
+    g.set(
+        "PickupEquipmentSet",
+        lua.create_function(|lua, index: Value| {
+            let n = super::binding_abi::is_number(lua, index)
+                .ok_or_else(|| mlua::Error::runtime("Usage: PickupEquipmentSet(setIndex)"))?;
+            let row = i64::from(super::binding_abi::ftol(n)) - 1;
+            let id = usize::try_from(row)
+                .ok()
+                .and_then(|row| model(lua).equipment_sets.sets.get(row).map(|s| s.id));
+            if let Some(id) = id {
+                pick_up_set(lua, id);
+            }
+            Ok(())
+        })?,
+    )?;
     Ok(())
 }
 
