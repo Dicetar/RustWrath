@@ -848,6 +848,14 @@ fn destroy_as_out_of_range(guid: u64) -> Vec<u8> {
     p
 }
 
+/// The server broadcasts a movement opcode back to observers from
+/// `WorldSession::HandleMovementOpcodes` (`MovementHandler.cpp:320-395`) plus the root,
+/// knockback and ascend/descend acks, which relay a `MovementInfo` body under their own
+/// opcode (`MovementHandler.cpp:835-848`, `:1016-1019`, `MoveSplineInit`). The set is the
+/// registrations in `Opcodes.cpp:312-326`, `:332-334`, `:349-350`, `:369`, `:988-989`
+/// and `:1066`. `CMSG_MOVE_TIME_SKIPPED`/`_FEATHER_FALL_ACK`/`_WATER_WALK_ACK`
+/// (0x2CE-0x2D0) are client-to-server only and are not relays; the time-skip broadcast is
+/// `MSG_MOVE_TIME_SKIPPED` 0x319 with a packed guid and one u32, not a movement block.
 fn is_relayed_movement_opcode(op: u16) -> bool {
     matches!(
         op,
@@ -856,7 +864,9 @@ fn is_relayed_movement_opcode(op: u16) -> bool {
             | 0x0DA..=0x0DB
             | 0x0EC..=0x0EE
             | 0x0F1
-            | 0x2CE..=0x2D0
+            | 0x359
+            | 0x35A
+            | 0x3A7
     )
 }
 
