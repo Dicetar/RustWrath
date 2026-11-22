@@ -1,14 +1,14 @@
 # Session failure recorder
 
-Status: in progress
+Status: ready to merge
 Owner: Pi
 Branch: pi/session-failure-recorder
 Issue: none
-Next: Read branch CI gates/windows/player-tests and repair failures.
+Next: Coordinator review and merge; owner checks the next real disconnect's local report.
 
 Adds session-thread bounded inbound/outbound rings (256/64, 512-byte prefixes), post-world-auth only, full error-chain report and ten-file retention. All direct session sends/reads and multiclass sends use the recorder. Explicit reducer, socket read/send, reply-backlog, multiclass receive/dispatch and response/logout timeout paths.
 
-Verification: source inspection and rustfmt only; CI pending. Three focused tests added. No local Cargo/client/server run. Own target directory reserved as D:/Projects/wow/worktrees/pi-session-failure-recorder/target; no target created.
+Verification: CI 45002983208 (source 20450e2a9): gates and windows green. All three recorder cases passed in Linux tests, Windows tests, and player-tests (verified in run logs). player-tests actually ran: 6854 + 591 passed, zero failures. Covers ring bounds/prefix truncation, authentication exclusion, a real malformed LOGIN_VERIFY_WORLD reducer error's report/full cause chain, and ten-file retention. Earlier CI 45002894052 was superseded/cancelled, not a source failure. Source inspection, rustfmt and git diff --check passed. No local Cargo/client/server run. Own CARGO_TARGET_DIR designated D:/Projects/wow/worktrees/pi-session-failure-recorder/target; no Cargo invocation or target directory created, so no target remains to delete. Final fetch: zero origin/main commits missing from this branch.
 
 12340: instrumentation only; no wire layouts/behavior changed. Authentication boundary follows existing AUTH_OK handling in wrath.rs. No reference implementation copied.
 
