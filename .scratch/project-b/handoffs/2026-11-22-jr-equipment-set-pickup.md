@@ -1,10 +1,10 @@
 # Equipment sets on the cursor and the action bar
 
-Status: in progress
+Status: ready to merge
 Owner: Claude Code / Claude Opus 5.5
 Branch: jr/equipment-set-pickup
 Issue: none
-Next: read the CI run for the pushed head and fix until gates and windows are green
+Next: coordinator reviews and merges; owner drags a set onto the bar and clicks it in game
 
 ## What landed
 
@@ -85,7 +85,11 @@ Pin e67b6ffef23655dc7da061cb2d36b7963f6ef71a.
 - Six new cases in `benilla-app/src/wrath_equipment/tests.rs`, narrow `FnHost`: pickup to cursor,
   place and the bar queries, use → `WEAR_EQUIPMENT_SET`, pickup off the bar, rename repaint and
   delete clear, the usable gates.
-- CI: not run yet.
+- CI 45003577207 on 67166c84f: compiles; tests pass. Both jobs passed:
+  - `gates`: fmt, clippy, the `changed` step's tests (benilla-app 6923 passed, benilla-ui 3553
+    passed, 0 failed), `player-clippy`, and `player-tests` (benilla-app `--no-default-features`:
+    6857 passed; benilla-formats: 591 passed). The six new cases appear by name in both test runs.
+  - `windows`: check, test-build, test.
 
 ## Unproven in game
 
