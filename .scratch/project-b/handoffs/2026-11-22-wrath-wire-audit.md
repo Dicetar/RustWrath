@@ -193,7 +193,10 @@ Gameplay/session surfaces:
 - `cargo clippy -p benilla-protocol-wrath --all-targets`: no errors; only the pre-existing
   warnings above.
 - Client not run and no server change made; the audit is source-level only.
-- CI: not run yet. The task's one run is the final `HEAD:main` push.
+- CI run 45038866899 (`4ce572784`, push to `main`): success. `gates` 11m16s and `windows`
+  4m19s; `changed` named `benilla-protocol-wrath` and its tests ran 152 passed / 1 pre-existing
+  ignore, replay 2, session 16, zero failures. Clippy reported only the pre-existing warnings
+  listed above. No second run was started.
 
 ## Files changed
 
