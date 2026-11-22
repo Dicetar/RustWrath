@@ -304,6 +304,12 @@ pub const MSG_MOVE_SET_WALK_MODE: u16 = 0x0C3;
 pub const MSG_MOVE_START_SWIM: u16 = 0x0CA;
 pub const MSG_MOVE_STOP_SWIM: u16 = 0x0CB;
 pub const MSG_MOVE_SET_PITCH: u16 = 0x0DB;
+/// The ascend/descend relays are outside the 0x0B5-0x0EE block: `Opcodes.h:887-888` and
+/// `:965` register them with `HandleMovementOpcodes`, which broadcasts the same opcode
+/// and body to observers.
+pub const MSG_MOVE_START_ASCEND: u16 = 0x359;
+pub const MSG_MOVE_STOP_ASCEND: u16 = 0x35A;
+pub const MSG_MOVE_START_DESCEND: u16 = 0x3A7;
 pub const SMSG_MOVE_WATER_WALK: u16 = 0x0DE;
 pub const SMSG_MOVE_LAND_WALK: u16 = 0x0DF;
 pub const SMSG_FORCE_RUN_SPEED_CHANGE: u16 = 0x0E2;
@@ -336,10 +342,14 @@ pub const SMSG_SET_FACTION_STANDING: u16 = 0x124;
 pub const SMSG_SET_PROFICIENCY: u16 = 0x127;
 pub const SMSG_SUPERCEDED_SPELL: u16 = 0x12C;
 pub const SMSG_PET_CAST_FAILED: u16 = 0x138;
-pub const SMSG_FORCE_SWIM_BACK_SPEED_CHANGE: u16 = 0x13A;
-pub const CMSG_FORCE_SWIM_BACK_SPEED_CHANGE_ACK: u16 = 0x13B;
-pub const SMSG_FORCE_TURN_RATE_CHANGE: u16 = 0x13C;
-pub const CMSG_FORCE_TURN_RATE_CHANGE_ACK: u16 = 0x13D;
+/// The speed opcodes are not in the 0x0E0 block: 0x13A-0x13D are MSG_CHANNEL_UPDATE,
+/// CMSG_CANCEL_CHANNELLING, SMSG_AI_REACTION and CMSG_SET_SELECTION (Opcodes.h:344-347).
+/// The swim-back and turn-rate forms sit next to the walk form at 0x2DC-0x2DF
+/// (Opcodes.h:762-765).
+pub const SMSG_FORCE_SWIM_BACK_SPEED_CHANGE: u16 = 0x2DC;
+pub const CMSG_FORCE_SWIM_BACK_SPEED_CHANGE_ACK: u16 = 0x2DD;
+pub const SMSG_FORCE_TURN_RATE_CHANGE: u16 = 0x2DE;
+pub const CMSG_FORCE_TURN_RATE_CHANGE_ACK: u16 = 0x2DF;
 pub const SMSG_SPELLHEALLOG: u16 = 0x150;
 pub const SMSG_SPELLENERGIZELOG: u16 = 0x151;
 pub const SMSG_BINDPOINTUPDATE: u16 = 0x155;
@@ -377,7 +387,9 @@ pub const SMSG_PLAY_SOUND: u16 = 0x2D2;
 pub const SMSG_FORCE_WALK_SPEED_CHANGE: u16 = 0x2DA;
 pub const CMSG_FORCE_WALK_SPEED_CHANGE_ACK: u16 = 0x2DB;
 pub const MSG_PVP_LOG_DATA: u16 = 0x2E0;
-pub const CMSG_MOVE_SPLINE_DONE: u16 = 0x2E9;
+/// CMSG_MOVE_SPLINE_DONE is 0x2C9 (Opcodes.h:743); 0x2E9 is the unrelated
+/// MSG_BATTLEGROUND_PLAYER_POSITIONS.
+pub const CMSG_MOVE_SPLINE_DONE: u16 = 0x2C9;
 pub const SMSG_WEATHER: u16 = 0x2F4;
 pub const SMSG_SPLINE_SET_RUN_SPEED: u16 = 0x2FE;
 pub const SMSG_SPLINE_SET_RUN_BACK_SPEED: u16 = 0x2FF;
@@ -397,7 +409,8 @@ pub const SMSG_SPLINE_MOVE_STOP_SWIM: u16 = 0x30C;
 pub const SMSG_SPLINE_MOVE_SET_RUN_MODE: u16 = 0x30D;
 pub const SMSG_SPLINE_MOVE_SET_WALK_MODE: u16 = 0x30E;
 pub const SMSG_SET_FACTION_ATWAR: u16 = 0x313;
-pub const CMSG_MOVE_TIME_SKIPPED: u16 = 0x319;
+/// CMSG_MOVE_TIME_SKIPPED is 0x2CE (Opcodes.h:748); 0x319 is MSG_MOVE_TIME_SKIPPED.
+pub const CMSG_MOVE_TIME_SKIPPED: u16 = 0x2CE;
 pub const SMSG_INIT_WORLD_STATES: u16 = 0x2C2;
 pub const SMSG_UPDATE_WORLD_STATE: u16 = 0x2C3;
 pub const SMSG_ITEM_NAME_QUERY_RESPONSE: u16 = 0x2C5;
@@ -607,7 +620,9 @@ pub const CMSG_GMTICKET_DELETETICKET: u32 = 0x217;
 pub const CMSG_GMTICKET_SYSTEMSTATUS: u32 = 0x21A;
 pub const CMSG_BATTLEFIELD_STATUS: u32 = 0x2D3;
 pub const CMSG_BATTLEMASTER_HELLO: u32 = 0x2D7;
-pub const CMSG_BATTLEFIELD_LIST: u32 = 0x2D8;
+/// CMSG_BATTLEFIELD_LIST is 0x23C (Opcodes.h:602); 0x2D8 is
+/// CMSG_MOVE_START_SWIM_CHEAT.
+pub const CMSG_BATTLEFIELD_LIST: u32 = 0x23C;
 pub const CMSG_LEAVE_BATTLEFIELD: u32 = 0x2E1;
 pub const CMSG_AREA_SPIRIT_HEALER_QUERY: u32 = 0x2E2;
 pub const CMSG_AREA_SPIRIT_HEALER_QUEUE: u32 = 0x2E3;
@@ -675,7 +690,8 @@ pub const SMSG_GUILD_INVITE: u16 = 0x083;
 pub const SMSG_GUILD_DECLINE: u16 = 0x086;
 pub const MSG_RAID_TARGET_UPDATE_SERVER: u16 = 0x321;
 pub const MSG_RAID_READY_CHECK_SERVER: u16 = 0x322;
-pub const MSG_RAID_READY_CHECK_CONFIRM_SERVER: u16 = 0x323;
+/// MSG_RAID_READY_CHECK_CONFIRM is 0x3AE (Opcodes.h:972); 0x323 is CMSG_LUA_USAGE.
+pub const MSG_RAID_READY_CHECK_CONFIRM_SERVER: u16 = 0x3AE;
 
 /// 12340 Dungeon Finder, battleground/arena, calendar, rune and vehicle wire (`Opcodes.h`;
 /// layouts in `gameplay/wrath_systems.rs`). `MSG_PVP_LOG_DATA` is bidirectional, so its reply
@@ -743,3 +759,37 @@ pub const SMSG_LOAD_EQUIPMENT_SET: u16 = 0x4BC;
 pub const CMSG_SAVE_EQUIPMENT_SET: u32 = 0x4BD;
 pub const CMSG_EQUIPMENT_SET_USE: u32 = 0x4D5;
 pub const SMSG_USE_EQUIPMENT_SET_RESULT: u16 = 0x4D6;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Values taken from the local `Opcodes.h` table, line by line. These four blocks were
+    /// once filled with the neighbouring 0x13A-0x13D and `MSG_*` entries: the collisions made
+    /// an AI reaction share a value with the turn-rate order and sent spline/time-skip/list
+    /// requests under another message's opcode.
+    #[test]
+    fn speed_ack_and_server_opcodes_match_the_azerothcore_table() {
+        assert_eq!(SMSG_FORCE_SWIM_BACK_SPEED_CHANGE, 0x2DC); // Opcodes.h:762
+        assert_eq!(CMSG_FORCE_SWIM_BACK_SPEED_CHANGE_ACK, 0x2DD); // Opcodes.h:763
+        assert_eq!(SMSG_FORCE_TURN_RATE_CHANGE, 0x2DE); // Opcodes.h:764
+        assert_eq!(CMSG_FORCE_TURN_RATE_CHANGE_ACK, 0x2DF); // Opcodes.h:765
+        assert_eq!(CMSG_MOVE_SPLINE_DONE, 0x2C9); // Opcodes.h:743
+        assert_eq!(CMSG_MOVE_TIME_SKIPPED, 0x2CE); // Opcodes.h:748
+        assert_eq!(CMSG_BATTLEFIELD_LIST, 0x23C); // Opcodes.h:602
+        assert_eq!(MSG_RAID_READY_CHECK_CONFIRM_SERVER, 0x3AE); // Opcodes.h:972
+
+        // The neighbours the block previously collided with.
+        assert_ne!(SMSG_FORCE_SWIM_BACK_SPEED_CHANGE, MSG_CHANNEL_UPDATE);
+        assert_ne!(SMSG_FORCE_TURN_RATE_CHANGE, SMSG_AI_REACTION);
+        assert_ne!(
+            u32::from(CMSG_FORCE_TURN_RATE_CHANGE_ACK),
+            CMSG_SET_SELECTION
+        );
+        assert_ne!(
+            u32::from(CMSG_MOVE_SPLINE_DONE),
+            MSG_BATTLEGROUND_PLAYER_POSITIONS
+        );
+        assert_ne!(CMSG_MOVE_TIME_SKIPPED, MSG_MOVE_TIME_SKIPPED);
+    }
+}

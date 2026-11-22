@@ -2973,7 +2973,8 @@ pub struct SpellMissTarget {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PeriodicAuraTick {
     /// Aura types 3 / 89: u32 damage, u32 overkill, u32 school mask, u32 absorbed, u32 resisted,
-    /// u8 crit, u8 hitInfo (reference rewrites hitInfo to 2 when crit).
+    /// u8 crit. `hit_info` is the reference client's derived value (2 when crit, else 0); the
+    /// server writes no such byte.
     Damage {
         amount: u32,
         overkill: u32,
@@ -4086,13 +4087,16 @@ fn read_damage_shield(b: &[u8]) -> Result<ServerEvent> {
 }
 
 /// `SMSG_ENVIRONMENTALDAMAGELOG` (`0x1FC`):
-/// body: u64 victim, u8 type, u32 damage, u32 absorbed, u32 resisted.
+/// body: u64 victim, u8 type, u32 damage, u32 resisted, u32 absorbed
+/// (`WorldPackets::CombatLog::EnvironmentalDamageLog::Write`, `CombatLogPackets.cpp:20-27`;
+/// `Player::EnvironmentalDamage` fills `Resisted` and `Absorbed` in that order,
+/// `Player.cpp:799-803`). The 12340 client reads absorbed before resisted, but the writer's
+/// order is the one on this wire, so the two words are taken as resisted then absorbed.
 /// Event 0. 8 header with a nil source and the victim as destination,
 /// then the 0x8 type string and the 0x10 block: damage, overkill 0, school mask,
 /// resisted or nil, blocked nil, absorbed or nil, critical / glancing / crushing nil = 18 values.
 /// Type strings: FATIGUE, DROWNING, FALLING, LAVA, SLIME, FIRE.
-/// School masks: 1 << {0,0,0,2,3,2}[type]. The reference reads absorbed before resisted;
-/// the local AzerothCore writer emits resisted before absorbed (recorded in the handoff).
+/// School masks: 1 << {0,0,0,2,3,2}[type].
 /// A zero row is kept here and dropped by the feed, where `HandleEnvironmentDamage` tests it.
 fn read_environmental_damage(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
@@ -4104,8 +4108,8 @@ fn read_environmental_damage(b: &[u8]) -> Result<ServerEvent> {
         ));
     }
     let damage = r.u32()?;
-    let absorbed = r.u32()?;
     let resisted = r.u32()? as i32;
+    let absorbed = r.u32()?;
     Ok(ServerEvent::EnvironmentalDamage {
         victim,
         damage_type,
@@ -4200,10 +4204,12 @@ fn read_periodic_aura(b: &[u8]) -> Result<ServerEvent> {
                 let school = r.u32()?;
                 let absorb = r.u32()?;
                 let resist = r.u32()? as i32;
+                // The writer ends the block at the crit byte (Unit.cpp:6810-6820): it never
+                // emits the reference client's trailing hitInfo byte. Derive the reference's
+                // rewrite (2 on a crit) instead of reading a byte that is not on this wire;
+                // reading one consumed the next tick or failed the whole packet as truncated.
                 let critical = r.u8()? != 0;
-                let hit_info = r.u8()?;
-                // Reference rewrites hitInfo to 2 when crit.
-                let hit_info = if critical { 2 } else { hit_info };
+                let hit_info = if critical { 2 } else { 0 };
                 PeriodicAuraTick::Damage {
                     amount,
                     overkill,
@@ -6105,7 +6111,9 @@ mod tests {
     }
 
     /// `SMSG_SPELL_INSTAKILL_LOG` (`0x32F`), `SMSG_ENCHANTMENTLOG` (`0x1D7`) and
-    /// `SMSG_ENVIRONMENTALDAMAGELOG` (`0x1FC`) in the reference's own field order.
+    /// `SMSG_ENVIRONMENTALDAMAGELOG` (`0x1FC`) in the writer's own field order. The
+    /// environmental block puts resisted before absorbed (`CombatLogPackets.cpp:20-27`); the
+    /// reference client reads them the other way, so this pins the writer's order.
     #[test]
     fn instakill_enchant_and_environmental_decode_in_their_reference_shapes() {
         let caster = 0x0000_0000_0000_0011u64;
@@ -6163,8 +6171,8 @@ mod tests {
         let mut body = target.to_le_bytes().to_vec();
         body.push(2); // FALLING
         body.extend_from_slice(&120u32.to_le_bytes()); // damage
+        body.extend_from_slice(&5u32.to_le_bytes()); // resisted (writer order)
         body.extend_from_slice(&9u32.to_le_bytes()); // absorbed
-        body.extend_from_slice(&5u32.to_le_bytes()); // resisted
         let event = parse(crate::opcode::SMSG_ENVIRONMENTALDAMAGELOG, &body)
             .expect("the environmental opcode is translated")
             .expect("the 21-byte environmental body is valid");
@@ -7620,7 +7628,8 @@ mod tests {
         body.extend_from_slice(&133u32.to_le_bytes()); // spell id
         body.extend_from_slice(&2u32.to_le_bytes()); // tick count
 
-        // Damage tick (aura type 3): amount, overkill, school, absorbed, resisted, crit, hitInfo
+        // Damage tick (aura type 3): amount, overkill, school, absorbed, resisted, crit. The
+        // writer stops at the crit byte; hitInfo is derived, not on the wire.
         body.extend_from_slice(&3u32.to_le_bytes());
         body.extend_from_slice(&100u32.to_le_bytes()); // amount
         body.extend_from_slice(&7u32.to_le_bytes()); // overkill
@@ -7628,7 +7637,6 @@ mod tests {
         body.extend_from_slice(&9u32.to_le_bytes()); // absorbed
         body.extend_from_slice(&5u32.to_le_bytes()); // resisted
         body.push(1); // crit
-        body.push(0); // hitInfo, reference rewrites to 2 when crit
 
         // Heal tick (aura type 8): amount, overheal, absorbed, crit
         body.extend_from_slice(&8u32.to_le_bytes());
@@ -7790,5 +7798,82 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    /// The local writer's environmental block is victim, type, damage, **resisted**, then
+    /// **absorbed** (`CombatLogPackets.cpp:20-27`, filled at `Player.cpp:799-804`). The 12340
+    /// client handler reads the last two the other way, so a reader built from the client
+    /// reports the two values swapped. This body is the writer's 21 bytes exactly.
+    #[test]
+    fn environmental_damage_reads_the_writers_resisted_then_absorbed() {
+        let victim = 0xF130_0000_0000_0022u64;
+        let mut body = victim.to_le_bytes().to_vec();
+        body.push(2); // FALLING
+        body.extend_from_slice(&120u32.to_le_bytes()); // damage
+        body.extend_from_slice(&5u32.to_le_bytes()); // resisted
+        body.extend_from_slice(&9u32.to_le_bytes()); // absorbed
+        assert_eq!(body.len(), 21);
+
+        let event = parse(crate::opcode::SMSG_ENVIRONMENTALDAMAGELOG, &body)
+            .expect("the environmental opcode is translated")
+            .expect("the 21-byte environmental body is valid");
+        assert_eq!(
+            event,
+            ServerEvent::EnvironmentalDamage {
+                victim,
+                damage_type: 2,
+                damage: 120,
+                resisted: 5,
+                absorbed: 9,
+            }
+        );
+    }
+
+    /// `Unit::SendPeriodicAuraLog` ends a type-3 tick at the crit byte (`Unit.cpp:6803-6808`);
+    /// there is no trailing `hitInfo` byte on this wire. Two back-to-back ticks are the case
+    /// that catches an over-read: one extra byte makes the second tick's aura type `0x0308...`
+    /// (a truncation), not a second damage row.
+    #[test]
+    fn periodic_damage_tick_ends_at_the_crit_byte() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&[0x01, 0x11]); // packed target 0x11
+        body.extend_from_slice(&[0x01, 0x22]); // packed caster 0x22
+        body.extend_from_slice(&133u32.to_le_bytes()); // spell id
+        body.extend_from_slice(&2u32.to_le_bytes()); // tick count
+        for (amount, crit) in [(100u32, 1u8), (40u32, 0u8)] {
+            body.extend_from_slice(&3u32.to_le_bytes()); // SPELL_AURA_PERIODIC_DAMAGE
+            body.extend_from_slice(&amount.to_le_bytes());
+            body.extend_from_slice(&0u32.to_le_bytes()); // overkill
+            body.extend_from_slice(&4u32.to_le_bytes()); // school mask
+            body.extend_from_slice(&0u32.to_le_bytes()); // absorbed
+            body.extend_from_slice(&0u32.to_le_bytes()); // resisted
+            body.push(crit);
+        }
+
+        let event = parse(crate::opcode::SMSG_PERIODICAURALOG, &body)
+            .expect("periodic aura is decoded")
+            .expect("the writer-shaped body is valid");
+        let ServerEvent::PeriodicAura { ticks, .. } = event else {
+            panic!("unexpected event: {event:?}");
+        };
+        assert_eq!(ticks.len(), 2);
+        assert!(matches!(
+            ticks[0],
+            PeriodicAuraTick::Damage {
+                amount: 100,
+                critical: true,
+                hit_info: 2,
+                ..
+            }
+        ));
+        assert!(matches!(
+            ticks[1],
+            PeriodicAuraTick::Damage {
+                amount: 40,
+                critical: false,
+                hit_info: 0,
+                ..
+            }
+        ));
     }
 }

@@ -113,10 +113,58 @@ mod enc {
         p.extend(0.5f32.to_le_bytes());
         p
     }
+
+    /// A standstill standalone movement body (`Unit::BuildMovementPacket`): flags, flags2,
+    /// time, x/y/z/o and the fall time. No optional tails, so any reader that invents one
+    /// desynchronizes immediately.
+    pub fn movement_body(x: f32) -> Vec<u8> {
+        let mut p = u32b(0); // movement flags
+        p.extend(0u16.to_le_bytes()); // movement flags2
+        p.extend(u32b(7)); // time
+        for v in [x, 1.0f32, 2.0, 0.5] {
+            p.extend(v.to_le_bytes());
+        }
+        p.extend(u32b(0)); // fall time
+        p
+    }
 }
 
 const PLAYER: u64 = 0x0000_0000_0000_1521; // guid 5409, the live probe character
 const OTHER: u64 = 0x0000_0000_0000_0F0F;
+
+/// `HandleMovementOpcodes` relays `MSG_MOVE_START_ASCEND`/`_STOP_ASCEND`/
+/// `_START_DESCEND` (0x359/0x35A/0x3A7, `Opcodes.cpp:988-989`, `:1066`) with the same
+/// packed mover guid and `MovementInfo` body as the other movement relays. A session built
+/// from the 0x0B5-0x0EE block alone drops those positions.
+#[test]
+fn ascend_and_descend_relays_update_an_observer_position() {
+    let mut s = SessionState::new();
+    s.start_session(PLAYER);
+    s.note_player_login();
+    s.reduce(
+        opcode::SMSG_LOGIN_VERIFY_WORLD,
+        &enc::verify_world(0, 0.0),
+        1,
+    )
+    .unwrap();
+
+    for (op, x) in [
+        (opcode::MSG_MOVE_START_ASCEND, 11.0f32),
+        (opcode::MSG_MOVE_STOP_ASCEND, 12.0f32),
+        (opcode::MSG_MOVE_START_DESCEND, 13.0f32),
+    ] {
+        let mut body = enc::pack_guid(OTHER);
+        body.extend(enc::movement_body(x));
+        s.reduce(op, &body, 2).unwrap();
+        let entry = s.world().get(OTHER).expect("the relay creates the entry");
+        let position = entry
+            .movement
+            .as_ref()
+            .and_then(|movement| movement.position)
+            .expect("the relay carries a position");
+        assert_eq!(position.x, x, "opcode {op:#X}");
+    }
+}
 
 #[test]
 fn export_refuses_to_invent_a_position() {
