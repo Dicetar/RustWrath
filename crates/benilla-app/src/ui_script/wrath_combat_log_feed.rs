@@ -58,6 +58,16 @@ pub(crate) struct CombatLogMemo {
     spell_periodic_drain_unresolved: u64,
     spell_execute_log_dropped: u64,
     spell_execute_log_unresolved: u64,
+    spell_dispel_log_dropped: u64,
+    spell_dispel_log_unresolved: u64,
+    spell_dispel_dropped: u64,
+    spell_dispel_unresolved: u64,
+    spell_stolen_dropped: u64,
+    spell_stolen_unresolved: u64,
+    spell_dispel_failed_dropped: u64,
+    spell_dispel_failed_unresolved: u64,
+    spell_dispel_failed_log_dropped: u64,
+    spell_dispel_failed_log_unresolved: u64,
 }
 
 /// The visible marker for an endpoint whose name never resolved inside the retry window. It is
@@ -299,6 +309,20 @@ pub(crate) fn feed(
             );
         }
         memo.spell_execute_log_unresolved = world.spell_execute_log_unresolved;
+        if world.spell_dispel_log_dropped > memo.spell_dispel_log_dropped {
+            debug!(
+                dropped = world.spell_dispel_log_dropped,
+                "wrath: combat-log queue capacity lost spell-dispel rows"
+            );
+        }
+        memo.spell_dispel_log_dropped = world.spell_dispel_log_dropped;
+        if world.spell_dispel_log_unresolved > memo.spell_dispel_log_unresolved {
+            debug!(
+                unresolved = world.spell_dispel_log_unresolved,
+                "wrath: combat-log spell-dispel rows delivered with an unknown endpoint after name resolution timed out"
+            );
+        }
+        memo.spell_dispel_log_unresolved = world.spell_dispel_log_unresolved;
 
         let now = clock.as_deref().map_or(0.0, |clock| clock.ui_now);
         let ask = match net.as_deref() {
@@ -1064,6 +1088,145 @@ pub(crate) fn feed(
             );
             world.spell_execute_logs.remove(index);
         }
+
+        let mut index = 0;
+        while index < world.spell_dispel_logs.len() {
+            let hit = world.spell_dispel_logs[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                world.spell_dispel_logs.remove(index);
+                continue;
+            }
+            let spell_ok = spells
+                .as_deref()
+                .and_then(|spells| spells.catalog.get(hit.spell_id))
+                .is_some_and(|def| !spell_is_hidden_in_combat_log(def));
+            let replaced_ok = spells
+                .as_deref()
+                .and_then(|spells| spells.catalog.get(hit.replaced_spell_id))
+                .is_some_and(|def| !spell_is_hidden_in_combat_log(def));
+            let hidden = spells.is_some() && !(spell_ok && replaced_ok);
+            if hidden {
+                world.spell_dispel_logs.remove(index);
+                continue;
+            }
+
+            let source_guid = hit.caster;
+            let target_guid = hit.target;
+            let source = endpoint_name(script, world, names.as_deref(), source_guid, ask);
+            let target = endpoint_name(script, world, names.as_deref(), target_guid, ask);
+            let timestamp = if hit.received_at > 0.0 { hit.received_at } else { now };
+            if source.is_none() || target.is_none() {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at {
+                    now - hit.received_at
+                } else {
+                    0.0
+                };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        spell_dispel_log_args(
+                            timestamp,
+                            &hit,
+                            source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            spells.as_deref(),
+                            ask,
+                        ),
+                    );
+                    world.spell_dispel_log_unresolved =
+                        world.spell_dispel_log_unresolved.saturating_add(1);
+                    world.spell_dispel_logs.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let (source, target) = (source.unwrap_or_default(), target.unwrap_or_default());
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                spell_dispel_log_args(
+                    timestamp,
+                    &hit,
+                    &source,
+                    &target,
+                    spells.as_deref(),
+                    ask,
+                ),
+            );
+            world.spell_dispel_logs.remove(index);
+        }
+
+        let mut index = 0;
+        while index < world.spell_dispel_faileds.len() {
+            let hit = world.spell_dispel_faileds[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                world.spell_dispel_faileds.remove(index);
+                continue;
+            }
+            let spell_ok = spells
+                .as_deref()
+                .and_then(|spells| spells.catalog.get(hit.spell_id))
+                .is_some_and(|def| !spell_is_hidden_in_combat_log(def));
+            let failed_ok = spells
+                .as_deref()
+                .and_then(|spells| spells.catalog.get(hit.failed_spell_id))
+                .is_some_and(|def| !spell_is_hidden_in_combat_log(def));
+            let hidden = spells.is_some() && !(spell_ok && failed_ok);
+            if hidden {
+                world.spell_dispel_faileds.remove(index);
+                continue;
+            }
+
+            let source_guid = hit.caster;
+            let target_guid = hit.target;
+            let source = endpoint_name(script, world, names.as_deref(), source_guid, ask);
+            let target = endpoint_name(script, world, names.as_deref(), target_guid, ask);
+            let timestamp = if hit.received_at > 0.0 { hit.received_at } else { now };
+            if source.is_none() || target.is_none() {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at {
+                    now - hit.received_at
+                } else {
+                    0.0
+                };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        spell_dispel_failed_args(
+                            timestamp,
+                            &hit,
+                            source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            spells.as_deref(),
+                            ask,
+                        ),
+                    );
+                    world.spell_dispel_failed_unresolved =
+                        world.spell_dispel_failed_unresolved.saturating_add(1);
+                    world.spell_dispel_faileds.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let (source, target) = (source.unwrap_or_default(), target.unwrap_or_default());
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                spell_dispel_failed_args(
+                    timestamp,
+                    &hit,
+                    &source,
+                    &target,
+                    spells.as_deref(),
+                    ask,
+                ),
+            );
+            world.spell_dispel_faileds.remove(index);
+        }
+
         let mut index = 0;
         while index < world.spell_misses.len() {
             let hit = world.spell_misses[index];
@@ -1819,6 +1982,133 @@ fn spell_execute_log_args(
         | WrathSpellExecuteLogRow::DurabilityDamageAll { .. } => {}
     }
     args
+}
+
+fn spell_dispel_log_args(
+    timestamp: f64,
+    hit: &WrathSpellDispelLog,
+    source_name: &str,
+    target_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+    ask: Ask<'_>,
+) -> Vec<ScriptValue> {
+    let subevent = if hit.stolen { "SPELL_STOLEN" } else { "SPELL_DISPEL" };
+    let mut args = combat_log_header(
+        timestamp,
+        subevent,
+        hit.caster,
+        source_name,
+        hit.target,
+        target_name,
+    );
+    let spell_name = spells
+        .and_then(|spells| spells.catalog.get(hit.spell_id))
+        .map(|def| def.name.clone());
+    let spell_school = spells
+        .and_then(|spells| spells.catalog.school_mask(hit.spell_id))
+        .unwrap_or(0);
+    args.push(ScriptValue::Int(i64::from(hit.spell_id)));
+    args.push(spell_name.map_or(ScriptValue::Nil, ScriptValue::Str));
+    args.push(ScriptValue::Int(i64::from(spell_school)));
+    // 0x100 block: replaced spell id, name, school.
+    let replaced_name = spells
+        .and_then(|spells| spells.catalog.get(hit.replaced_spell_id))
+        .map(|def| def.name.clone());
+    let replaced_school = spells
+        .and_then(|spells| spells.catalog.school_mask(hit.replaced_spell_id))
+        .unwrap_or(0);
+    args.push(ScriptValue::Int(i64::from(hit.replaced_spell_id)));
+    args.push(replaced_name.map_or(ScriptValue::Nil, ScriptValue::Str));
+    args.push(ScriptValue::Int(i64::from(replaced_school)));
+    // 0x400 block: aura type.
+    if hit.harmful {
+        args.push(ScriptValue::Str("DEBUFF".to_owned()));
+    } else {
+        args.push(ScriptValue::Str("BUFF".to_owned()));
+    }
+    args
+}
+
+fn spell_dispel_args(
+    timestamp: f64,
+    hit: &WrathSpellDispelLog,
+    source_name: &str,
+    target_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+    ask: Ask<'_>,
+) -> Vec<ScriptValue> {
+    spell_dispel_log_args(timestamp, hit, source_name, target_name, spells, ask)
+}
+
+fn spell_stolen_args(
+    timestamp: f64,
+    hit: &WrathSpellDispelLog,
+    source_name: &str,
+    target_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+    ask: Ask<'_>,
+) -> Vec<ScriptValue> {
+    spell_dispel_log_args(timestamp, hit, source_name, target_name, spells, ask)
+}
+
+fn spell_dispel_failed_args(
+    timestamp: f64,
+    hit: &WrathSpellDispelFailed,
+    source_name: &str,
+    target_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+    ask: Ask<'_>,
+) -> Vec<ScriptValue> {
+    let mut args = combat_log_header(
+        timestamp,
+        "SPELL_DISPEL_FAILED",
+        hit.caster,
+        source_name,
+        hit.target,
+        target_name,
+    );
+    let spell_name = spells
+        .and_then(|spells| spells.catalog.get(hit.spell_id))
+        .map(|def| def.name.clone());
+    let spell_school = spells
+        .and_then(|spells| spells.catalog.school_mask(hit.spell_id))
+        .unwrap_or(0);
+    args.push(ScriptValue::Int(i64::from(hit.spell_id)));
+    args.push(spell_name.map_or(ScriptValue::Nil, ScriptValue::Str));
+    args.push(ScriptValue::Int(i64::from(spell_school)));
+    // 0x100 block: failed spell id, name, school.
+    let failed_name = spells
+        .and_then(|spells| spells.catalog.get(hit.failed_spell_id))
+        .map(|def| def.name.clone());
+    let failed_school = spells
+        .and_then(|spells| spells.catalog.school_mask(hit.failed_spell_id))
+        .unwrap_or(0);
+    args.push(ScriptValue::Int(i64::from(hit.failed_spell_id)));
+    args.push(failed_name.map_or(ScriptValue::Nil, ScriptValue::Str));
+    args.push(ScriptValue::Int(i64::from(failed_school)));
+    args
+}
+
+fn spell_dispel_failed_log_args(
+    timestamp: f64,
+    hit: &WrathSpellDispelFailed,
+    source_name: &str,
+    target_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+    ask: Ask<'_>,
+) -> Vec<ScriptValue> {
+    spell_dispel_failed_args(timestamp, hit, source_name, target_name, spells, ask)
+}
+
+fn dispel_failed_args(
+    timestamp: f64,
+    hit: &WrathSpellDispelFailed,
+    source_name: &str,
+    target_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+    ask: Ask<'_>,
+) -> Vec<ScriptValue> {
+    spell_dispel_failed_args(timestamp, hit, source_name, target_name, spells, ask)
 }
 
 fn spell_periodic_drain_args(

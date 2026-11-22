@@ -748,6 +748,18 @@ pub enum WrathFeedEvent {
         session_epoch: u64,
         world_generation: u64,
     },
+    /// `SMSG_SPELL_DISPELL_LOG` / `SMSG_SPELL_STEAL_LOG`: one replaced aura row.
+    SpellDispelLog {
+        hit: WrathSpellDispelLog,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_DISPEL_FAILED`: one failed aura row.
+    SpellDispelFailed {
+        hit: WrathSpellDispelFailed,
+        session_epoch: u64,
+        world_generation: u64,
+    },
     /// `SMSG_PARTYKILLLOG`: the killing blow credited to a player. Carries the scope so a
     /// delayed kill from a retired world never reaches the Wrath VM.
     PartyKillLog {
@@ -2535,6 +2547,39 @@ pub struct WrathSpellExecuteLog {
     pub received_at: f64,
 }
 
+/// One decoded `SMSG_SPELL_DISPELL_LOG` / `SMSG_SPELL_STEAL_LOG` aura replacement row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathSpellDispelLog {
+    pub caster: u64,
+    pub target: u64,
+    pub spell_id: u32,
+    pub replaced_spell_id: u32,
+    pub harmful: bool,
+    pub stolen: bool,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    pub received_at: f64,
+}
+
+pub type WrathSpellDispel = WrathSpellDispelLog;
+pub type WrathSpellStolen = WrathSpellDispelLog;
+
+/// One decoded `SMSG_DISPEL_FAILED` failed aura row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathSpellDispelFailed {
+    pub caster: u64,
+    pub target: u64,
+    pub spell_id: u32,
+    pub failed_spell_id: u32,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    pub received_at: f64,
+}
+
+pub type WrathDispelFailed = WrathSpellDispelFailed;
+
 /// The decoded `SMSG_CALENDAR_SEND_CALENDAR` snapshot, kept as the wire delivered it. The UI
 /// reads the date from `zone_time` and pending invites from `invites`; the other rows stay here
 /// for the calendar windows that need them.
@@ -2711,6 +2756,28 @@ pub struct WrathWorldView {
     pub spell_execute_log_revision: u64,
     pub spell_execute_log_dropped: u64,
     pub spell_execute_log_unresolved: u64,
+    /// Dispel-log rows (`SMSG_SPELL_DISPELL_LOG` / `SMSG_SPELL_STEAL_LOG`) waiting for the UI feed.
+    pub spell_dispel_logs: VecDeque<WrathSpellDispelLog>,
+    pub spell_dispel_log_revision: u64,
+    pub spell_dispel_log_dropped: u64,
+    pub spell_dispel_log_unresolved: u64,
+    pub spell_dispels: VecDeque<WrathSpellDispelLog>,
+    pub spell_dispel_revision: u64,
+    pub spell_dispel_dropped: u64,
+    pub spell_dispel_unresolved: u64,
+    pub spell_stolens: VecDeque<WrathSpellDispelLog>,
+    pub spell_stolen_revision: u64,
+    pub spell_stolen_dropped: u64,
+    pub spell_stolen_unresolved: u64,
+    /// Dispel-failed rows (`SMSG_DISPEL_FAILED`) waiting for the UI feed.
+    pub spell_dispel_faileds: VecDeque<WrathSpellDispelFailed>,
+    pub spell_dispel_failed_revision: u64,
+    pub spell_dispel_failed_dropped: u64,
+    pub spell_dispel_failed_unresolved: u64,
+    pub spell_dispel_failed_logs: VecDeque<WrathSpellDispelFailed>,
+    pub spell_dispel_failed_log_revision: u64,
+    pub spell_dispel_failed_log_dropped: u64,
+    pub spell_dispel_failed_log_unresolved: u64,
     /// Presentation mirror of the authority's active casts, keyed by caster, retaining 12340
     /// identity/timing beyond the vanilla cast-bar edges. Written only from resolved snapshots;
     /// never re-resolves wire facts. UI clocks are stamped here, not in the authority.
@@ -2820,6 +2887,26 @@ impl Default for WrathWorldView {
             spell_execute_log_revision: 0,
             spell_execute_log_dropped: 0,
             spell_execute_log_unresolved: 0,
+            spell_dispel_logs: VecDeque::new(),
+            spell_dispel_log_revision: 0,
+            spell_dispel_log_dropped: 0,
+            spell_dispel_log_unresolved: 0,
+            spell_dispels: VecDeque::new(),
+            spell_dispel_revision: 0,
+            spell_dispel_dropped: 0,
+            spell_dispel_unresolved: 0,
+            spell_stolens: VecDeque::new(),
+            spell_stolen_revision: 0,
+            spell_stolen_dropped: 0,
+            spell_stolen_unresolved: 0,
+            spell_dispel_faileds: VecDeque::new(),
+            spell_dispel_failed_revision: 0,
+            spell_dispel_failed_dropped: 0,
+            spell_dispel_failed_unresolved: 0,
+            spell_dispel_failed_logs: VecDeque::new(),
+            spell_dispel_failed_log_revision: 0,
+            spell_dispel_failed_log_dropped: 0,
+            spell_dispel_failed_log_unresolved: 0,
             casts: BTreeMap::new(),
             channels: BTreeMap::new(),
             last_cast_end: None,
@@ -3362,6 +3449,114 @@ impl WrathWorldView {
         });
     }
 
+    pub(crate) fn apply_spell_dispel_log(
+        &mut self,
+        hit: WrathSpellDispelLog,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        self.spell_dispel_log_revision = self.spell_dispel_log_revision.saturating_add(1);
+        if self.spell_dispel_logs.len() >= SPELL_LOG_CAPACITY {
+            self.spell_dispel_logs.pop_front();
+            self.spell_dispel_log_dropped = self.spell_dispel_log_dropped.saturating_add(1);
+        }
+        self.spell_dispel_logs.push_back(WrathSpellDispelLog {
+            session_epoch,
+            world_generation,
+            revision: self.spell_dispel_log_revision,
+            received_at,
+            ..hit
+        });
+        self.spell_dispel_revision = self.spell_dispel_revision.saturating_add(1);
+        if self.spell_dispels.len() >= SPELL_LOG_CAPACITY {
+            self.spell_dispels.pop_front();
+            self.spell_dispel_dropped = self.spell_dispel_dropped.saturating_add(1);
+        }
+        self.spell_dispels.push_back(WrathSpellDispelLog {
+            session_epoch,
+            world_generation,
+            revision: self.spell_dispel_revision,
+            received_at,
+            ..hit
+        });
+        self.spell_stolen_revision = self.spell_stolen_revision.saturating_add(1);
+        if self.spell_stolens.len() >= SPELL_LOG_CAPACITY {
+            self.spell_stolens.pop_front();
+            self.spell_stolen_dropped = self.spell_stolen_dropped.saturating_add(1);
+        }
+        self.spell_stolens.push_back(WrathSpellDispelLog {
+            session_epoch,
+            world_generation,
+            revision: self.spell_stolen_revision,
+            received_at,
+            ..hit
+        });
+    }
+
+    pub(crate) fn apply_spell_dispel(
+        &mut self,
+        hit: WrathSpellDispelLog,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        self.apply_spell_dispel_log(hit, session_epoch, world_generation, received_at);
+    }
+
+    pub(crate) fn apply_spell_stolen(
+        &mut self,
+        hit: WrathSpellDispelLog,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        self.apply_spell_dispel_log(hit, session_epoch, world_generation, received_at);
+    }
+
+    pub(crate) fn apply_spell_dispel_failed(
+        &mut self,
+        hit: WrathSpellDispelFailed,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        self.spell_dispel_failed_revision = self.spell_dispel_failed_revision.saturating_add(1);
+        if self.spell_dispel_faileds.len() >= SPELL_LOG_CAPACITY {
+            self.spell_dispel_faileds.pop_front();
+            self.spell_dispel_failed_dropped = self.spell_dispel_failed_dropped.saturating_add(1);
+        }
+        self.spell_dispel_faileds.push_back(WrathSpellDispelFailed {
+            session_epoch,
+            world_generation,
+            revision: self.spell_dispel_failed_revision,
+            received_at,
+            ..hit
+        });
+        self.spell_dispel_failed_log_revision = self.spell_dispel_failed_log_revision.saturating_add(1);
+        if self.spell_dispel_failed_logs.len() >= SPELL_LOG_CAPACITY {
+            self.spell_dispel_failed_logs.pop_front();
+            self.spell_dispel_failed_log_dropped = self.spell_dispel_failed_log_dropped.saturating_add(1);
+        }
+        self.spell_dispel_failed_logs.push_back(WrathSpellDispelFailed {
+            session_epoch,
+            world_generation,
+            revision: self.spell_dispel_failed_log_revision,
+            received_at,
+            ..hit
+        });
+    }
+
+    pub(crate) fn apply_dispel_failed(
+        &mut self,
+        hit: WrathSpellDispelFailed,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        self.apply_spell_dispel_failed(hit, session_epoch, world_generation, received_at);
+    }
+
     /// Clear every scoped rune/calendar/combat-log/LFG fact on a session end or world transfer.
     fn clear_rune_calendar(&mut self) {
         self.runes.clear();
@@ -3414,6 +3609,21 @@ impl WrathWorldView {
         self.spell_execute_logs.clear();
         self.spell_execute_log_dropped = 0;
         self.spell_execute_log_unresolved = 0;
+        self.spell_dispel_logs.clear();
+        self.spell_dispel_log_dropped = 0;
+        self.spell_dispel_log_unresolved = 0;
+        self.spell_dispels.clear();
+        self.spell_dispel_dropped = 0;
+        self.spell_dispel_unresolved = 0;
+        self.spell_stolens.clear();
+        self.spell_stolen_dropped = 0;
+        self.spell_stolen_unresolved = 0;
+        self.spell_dispel_faileds.clear();
+        self.spell_dispel_failed_dropped = 0;
+        self.spell_dispel_failed_unresolved = 0;
+        self.spell_dispel_failed_logs.clear();
+        self.spell_dispel_failed_log_dropped = 0;
+        self.spell_dispel_failed_log_unresolved = 0;
         self.lfg_join_result = None;
         self.lfg_queue_status = None;
         self.lfg_update_player = None;
@@ -4850,6 +5060,9 @@ fn translate_gameplay(
         })],
         WrathGameplayEvent::SpellMiss { .. } => Vec::new(),
         WrathGameplayEvent::SpellExecuteLog { .. } => Vec::new(),
+        WrathGameplayEvent::SpellDispelLog { .. } => Vec::new(),
+        WrathGameplayEvent::SpellStealLog { .. } => Vec::new(),
+        WrathGameplayEvent::SpellDispelFailed { .. } => Vec::new(),
         WrathGameplayEvent::PeriodicAura {
             target,
             caster,
@@ -10207,6 +10420,44 @@ fn wrath_net_drain(
                     world_generation,
                 ) {
                     view.apply_spell_execute_log(
+                        hit,
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
+            WrathFeedEvent::SpellDispelLog {
+                hit,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_spell_dispel_log(
+                        hit,
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
+            WrathFeedEvent::SpellDispelFailed {
+                hit,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_spell_dispel_failed(
                         hit,
                         session_epoch,
                         world_generation,
@@ -15639,6 +15890,85 @@ pub fn run_session_with_cancel(
                                         caster,
                                         spell_id,
                                         row,
+                                        session_epoch,
+                                        world_generation,
+                                        revision: 0,
+                                        received_at: 0.0,
+                                    },
+                                    session_epoch,
+                                    world_generation,
+                                });
+                            }
+                        }
+                        Ok(WrathGameplayEvent::SpellDispelLog {
+                            victim,
+                            caster,
+                            dispel_spell_id,
+                            rows,
+                        }) => {
+                            let session_epoch = session.epoch();
+                            let world_generation = session.world_generation();
+                            for row in rows {
+                                feed.push_event(WrathFeedEvent::SpellDispelLog {
+                                    hit: WrathSpellDispelLog {
+                                        caster,
+                                        target: victim,
+                                        spell_id: dispel_spell_id,
+                                        replaced_spell_id: row.spell_id,
+                                        harmful: row.harmful,
+                                        stolen: false,
+                                        session_epoch,
+                                        world_generation,
+                                        revision: 0,
+                                        received_at: 0.0,
+                                    },
+                                    session_epoch,
+                                    world_generation,
+                                });
+                            }
+                        }
+                        Ok(WrathGameplayEvent::SpellStealLog {
+                            victim,
+                            caster,
+                            dispel_spell_id,
+                            rows,
+                        }) => {
+                            let session_epoch = session.epoch();
+                            let world_generation = session.world_generation();
+                            for row in rows {
+                                feed.push_event(WrathFeedEvent::SpellDispelLog {
+                                    hit: WrathSpellDispelLog {
+                                        caster,
+                                        target: victim,
+                                        spell_id: dispel_spell_id,
+                                        replaced_spell_id: row.spell_id,
+                                        harmful: row.harmful,
+                                        stolen: true,
+                                        session_epoch,
+                                        world_generation,
+                                        revision: 0,
+                                        received_at: 0.0,
+                                    },
+                                    session_epoch,
+                                    world_generation,
+                                });
+                            }
+                        }
+                        Ok(WrathGameplayEvent::SpellDispelFailed {
+                            caster,
+                            victim,
+                            dispel_spell_id,
+                            failed_spell_ids,
+                        }) => {
+                            let session_epoch = session.epoch();
+                            let world_generation = session.world_generation();
+                            for failed_spell_id in failed_spell_ids {
+                                feed.push_event(WrathFeedEvent::SpellDispelFailed {
+                                    hit: WrathSpellDispelFailed {
+                                        caster,
+                                        target: victim,
+                                        spell_id: dispel_spell_id,
+                                        failed_spell_id,
                                         session_epoch,
                                         world_generation,
                                         revision: 0,

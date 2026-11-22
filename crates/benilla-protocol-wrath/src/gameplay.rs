@@ -2290,6 +2290,34 @@ pub enum ServerEvent {
         spell_id: u32,
         rows: Vec<SpellExecuteLogRow>,
     },
+    /// `SMSG_SPELL_DISPELL_LOG` (`0x27B`) / `SMSG_SPELL_STEAL_LOG` (`0x333`):
+    /// `HandleSpellRemoveLog` (packed victim, packed caster, dispel spell, count; per row
+    /// spell id + harmful byte). `stolen` is true for the steal variant.
+    SpellDispelLog {
+        victim: u64,
+        caster: u64,
+        dispel_spell_id: u32,
+        rows: Vec<SpellDispelLogRow>,
+    },
+    SpellStealLog {
+        victim: u64,
+        caster: u64,
+        dispel_spell_id: u32,
+        rows: Vec<SpellDispelLogRow>,
+    },
+    /// `SMSG_DISPEL_FAILED` (`0x262`): raw caster/victim, dispel spell, then failed spell ids.
+    SpellDispelFailed {
+        caster: u64,
+        victim: u64,
+        dispel_spell_id: u32,
+        failed_spell_ids: Vec<u32>,
+    },
+    DispelFailed {
+        caster: u64,
+        victim: u64,
+        dispel_spell_id: u32,
+        failed_spell_ids: Vec<u32>,
+    },
     /// `MSG_CORPSE_QUERY`'s answer: the corpse's adjusted display map/position and real map.
     CorpseQuery {
         found: bool,
@@ -2934,6 +2962,14 @@ pub enum PeriodicAuraTick {
 
 /// One logged `SMSG_SPELL_EXECUTE_LOG` effect row (`UnitCombatLog_C.cpp:1684`). The target is
 /// packed on the wire; every row carries it as the destination guid.
+/// One row of `SMSG_SPELL_DISPELL_LOG` / `SMSG_SPELL_STEAL_LOG`: the replaced aura's
+/// spell id and whether it was harmful.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpellDispelLogRow {
+    pub spell_id: u32,
+    pub harmful: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SpellExecuteLogRow {
     /// Effect 68: interrupted spell id.
@@ -3014,6 +3050,9 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_SPELLNONMELEEDAMAGELOG => read_spell_damage(body),
         SMSG_SPELL_MISS_LOG => read_spell_miss(body),
         0x24C => read_spell_execute_log(body),
+        0x27B => read_spell_dispel_log(body),
+        0x333 => read_spell_steal_log(body),
+        0x262 => read_dispel_failed(body),
         MSG_CORPSE_QUERY => read_corpse_query(body),
         SMSG_CORPSE_RECLAIM_DELAY => read_corpse_reclaim_delay(body),
         SMSG_RESURRECT_REQUEST => read_resurrect_request(body),
@@ -4185,6 +4224,65 @@ fn read_spell_execute_log(b: &[u8]) -> Result<ServerEvent> {
         rows,
     })
 }
+fn read_spell_dispel_log(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let victim = r.packed_guid()?;
+    let caster = r.packed_guid()?;
+    let dispel_spell_id = r.u32()?;
+    let _unused = r.u8()?;
+    let count = r.u32()?;
+    let mut rows = Vec::with_capacity(count.min(64) as usize);
+    for _ in 0..count {
+        let spell_id = r.u32()?;
+        let harmful = r.u8()? != 0;
+        rows.push(SpellDispelLogRow { spell_id, harmful });
+    }
+    Ok(ServerEvent::SpellDispelLog {
+        victim,
+        caster,
+        dispel_spell_id,
+        rows,
+    })
+}
+
+fn read_spell_steal_log(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let victim = r.packed_guid()?;
+    let caster = r.packed_guid()?;
+    let dispel_spell_id = r.u32()?;
+    let _unused = r.u8()?;
+    let count = r.u32()?;
+    let mut rows = Vec::with_capacity(count.min(64) as usize);
+    for _ in 0..count {
+        let spell_id = r.u32()?;
+        let harmful = r.u8()? != 0;
+        rows.push(SpellDispelLogRow { spell_id, harmful });
+    }
+    Ok(ServerEvent::SpellStealLog {
+        victim,
+        caster,
+        dispel_spell_id,
+        rows,
+    })
+}
+
+fn read_dispel_failed(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let caster = r.u64()?;
+    let victim = r.u64()?;
+    let dispel_spell_id = r.u32()?;
+    let mut failed_spell_ids = Vec::new();
+    while r.remaining() >= 4 {
+        failed_spell_ids.push(r.u32()?);
+    }
+    Ok(ServerEvent::SpellDispelFailed {
+        caster,
+        victim,
+        dispel_spell_id,
+        failed_spell_ids,
+    })
+}
+
 fn read_cast_failed(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let cast_count = r.u8()?;
@@ -7378,6 +7476,73 @@ mod tests {
                         },
                     ]
                 );
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spell_dispel_log_reads_harmful_rows_and_dispel_failed_reads_the_tail() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&pack_guid(0x22)); // victim
+        body.extend_from_slice(&pack_guid(0x11)); // caster
+        body.extend_from_slice(&100u32.to_le_bytes()); // dispel spell id
+        body.push(0u8); // unused
+        body.extend_from_slice(&2u32.to_le_bytes()); // count
+        body.extend_from_slice(&50u32.to_le_bytes()); // replaced spell id
+        body.push(1u8); // harmful
+        body.extend_from_slice(&51u32.to_le_bytes()); // replaced spell id
+        body.push(0u8); // not harmful
+        let event = parse(0x27B, &body)
+            .expect("spell dispel log is decoded")
+            .expect("spell dispel log body is valid");
+        match event {
+            ServerEvent::SpellDispelLog {
+                victim,
+                caster,
+                dispel_spell_id,
+                rows,
+            } => {
+                assert_eq!(victim, 0x22);
+                assert_eq!(caster, 0x11);
+                assert_eq!(dispel_spell_id, 100);
+                assert_eq!(
+                    rows,
+                    vec![
+                        SpellDispelLogRow {
+                            spell_id: 50,
+                            harmful: true,
+                        },
+                        SpellDispelLogRow {
+                            spell_id: 51,
+                            harmful: false,
+                        },
+                    ]
+                );
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        let mut body = Vec::new();
+        body.extend_from_slice(&0x11u64.to_le_bytes()); // caster
+        body.extend_from_slice(&0x22u64.to_le_bytes()); // victim
+        body.extend_from_slice(&100u32.to_le_bytes()); // dispel spell id
+        body.extend_from_slice(&50u32.to_le_bytes()); // failed spell id
+        body.extend_from_slice(&51u32.to_le_bytes()); // failed spell id
+        let event = parse(0x262, &body)
+            .expect("dispel failed is decoded")
+            .expect("dispel failed body is valid");
+        match event {
+            ServerEvent::SpellDispelFailed {
+                caster,
+                victim,
+                dispel_spell_id,
+                failed_spell_ids,
+            } => {
+                assert_eq!(caster, 0x11);
+                assert_eq!(victim, 0x22);
+                assert_eq!(dispel_spell_id, 100);
+                assert_eq!(failed_spell_ids, vec![50, 51]);
             }
             other => panic!("unexpected event: {other:?}"),
         }
