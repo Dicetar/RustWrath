@@ -96,17 +96,34 @@ if ($LiveCode -and ($isRelease -or $releaseRequested)) {
 if ($LiveCode -and $BuildLatest) {
     Write-Host 'Live code builds through dx; -BuildLatest is skipped.'
 }
-# A client or build of this checkout: a client exe under it, or a compiler writing into its own
-# `target`. Agents build in their own worktrees with their own targets; those do not block a launch.
+# A client or build of this checkout: dx (the live-code session), a client exe under it, or a
+# Cargo run on its manifest or its `target` (each build keeps its cargo.exe alive throughout; the
+# rustc processes run under the shared sccache server and cannot be traced to theirs). Agents build
+# in their own worktrees with their own targets, and a rust-analyzer check (metadata only, its own
+# profile folder; a build that meets it waits on Cargo's lock): neither blocks a launch.
 function Test-OwnBuildOrClient([string]$Root) {
     $own = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
     $target = $own + 'target\'
-    foreach ($p in Get-CimInstance Win32_Process -Filter "Name LIKE 'benilla%' OR Name = 'rustc.exe' OR Name = 'cargo.exe'") {
+    $all = @{}
+    foreach ($q in Get-CimInstance Win32_Process) { $all[[int]$q.ProcessId] = $q }
+    $fromAnalyzer = {
+        param($proc)
+        $at = $proc
+        for ($i = 0; $i -lt 6 -and $at; $i++) {
+            if ($at.Name -like 'rust-analyzer*') { return $true }
+            $at = $all[[int]$at.ParentProcessId]
+        }
+        return $false
+    }
+    foreach ($p in $all.Values) {
+        if ($p.Name -eq 'dx.exe') { return $true }
         if ($p.Name -like 'benilla*') {
             if ($p.ExecutablePath -and $p.ExecutablePath.StartsWith($own, [StringComparison]::OrdinalIgnoreCase)) { return $true }
-        } elseif ($p.CommandLine -and $p.CommandLine.IndexOf($target, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-            return $true
-        } elseif ($p.CommandLine -and $p.CommandLine.IndexOf($own + 'Cargo.toml', [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            continue
+        }
+        if ($p.Name -ne 'cargo.exe' -or !$p.CommandLine -or (& $fromAnalyzer $p)) { continue }
+        if ($p.CommandLine.IndexOf($target, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            $p.CommandLine.IndexOf($own + 'Cargo.toml', [StringComparison]::OrdinalIgnoreCase) -ge 0) {
             return $true
         }
     }
