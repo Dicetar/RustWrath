@@ -358,3 +358,229 @@ fn equipment_set_contains_locked_items_reads_the_client_lock() {
     h.script.lock_item(SWORD);
     assert!(h.eval::<bool>(r#"return EquipmentSetContainsLockedItems("Tank") == true"#));
 }
+
+// ── The action bar's set buttons (12340 `ActionBarFrame.cpp`) ──
+
+/// What one bar run left: the slot writes sent (`CMSG_SET_ACTION_BUTTON`, Lua id and word) and the
+/// `UseAction` presses that reached the host.
+#[derive(Default)]
+struct BarRun {
+    sets: Vec<(u32, u32)>,
+    uses: usize,
+}
+
+/// The tag `PutActionInSlot` (`0x5AB120`) packs a set under, AzerothCore's `ACTION_BUTTON_EQSET`.
+const SET_WORD: u32 = 0x2000_0000;
+
+impl Harness {
+    /// Listen to the bar's and the cursor's events in `BAR`; a slot signal records the text its
+    /// handler reads.
+    fn listen_bar(&mut self) {
+        self.script
+            .run(
+                r#"BAR = {}
+                local f = CreateFrame("Frame")
+                for _, e in ipairs({"ACTIONBAR_SLOT_CHANGED", "WEAR_EQUIPMENT_SET",
+                        "ACTIONBAR_SHOWGRID", "ACTIONBAR_HIDEGRID", "CURSOR_UPDATE",
+                        "EQUIPMENT_SETS_CHANGED"}) do f:RegisterEvent(e) end
+                f:SetScript("OnEvent", function(_, event, a1)
+                    if event == "ACTIONBAR_SLOT_CHANGED" then
+                        table.insert(BAR, event .. ":" .. a1 .. "=" .. tostring(GetActionText(a1)))
+                    elseif a1 then
+                        table.insert(BAR, event .. ":" .. tostring(a1))
+                    else
+                        table.insert(BAR, event)
+                    end
+                end)"#,
+            )
+            .expect("the bar listener loads");
+    }
+
+    /// Run `lua` with a narrow host: the set verbs through [`EquipmentSteps`], the slot writes and
+    /// presses recorded.
+    fn bar(&mut self, lua: &str) -> BarRun {
+        let world = &mut self.world;
+        let mut run = BarRun::default();
+        let mut host =
+            crate::script_calls::FnHost(|script: &mut UiScript, call: ScriptCall| match call {
+                ScriptCall::EquipmentSet(call) => {
+                    let mut state = SystemState::<EquipmentSteps>::new(world);
+                    state.get_mut(world).apply(script, call);
+                    state.apply(world);
+                }
+                ScriptCall::ActionBar(benilla_ui::script::ActionBarCall::Set { id, packed }) => {
+                    run.sets.push((id, packed));
+                }
+                ScriptCall::UseAction(_) => run.uses += 1,
+                _ => {}
+            });
+        self.script
+            .hosted(&mut host, |s| s.run(lua))
+            .expect("the chunk runs");
+        drop(host);
+        run
+    }
+
+    fn bar_seen(&mut self) -> String {
+        self.eval::<String>("local s = table.concat(BAR, ' ') BAR = {} return s")
+    }
+}
+
+/// `PickupEquipmentSet` and `PickupEquipmentSetByName` put a listed set on the cursor through
+/// `SetCursorEquipmentSet` (`0x520DC0`): its clear, then the grid; `GetCursorInfo` answers
+/// `"equipmentset"` and the name (`GameUI_Scripts.cpp:2921`). An unknown name or a free row leaves
+/// the cursor as it was.
+#[test]
+fn a_set_picked_up_goes_on_the_cursor() {
+    let mut h = listed();
+    h.listen_bar();
+    h.bar("PickupEquipmentSet(1)");
+    assert_eq!(h.bar_seen(), "CURSOR_UPDATE ACTIONBAR_SHOWGRID");
+    assert_eq!(
+        h.eval::<(String, String)>("return GetCursorInfo()"),
+        ("equipmentset".into(), "Tank".into())
+    );
+    assert!(matches!(
+        h.script.cursor_payload(),
+        Some(benilla_ui::script::CursorPayload::EquipmentSet(s))
+            if s.id == 3 && s.texture.as_deref() == Some("Interface\\Icons\\INV_Chest_Plate01")
+    ));
+    h.bar(r#"PickupEquipmentSetByName("Heal") PickupEquipmentSetByName("Nope") PickupEquipmentSet(5)"#);
+    assert_eq!(
+        h.eval::<String>("return select(2, GetCursorInfo())"),
+        "Heal"
+    );
+    h.bar("ClearCursor()");
+    assert_eq!(h.eval::<i64>("return select('#', GetCursorInfo())"), 0);
+}
+
+/// `PutActionInSlot` stores `cursorSet | 0x20000000` and sends it; the bar's queries read the set
+/// live: `GetActionInfo` and `GetActionText` its name, `GetActionTexture` its icon path, and
+/// `IsEquippedAction` nil (no item, `0x5A88B0`).
+#[test]
+fn a_set_placed_on_the_bar_stores_the_set_word() {
+    let mut h = listed();
+    h.listen_bar();
+    h.bar("PickupEquipmentSet(1)");
+    h.bar_seen();
+    let run = h.bar("PlaceAction(7)");
+    assert_eq!(run.sets, [(7, SET_WORD | 3)]);
+    assert_eq!(
+        h.bar_seen(),
+        "ACTIONBAR_HIDEGRID CURSOR_UPDATE ACTIONBAR_SLOT_CHANGED:7=Tank"
+    );
+    assert!(h.script.cursor_payload().is_none());
+    assert_eq!(
+        h.eval::<(String, String)>("return GetActionInfo(7)"),
+        ("equipmentset".into(), "Tank".into())
+    );
+    assert_eq!(
+        h.eval::<String>("return GetActionTexture(7)"),
+        "Interface\\Icons\\INV_Chest_Plate01"
+    );
+    assert!(h.eval::<bool>("return HasAction(7) == 1 and IsEquippedAction(7) == nil"));
+    // The same set held over its own slot clears the cursor and writes nothing.
+    let run = h.bar("PickupEquipmentSet(1) PlaceAction(7)");
+    assert!(run.sets.is_empty());
+    assert!(h.script.cursor_payload().is_none());
+}
+
+/// `UseAction` on a set slot is `EquipSet` (`0x5AE660`): `WEAR_EQUIPMENT_SET` with the set's
+/// name, no press for the host and no swap sent.
+#[test]
+fn a_set_slot_used_signals_wear_equipment_set() {
+    let mut h = listed();
+    h.listen_bar();
+    h.bar("PickupEquipmentSet(1) PlaceAction(7)");
+    h.bar_seen();
+    let run = h.bar("UseAction(7)");
+    assert_eq!(run.uses, 0);
+    assert_eq!(h.bar_seen(), "WEAR_EQUIPMENT_SET:Tank");
+    assert!(h
+        .sent()
+        .iter()
+        .all(|c| !matches!(c, ClientCommand::EquipmentSetUse(_))));
+}
+
+/// `PickupAction` lifts a set slot back onto the cursor and clears the slot on the wire
+/// (`0x5ABE70`).
+#[test]
+fn a_set_slot_picked_up_lifts_the_set() {
+    let mut h = listed();
+    h.bar("PickupEquipmentSet(2) PlaceAction(9)");
+    let run = h.bar("PickupAction(9)");
+    assert_eq!(run.sets, [(9, 0)]);
+    assert_eq!(
+        h.eval::<String>("return select(2, GetCursorInfo())"),
+        "Heal"
+    );
+    assert!(h.eval::<bool>("return HasAction(9) == nil"));
+}
+
+/// A rename saves the numbered set, whose slots signal with the new name before the list's
+/// `EQUIPMENT_SETS_CHANGED` (`SaveSet` `0x5ADE50` → `UpdateEquipmentSet` `0x5AAA00`); a delete
+/// clears every slot holding the set, each sent as 0, before the list changes
+/// (`RemoveEquipmentSet` `0x5AAE20`).
+#[test]
+fn a_rename_repaints_and_a_delete_clears_the_set_slots() {
+    let mut h = listed();
+    h.listen_bar();
+    h.bar("PickupEquipmentSet(1) PlaceAction(9) PickupEquipmentSet(1) PlaceAction(7)");
+    h.bar_seen();
+    h.sent();
+    h.bar(r#"RenameEquipmentSet("Tank", "Bulwark")"#);
+    assert_eq!(
+        h.bar_seen(),
+        // `SaveSet`'s own signal, then `ModifyEquipmentSet`'s (`0x5AF400`).
+        "ACTIONBAR_SLOT_CHANGED:7=Bulwark ACTIONBAR_SLOT_CHANGED:9=Bulwark \
+         EQUIPMENT_SETS_CHANGED EQUIPMENT_SETS_CHANGED"
+    );
+    assert!(matches!(
+        h.sent().as_slice(),
+        [ClientCommand::EquipmentSetSave(s)] if s.name == "Bulwark" && s.id == 3
+    ));
+    let run = h.bar(r#"DeleteEquipmentSet("Bulwark")"#);
+    assert_eq!(run.sets, [(7, 0), (9, 0)]);
+    assert_eq!(
+        h.bar_seen(),
+        "ACTIONBAR_SLOT_CHANGED:7=nil ACTIONBAR_SLOT_CHANGED:9=nil EQUIPMENT_SETS_CHANGED"
+    );
+    assert!(matches!(
+        h.sent().as_slice(),
+        [ClientCommand::EquipmentSetDelete { set_guid: 0x70 }]
+    ));
+}
+
+/// `IsUsableAction` on a set slot: the app's control leg and the set gates of
+/// `UpdateUsableAction` (`0x5A9E20`), the manager's CVar and a locked worn-or-carried item.
+#[test]
+fn a_set_slot_is_usable_through_the_set_gates() {
+    let mut h = listed();
+    h.bar("PickupEquipmentSet(1) PlaceAction(7)");
+    h.script.set_action_state(
+        7,
+        Some(benilla_ui::script::ActionState {
+            usable: true,
+            ..Default::default()
+        }),
+    );
+    assert!(h.eval::<bool>("return IsUsableAction(7) == 1"));
+    h.script.lock_item(HELM);
+    let mut slots: benilla_ui::script::InventorySlots = Default::default();
+    slots[1] = Some(benilla_ui::script::InvSlotView {
+        item_id: HELM_ENTRY,
+        guid: HELM,
+        ..Default::default()
+    });
+    h.script.set_inventory_slots(slots);
+    assert!(
+        h.eval::<bool>("return IsUsableAction(7) == nil"),
+        "a locked worn slot"
+    );
+    h.script.unlock_item(HELM);
+    h.script.set_cvar_host("equipmentManager", "0");
+    assert!(
+        h.eval::<bool>("return IsUsableAction(7) == nil"),
+        "the manager off"
+    );
+}

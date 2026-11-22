@@ -96,6 +96,7 @@ pub(super) fn doll_click(model: &mut Model, id: u32, may_cast: bool) -> DollClic
         | Some(
             CursorPayload::Spell(_)
             | CursorPayload::Macro(_)
+            | CursorPayload::EquipmentSet(_)
             | CursorPayload::PetAction(_)
             | CursorPayload::StablePet(_)
             | CursorPayload::Money(_),

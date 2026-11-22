@@ -4,9 +4,11 @@
 //! [`crate::wrath::wrath_net_drain`]; the four set verbs through [`EquipmentSteps`], applied
 //! inside the VM's call; [`feed`] copies it into the VM and signals what the packets raised.
 //!
-//! Not modelled: the action bar's set buttons (`CGActionBar::UpdateEquipmentSet`,
-//! `RemoveEquipmentSet`) and its usable refresh (`CGActionBar::UpdateUsable`), which no action
-//! slot here can hold.
+//! The action bar's set buttons: a save of a numbered set signals its slots
+//! (`CGActionBar::UpdateEquipmentSet`, `0x5AAA00`) between its copy and its send; the delete's
+//! slot clears (`RemoveEquipmentSet`, `0x5AAE20`) run in the VM before the call. Not modelled: the
+//! bar's usable refresh on a change of `CanUseEquipmentSets` (`CGActionBar::UpdateUsable`); the
+//! VM reads the set gates when `IsUsableAction` asks.
 
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
@@ -365,8 +367,12 @@ impl EquipmentSteps<'_, '_> {
         let set = owned.set.clone();
         manager.changed();
         let state = manager.state();
-        self.send(ClientCommand::EquipmentSetSave(Box::new(set)));
         script.set_equipment_sets(state);
+        // `0x5ADE50`: a set the server has numbered repaints its bar slots before the send.
+        if set.guid != 0 {
+            script.signal_equipment_set_slots(set.id);
+        }
+        self.send(ClientCommand::EquipmentSetSave(Box::new(set)));
         script.fire_event("EQUIPMENT_SETS_CHANGED", Vec::new());
     }
 

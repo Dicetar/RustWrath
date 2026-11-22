@@ -750,6 +750,7 @@ fn pickup_container_item(
         | Some(
             CursorPayload::Spell(_)
             | CursorPayload::Macro(_)
+            | CursorPayload::EquipmentSet(_)
             | CursorPayload::PetAction(_)
             | CursorPayload::StablePet(_)
             | CursorPayload::Money(_),
