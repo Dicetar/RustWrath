@@ -1,10 +1,10 @@
 # Remaining single-row combat-log packets: INSTAKILL / ENCHANT / ENVIRONMENTAL_DAMAGE
 
-Status: ready to merge with named tests and "CI: not run yet"
-Owner: Flint 40B Free
+Status: blocked
+Owner: OpenCode / Nemotron 3.5 Lightning Free (partial)
 Branch: oc/combat-log-single-row
 Issue: none
-Next: decode the three packets and feed SPELL_INSTAKILL, ENCHANT_APPLIED/REMOVED and ENVIRONMENTAL_DAMAGE
+Next: the branch does not compile (CI 44990691706). Add the missing WrathWorldView instakill/enchant/environmental queues and counters with defaults and clears, add the EnchantRemoved feed variant, and handle the four new ServerEvent/WrathFeedEvent variants in translate_gameplay and wrath_net_drain. Then rerun CI.
 
 ## Scope
 
