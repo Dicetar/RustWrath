@@ -433,7 +433,7 @@ mod tests {
                 p.extend(55u32.to_le_bytes());
             }
             p.extend(0u32.to_le_bytes()); // fall time
-            let speeds = [2.5f32, 7.0, 4.5, 4.72, 2.5, 7.0, 4.5, 3.14, 3.14];
+            let speeds = [2.5f32, 7.0, 4.5, 4.72, 2.5, 7.0, 4.5, 3.5, 3.5];
             for s in speeds {
                 p.extend(s.to_le_bytes());
             }
