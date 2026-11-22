@@ -109,9 +109,17 @@ pub const SMSG_ATTACKERSTATEUPDATE: u16 = 0x14A;
 pub const SMSG_CANCEL_COMBAT: u16 = 0x14E;
 pub const SMSG_PLAY_SPELL_VISUAL: u16 = 0x1F3;
 pub const SMSG_PARTYKILLLOG: u16 = 0x1F5;
+/// `SMSG_ENCHANTMENTLOG`: packed target, packed caster, item id, enchant id.
+pub const SMSG_ENCHANTMENTLOG: u16 = 0x1D7;
+/// `SMSG_ENVIRONMENTALDAMAGELOG`: victim, damage type, damage, absorbed, resisted.
+pub const SMSG_ENVIRONMENTALDAMAGELOG: u16 = 0x1FC;
 pub const SMSG_SPELL_MISS_LOG: u16 = 0x24B;
 pub const SMSG_PERIODICAURALOG: u16 = 0x24E;
+/// `SMSG_SPELLDAMAGESHIELD`: victim, caster, spell, damage, overkill, school mask.
+pub const SMSG_SPELLDAMAGESHIELD: u16 = 0x24F;
 pub const SMSG_SPELLNONMELEEDAMAGELOG: u16 = 0x250;
+/// `SMSG_SPELL_INSTAKILL_LOG`: caster, victim, spell.
+pub const SMSG_SPELL_INSTAKILL_LOG: u16 = 0x32F;
 pub const SMSG_CANCEL_AUTO_REPEAT: u16 = 0x29C;
 pub const CMSG_CAST_SPELL: u32 = 0x12E;
 pub const SMSG_CAST_FAILED: u16 = 0x130;
