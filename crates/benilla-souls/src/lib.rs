@@ -55,12 +55,13 @@ use crate::combat_playback::{
 use crate::combat_profiles::CombatProfiles;
 
 // The core modules the systems name, imported at the root so their `crate::…` paths read as they
-// did inside `benilla-app`.
-use benilla_app::{
-    aura_visual, bindings, camera_shake, client_state, combat_kit, combat_mode, combat_playback,
-    combat_profiles, creature_anim, entities, local_state, names, net, player, query_cache, target,
-    ui_script, vplates,
+// did inside `benilla-app`: the boot's public modules, and the rest through the core's narrow
+// `souls_seam` re-exports.
+use benilla_app::souls_seam::{
+    aura_visual, bindings, camera_shake, combat_kit, combat_mode, combat_playback, combat_profiles,
+    creature_anim, entities, names, net, player, query_cache, target, ui_script, vplates,
 };
+use benilla_app::{client_state, local_state};
 
 /// The Wrath session's selection, under the path the server link names it by.
 mod wrath {
