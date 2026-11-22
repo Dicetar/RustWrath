@@ -186,14 +186,21 @@ mod tests {
         r.authenticated();
         r.packet(true, 0x123, &[0xab]);
         r.step("reducer", Some(0x123));
-        let error = anyhow::anyhow!("forced decode error").context("reducer failed");
+        let error = benilla_protocol_wrath::session::SessionState::new()
+            .reduce(
+                benilla_protocol_wrath::opcode::SMSG_LOGIN_VERIFY_WORLD,
+                &[],
+                0,
+            )
+            .expect_err("empty LOGIN_VERIFY_WORLD must fail reduction")
+            .context("forced reducer error");
         for _ in 0..12 {
             r.write(&dir, &error).unwrap();
         }
         let files: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
         assert_eq!(files.len(), 10);
         let content = std::fs::read_to_string(files[0].as_ref().unwrap().path()).unwrap();
-        assert!(content.contains("reducer failed: forced decode error"));
+        assert!(content.contains(&format!("error: {error:#}")));
         assert!(content.contains("path: reducer"));
         assert!(content.contains("opcode=0x0123"));
         assert!(content.contains("ab"));

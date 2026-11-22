@@ -14515,9 +14515,8 @@ fn run_recorded_session(
                             .as_ref()
                             .expect("enabled multiclass")
                             .receive(&p.payload)
-                            .map_err(|e| {
+                            .inspect_err(|_| {
                                 recorder.step("multiclass receive", Some(u32::from(p.opcode)));
-                                e
                             })?;
                     }
                     Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_REALM_SPLIT => {
@@ -15071,7 +15070,7 @@ fn run_recorded_session(
             }
         }
         // The pause is cancel-aware, but the check must be repeated here: falling through to
-        // `recorder.recv(&mut world)` would block for the socket read timeout after a stop request and extend
+        // `world.recv()` would block for the socket read timeout after a stop request and extend
         // `AppExit`/stop latency. Same clean exit as the top-of-loop cancellation block.
         if cancel.load(Ordering::SeqCst) {
             native.invalidate_scope();
@@ -15088,9 +15087,8 @@ fn run_recorded_session(
                     .as_ref()
                     .expect("enabled multiclass")
                     .receive(&p.payload)
-                    .map_err(|e| {
+                    .inspect_err(|_| {
                         recorder.step("multiclass receive", Some(u32::from(p.opcode)));
-                        e
                     })?;
             }
             Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_CHARACTER_LOGIN_FAILED => {
