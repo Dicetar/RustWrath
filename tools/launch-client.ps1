@@ -26,6 +26,12 @@ $releaseContext = $null
 
 # The developer path is the default. A versioned release set is opt-in and additive.
 $releaseRequested = $UseReleaseSet.IsPresent -or ![string]::IsNullOrWhiteSpace($ReleaseRoot)
+# Every developer launch first drops build output nobody is using (idle agent-worktree targets,
+# old incremental sessions, idle profiles), so builds cannot fill the disk. Never fatal.
+$prune = Join-Path $PSScriptRoot 'prune-build-output.ps1'
+if (!$releaseRequested -and (Test-Path -LiteralPath $prune)) {
+    try { & $prune } catch { Write-Warning "build-output prune failed: $($_.Exception.Message)" }
+}
 $binary = Join-Path $repo 'target\debug\benilla.exe'
 if ($releaseRequested) {
     $releaseModule = Join-Path $PSScriptRoot 'release-set.ps1'
