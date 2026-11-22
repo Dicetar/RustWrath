@@ -102,6 +102,11 @@ impl UsableCache {
 
 /// `UNIT_FIELD_POWER1` to `POWER5`, one watch (`0x604876`).
 const UNIT_FIELD_POWERS: std::ops::RangeInclusive<u16> = 23..=27;
+/// `UNIT_FLAG_STUNNED`, the bit a set slot's usable test reads (12340 `0x5A9E20`,
+/// `m_unitFieldFlags & 0x100000`).
+const UNIT_FLAG_STUNNED: u32 = 0x10_0000;
+/// 12340's set tag on a slot word (`0x20000000 | id`), AzerothCore's `ACTION_BUTTON_EQSET`.
+const ACTION_KIND_EQUIPMENT_SET: u8 = 0x20;
 /// `UNIT_FIELD_AURASTATE`.
 const UNIT_FIELD_AURASTATE: u16 = 125;
 /// `PLAYER_FIELD_BYTES`, whose byte 1 is the combo points.
@@ -805,6 +810,15 @@ impl ActionStates<'_, '_> {
                             cooldowns.info_item(u.spell_id, button.action, u.category, d, now);
                         st.cooldown = info.ui_triple(anchor, ui_now);
                     }
+                }
+                // 12340 `UpdateUsableAction`'s set arm (`0x5A9E20`): past the set gates, which the
+                // VM reads live (`IsUsableAction`), a stunned player (`UNIT_FLAG_STUNNED`,
+                // `0x100000`) or one in control is usable; no cooldown, range or check.
+                ACTION_KIND_EQUIPMENT_SET => {
+                    let stunned =
+                        me.is_some_and(|(store, _)| store.0.unit_flags() & UNIT_FLAG_STUNNED != 0);
+                    st.usable = me.is_some() && (stunned || !control_lost);
+                    st.no_cooldown_query = true;
                 }
                 _ => {}
             }

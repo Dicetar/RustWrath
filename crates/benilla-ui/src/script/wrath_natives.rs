@@ -82,9 +82,10 @@ fn lua_seat_permission(allowed: bool) -> Value {
 /// - `"macro"`, 1-based macro index: `GetMacroIndexByID(id) + 1`.
 ///
 /// An empty cursor returns nothing, which is what `local type = GetCursorInfo()` tests. The
-/// reference's companion (`"companion"`, slot, `"CRITTER"`/`"MOUNT"`), guild-bank (`"guildbankmoney"`)
-/// and equipment-set arms have no host state here: benilla keeps no companion, guild-bank or
-/// equipment-set collection, and none of them can reach the cursor.
+/// reference's companion (`"companion"`, slot, `"CRITTER"`/`"MOUNT"`) and guild-bank
+/// (`"guildbankmoney"`) arms have no host state here: benilla keeps no companion or guild-bank
+/// collection, and neither can reach the cursor. The equipment-set arm answers `"equipmentset"` and
+/// the held set's name (`GameUI_Scripts.cpp:2921-2931`).
 fn cursor_info(lua: &Lua) -> mlua::Result<MultiValue> {
     let model = lua.app_data_ref::<Model>().expect("model app_data");
     let mut out = MultiValue::new();
@@ -180,6 +181,18 @@ fn cursor_info(lua: &Lua) -> mlua::Result<MultiValue> {
         // No `GetCursorInfo` arm in the reference: a stable-pet grab and a pet-bar pickup fall
         // through its switch to `return 0`.
         Some(CursorPayload::StablePet(_)) | Some(CursorPayload::PetAction(_)) => {}
+        // `UICURSOR_EQUIPMENT_SET`: the set by id, nothing once it is gone.
+        Some(CursorPayload::EquipmentSet(held)) => {
+            if let Some(set) = model
+                .equipment_sets
+                .sets
+                .iter()
+                .find(|s| i64::from(s.id) == i64::from(held.id))
+            {
+                push(Value::String(lua.create_string("equipmentset")?));
+                push(Value::String(lua.create_string(&set.name)?));
+            }
+        }
     }
     Ok(out)
 }

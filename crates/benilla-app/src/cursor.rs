@@ -36,6 +36,9 @@ fn payload_icon(script: &benilla_ui::script::UiScript, covered: bool) -> Option<
         // Mode 5: the vendor row's icon, which the reference resolves from its `ItemDisplayInfo`
         // id (`0xb4d8ec`).
         CursorPayload::Merchant(m) => m.texture,
+        // 12340 `UICURSOR_EQUIPMENT_SET`: the set's icon, `CursorGrabSpell` at the grab
+        // (`0x520DC0`).
+        CursorPayload::EquipmentSet(s) => s.texture,
     }
 }
 

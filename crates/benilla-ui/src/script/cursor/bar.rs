@@ -5,12 +5,18 @@
 
 use mlua::{Lua, Value};
 
-use crate::script::action::{macro_slot_id, macro_slot_word, ACTION_KIND_ITEM, ACTION_KIND_SPELL};
+use crate::script::action::{
+    equipment_set_slot_id, macro_slot_id, macro_slot_word, ACTION_KIND_EQUIPMENT_SET,
+    ACTION_KIND_ITEM, ACTION_KIND_SPELL,
+};
 use crate::script::binding_abi;
 use crate::script::tick::verb;
 use crate::script::{ActionSlot, Model};
 
-use super::{clear_cursor, set_cursor, CursorAction, CursorMacro, CursorPayload, CursorSpell};
+use super::{
+    clear_cursor, set_cursor, CursorAction, CursorEquipmentSet, CursorMacro, CursorPayload,
+    CursorSpell,
+};
 
 /// The passive-spell refusal's error, errorId `0x9e`: entry `0xb4c0f0` of the table at `0xb4b498`
 /// (stride `0x14`) names this key (`0x84133c`).
@@ -29,6 +35,12 @@ fn pack(kind: u8, action: u32) -> u32 {
 /// pickup then sets nothing, and a place clears the cursor as for an empty slot.
 fn lift(model: &Model, id: u32) -> Option<Option<CursorPayload>> {
     let slot = model.actions.get(&id)?;
+    // 12340: a set slot lifts through `SetCursorEquipmentSet` only while
+    // `CGActionBar::IsEquipmentSetValid` (`0x5AE4F0`) finds its set (`PickupAction` `0x5ABE70`,
+    // `PutActionInSlot` `0x5AB120`).
+    if let Some(set_id) = equipment_set_slot_id(slot.kind, slot.action) {
+        return Some(equipment_set_payload(model, set_id));
+    }
     if let Some(macro_id) = macro_slot_id(slot.kind, slot.action) {
         return Some(model.macros.by_id(macro_id).map(|m| {
             CursorPayload::Macro(CursorMacro {
@@ -66,6 +78,16 @@ fn lift(model: &Model, id: u32) -> Option<Option<CursorPayload>> {
     })
 }
 
+/// The payload `SetCursorEquipmentSet(set_id)` (12340 `0x520DC0`) puts on the cursor: `None` for
+/// an id no set holds, which the setter refuses before its clear.
+pub(crate) fn equipment_set_payload(model: &Model, set_id: u32) -> Option<CursorPayload> {
+    let set = model.equipment_sets.sets.iter().find(|s| s.id == set_id)?;
+    Some(CursorPayload::EquipmentSet(CursorEquipmentSet {
+        id: set_id as i32,
+        texture: crate::script::equipment::full_icon_path(&set.icon),
+    }))
+}
+
 /// `PickupAction(id)`, the slot's shift-click and drag start (`ActionBarFrame.xml:12-38`). With a
 /// spell, item, macro or bar item held it places instead (`0x4e615d`-`0x4e6194`); with nothing
 /// or anything else held it picks up, the setter's clear dropping coins, a pet action, a stabled
@@ -84,6 +106,7 @@ pub(super) fn pickup_action(lua: &Lua, id: u32) -> mlua::Result<bool> {
                     | CursorPayload::Item(_)
                     | CursorPayload::Macro(_)
                     | CursorPayload::Action(_)
+                    | CursorPayload::EquipmentSet(_)
             )
         ) {
             None
@@ -121,6 +144,25 @@ pub(crate) fn clear_macro_slots(model: &mut Model, macro_id: u32) {
         .actions
         .iter()
         .filter(|(_, slot)| macro_slot_id(slot.kind, slot.action) == Some(macro_id))
+        .map(|(&id, _)| id)
+        .collect();
+    held.sort_unstable();
+    for id in held {
+        model.actions.remove(&id);
+        model.action_states.remove(&id);
+        model.call_in_verb(set_slot(id, 0));
+        raise_slot_changed(model, id);
+    }
+}
+
+/// 12340 `CGActionBar::RemoveEquipmentSet` (`0x5AAE20`), which `DeleteEquipmentSet` runs before the
+/// set leaves the list (`0x5AE260`): every slot holding set `set_id` is removed, lowest first, each
+/// through `RemoveAction` (`0x5AAA90`), sent as 0 and signalling `ACTIONBAR_SLOT_CHANGED`.
+pub(crate) fn clear_equipment_set_slots(model: &mut Model, set_id: u32) {
+    let mut held: Vec<u32> = model
+        .actions
+        .iter()
+        .filter(|(_, slot)| equipment_set_slot_id(slot.kind, slot.action) == Some(set_id))
         .map(|(&id, _)| id)
         .collect();
     held.sort_unstable();
@@ -276,6 +318,12 @@ fn plan_place(model: &mut Model, id: u32) -> Place {
             let (kind, action) = macro_slot_word(m.id);
             slot(kind, action, &m.texture)
         }
+        // 12340's last arm (`PutActionInSlot` `0x5AB120`): `cursorSet | 0x20000000`. The slot
+        // keeps no icon: the bar reads the set's live (`GetActionTexture`, `0x5A7A90` arm).
+        CursorPayload::EquipmentSet(s) => match u32::try_from(s.id) {
+            Ok(set_id) => slot(ACTION_KIND_EQUIPMENT_SET, set_id, &None),
+            Err(_) => return Place::Refused,
+        },
         CursorPayload::PetAction(_)
         | CursorPayload::StablePet(_)
         | CursorPayload::Money(_)

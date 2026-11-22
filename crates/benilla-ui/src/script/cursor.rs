@@ -20,7 +20,9 @@ pub(crate) mod money;
 pub(super) mod pet;
 pub(crate) mod swap;
 
-pub(crate) use bar::{clear_macro_slots, place_action};
+pub(crate) use bar::{
+    clear_equipment_set_slots, clear_macro_slots, equipment_set_payload, place_action,
+};
 pub(crate) use drag::{
     abandon_drag, maybe_start_drag, press_drag, take_drag, DragGesture, DragRelease,
 };
@@ -35,7 +37,8 @@ pub const EQUIPMENT_BAG: i64 = -100;
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// What the cursor carries, by the client's payload mode `[0xb4d900]`: 1 item, 2 money, 3 spell,
-/// 4 pet action, 5 vendor row, 8 macro, 10 stabled pet; `Action` is the bar-slot pickup.
+/// 4 pet action, 5 vendor row, 8 macro, 10 stabled pet; `Action` is the bar-slot pickup; on
+/// Wrath, `EquipmentSet` is 12340's `UICURSOR_EQUIPMENT_SET`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CursorPayload {
     Item(CursorItem),
@@ -50,6 +53,10 @@ pub enum CursorPayload {
     StablePet(CursorStablePet),
     /// Mode 2, coins taken off a money frame.
     Money(CursorMoney),
+    /// 12340 `UICURSOR_EQUIPMENT_SET`, a saved gear set (`CGGameUI::SetCursorEquipmentSet`,
+    /// `0x520DC0`), from `PickupEquipmentSet`, `PickupEquipmentSetByName` or a set lifted off the
+    /// action bar. Wrath only.
+    EquipmentSet(CursorEquipmentSet),
 }
 
 impl CursorPayload {
@@ -107,8 +114,23 @@ impl CursorPayload {
                 texture: String::new(),
             }),
             CursorPayload::Money(_) => CursorPayload::Money(CursorMoney { copper: 0 }),
+            // The set arm writes `m_cursorEquipmentSet = -1` (12340 `GameUI.cpp:2553`).
+            CursorPayload::EquipmentSet(_) => CursorPayload::EquipmentSet(CursorEquipmentSet {
+                id: -1,
+                texture: None,
+            }),
         }
     }
+}
+
+/// A gear set held on the cursor (12340 `m_cursorEquipmentSet`, `GameUI.cpp:938`): the set's id,
+/// `-1` once a clear's arm has run, which no set holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CursorEquipmentSet {
+    /// `EQUIPMENT_SET::m_id`, 0..=9.
+    pub id: i32,
+    /// The icon at the mouse, `GetFullIconPath` (`0x5AE6B0`) at the grab.
+    pub texture: Option<String>,
 }
 
 /// Copper held on the cursor, mode 2 (`[0xb4e2f0]`, set by `PickupPlayerMoney`, `0x48abc0`). The
@@ -468,7 +490,11 @@ fn put_now(model: &mut Model, payload: CursorPayload) {
         },
         CursorPayload::Action(_) => Tail::Update { grid: true },
         CursorPayload::Merchant(_) => Tail::Update { grid: false },
-        CursorPayload::Spell(_) | CursorPayload::Macro(_) => Tail::BarGrid,
+        // 12340's `SetCursorEquipmentSet` (`0x520DC0`) ends as the macro setter does: the grab,
+        // `CGActionBar::ShowGrid` and `m_cursorHasAction`.
+        CursorPayload::Spell(_) | CursorPayload::Macro(_) | CursorPayload::EquipmentSet(_) => {
+            Tail::BarGrid
+        }
         CursorPayload::PetAction(_) => Tail::PetGrid,
         CursorPayload::Money(_) => Tail::Money,
         CursorPayload::StablePet(_) => Tail::Nothing,
@@ -659,6 +685,7 @@ fn world_drop(model: &Model) -> (WorldDrop, bool) {
             CursorPayload::Spell(_)
             | CursorPayload::Action(_)
             | CursorPayload::Macro(_)
+            | CursorPayload::EquipmentSet(_)
             | CursorPayload::PetAction(_),
             WorldPick::Terrain,
         ) => (WorldDrop::Clear, true),
@@ -1145,6 +1172,7 @@ pub(crate) fn install_kind_probe(s: &super::UiScript) {
                 Some(CursorPayload::Merchant(_)) => "row",
                 Some(CursorPayload::StablePet(_)) => "stable",
                 Some(CursorPayload::Money(_)) => "money",
+                Some(CursorPayload::EquipmentSet(_)) => "set",
             })
         })
         .unwrap();
