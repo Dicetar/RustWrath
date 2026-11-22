@@ -10282,6 +10282,23 @@ fn wrath_net_drain(
                     Ok(()) => info!("wrath session ended cleanly"),
                     Err(e) => {
                         warn!("wrath session failed: {e}");
+                        // A live-code client's stderr is only dx's terminal, which scrolls; keep
+                        // every session failure, with its cause chain, where it can be read later.
+                        if let Some(dir) = crate::local_state::logs_dir() {
+                            use std::io::Write as _;
+                            let stamp = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            let _ = std::fs::create_dir_all(&dir);
+                            if let Ok(mut file) = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(dir.join("session-failures.log"))
+                            {
+                                let _ = writeln!(file, "{stamp} wrath session failed: {e:#}");
+                            }
+                        }
                         control.last_error = Some(e);
                     }
                 }
