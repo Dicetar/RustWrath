@@ -37,7 +37,7 @@ pub struct Wielded {
     pub(crate) main: Option<(u8, u8)>,
     pub(crate) off: Option<(u8, u8)>,
     /// The ranged-slot item's `(class, subclass)`, the auto-repeat idle's selector (`0x5fd530`).
-    pub(crate) ranged: Option<(u8, u8)>,
+    pub ranged: Option<(u8, u8)>,
     /// The hand items' `Item.dbc` `SheatheType` (0 none, 1 mainhand, 2 back, 3 hip, 4 shield).
     /// Each picks its arm's draw/stow clip, HipSheath 90 for types 3 and 7, else Sheath 89
     /// (`0x611930`).

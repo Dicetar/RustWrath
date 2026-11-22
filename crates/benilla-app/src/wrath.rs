@@ -6637,6 +6637,10 @@ fn translate_gameplay(
                 apply,
             }],
             None => {
+                // The mount moves are for a mount that cannot fly; the order itself is not applied.
+                if mode == gameplay::MoveMode::CanFly {
+                    crate::souls::set_can_fly(apply);
+                }
                 // Unsupported: CanFly and gravity need the flight controller the shared mover
                 // lacks, so the order is neither applied nor acked.
                 warn!(

@@ -84,6 +84,7 @@ local EMOTE_STATE_STUN = 64
 local TICK_MS = 100
 local SPRINT_RATE = 1.4             -- ESTIMATE: ER's sprint over its run
 local CROUCH_RATE = 0.5             -- ESTIMATE: ER's crouch walk over its run
+local STEALTH_SPRINT_RATE = 1.0     -- a crouched sprint (the client's stealth_moves) is no faster than a run
 local ROLL_RATE_MIN, ROLL_RATE_MAX = 0.5, 3.0   -- the client's roll rate, kept sane
 local WINDUP_SHARE = 0.4            -- decision 16: 40 % of the attack time...
 local WINDUP_MIN_MS = 600           -- ...clamped 0.6-1.5 s
@@ -413,10 +414,22 @@ local function restore_speed(player, state)
     restore_back(player, state)
 end
 
+-- The stance's run-rate factor: a roll's own rate, a sprint's (a crouched one only a run's), the
+-- crouch's, else 1.
+local function stance_factor(state)
+    if state.roll then
+        return state.roll
+    end
+    if state.sprint then
+        return state.crouch and STEALTH_SPRINT_RATE or SPRINT_RATE
+    end
+    return state.crouch and CROUCH_RATE or 1
+end
+
 -- The run speed for the client's stance: a roll runs at its own rate, sprinting raises it,
 -- crouching lowers it.
 local function apply_speed(player, state)
-    local factor = state.roll or (state.sprint and SPRINT_RATE) or (state.crouch and CROUCH_RATE) or 1
+    local factor = stance_factor(state)
     if factor == 1 and not state.roll then
         restore_speed(player, state)
         return
@@ -462,7 +475,9 @@ end
 -- moving, more in armour heavier than leather). At NOTICE it stops and looks, at INVESTIGATE it
 -- walks to where it last placed the player, at SPOTTED it attacks and the stealth breaks.
 -- The stealth also breaks when one of the player's attacks lands, on damage taken, in combat,
--- sprinting, rolling or mounted, and comes back STEALTH_COOLDOWN_MS later if they still crouch.
+-- rolling (ROLL) or mounted, and comes back STEALTH_COOLDOWN_MS later if they still crouch. A
+-- crouched sprint keeps it (the client's stealth_moves), at the penalty of a run's speed and more
+-- noise and sight (STEALTH_SPRINT_NOISE, STEALTH_SPRINT_SIGHT); a standing sprint breaks it.
 -- A rogue's own Stealth rides along (its openers work) without its slow, and creatures notice a
 -- rogue at half: half the view cone, half the noise, half the suspicion from what they see.
 -- The first hit landed from hiding on an unaware creature is a sneak attack.
@@ -482,6 +497,8 @@ local NOISE_ARMOR_YARDS = 10        -- ...and this much farther in full plate (f
 local NOISE_RATE = 45               -- ESTIMATE: suspicion a second from noise at point blank
 local ARMOR_SHINE = 0.25            -- ESTIMATE: full plate is seen this much farther
 local SUSPICION_DECAY = 12          -- a second, while nothing is seen or heard
+local STEALTH_SPRINT_NOISE = 2.0    -- ESTIMATE: a crouched sprint is heard this much farther...
+local STEALTH_SPRINT_SIGHT = 1.3    -- ...and seen this much farther
 local NOTICE, INVESTIGATE, SPOTTED = 30, 65, 100
 local LEVEL_STEP = 0.06             -- each level the creature has over the player (five at most) stretches its ranges this much
 local NIGHT_SIGHT, DUSK_SIGHT, INDOOR_SIGHT = 0.6, 0.8, 0.75
@@ -655,6 +672,10 @@ local function work_suspicion(player, state, now)
         local sight_base = SIGHT_YARDS * light_share(player, state, now) * (moving and 1 or SIGHT_STILL)
             * (1 + ARMOR_SHINE * weight)
         local noise_base = moving and (NOISE_MOVE_YARDS + NOISE_ARMOR_YARDS * weight) * share or 0
+        if state.sprint then
+            noise_base = noise_base * STEALTH_SPRINT_NOISE
+            sight_base = sight_base * STEALTH_SPRINT_SIGHT
+        end
         local arc = 2 * SIGHT_HALF_ARC * share
         local level = player:GetLevel()
         for _, creature in ipairs(player:GetCreaturesInRange(SUSPECT_SCAN_YARDS, 0, 1, 1) or {}) do
@@ -707,7 +728,7 @@ end
 
 -- Hide, refresh or break, then the suspicion; every tick, worked every STEALTH_EVERY_MS.
 local function stealth_tick(player, state, now)
-    local want = state.crouch and not state.sprint and not state.roll and player:IsAlive()
+    local want = state.crouch and not state.roll and player:IsAlive()
         and not player:IsInCombat() and not player:IsMounted()
     if state.hidden then
         local aura = player:GetAura(HIDE_SPELL)
@@ -741,8 +762,7 @@ local function keep_speed(player, state)
     end
     local want
     if state.sprint_rate then
-        local factor = state.roll or (state.sprint and SPRINT_RATE) or (state.crouch and CROUCH_RATE) or 1
-        want = state.sprint_rate * factor
+        want = state.sprint_rate * stance_factor(state)
     else
         want = state.free_rate
     end
@@ -999,7 +1019,8 @@ local function on_addon(event, sender, msg_type, prefix, msg, target)
         end
     elseif state and verb == "SPRINT" then
         state.sprint = fields[2] == "1" or nil
-        if state.sprint then
+        -- A crouched sprint stays hidden (the noise and sight penalty is in work_suspicion).
+        if state.sprint and not state.crouch then
             broke_cover(sender, state)
         end
         apply_speed(sender, state)

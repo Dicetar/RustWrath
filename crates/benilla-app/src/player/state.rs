@@ -343,6 +343,8 @@ pub struct SoulsDrive {
     pub cam_yaw: Option<f32>,
     /// Souls mode is on this frame.
     pub active: bool,
+    /// One more jump is allowed in the air (the Souls mount's double jump).
+    pub air_jump: bool,
 }
 
 /// Our avatar: until `active` the camera free-flies, then we drive the body the server placed.
@@ -487,6 +489,8 @@ pub struct Player {
     /// The hostile bodies the mover slides round this frame (Bevy position, bounding radius),
     /// gathered by the Souls drive ([`super::bodies`]); empty is the stock walk-through.
     pub unit_bodies: Vec<(bevy::prelude::Vec3, f32)>,
+    /// The Souls double jump ([`SoulsDrive::air_jump`]) was spent on this arc; landing resets it.
+    pub(super) air_jumped: bool,
     /// Souls mode: frames left to stow once the attack the sheath key stopped is echoed off
     /// ([`super::posture`]); 0 is none pending.
     pub(crate) sheath_after_stop: u8,

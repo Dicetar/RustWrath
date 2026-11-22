@@ -192,6 +192,7 @@ pub(super) fn step(
         player.knock_arc = true;
     } else if grounded {
         player.vel_y = 0.0;
+        player.air_jumped = false;
         // Hover refuses the keyboard jump silently, the first test in `CMovement::Jump`
         // (`0x7c623a`): the key's replay passes `Jump(1)` (`0x615eba`) and drops a refusal
         // (`0x615ec5`), so no `MSG_MOVE_JUMP` and no retry. `wire_jump` is `Jump(0)`, which skips
@@ -206,6 +207,14 @@ pub(super) fn step(
             // A moving jump is locked to its momentum; a standing one may steer once.
             player.arc_dirs_set = moving;
         }
+    } else if want_jump && player.souls.air_jump && !player.air_jumped {
+        // The Souls mount's double jump (Elden Ring's Torrent): one more take-off in the air, a
+        // new arc with its own `MSG_MOVE_JUMP` (`ArcEdges::jumped` restarts the arc mid-air).
+        player.air_jumped = true;
+        player.vel_y = JUMP_SPEED;
+        player.launch_vz = JUMP_SPEED;
+        jumped = true;
+        player.arc_dirs_set = moving;
     } else if !player.airborne_prev {
         // A step-off: `StartFalling(0)` launches at exactly 0, which the wire tail sends and the
         // FALLINGFAR legs split on; the nibble seeds from the keys.

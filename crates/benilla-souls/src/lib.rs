@@ -39,6 +39,7 @@ mod controls;
 mod drive;
 mod hud;
 mod input;
+mod ranged;
 mod retarget;
 mod server;
 mod targets;
@@ -102,6 +103,7 @@ impl Plugin for SoulsPlugin {
                 (
                     input::grip_toggle,
                     input::souls_input,
+                    ranged::ranged_stance,
                     targets::toggle_lock,
                     targets::lock_follows_target,
                     targets::resolve_hits,

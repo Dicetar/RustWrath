@@ -33,6 +33,12 @@ use crate::ui_script::UiKeyboardCapture;
 const SPRINT_AFTER_SECONDS: f32 = 0.35;
 /// The sprint's drain, kit points a second (authored; the bar is the kit's).
 const SPRINT_DRAIN_POINTS_PER_SECOND: f32 = 8.0;
+/// A crouched sprint (`stealth_moves`) drains this much more: the stealth penalty on the client's
+/// side (the server's is a run-speed cap and more noise and sight).
+const STEALTH_SPRINT_DRAIN_FACTOR: f32 = 1.5;
+/// A crouched roll (`stealth_moves`) costs this many kit points on top of the roll's own: the
+/// server is not told of a roll, so its stealth penalty is the stamina.
+const STEALTH_ROLL_EXTRA_POINTS: u32 = 10;
 /// The movement keys may all be up this long without ending a sprint (a direction change).
 const SPRINT_NEUTRAL_GRACE_SECONDS: f32 = 0.2;
 /// A light or heavy press this long after the sprint ends (Space let go to click) is still the
@@ -404,6 +410,13 @@ pub(super) fn souls_input(
         .1
         .me_store()
         .is_some_and(|store| store.0.unit_mount_display_id() != 0);
+    // A mount that cannot fly sprints (without stamina) and double-jumps (`mount_moves`).
+    let mount_moves = mounted && features.mount_moves && !benilla_app::souls::can_fly();
+    if souls.mount_moves != mount_moves {
+        souls.mount_moves = mount_moves;
+    }
+    // Sprinting is the body's, or a ground mount's.
+    let may_sprint = !mounted || mount_moves;
 
     // Guarded hits since last frame: each costs stamina; an empty bar breaks the guard.
     let guarded = std::mem::take(&mut playback.guarded_hits);
@@ -472,7 +485,8 @@ pub(super) fn souls_input(
         && t >= souls.guard_broken_until
         && idle
         && !souls.sprinting
-        && !mounted;
+        && !mounted
+        && !souls.ranged;
     if guard && !souls.guarding && !features.retarget_locomotion {
         play_clip(ANIM_SHIELD_BLOCK, entity, &mut play_seq, &mut actions);
     }
@@ -498,7 +512,7 @@ pub(super) fn souls_input(
     let moving_now = moving || t - souls.last_moving_at < SPRINT_NEUTRAL_GRACE_SECONDS;
     if !souls.sprinting
         && features.sprint
-        && !mounted
+        && may_sprint
         && dodge_held
         && moving
         && held_for >= SPRINT_AFTER_SECONDS
@@ -508,7 +522,7 @@ pub(super) fn souls_input(
         souls.sprinting = true;
         souls.dodge_sprinted = true;
     }
-    if souls.sprinting && (!dodge_held || !moving_now || !features.sprint || mounted) {
+    if souls.sprinting && (!dodge_held || !moving_now || !features.sprint || !may_sprint) {
         info!(
             "souls: sprint ends (dodge held {dodge_held}, moving {moving_now}, on {})",
             features.sprint
@@ -517,9 +531,15 @@ pub(super) fn souls_input(
         souls.sprint_ended_at = Some(t);
         souls.sprint_owed = 0.0;
     }
-    if souls.sprinting {
+    // The mount runs on its own legs: its sprint costs nothing.
+    if souls.sprinting && !mounted {
         if let Some(engine) = playback.engine.as_mut() {
-            souls.sprint_owed += SPRINT_DRAIN_POINTS_PER_SECOND * scale as f32 * dt;
+            let stealth = if souls.crouched {
+                STEALTH_SPRINT_DRAIN_FACTOR
+            } else {
+                1.0
+            };
+            souls.sprint_owed += SPRINT_DRAIN_POINTS_PER_SECOND * stealth * scale as f32 * dt;
             let whole = souls.sprint_owed.floor();
             if whole >= 1.0 {
                 souls.sprint_owed -= whole;
@@ -589,8 +609,11 @@ pub(super) fn souls_input(
         }
     }
 
-    // The crouch: its key toggles it; a dodge, a sprint or any accepted action stands back up.
-    if !features.crouch || dodge_press || souls.sprinting || mounted {
+    // The crouch: its key toggles it; any accepted action stands back up. With `stealth_moves` a
+    // sprint and a roll keep it (the penalty is the sprint's drain and the server's noise),
+    // without them they stand up too.
+    let stands = !features.stealth_moves && (dodge_press || souls.sprinting);
+    if !features.crouch || stands || mounted {
         souls.crouched = false;
     } else if input.just_pressed(binds.crouch) {
         souls.crouched = !souls.crouched;
@@ -603,7 +626,7 @@ pub(super) fn souls_input(
     let airborne = player.airborne();
     let landed = souls.was_airborne && !airborne;
     souls.was_airborne = airborne;
-    let jumping = features.jump_attacks && airborne && !mounted;
+    let jumping = features.jump_attacks && airborne && !mounted && !souls.ranged;
     // Keep one press per jump. A landing row is pending; an air row records that the engine
     // already accepted the press, even if the action finishes before touchdown.
     let landing = if jumping {
@@ -626,6 +649,9 @@ pub(super) fn souls_input(
     let mut air_row = None;
     let (units, relations, mut link) = critical;
     let mut crit = None;
+    // The ranged stance shoots on light ([`super::ranged`]); only the dodge stays a press.
+    let melee = !souls.ranged;
+    let mut rolled = false;
     let request = if mounted {
         None
     } else if let Some(row) = landing {
@@ -647,10 +673,13 @@ pub(super) fn souls_input(
             .and_then(|name| kit_now?.action_named(name))
             .map(|row| row.id)
     } else if dodge_press {
+        rolled = true;
         match kit_now {
             Some(kit) => resolve_dodge(kit, flags, Some(roll_load(link.load))),
             None => Some(stock_press(Press::Dodge)),
         }
+    } else if !melee {
+        None
     } else if input.just_pressed(binds.light) {
         crit = kit_now
             .filter(|_| idle && link.reporting())
@@ -745,7 +774,17 @@ pub(super) fn souls_input(
             }
             souls.sprinting = false;
             souls.sprint_ended_at = None;
-            souls.crouched = false;
+            // A roll keeps the crouch with `stealth_moves`, for a little more stamina; every other
+            // action stands up.
+            if rolled && features.stealth_moves && souls.crouched {
+                if let Some(engine) = playback.engine.as_mut() {
+                    let extra = STEALTH_ROLL_EXTRA_POINTS.saturating_mul(scale);
+                    let left = engine.stamina().saturating_sub(extra);
+                    engine.set_stamina(left, now);
+                }
+            } else {
+                souls.crouched = false;
+            }
             if counter && heavy_pressed.is_some() {
                 souls.counter_until = 0.0;
             }
