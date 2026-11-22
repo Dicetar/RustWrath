@@ -1,10 +1,10 @@
 # Single-row combat-log packets and damage classifications
 
-Status: in progress
+Status: ready to merge
 Owner: OpenCode / DeepSeek V4.1 Flash
 Branch: oc/combat-log-single-row
 Issue: none
-Next: push the repaired decode/queue/feed layer, read the CI run, and fix until green. Then mark ready to merge and record the CI run id.
+Next: coordinator review and merge. The branch is green on CI 45005292656 (full dispatch); the earlier push run 45004406634 is also green.
 
 ## Delivery this round
 
@@ -25,8 +25,34 @@ Next: push the repaired decode/queue/feed layer, read the CI run, and fix until 
   `damage_shield_has_the_twenty_values_in_source_victim_order`,
   `damage_split_uses_the_split_damage_row`,
   `range_damage_uses_the_ranged_spell_attribute`.
-- Verification: rustfmt on the four edited files; no Cargo, client or server was run. CI: not
-  run yet. Nothing has been observed in the stock combat-log frame.
+- Verification: rustfmt on the four edited files; no local Cargo, client or server was run.
+  CI 45005292656 (workflow_dispatch `all=true`): gates and windows green; `player-tests` ran,
+  including every named test above. CI 45004406634 (push, changed crates) also passed.
+  Nothing has been observed in the stock combat-log frame.
+
+## Event status
+
+| Event | Producer | Status |
+|---|---|---|
+| `SPELL_INSTAKILL` | `0x32F` | decoded, queued, feed built; CI green; not seen in game |
+| `ENCHANT_APPLIED` / `ENCHANT_REMOVED` | `0x1D7` | decoded, queued, feed built; CI green; not seen in game |
+| `ENVIRONMENTAL_DAMAGE` | `0x1FC` | decoded, queued, feed built; CI green; not seen in game |
+| `DAMAGE_SHIELD` | `0x24F` | decoded, queued, feed built; CI green; not seen in game |
+| `DAMAGE_SPLIT` | `0x250` `hitInfo & 0x8` | classified on the existing spell-damage row; CI green; not seen in game |
+| `RANGE_DAMAGE` | `0x250` + `AttributesEx3 & 0x8000` | classified on the existing spell-damage row; CI green; not seen in game |
+
+## Not proven in game
+
+- No client or server run: none of these rows has been observed in the stock combat-log frame.
+- Environmental absorbed/resisted remain decoded in 12340 order; the local AzerothCore writer's
+  swapped pair has not been checked against a live packet.
+- An enchant row whose item name is not yet in `ItemNames` posts a nil item name (the reference
+  can delay the row through its pending-name data). A missing spell/enchant DBC row drops the row.
+- `RANGE_DAMAGE` needs the `Spell.dbc` catalog to identify the ranged attribute; without a
+  catalog record the row falls back to `SPELL_DAMAGE` because the wire cannot tell.
+- The reflected-spell source override (`hitInfo & 0x10`) is not applied; the pre-existing
+  spell-damage path keeps the packet's caster.
+- No visible UI/frame ordering, filtering or retention behavior was exercised.
 
 ## Scope
 
