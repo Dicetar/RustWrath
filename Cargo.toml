@@ -65,8 +65,9 @@ opt-level = 1
 # incremental rebuild redoes it whole: 19 s of a one-line `benilla-app` edit's 25 s, and half its
 # 5.3 GB. Off, our crates cost +0.7 cpu_ms (+6 %) at the leg pin.
 lto = "off"
-
-# No debuginfo trimming: `debug = "line-tables-only"` measures no recurring win on macOS + sccache.
+# Line tables only (file:line in backtraces and crash reports, no types or locals), for every crate:
+# on Windows full debuginfo made dx's fat link write a 2.5 GB PDB, 78 s of a 131 s restart build.
+debug = "line-tables-only"
 
 # The shipping build (`--profile ship`): fat LTO measures -1.0 cpu_ms (-5 %) against `release`,
 # which stays the measured profile because fat LTO's link time would tax every iteration.
