@@ -14,9 +14,26 @@ pub mod server;
 use benilla_combat_core::{ActionId, Milli};
 use bevy::prelude::*;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 pub use config::SoulsConfig;
 pub use controls::ErControls;
 pub use server::{tap_addon, SwingMute};
+
+/// The server let our mover fly (`SMSG_MOVE_SET_CAN_FLY`, unset by `_UNSET_CAN_FLY`). The mount
+/// moves (sprint, double jump) are for a mount that cannot fly. Recorded where the Wrath session
+/// decodes the order, which the client does not otherwise apply.
+static CAN_FLY: AtomicBool = AtomicBool::new(false);
+
+/// Record the server's fly order for our mover.
+pub fn set_can_fly(apply: bool) {
+    CAN_FLY.store(apply, Ordering::Relaxed);
+}
+
+/// Whether the server lets our mover fly.
+pub fn can_fly() -> bool {
+    CAN_FLY.load(Ordering::Relaxed)
+}
 
 /// Inserts the Souls state, where `benilla-souls`'s `SoulsPlugin` did before it moved up; the
 /// client adds that plugin right after this one.
@@ -78,6 +95,10 @@ pub struct SoulsState {
     pub was_airborne: bool,
     /// The jump's accepted air row, or the landing row still owed for its one press.
     pub air_attack: Option<&'static str>,
+    /// Mounted on a mount that cannot fly, with the mount moves on: sprint and the double jump.
+    pub mount_moves: bool,
+    /// The ranged stance: the ranged weapon is drawn and light shoots it.
+    pub ranged: bool,
 }
 
 impl SoulsState {
@@ -102,6 +123,8 @@ impl SoulsState {
             && !self.crouched
             && !self.was_airborne
             && self.air_attack.is_none()
+            && !self.mount_moves
+            && !self.ranged
     }
 }
 

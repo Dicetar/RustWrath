@@ -43,6 +43,12 @@
 //!                     # faces where it runs (off: the orbit turns the body, as mouselook does)
 //! unit_collision = true # with the ER controls on, attackable units are solid: the body slides
 //!                     # round them and an attack's step forward stops at their body
+//! stealth_moves = true # sprint and roll keep the crouch: a crouched sprint is no faster than a
+//!                     # run and drains more stamina, and the server hears and sees both farther
+//! mount_moves = true  # on a mount that cannot fly: hold dodge to sprint (no stamina), and jump
+//!                     # again in the air (one double jump)
+//! ranged = true       # the ranged key draws the ranged-slot weapon (bow, gun, crossbow, thrown,
+//!                     # wand); light then shoots the locked or nearest enemy in front
 //!
 //! [binds]             # key names: A-Z, 0-9, F1-F12, Space, Tab, Backquote, Escape, Enter,
 //! light = "MouseLeft" # LeftShift, LeftCtrl, LeftAlt, CapsLock, MouseLeft, MouseRight,
@@ -60,6 +66,7 @@
 //! use_item = "R"      # runs the `quick_item` binding
 //! walk = "LeftAlt"    # hold to walk (TOGGLERUN on press and release)
 //! cursor = "LeftCtrl" # tap: the cursor up for the UI, tap again: back to the orbit
+//! ranged = "V"        # the ranged stance on and off (ranged)
 //!
 //! [controls]
 //! quick_item = "ACTIONBUTTON12" # the WoW binding the use-item key runs
@@ -112,6 +119,9 @@ pub struct SoulsFeatures {
     pub er_controls: bool,
     pub free_camera: bool,
     pub unit_collision: bool,
+    pub stealth_moves: bool,
+    pub mount_moves: bool,
+    pub ranged: bool,
 }
 
 impl Default for SoulsFeatures {
@@ -146,6 +156,9 @@ impl Default for SoulsFeatures {
             er_controls: true,
             free_camera: true,
             unit_collision: true,
+            stealth_moves: true,
+            mount_moves: true,
+            ranged: true,
         }
     }
 }
@@ -169,6 +182,7 @@ struct BindNames {
     use_item: String,
     walk: String,
     cursor: String,
+    ranged: String,
 }
 
 impl Default for BindNames {
@@ -189,6 +203,7 @@ impl Default for BindNames {
             use_item: "R".into(),
             walk: "LeftAlt".into(),
             cursor: "LeftCtrl".into(),
+            ranged: "V".into(),
         }
     }
 }
@@ -273,11 +288,13 @@ pub struct SoulsBinds {
     pub walk: SoulsKey,
     /// Tap to bring the cursor up for the UI, tap again to orbit.
     pub cursor: SoulsKey,
+    /// The ranged stance on and off.
+    pub ranged: SoulsBind,
 }
 
 impl SoulsBinds {
     /// The combat binds, for the Shift pairing and the claims.
-    pub fn combat(&self) -> [SoulsBind; 10] {
+    pub fn combat(&self) -> [SoulsBind; 11] {
         [
             self.light,
             self.heavy,
@@ -289,6 +306,7 @@ impl SoulsBinds {
             self.left,
             self.parry,
             self.grip,
+            self.ranged,
         ]
     }
 }
@@ -331,6 +349,7 @@ impl Default for SoulsConfig {
                 use_item: Key(KeyCode::KeyR),
                 walk: Key(KeyCode::AltLeft),
                 cursor: Key(KeyCode::ControlLeft),
+                ranged: SoulsBind::plain(Key(KeyCode::KeyV)),
             },
             controls: SoulsControls {
                 quick_item: "ACTIONBUTTON12".into(),
@@ -435,6 +454,7 @@ fn resolve(file: SoulsFile) -> Result<SoulsConfig, String> {
             use_item: keyboard("use_item", &names.use_item)?,
             walk: keyboard("walk", &names.walk)?,
             cursor: keyboard("cursor", &names.cursor)?,
+            ranged: bind("ranged", &names.ranged)?,
         },
         controls: SoulsControls {
             quick_item,

@@ -145,6 +145,8 @@ pub(super) fn drive_controller(
         active: true,
         free_camera: er.active() && er.free_camera,
         orbit: er.hides_cursor(),
+        // The ground mount's double jump ([`super::input`] decides `mount_moves`).
+        air_jump: souls.mount_moves,
         ..SoulsDrive::default()
     };
 
@@ -160,6 +162,15 @@ pub(super) fn drive_controller(
                     drive.cam_yaw = Some(bearing);
                 }
             }
+            drive.turn_keys_strafe = true;
+            locked_on = true;
+        }
+    }
+    // The ranged stance aims where the camera looks: without a lock the body faces the camera's
+    // line and the movement keys strafe, as an Elden Ring bow's aim does.
+    if souls.ranged && !locked_on && drive.free_camera {
+        if let Ok(cam) = cams.single() {
+            drive.face = Some(cam.yaw());
             drive.turn_keys_strafe = true;
             locked_on = true;
         }
