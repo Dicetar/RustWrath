@@ -54,7 +54,7 @@ pub(crate) use clock::{process_cpu_secs, process_faults, system_cpu_ticks, threa
 pub(crate) use gpu::{GpuMsShared, WgpuCensusShared};
 #[cfg(feature = "dev")]
 pub(crate) use hud::PerfHud;
-pub(crate) use journal::FpsJournalPlugin;
+pub use journal::FpsJournalPlugin;
 #[cfg(test)]
 pub(crate) use journal::{on_cvar, FpsJournalSetting};
 #[cfg(feature = "dev")]

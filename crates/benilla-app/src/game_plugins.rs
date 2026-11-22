@@ -91,14 +91,14 @@ use crate::ui_unit::UiUnitPlugin;
 use crate::world_backdrop::WorldBackdropPlugin;
 
 /// The game, as one plugin group. The two fields are the two plugins `run()` parameterises.
-pub(crate) struct GamePlugins {
+pub struct GamePlugins {
     /// [`NetPlugin::connect`]: `false` in capture mode and whenever the Wrath path owns the
     /// session, so exactly one network loop runs.
-    pub(crate) connect: bool,
+    pub connect: bool,
     /// [`crate::client_state::ClientStatePlugin::start`]: the screen this session opens on.
-    pub(crate) start: crate::client_state::ClientState,
+    pub start: crate::client_state::ClientState,
     /// Explicitly selected Wrath graphical session; `None` leaves the stock 1.12 path alone.
-    pub(crate) wrath: Option<crate::wrath::WrathSessionConfig>,
+    pub wrath: Option<crate::wrath::WrathSessionConfig>,
 }
 
 impl PluginGroup for GamePlugins {

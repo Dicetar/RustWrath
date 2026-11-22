@@ -3,7 +3,7 @@ name = "benilla"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "The launcher: build.rs stamps the git build id and main() hands it to benilla-app, so a new commit rebuilds this package and not the app crate"
+description = "The launcher: build.rs stamps the git build id and main() hands it to benilla-client, so a new commit rebuilds this package and not the app crate"
 
 [lints]
 workspace = true
@@ -11,20 +11,20 @@ workspace = true
 [features]
 # The dev/player seam: `cargo build -p benilla --no-default-features` is the player build.
 default = ["dev"]
-dev = ["benilla-app/dev"]
+dev = ["benilla-client/dev"]
 # Profiling switches, forwarded so `cargo run -p benilla --features tracy` works.
-tracy = ["benilla-app/tracy"]
-trace_chrome = ["benilla-app/trace_chrome"]
-# Forwards to benilla-app's `bevy_dynamic_linking`, which enables bevy/dynamic_linking.
-bevy_dynamic_linking = ["benilla-app/bevy_dynamic_linking"]
+tracy = ["benilla-client/tracy"]
+trace_chrome = ["benilla-client/trace_chrome"]
+# Forwards to benilla-client's `bevy_dynamic_linking`, which enables bevy/dynamic_linking.
+bevy_dynamic_linking = ["benilla-client/bevy_dynamic_linking"]
 # Opt-in native pose modules and source shader watching; one bootstrap build is required.
-hotpatch = ["benilla-app/hotpatch"]
+hotpatch = ["benilla-client/hotpatch"]
 # Whole-client live code under `dx serve --hot-patch` (`tools/launch-client.ps1 -LiveCode`).
-live_code = ["benilla-app/live_code"]
+live_code = ["benilla-client/live_code"]
 
 [dependencies]
-# `default-features = false`, or `--no-default-features` here still builds benilla-app with `dev`.
-benilla-app = { path = "../benilla-app", default-features = false }
+# `default-features = false`, or `--no-default-features` here still builds benilla-client with `dev`.
+benilla-client = { path = "../benilla-client", default-features = false }
 
 [build-dependencies]
 benilla-buildstamp = { path = "../benilla-buildstamp" }

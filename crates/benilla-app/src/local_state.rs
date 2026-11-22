@@ -26,7 +26,7 @@ const STATE_DIR: &str = "benilla-config";
 /// The state folder, or `None` when persistence is off (a capture run, or no executable path).
 /// It may not exist yet: [`write_atomic`] creates it, and a reader treats a missing file as
 /// defaults.
-pub(crate) fn home() -> Option<PathBuf> {
+pub fn home() -> Option<PathBuf> {
     home_in(cfg!(test))
 }
 

@@ -11,26 +11,26 @@ use bevy::prelude::*;
 
 /// `WOW_CAPTURE=list`: prints the harness scenario names `scripts/visual.sh` reads, before any
 /// window or asset setup; nothing in a player build.
-pub(crate) fn print_scenario_names() {
+pub fn print_scenario_names() {
     #[cfg(feature = "dev")]
     crate::capture::print_scenario_names();
 }
 
 /// `WOW_PROBE=list`: prints the probe environment registry (`capture::probe_env`) before any window
 /// or asset setup; nothing in a player build.
-pub(crate) fn print_probe_vars() {
+pub fn print_probe_vars() {
     #[cfg(feature = "dev")]
     crate::capture::probe_env::print();
 }
 
 /// `WOW_HOVER_LOG_REPORT=<csv>`: prints a recorded hover-log run's report, with no window or game.
-pub(crate) fn report_recorded_hover_log(_path: &str) {
+pub fn report_recorded_hover_log(_path: &str) {
     #[cfg(feature = "dev")]
     crate::hover_log::report_recorded_file(_path);
 }
 
 /// The instruments, debug panel first: `PerfPlugin` needs the egui plugin and context it sets up.
-pub(crate) struct DevToolsPlugin;
+pub struct DevToolsPlugin;
 
 impl Plugin for DevToolsPlugin {
     #[cfg_attr(not(feature = "dev"), allow(unused_variables))]
@@ -59,7 +59,7 @@ impl Plugin for DevToolsPlugin {
 
 /// The probe fleet: the capture harness and every scripted live probe, each inert without its own
 /// environment variable. Added last so they observe the fully-built app.
-pub(crate) struct DevProbesPlugin;
+pub struct DevProbesPlugin;
 
 impl Plugin for DevProbesPlugin {
     #[cfg_attr(not(feature = "dev"), allow(unused_variables))]

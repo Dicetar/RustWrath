@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 
 /// `$WOW_NOVSYNC=1`: uncap for this session only; it never reaches `config.toml` (the
 /// `session_owned` set in [`crate::cvars`]).
-pub(crate) fn novsync_env() -> bool {
+pub fn novsync_env() -> bool {
     std::env::var("WOW_NOVSYNC").as_deref() == Ok("1")
 }
 
@@ -46,7 +46,7 @@ pub(crate) fn windowed_env() -> bool {
 }
 
 /// `$WOW_WIN=WxH` in logical px; the one parser, so the size asked for and the size checked agree.
-pub(crate) fn requested_window_size() -> Option<UVec2> {
+pub fn requested_window_size() -> Option<UVec2> {
     let v = std::env::var("WOW_WIN").ok()?;
     let (w, h) = v.split_once('x')?;
     Some(UVec2::new(w.parse().ok()?, h.parse().ok()?))
@@ -61,7 +61,7 @@ pub(crate) fn requested_dpi() -> Option<f32> {
 }
 
 /// Apply [`requested_dpi`] to a window resolution; the one place the knob is spent.
-pub(crate) fn at_requested_dpi(res: WindowResolution) -> WindowResolution {
+pub fn at_requested_dpi(res: WindowResolution) -> WindowResolution {
     match requested_dpi() {
         Some(dpi) => res.with_scale_factor_override(dpi),
         None => res,
@@ -119,7 +119,7 @@ pub(crate) fn window_mode(
 /// The mode the primary window is born in, resolved before the `App` exists so a fullscreen launch
 /// does not flash windowed until `Startup`. `MonitorSelection::Primary`, since `Current` has no
 /// answer before the window exists (`bevy_winit::select_monitor`).
-pub(crate) fn boot_window_mode() -> WindowMode {
+pub fn boot_window_mode() -> WindowMode {
     // Quiet and lazy: the log plugin does not exist yet, and a config holding both rows needs no
     // locale at all.
     boot_window_mode_for(
@@ -160,7 +160,7 @@ fn boot_window_mode_for(
 
 /// The windowed size the primary window is born at, `gxResolution`, read as [`boot_window_mode`]
 /// is; `bevy_winit` ignores it while fullscreen.
-pub(crate) fn boot_windowed_size() -> UVec2 {
+pub fn boot_windowed_size() -> UVec2 {
     crate::cvars::boot_cvar("gxResolution")
         .and_then(|v| parse_resolution(&v))
         .unwrap_or(DEFAULT_WINDOWED)
@@ -196,7 +196,7 @@ impl Default for VideoConfig {
 
 /// The present mode a vsync setting means. On is `PresentMode::default()` (`Fifo`, never tears),
 /// not `AutoVsync`, which resolves to `FifoRelaxed` and can tear on a late frame.
-pub(crate) fn present_mode(vsync: bool) -> PresentMode {
+pub fn present_mode(vsync: bool) -> PresentMode {
     if vsync {
         PresentMode::default()
     } else {

@@ -1,13 +1,13 @@
 //! `extended_launcher`: the client with a plugin of its own on top, started through
-//! [`benilla_app::run_with`] as a crate built on benilla starts it. A feature 1.12.1 does not have
+//! [`benilla_client::run_with`] as a crate built on benilla starts it. A feature 1.12.1 does not have
 //! lives in a crate like this one, never in benilla.
 //!
 //! ```text
-//! cargo run -p benilla-app --example extended_launcher
+//! cargo run -p benilla-client --example extended_launcher
 //! ```
 //!
 //! The banner reads `benilla build … · extended`, and the plugin logs one line at `Startup`: the
-//! `AddOns/` folder in [`benilla_app::config_dir`], where an addon the crate ships is written.
+//! `AddOns/` folder in [`benilla_client::config_dir`], where an addon the crate ships is written.
 //!
 //! A crate of its own copies the `benilla` launcher (`crates/benilla`): a build script that stamps
 //! its commit, a `main` like this one that reads the stamp back as `crates/benilla/src/main.rs`
@@ -17,11 +17,11 @@
 //! [features]
 //! default = ["dev"]
 //! # The instruments; the player build is `--no-default-features`.
-//! dev = ["benilla-app/dev"]
+//! dev = ["benilla-client/dev"]
 //!
 //! [dependencies]
-//! # `default-features = false`, or `--no-default-features` still builds benilla-app with `dev`.
-//! benilla-app = { git = "https://github.com/samwhosung/benilla", default-features = false }
+//! # `default-features = false`, or `--no-default-features` still builds benilla-client with `dev`.
+//! benilla-client = { git = "https://github.com/samwhosung/benilla", default-features = false }
 //! # benilla's version, adding no features: bevy's defaults bring its audio stack back.
 //! bevy = { version = "0.18.1", default-features = false }
 //!
@@ -54,7 +54,7 @@
 //! with. A dev build keeps its `WoW` link, `benilla-config/` and `.probe-identity` in its own
 //! folder, beside that `Cargo.lock`, as benilla's does.
 
-use benilla_app::{AppExit, BuildId};
+use benilla_client::{AppExit, BuildId};
 use bevy::prelude::*;
 
 /// The crate's own plugin: one line at `Startup`, to show it runs inside the client and where its
@@ -64,7 +64,7 @@ struct HelloPlugin;
 impl Plugin for HelloPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, || {
-            let addons = benilla_app::config_dir().map(|dir| dir.join("AddOns"));
+            let addons = benilla_client::config_dir().map(|dir| dir.join("AddOns"));
             info!("a plugin on top of benilla is running; its addons go in {addons:?}");
         });
     }
@@ -82,7 +82,7 @@ fn main() -> AppExit {
         },
         ..Default::default()
     };
-    benilla_app::run_with(build, |app| {
+    benilla_client::run_with(build, |app| {
         app.add_plugins(HelloPlugin);
     })
 }

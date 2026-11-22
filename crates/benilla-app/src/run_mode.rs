@@ -21,19 +21,19 @@ pub(crate) struct RigCharacter(pub(crate) String);
 
 /// Is a capture running (`$WOW_CAPTURE` set)? Read before any plugin builds: it decides whether
 /// the net thread starts, the window size, and whether clutter and anim-LOD randomness is pinned.
-pub(crate) fn scenario_active() -> bool {
+pub fn scenario_active() -> bool {
     std::env::var("WOW_CAPTURE").is_ok()
 }
 
 /// Is the player UI opted into this capture? Forwards [`crate::capture::ui_opted_in`] for readers
 /// outside the harness; `false` in a player build, which has no capture to opt into.
 #[cfg(feature = "dev")]
-pub(crate) fn capture_ui_opted_in() -> bool {
+pub fn capture_ui_opted_in() -> bool {
     crate::capture::ui_opted_in()
 }
 
 #[cfg(not(feature = "dev"))]
-pub(crate) fn capture_ui_opted_in() -> bool {
+pub fn capture_ui_opted_in() -> bool {
     false
 }
 
@@ -55,7 +55,7 @@ pub(crate) fn env_login() -> bool {
 ///
 /// Read by what acts instead of a person: [`crate::net::DisconnectedMessage::new`] (the
 /// lost-session verdict, taken once at the wire edge) and the `FATAL` exits.
-pub(crate) fn unattended() -> bool {
+pub fn unattended() -> bool {
     ["WOW_UNATTENDED", "WOW_CAPTURE", "WOW_RIG"]
         .iter()
         .any(|k| std::env::var_os(k).is_some())
@@ -83,7 +83,7 @@ pub(crate) fn fatal_when_driverless(why: &str) -> bool {
 /// The screen the client starts on: a player at the login screen, a capture straight in the world,
 /// a glue capture on the screen it photographs. Needed before the plugins build, so it forwards
 /// into the dev half rather than reading a resource.
-pub(crate) fn start_state() -> crate::client_state::ClientState {
+pub fn start_state() -> crate::client_state::ClientState {
     // The selected Wrath path enters the world directly: its session loop owns login and character
     // selection, so the stock glue screen is not a second owner.
     if crate::wrath::selected_from_env() && !crate::wrath::interactive_from_env() {

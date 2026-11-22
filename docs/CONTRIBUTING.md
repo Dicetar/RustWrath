@@ -51,10 +51,10 @@ taken.
 ## Building on top
 
 A feature 1.12.1 does not have lives in a crate of its own that adds its Bevy plugins through
-`benilla_app::run_with`, as `crates/benilla-app/examples/extended_launcher.rs` shows, or in a
+`benilla_client::run_with`, as `crates/benilla-client/examples/extended_launcher.rs` shows, or in a
 fork. A client started through `run_with` says `extended` in its build line, so its reports read
 apart from stock benilla's. The crate keeps its own settings, never rows in benilla's CVar table,
-which every addon reads, and its files go under `benilla_app::config_dir()`, its own
+which every addon reads, and its files go under `benilla_client::config_dir()`, its own
 `benilla-config/`: an addon it ships is written into that folder's `AddOns/` and loads as any
 addon does.
 

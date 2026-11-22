@@ -45,7 +45,7 @@ fn trace_evaluation_reason(detail: PatchEvaluationReason, coarse: BevyReason) ->
     }
 }
 
-pub(crate) fn plugin(app: &mut App) {
+pub fn plugin(app: &mut App) {
     let Some(home) = crate::local_state::home() else {
         return;
     };

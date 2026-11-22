@@ -19,7 +19,7 @@ use crate::BuildId;
 /// Chains the crash-report hook after the current one. Called once as the client launches
 /// ([`crate::run`], [`crate::run_with`]), before the `App` exists, so a panic while plugins build
 /// is covered.
-pub(crate) fn install(build: BuildId) {
+pub fn install(build: BuildId) {
     let started = Instant::now();
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

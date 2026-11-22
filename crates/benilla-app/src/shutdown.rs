@@ -54,7 +54,7 @@ pub(crate) fn on_app_exit(app: &mut App, systems: ScheduleConfigs<ScheduleSystem
 /// sway, Hyprland) binds nothing to it, so benilla reads the chord itself and asks for the same
 /// close, which the shutdown tail above already serves. Not on macOS: `Cmd+Q` is
 /// [`benilla_world::mac_quit`].
-pub(crate) struct AltF4Plugin;
+pub struct AltF4Plugin;
 
 impl Plugin for AltF4Plugin {
     fn build(&self, app: &mut App) {

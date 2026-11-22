@@ -20,7 +20,7 @@ use bevy::time::Real;
 
 use super::clock::{main_thread_cpu_secs, process_cpu_secs};
 
-pub(crate) struct FpsJournalPlugin;
+pub struct FpsJournalPlugin;
 
 /// The `fpsJournal` CVar: on, the journal appends from the next second; off, it stops and the
 /// file keeps what it has.

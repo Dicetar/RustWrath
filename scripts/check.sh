@@ -116,8 +116,8 @@ run() {
 run fmt cargo fmt --all -- --check
 run clippy cargo clippy $pflags --all-targets -- -D warnings
 # The player build (no `dev` feature) is linted on its own: the run above sees only the dev set.
-case " $pkgs " in *" benilla-app "* | *" benilla "*)
-    run player-clippy cargo clippy -p benilla -p benilla-app --no-default-features -- -D warnings ;;
+case " $pkgs " in *" benilla-app "* | *" benilla-client "* | *" benilla "*)
+    run player-clippy cargo clippy -p benilla -p benilla-client -p benilla-app --no-default-features -- -D warnings ;;
 esac
 # Every test binary runs whatever another fails (`scripts/unit-tests.sh`), and the doctests after.
 run test env BENILLA_SKIP_LOG="$skips" "$root/scripts/unit-tests.sh" $pflags

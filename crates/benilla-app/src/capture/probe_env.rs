@@ -463,24 +463,32 @@ mod tests {
         );
     }
 
-    /// Every `.rs` under this crate's `src/`, as `(path under src/, text)`.
+    /// Every `.rs` under this crate's `src/`, as `(path under src/, text)`, and under the
+    /// assembler's (`benilla-client`, whose boot dispatches `WOW_PROBE=list`), as
+    /// `(benilla-client/<path under src/>, text)`.
     fn crate_sources() -> Vec<(String, String)> {
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let roots = [
+            (manifest.join("src"), ""),
+            (manifest.join("../benilla-client/src"), "benilla-client/"),
+        ];
         let mut out = Vec::new();
-        let mut stack = vec![src.clone()];
-        while let Some(dir) = stack.pop() {
-            for entry in std::fs::read_dir(&dir).expect("crate source dir is readable") {
-                let path = entry.expect("dir entry").path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else if path.extension().is_some_and(|e| e == "rs") {
-                    let rel = path
-                        .strip_prefix(&src)
-                        .expect("under src")
-                        .to_string_lossy()
-                        .replace('\\', "/");
-                    let text = std::fs::read_to_string(&path).expect("source is readable");
-                    out.push((rel, text));
+        for (src, prefix) in roots {
+            let mut stack = vec![src.clone()];
+            while let Some(dir) = stack.pop() {
+                for entry in std::fs::read_dir(&dir).expect("crate source dir is readable") {
+                    let path = entry.expect("dir entry").path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if path.extension().is_some_and(|e| e == "rs") {
+                        let rel = path
+                            .strip_prefix(&src)
+                            .expect("under src")
+                            .to_string_lossy()
+                            .replace('\\', "/");
+                        let text = std::fs::read_to_string(&path).expect("source is readable");
+                        out.push((format!("{prefix}{rel}"), text));
+                    }
                 }
             }
         }

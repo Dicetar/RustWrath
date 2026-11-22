@@ -6,7 +6,7 @@ use bevy::prelude::*;
 
 /// The app's lifecycle: which screen owns the session.
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub(crate) enum ClientState {
+pub enum ClientState {
     /// Parked pre-logon at the login screen, the IO thread waiting for credentials. The realm list
     /// is no state: `GlueParent.lua`'s `GlueScreenInfo` omits it, a `DIALOG` frame over any
     /// screen.

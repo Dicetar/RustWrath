@@ -16,7 +16,7 @@ use bevy::app::AppExit;
 
 /// Why the client cannot start: the message a person is shown and a log carries.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct NoInstall {
+pub struct NoInstall {
     title: &'static str,
     message: String,
 }
@@ -28,7 +28,7 @@ impl NoInstall {
 
     /// A `Data` folder whose archives will not open, a corrupt one or none the chain knows: as fatal
     /// as no folder, the case the reference's `0x403b6f` covers for a base archive.
-    pub(crate) fn unreadable(data_dir: &std::path::Path, err: &anyhow::Error) -> Self {
+    pub fn unreadable(data_dir: &std::path::Path, err: &anyhow::Error) -> Self {
         Self {
             title: "benilla: the WoW install cannot be read",
             message: format!(
@@ -71,7 +71,7 @@ fn message(looked_in: &[PathBuf]) -> String {
 
 /// Report `err` and end the boot with a failing exit: stderr always, the dialog too unless the run
 /// is `unattended`, so an instrumented run never waits on a click.
-pub(crate) fn fail(err: &NoInstall, unattended: bool) -> AppExit {
+pub fn fail(err: &NoInstall, unattended: bool) -> AppExit {
     eprintln!("benilla: {}", err.message());
     if !unattended {
         // Linux shows it through `zenity` and logs nothing when that is missing, which stderr covers.
@@ -86,7 +86,7 @@ pub(crate) fn fail(err: &NoInstall, unattended: bool) -> AppExit {
 }
 
 /// [`require`] on the real resolver.
-pub(crate) fn resolve() -> Result<PathBuf, NoInstall> {
+pub fn resolve() -> Result<PathBuf, NoInstall> {
     require(benilla_formats::wow_data(), &benilla_formats::candidates())
 }
 

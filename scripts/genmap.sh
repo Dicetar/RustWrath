@@ -32,11 +32,11 @@ field() { grep -m1 "^$2" "$1" 2>/dev/null | sed -E "s/^$2[[:space:]]*=[[:space:]
   done
   echo
 
-  echo "## App subsystems — Bevy plugins in load order (\`crates/benilla-app/src/lib.rs\`)"
+  echo "## App subsystems — Bevy plugins in load order (\`crates/benilla-client/src/lib.rs\`)"
   echo
   # Accept bare (`add_plugins(FooPlugin)`) and path-qualified (`add_plugins(foo::FooPlugin)`)
   # registrations; print the plugin type name either way.
-  grep -oE 'add_plugins\(([a-z_]+::)*[A-Za-z_]+Plugins?' crates/benilla-app/src/lib.rs \
+  grep -oE 'add_plugins\(([a-z_]+::)*[A-Za-z_]+Plugins?' crates/benilla-client/src/lib.rs \
     | sed -E 's/add_plugins\(//; s/([a-z_]+::)+//' | awk '!seen[$0]++ {print "- " $0}'
   echo
 

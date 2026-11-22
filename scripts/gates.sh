@@ -171,7 +171,7 @@ run pass-span-lint scripts/pass-span-lint.py
 # feature set and player-tests compiles under `cfg(test)`, where test code uses imports and items
 # the shipped library does not; this lints the shipped library and the launcher, with no
 # `--all-targets`, so a warning confined to the player graph fails here.
-run player-clippy cargo clippy -p benilla -p benilla-app --no-default-features -- -D warnings
+run player-clippy cargo clippy -p benilla -p benilla-client -p benilla-app --no-default-features -- -D warnings
 
 # player-tests: the player build, `benilla-app` without `dev`, which compiles out the debug panel,
 # perf HUD, inspector, capture harness and probes, so it fails when any other code names one of

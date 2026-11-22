@@ -113,7 +113,7 @@ jobs:
       - name: pass-span-lint
         run: scripts/pass-span-lint.py
       - name: player-clippy
-        run: cargo clippy -p benilla -p benilla-app --no-default-features -- -D warnings
+        run: cargo clippy -p benilla -p benilla-client -p benilla-app --no-default-features -- -D warnings
       - name: player-tests
         if: >-
           contains(steps.changed.outputs.packages, ' benilla-app ')
@@ -125,7 +125,7 @@ jobs:
       # A check, not clippy: the lint debt the clippy step reports would stop it before the app.
       - name: live-code-check
         if: ${{ !cancelled() }}
-        run: cargo check -p benilla -p benilla-app --features live_code
+        run: cargo check -p benilla -p benilla-client -p benilla-app --features live_code
 
   windows:
     # The workspace tests on a Windows checkout, which no macOS or Linux gate runs: path separators,

@@ -77,12 +77,12 @@ fn the_documented_launcher_repeats_the_root_patches_profile_and_bevy() {
 }
 
 #[test]
-fn the_documented_launcher_takes_benilla_app_as_the_benilla_launcher_does() {
+fn the_documented_launcher_takes_benilla_client_as_the_benilla_launcher_does() {
     let doc = documented();
     let shim = manifest("../benilla/Cargo.toml");
     for keys in [
         &["features", "dev"][..],
-        &["dependencies", "benilla-app", "default-features"],
+        &["dependencies", "benilla-client", "default-features"],
     ] {
         assert_eq!(at(&doc, keys), at(&shim, keys), "{}", keys.join("."));
     }

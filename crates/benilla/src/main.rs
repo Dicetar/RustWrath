@@ -1,10 +1,10 @@
 //! The `benilla` launcher: a shim that carries the build stamp, so a new commit recompiles these
-//! few lines and relinks instead of rebuilding `benilla-app`.
+//! few lines and relinks instead of rebuilding `benilla-app` or `benilla-client`.
 
-use benilla_app::BuildId;
+use benilla_client::BuildId;
 
-fn main() -> benilla_app::AppExit {
-    benilla_app::run(BuildId {
+fn main() -> benilla_client::AppExit {
+    benilla_client::run(BuildId {
         version: env!("CARGO_PKG_VERSION"),
         describe: env!("BENILLA_GIT_DESCRIBE"),
         sha: env!("BENILLA_GIT_SHA"),
