@@ -388,7 +388,7 @@ mod tests {
             .to_le_bytes()
             .to_vec();
         p.extend(living_head(0, MOVE2_ALWAYS_ALLOW_PITCHING, Some(0.25)));
-        let speeds = [2.5f32, 7.0, 4.5, 2.5, 4.72, 7.0, 4.5, 3.14, 3.14];
+        let speeds = [2.5f32, 7.0, 4.5, 2.5, 4.72, 7.0, 4.5, 3.5, 3.5];
         for s in speeds {
             p.extend(s.to_le_bytes());
         }
