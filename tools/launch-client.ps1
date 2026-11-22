@@ -96,8 +96,24 @@ if ($LiveCode -and ($isRelease -or $releaseRequested)) {
 if ($LiveCode -and $BuildLatest) {
     Write-Host 'Live code builds through dx; -BuildLatest is skipped.'
 }
+# A client or build of this checkout: a client exe under it, or a compiler writing into its own
+# `target`. Agents build in their own worktrees with their own targets; those do not block a launch.
+function Test-OwnBuildOrClient([string]$Root) {
+    $own = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+    $target = $own + 'target\'
+    foreach ($p in Get-CimInstance Win32_Process -Filter "Name LIKE 'benilla%' OR Name = 'rustc.exe' OR Name = 'cargo.exe'") {
+        if ($p.Name -like 'benilla*') {
+            if ($p.ExecutablePath -and $p.ExecutablePath.StartsWith($own, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+        } elseif ($p.CommandLine -and $p.CommandLine.IndexOf($target, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            return $true
+        } elseif ($p.CommandLine -and $p.CommandLine.IndexOf($own + 'Cargo.toml', [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            return $true
+        }
+    }
+    return $false
+}
 if ($BuildLatest -and !$LiveCode -and !$isRelease -and !$releaseRequested) {
-    if (Get-Process benilla,cargo,rustc -ErrorAction SilentlyContinue) {
+    if (Test-OwnBuildOrClient $repo) {
         throw 'Close the running client or wait for the active build before rebuilding.'
     }
     Write-Host 'Building the current RustWrath source before launch...'
@@ -155,8 +171,8 @@ if (!$LiveCode -and !(Test-Path -LiteralPath $binary)) {
     }
     throw 'Client binary missing. Build once: cargo build -p benilla --features hotpatch'
 }
-if (Get-Process benilla,cargo,rustc -ErrorAction SilentlyContinue) {
-    throw 'A client or build is already running. Close it or wait before launching.'
+if (Test-OwnBuildOrClient $repo) {
+    throw 'A client or build of this checkout is already running. Close it or wait before launching.'
 }
 if ($isRelease -and !$PSBoundParameters.ContainsKey('DataPath')) {
     # Release users choose their own existing game data; never assume the developer's path.
