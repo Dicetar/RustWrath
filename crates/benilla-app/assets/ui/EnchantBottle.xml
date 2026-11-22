@@ -1,32 +1,74 @@
 <Ui>
     <!--
-        RustWrath's Enchant Bottle panel (owner design, 2026-11-21): the essence meter, the
-        imprint, the equipped items with random enchants, one card per enchant slot with its live
-        costs, and the absorb shelf. The server script (`integrations/ale/rustwrath_enchant_bottle.lua`)
-        is authoritative and feeds the panel over an addon whisper to oneself under the prefix
-        RWBOTTLE; the protocol is written out there. Stock clients keep its gossip menu.
+        RustWrath's Enchant Bottle window (owner sketch, 2026-11-22): the bottle's options on the
+        left, the item slot with the selected option's effect and Cancel / Apply in the centre,
+        and the player's bags (or worn gear) on the right to drag or click items from.
 
-        The bottle reuses stock item 44625, whose spell is a ground-targeted "set out a bottle":
-        used normally, it shows a placement cursor and never reaches the server. Using it from the
-        bags or the action bar, or typing `/bottle`, opens this panel instead.
+        The server script (`integrations/ale/rustwrath_enchant_bottle.lua`) is authoritative and
+        talks to this window over addon whispers to oneself under the prefix RWBOTTLE; the
+        protocol is written out there. Stock clients keep its gossip menu.
+
+        The bottle reuses stock item 44625, whose spell is a ground-targeted "set out a bottle".
+        The client's item use (`ui_items::send_item_use`) opens this window instead of casting it,
+        from the bags, bag addons, the character frame, action bars, keybinds and macros alike;
+        `/bottle` opens it too, and the server's SHOW line (`.bottle`).
+
+        Written in closures that read neither `this` nor `self`, so it runs in either dialect.
     -->
     <Script><![CDATA[
         local PREFIX = "RWBOTTLE"
-        local BOTTLE_ITEMS = { [44625] = true, [800000] = true }
-        local A_REROLL, A_GAMBLE, A_EMPOWER, A_AWAKEN, A_POUR = 1, 2, 3, 4, 5
+        local A_REROLL, A_GAMBLE, A_EMPOWER, A_AWAKEN, A_POUR, A_ABSORB = 1, 2, 3, 4, 5, 6
         local TIER_COLOR = { "ffffffff", "ff1eff00", "ff0070dd", "ffa335ee", "ffff8000" }
-        local SLOT_NAMES = { "Primary enchant", "Secondary enchant", "Bonus enchant" }
-        local ROWS, SHELF = 19, 24
+        local SLOT_NAMES = { "Primary", "Secondary", "Bonus" }
+        local COLS, SHOWN_ROWS, CELL = 8, 10, 31
+        local ROW_HEIGHT = 54
 
-        -- The last full state the server sent, and the one being collected (BEGIN to END).
-        local B = { charges = 0, stored = 0, storedTier = 0, storedName = "", pour = 0, awaken = 0,
-            items = {}, absorb = {}, pending = false, selected = nil, confirm = nil }
-        local incoming = nil
+        -- The options, in the order the left column shows them. `needs`: what the item must have
+        -- for the option ("enchant": a random enchant, "empty": an empty enchant slot, "bag": to
+        -- lie in the bags).
+        local OPTIONS = {
+            { action = A_REROLL, name = "Reroll", needs = "enchant",
+                icon = "Interface\\Icons\\INV_Misc_Dice_01",
+                general = "Costs the tier's value",
+                about = "Turns one random enchant into another random enchant of the same tier." },
+            { action = A_GAMBLE, name = "Gamble", needs = "enchant",
+                icon = "Interface\\Icons\\INV_Misc_Coin_02",
+                general = "Costs the tier's value",
+                about = "Rerolls one random enchant: 25% one tier down, 50% the same tier, 25% one tier up." },
+            { action = A_EMPOWER, name = "Empower", needs = "enchant",
+                icon = "Interface\\Icons\\INV_Enchant_EssenceMagicLarge",
+                general = "Costs 2x the next tier's value",
+                about = "Raises one random enchant a tier, keeping its stat." },
+            { action = A_AWAKEN, name = "Awaken", needs = "empty",
+                icon = "Interface\\Icons\\INV_Enchant_ShardBrilliantSmall",
+                general = "Costs 1.5x the tier's value",
+                about = "Fills an empty enchant slot with a random enchant rolled from the item's quality, "
+                    .. "as high a tier as your charges pay for." },
+            { action = A_POUR, name = "Pour stored enchant", needs = "empty",
+                icon = "Interface\\Icons\\INV_Potion_51",
+                general = "Costs 2x the stored tier's value",
+                about = "Pours the bottle's stored enchant into an empty enchant slot." },
+            { action = A_ABSORB, name = "Absorb", needs = "bag",
+                icon = "Interface\\Icons\\INV_Enchant_Disenchant",
+                general = "Gives charges, destroys the item",
+                about = "Destroys a weapon or armor piece from your bags for charges (its tiers' values) "
+                    .. "and stores its best enchant in the bottle." },
+        }
+
+        -- The server's last state, and the window's selection: `pos` is where the item lies
+        -- ({ kind = "bag", bag, slot } or { kind = "worn", id }, the client's numbering) and
+        -- `item` what the server said of it (ITEM).
+        local B = { charges = 0, stored = 0, storedTier = 0, storedName = "", pour = 0, awaken = 0 }
+        local sel = { option = 1, pos = nil, item = nil, eslot = nil }
+        local pending, waited = false, 0
+        local picked = nil
+        local tab, scroll = "bags", 0
+        local frame
 
         local function split(text)
             local fields = {}
             for field in (text .. "\t"):gmatch("([^\t]*)\t") do
-                fields[#fields + 1] = field
+                table.insert(fields, field)
             end
             return fields
         end
@@ -35,22 +77,204 @@
             SendAddonMessage(PREFIX, text, "WHISPER", UnitName("player"))
         end
 
-        -- The server numbers bag positions as the core does: the backpack is bag 255, slots
-        -- 23-38; the equipped bags are 19-22, slots from 0.
-        local function client_position(bag, slot)
-            if bag == 255 then
-                return 0, slot - 22
+        local function charges_text(n)
+            if n == 1 then
+                return "1 charge"
             end
-            return bag - 18, slot + 1
+            return n .. " charges"
         end
 
-        -- The frame ---------------------------------------------------------------------------
+        -- The core numbers the backpack as bag 255, slots 23-38, the equipped bags 19-22 with
+        -- slots from 0, and the worn gear as bag 255, slots 0-18.
+        local function server_pos(pos)
+            if pos.kind == "worn" then
+                return 255, pos.id - 1
+            end
+            if pos.bag == 0 then
+                return 255, pos.slot + 22
+            end
+            return pos.bag + 18, pos.slot - 1
+        end
 
-        local frame = CreateFrame("Frame", "RustWrathBottleFrame", UIParent)
+        local function same_pos(a, b)
+            return a and b and a.kind == b.kind and a.bag == b.bag and a.slot == b.slot and a.id == b.id
+        end
+
+        local function link_at(pos)
+            if pos.kind == "worn" then
+                return GetInventoryItemLink("player", pos.id)
+            end
+            return GetContainerItemLink(pos.bag, pos.slot)
+        end
+
+        local function texture_at(pos)
+            if pos.kind == "worn" then
+                return GetInventoryItemTexture("player", pos.id), 1
+            end
+            local texture, count = GetContainerItemInfo(pos.bag, pos.slot)
+            return texture, count
+        end
+
+        local function entry_at(pos)
+            local link = link_at(pos)
+            return link and tonumber(link:match("item:(%d+)"))
+        end
+
+        -- Weapons and armor are what the bottle works on; everything else is dimmed in the grid.
+        local function equippable(link)
+            if not link then
+                return false
+            end
+            local _, _, _, _, _, _, _, _, equipLoc = GetItemInfo(link)
+            return equipLoc ~= nil and equipLoc ~= "" and equipLoc ~= "INVTYPE_BAG"
+                and equipLoc ~= "INVTYPE_AMMO" and equipLoc ~= "INVTYPE_QUIVER"
+        end
+
+        local function set_tooltip(owner, pos)
+            GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
+            if pos.kind == "worn" then
+                GameTooltip:SetInventoryItem("player", pos.id)
+            else
+                GameTooltip:SetBagItem(pos.bag, pos.slot)
+            end
+            GameTooltip:Show()
+        end
+
+        -- The rules -------------------------------------------------------------------------
+
+        local function slot_ok(option, s)
+            if not s then
+                return false
+            end
+            if option.needs == "enchant" then
+                if s.tier == 0 then
+                    return false
+                end
+                return option.action ~= A_EMPOWER or s.empower > 0
+            end
+            if option.needs == "empty" then
+                return s.id == 0 and (option.action ~= A_POUR or B.stored ~= 0)
+            end
+            return false
+        end
+
+        -- The enchant slot an option works on: the chosen one if it fits, else the first that does.
+        local function slot_for(option)
+            local item = sel.item
+            if not item or option.needs == "bag" then
+                return nil
+            end
+            if sel.eslot and slot_ok(option, item.slots[sel.eslot]) then
+                return sel.eslot
+            end
+            for si = 1, 3 do
+                if slot_ok(option, item.slots[si]) then
+                    return si
+                end
+            end
+            return nil
+        end
+
+        local function cost_of(option, si)
+            if option.action == A_ABSORB then
+                return sel.item and sel.item.absorb or 0
+            elseif option.action == A_AWAKEN then
+                return B.awaken
+            elseif option.action == A_POUR then
+                return B.pour
+            end
+            local s = sel.item and si and sel.item.slots[si]
+            if not s then
+                return 0
+            elseif option.action == A_EMPOWER then
+                return s.empower
+            end
+            return s.reroll
+        end
+
+        -- Whether `option` can be applied to the item in the slot, and if not, why.
+        local function refusal(option)
+            local item = sel.item
+            if not item then
+                return "Put an item in the slot first."
+            end
+            if option.action == A_ABSORB then
+                if sel.pos.kind == "worn" then
+                    return "Only items in your bags can be absorbed. Take it off first."
+                elseif item.absorb == 0 then
+                    return "It has no random enchants to absorb."
+                end
+                return nil
+            end
+            if option.action == A_POUR and B.stored == 0 then
+                return "The bottle stores no enchant. Absorbing or disenchanting an item stores its best one."
+            end
+            if slot_for(option) then
+                return nil
+            end
+            if option.needs == "empty" then
+                return "Every enchant slot of this item is taken."
+            end
+            for si = 1, 3 do
+                if item.slots[si].tier > 0 then
+                    return "Its random enchants are already at the highest tier."
+                end
+            end
+            return "It has no random enchant."
+        end
+
+        local function enchant_text(s)
+            return string.format("|c%s%s|r (T%d)", TIER_COLOR[s.tier] or "ffffffff", s.name, s.tier)
+        end
+
+        local function effect_text(option, si)
+            if not sel.item then
+                return option.about .. "\n\n|cff9d9d9dPut a weapon or armor piece in the slot: drag it here "
+                    .. "from your bags or your character, or click it on the right.|r"
+            end
+            local why = refusal(option)
+            if why then
+                return option.about .. "\n\n|cffff6060" .. why .. "|r"
+            end
+            local s = si and sel.item.slots[si]
+            local cost = cost_of(option, si)
+            local text
+            if option.action == A_REROLL then
+                text = string.format("Rerolls %s into another random T%d enchant.", enchant_text(s), s.tier)
+            elseif option.action == A_GAMBLE then
+                text = string.format("Rerolls %s: 25%% T%d, 50%% T%d, 25%% T%d.", enchant_text(s),
+                    math.max(s.tier - 1, 1), s.tier, math.min(s.tier + 1, 5))
+            elseif option.action == A_EMPOWER then
+                text = string.format("Raises %s to its T%d version, same stat.", enchant_text(s), s.tier + 1)
+            elseif option.action == A_AWAKEN then
+                text = string.format("Fills the empty %s slot with a random enchant rolled from the "
+                    .. "item's quality, as high a tier as your charges pay for (1.5x its value).",
+                    SLOT_NAMES[si]:lower())
+            elseif option.action == A_POUR then
+                text = string.format("Pours %s into the empty %s slot. The bottle's store empties.",
+                    enchant_text({ name = B.storedName, tier = B.storedTier }), SLOT_NAMES[si]:lower())
+            else
+                text = "Destroys the item and stores its best enchant in the bottle"
+                if B.stored ~= 0 then
+                    text = text .. ", replacing " .. B.storedName
+                end
+                return text .. string.format(".\n\n|cff66ff66Gives %s.|r", charges_text(cost))
+            end
+            local price = (option.action == A_AWAKEN) and "Costs at least %s." or "Costs %s."
+            text = text .. "\n\n" .. string.format(price, charges_text(cost))
+            if cost > B.charges then
+                text = text .. string.format(" |cffff6060The bottle holds %d.|r", B.charges)
+            end
+            return text
+        end
+
+        -- The frame -------------------------------------------------------------------------
+
+        frame = CreateFrame("Frame", "RustWrathBottleFrame", UIParent)
         frame:Hide()
-        frame:SetWidth(620)
-        frame:SetHeight(600)
-        frame:SetPoint("CENTER", UIParent, "CENTER", 0, 30)
+        frame:SetWidth(786)
+        frame:SetHeight(456)
+        frame:SetPoint("CENTER", UIParent, "CENTER", 0, 40)
         frame:SetFrameStrata("DIALOG")
         frame:SetToplevel(true)
         frame:EnableMouse(true)
@@ -71,7 +295,7 @@
 
         local header = frame:CreateTexture(nil, "ARTWORK")
         header:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Header")
-        header:SetWidth(320)
+        header:SetWidth(300)
         header:SetHeight(64)
         header:SetPoint("TOP", frame, "TOP", 0, 12)
         local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -82,167 +306,473 @@
         close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -6, -6)
         close:SetScript("OnClick", function() frame:Hide() end)
 
-        -- The essence meter: charges against the next power of two from 16.
-        local meter = CreateFrame("StatusBar", nil, frame)
-        meter:SetWidth(380)
-        meter:SetHeight(18)
-        meter:SetPoint("TOPLEFT", frame, "TOPLEFT", 24, -38)
-        meter:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
-        meter:SetStatusBarColor(0.55, 0.3, 1)
-        meter:SetMinMaxValues(0, 16)
-        meter:SetValue(0)
-        local meterBack = meter:CreateTexture(nil, "BACKGROUND")
-        meterBack:SetAllPoints(meter)
-        meterBack:SetTexture(0, 0, 0, 0.6)
-        local meterText = meter:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        meterText:SetPoint("CENTER", meter, "CENTER", 0, 0)
+        -- The bottle's contents, under the title.
+        local chargesText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        chargesText:SetPoint("TOPLEFT", frame, "TOPLEFT", 26, -34)
+        chargesText:SetJustifyH("LEFT")
+        local storedText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        storedText:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -40, -36)
+        storedText:SetWidth(420)
+        storedText:SetJustifyH("RIGHT")
 
-        local imprint = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        imprint:SetPoint("TOPLEFT", meter, "BOTTOMLEFT", 0, -6)
-        imprint:SetWidth(570)
-        imprint:SetJustifyH("LEFT")
-
-        local status = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        status:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 24, 20)
-        status:SetWidth(570)
-        status:SetJustifyH("LEFT")
-
-        -- The equipped items, left.
-        local rows = {}
-        for i = 1, ROWS do
-            local row = CreateFrame("Button", nil, frame)
-            row:SetWidth(236)
-            row:SetHeight(20)
-            row:SetPoint("TOPLEFT", frame, "TOPLEFT", 20, -82 - (i - 1) * 20)
-            row.icon = row:CreateTexture(nil, "ARTWORK")
-            row.icon:SetWidth(18)
-            row.icon:SetHeight(18)
-            row.icon:SetPoint("LEFT", row, "LEFT", 2, 0)
-            row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            row.text:SetPoint("LEFT", row.icon, "RIGHT", 4, 0)
-            row.text:SetWidth(208)
-            row.text:SetJustifyH("LEFT")
-            row.mark = row:CreateTexture(nil, "BACKGROUND")
-            row.mark:SetAllPoints(row)
-            row.mark:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
-            row.mark:SetBlendMode("ADD")
-            row.mark:Hide()
-            row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
-            row:SetScript("OnClick", function()
-                B.selected = row.equip
-                RustWrathBottle_Render()
-            end)
-            row:SetScript("OnEnter", function()
-                if row.equip then
-                    GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
-                    GameTooltip:SetInventoryItem("player", row.equip + 1)
-                    GameTooltip:Show()
-                end
-            end)
-            row:SetScript("OnLeave", function() GameTooltip:Hide() end)
-            rows[i] = row
-        end
-
-        -- One card per enchant slot of the selected item, right.
-        local cards = {}
-        for si = 1, 3 do
-            local card = CreateFrame("Frame", nil, frame)
-            card:SetWidth(334)
-            card:SetHeight(116)
-            card:SetPoint("TOPLEFT", frame, "TOPLEFT", 266, -82 - (si - 1) * 124)
-            card:SetBackdrop({
+        local function inset(x, y, width, height)
+            local box = CreateFrame("Frame", nil, frame)
+            box:SetWidth(width)
+            box:SetHeight(height)
+            box:SetPoint("TOPLEFT", frame, "TOPLEFT", x, y)
+            box:SetBackdrop({
                 bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
                 edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
                 tile = true, tileSize = 16, edgeSize = 16,
                 insets = { left = 4, right = 4, top = 4, bottom = 4 },
             })
-            card:SetBackdropColor(0.06, 0.04, 0.12, 0.95)
-            card.label = card:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            card.label:SetPoint("TOPLEFT", card, "TOPLEFT", 12, -10)
-            card.label:SetText(SLOT_NAMES[si])
-            card.name = card:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-            card.name:SetPoint("TOPLEFT", card.label, "BOTTOMLEFT", 0, -8)
-            card.name:SetWidth(310)
-            card.name:SetJustifyH("LEFT")
-            card.buttons = {}
-            for b = 1, 3 do
-                local button = CreateFrame("Button", "RustWrathBottleCard" .. si .. "Action" .. b,
-                    card, "UIPanelButtonTemplate")
-                button:SetWidth(100)
-                button:SetHeight(22)
-                button:SetPoint("BOTTOMLEFT", card, "BOTTOMLEFT", 10 + (b - 1) * 106, 12)
-                button:SetScript("OnClick", function()
-                    if button.action then
-                        RustWrathBottle_Act(button.action, si)
-                    end
-                end)
-                button:SetScript("OnEnter", function()
-                    if button.tip then
-                        GameTooltip:SetOwner(button, "ANCHOR_TOP")
-                        GameTooltip:SetText(button.tip, 1, 1, 1, 1, 1)
-                        GameTooltip:Show()
-                    end
-                end)
-                button:SetScript("OnLeave", function() GameTooltip:Hide() end)
-                button:Hide()
-                card.buttons[b] = button
-            end
-            cards[si] = card
+            box:SetBackdropColor(0.04, 0.03, 0.08, 0.85)
+            box:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
+            return box
         end
 
-        -- The absorb shelf, bottom: the bag items with random enchants.
-        local shelfLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        shelfLabel:SetPoint("TOPLEFT", frame, "TOPLEFT", 22, -462)
-        shelfLabel:SetWidth(570)
-        shelfLabel:SetJustifyH("LEFT")
-        local shelf = {}
-        for i = 1, SHELF do
-            local slotButton = CreateFrame("Button", nil, frame)
-            slotButton:SetWidth(30)
-            slotButton:SetHeight(30)
-            slotButton:SetPoint("TOPLEFT", frame, "TOPLEFT",
-                22 + ((i - 1) % 12) * 34, -480 - math.floor((i - 1) / 12) * 34)
-            slotButton.icon = slotButton:CreateTexture(nil, "ARTWORK")
-            slotButton.icon:SetAllPoints(slotButton)
-            slotButton:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
-            slotButton:SetScript("OnClick", function()
-                local entry = slotButton.entry
-                if entry and not B.pending then
-                    B.confirm = entry
-                    StaticPopup_Show("RUSTWRATH_BOTTLE_ABSORB", entry.name, entry.value)
-                end
-            end)
-            slotButton:SetScript("OnEnter", function()
-                local entry = slotButton.entry
-                if entry then
-                    GameTooltip:SetOwner(slotButton, "ANCHOR_RIGHT")
-                    GameTooltip:SetBagItem(client_position(entry.bag, entry.slot))
-                    GameTooltip:AddLine(string.format("Click to absorb: +%d charge%s (destroys it)",
-                        entry.value, entry.value == 1 and "" or "s"), 0.7, 0.5, 1)
-                    GameTooltip:Show()
-                end
-            end)
-            slotButton:SetScript("OnLeave", function() GameTooltip:Hide() end)
-            slotButton:Hide()
-            shelf[i] = slotButton
+        local function label(text, x, y)
+            local fs = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+            fs:SetPoint("TOPLEFT", frame, "TOPLEFT", x, y)
+            fs:SetText(text)
+            return fs
         end
-        local shelfHint = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        shelfHint:SetPoint("TOPLEFT", frame, "TOPLEFT", 434, -482)
-        shelfHint:SetWidth(166)
-        shelfHint:SetJustifyH("LEFT")
-        shelfHint:SetText("Disenchanting an item fills the bottle too, and imprints its best enchant.")
+
+        -- Left: the options --------------------------------------------------------------------
+
+        label("Options", 26, -58)
+        local optionBox = inset(20, -74, 240, 6 * ROW_HEIGHT + 14)
+        local rows = {}
+        for i = 1, table.getn(OPTIONS) do
+            local option = OPTIONS[i]
+            local row = CreateFrame("Button", nil, optionBox)
+            row:SetWidth(228)
+            row:SetHeight(ROW_HEIGHT - 2)
+            row:SetPoint("TOPLEFT", optionBox, "TOPLEFT", 6, -7 - (i - 1) * ROW_HEIGHT)
+            row.icon = row:CreateTexture(nil, "ARTWORK")
+            row.icon:SetWidth(36)
+            row.icon:SetHeight(36)
+            row.icon:SetPoint("LEFT", row, "LEFT", 6, 0)
+            row.icon:SetTexture(option.icon)
+            row.name = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            row.name:SetPoint("TOPLEFT", row.icon, "TOPRIGHT", 8, -2)
+            row.name:SetWidth(172)
+            row.name:SetJustifyH("LEFT")
+            row.name:SetText(option.name)
+            row.sub = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            row.sub:SetPoint("TOPLEFT", row.name, "BOTTOMLEFT", 0, -4)
+            row.sub:SetWidth(172)
+            row.sub:SetJustifyH("LEFT")
+            row.mark = row:CreateTexture(nil, "BACKGROUND")
+            row.mark:SetAllPoints(row)
+            row.mark:SetTexture("Interface\\QuestFrame\\UI-QuestLogTitleHighlight")
+            row.mark:SetBlendMode("ADD")
+            row.mark:SetVertexColor(1, 0.82, 0, 0.7)
+            row.mark:Hide()
+            row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
+            row:SetScript("OnClick", function()
+                sel.option = i
+                RustWrathBottle_Render()
+            end)
+            rows[i] = row
+        end
+
+        -- Centre: the item slot, its enchants, the effect and the buttons -----------------------
+
+        local CX, CW = 272, 220
+        local dropLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        dropLabel:SetPoint("TOP", frame, "TOPLEFT", CX + CW / 2, -66)
+        dropLabel:SetText("Drop item here")
+
+        local drop = CreateFrame("Button", "RustWrathBottleDropSlot", frame)
+        drop:SetWidth(52)
+        drop:SetHeight(52)
+        drop:SetPoint("TOP", frame, "TOPLEFT", CX + CW / 2, -88)
+        drop:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+        local dropBack = drop:CreateTexture(nil, "BACKGROUND")
+        dropBack:SetTexture("Interface\\Buttons\\UI-EmptySlot")
+        dropBack:SetWidth(90)
+        dropBack:SetHeight(90)
+        dropBack:SetPoint("CENTER", drop, "CENTER", 0, 0)
+        drop.icon = drop:CreateTexture(nil, "ARTWORK")
+        drop.icon:SetAllPoints(drop)
+        drop:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
+
+        local itemName = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        itemName:SetPoint("TOP", drop, "BOTTOM", 0, -8)
+        itemName:SetWidth(CW)
+
+        -- The item's three enchant slots; the selected option picks among the ones it can use.
+        local eslots = {}
+        for si = 1, 3 do
+            local line = CreateFrame("Button", nil, frame)
+            line:SetWidth(CW)
+            line:SetHeight(18)
+            line:SetPoint("TOPLEFT", frame, "TOPLEFT", CX, -170 - (si - 1) * 19)
+            line.text = line:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            line.text:SetPoint("LEFT", line, "LEFT", 6, 0)
+            line.text:SetWidth(CW - 12)
+            line.text:SetJustifyH("LEFT")
+            line.mark = line:CreateTexture(nil, "BACKGROUND")
+            line.mark:SetAllPoints(line)
+            line.mark:SetTexture("Interface\\QuestFrame\\UI-QuestLogTitleHighlight")
+            line.mark:SetBlendMode("ADD")
+            line.mark:SetVertexColor(1, 0.82, 0, 0.6)
+            line.mark:Hide()
+            line:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
+            line:SetScript("OnClick", function()
+                if line.usable then
+                    sel.eslot = si
+                    RustWrathBottle_Render()
+                end
+            end)
+            line:Hide()
+            eslots[si] = line
+        end
+
+        local effect = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        effect:SetPoint("TOPLEFT", frame, "TOPLEFT", CX, -232)
+        effect:SetWidth(CW)
+        effect:SetHeight(110)
+        effect:SetJustifyH("LEFT")
+        effect:SetJustifyV("TOP")
+
+        local cancel = CreateFrame("Button", "RustWrathBottleCancel", frame, "UIPanelButtonTemplate")
+        cancel:SetWidth(100)
+        cancel:SetHeight(22)
+        cancel:SetPoint("TOPLEFT", frame, "TOPLEFT", CX + 4, -352)
+        cancel:SetText(CANCEL or "Cancel")
+
+        local apply = CreateFrame("Button", "RustWrathBottleApply", frame, "UIPanelButtonTemplate")
+        apply:SetWidth(100)
+        apply:SetHeight(22)
+        apply:SetPoint("TOPRIGHT", frame, "TOPLEFT", CX + CW - 4, -352)
+        apply:SetText("Apply")
+
+        local result = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        result:SetPoint("TOPLEFT", frame, "TOPLEFT", CX, -382)
+        result:SetWidth(CW)
+        result:SetHeight(56)
+        result:SetJustifyH("CENTER")
+        result:SetJustifyV("TOP")
+
+        -- Right: the bags, or the worn gear --------------------------------------------------
+
+        local GX = 506
+        label("Bags", GX + 6, -58)
+        local gridBox = inset(GX, -74, COLS * CELL + 14, SHOWN_ROWS * CELL + 14)
+        local tabs = {}
+        local function make_tab(name, text, x)
+            local b = CreateFrame("Button", "RustWrathBottleTab" .. name, frame, "UIPanelButtonTemplate")
+            b:SetWidth(64)
+            b:SetHeight(20)
+            b:SetPoint("BOTTOMRIGHT", gridBox, "TOPRIGHT", x, 1)
+            b:SetText(text)
+            b:SetScript("OnClick", function()
+                tab, scroll = name, 0
+                RustWrathBottle_Render()
+            end)
+            tabs[name] = b
+        end
+        make_tab("worn", "Worn", 0)
+        make_tab("bags", "Bags", -66)
+
+        local cells = {}
+        for i = 1, COLS * SHOWN_ROWS do
+            local cell = CreateFrame("Button", nil, gridBox)
+            cell:SetWidth(CELL - 2)
+            cell:SetHeight(CELL - 2)
+            cell:SetPoint("TOPLEFT", gridBox, "TOPLEFT",
+                8 + ((i - 1) - math.floor((i - 1) / COLS) * COLS) * CELL, -8 - math.floor((i - 1) / COLS) * CELL)
+            cell:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+            cell:RegisterForDrag("LeftButton")
+            local back = cell:CreateTexture(nil, "BACKGROUND")
+            back:SetTexture("Interface\\Paperdoll\\UI-Backpack-EmptySlot")
+            back:SetAllPoints(cell)
+            cell.icon = cell:CreateTexture(nil, "ARTWORK")
+            cell.icon:SetAllPoints(cell)
+            cell.count = cell:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
+            cell.count:SetPoint("BOTTOMRIGHT", cell, "BOTTOMRIGHT", -2, 2)
+            cell.mark = cell:CreateTexture(nil, "OVERLAY")
+            cell.mark:SetTexture("Interface\\Buttons\\CheckButtonHilight")
+            cell.mark:SetBlendMode("ADD")
+            cell.mark:SetAllPoints(cell)
+            cell.mark:Hide()
+            cell:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
+            cell:SetScript("OnClick", function()
+                if cell.pos and cell.filled then
+                    RustWrathBottle_Pick(cell.pos)
+                end
+            end)
+            cell:SetScript("OnDragStart", function()
+                local pos = cell.pos
+                if pos and cell.filled then
+                    if pos.kind == "worn" then
+                        PickupInventoryItem(pos.id)
+                    else
+                        PickupContainerItem(pos.bag, pos.slot)
+                    end
+                end
+            end)
+            cell:SetScript("OnEnter", function()
+                if cell.pos and cell.filled then
+                    set_tooltip(cell, cell.pos)
+                end
+            end)
+            cell:SetScript("OnLeave", function() GameTooltip:Hide() end)
+            cells[i] = cell
+        end
+        local more = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        more:SetPoint("TOPRIGHT", gridBox, "BOTTOMRIGHT", -4, -4)
+
+        local function grid_positions()
+            local list = {}
+            if tab == "worn" then
+                for id = 1, 19 do
+                    table.insert(list, { kind = "worn", id = id })
+                end
+            else
+                for bag = 0, 4 do
+                    for slot = 1, (GetContainerNumSlots(bag) or 0) do
+                        table.insert(list, { kind = "bag", bag = bag, slot = slot })
+                    end
+                end
+            end
+            return list
+        end
+
+        local function max_scroll(n)
+            return math.max(0, math.ceil(n / COLS) - SHOWN_ROWS)
+        end
+
+        gridBox:EnableMouseWheel(true)
+        gridBox:SetScript("OnMouseWheel", function(_, delta)
+            delta = delta or arg1
+            local n = table.getn(grid_positions())
+            scroll = math.min(math.max(scroll - delta, 0), max_scroll(n))
+            RustWrathBottle_Render()
+        end)
+
+        -- Rendering ---------------------------------------------------------------------------
+
+        function RustWrathBottle_Render()
+            chargesText:SetText(string.format("Charges: |cffffffff%d|r", B.charges))
+            if B.stored ~= 0 then
+                storedText:SetText(string.format("Stored enchant: |c%s%s|r (T%d)",
+                    TIER_COLOR[B.storedTier] or "ffffffff", B.storedName, B.storedTier))
+            else
+                storedText:SetText("Stored enchant: |cff9d9d9dnone|r")
+            end
+
+            local option = OPTIONS[sel.option]
+            sel.eslot = slot_for(option)
+
+            for i = 1, table.getn(OPTIONS) do
+                local row, o = rows[i], OPTIONS[i]
+                local why = sel.item and refusal(o)
+                if not sel.item then
+                    row.sub:SetText(o.general)
+                    row.sub:SetTextColor(0.8, 0.8, 0.8)
+                elseif why then
+                    row.sub:SetText("Not for this item")
+                    row.sub:SetTextColor(0.6, 0.6, 0.6)
+                else
+                    local cost = cost_of(o, slot_for(o))
+                    if o.action == A_ABSORB then
+                        row.sub:SetText("Gives " .. charges_text(cost))
+                        row.sub:SetTextColor(0.4, 1, 0.4)
+                    else
+                        row.sub:SetText((o.action == A_AWAKEN and "From " or "") .. charges_text(cost))
+                        if cost > B.charges then
+                            row.sub:SetTextColor(1, 0.38, 0.38)
+                        else
+                            row.sub:SetTextColor(1, 1, 1)
+                        end
+                    end
+                end
+                row.icon:SetDesaturated(why and true or false)
+                if why then
+                    row.name:SetTextColor(0.55, 0.55, 0.55)
+                else
+                    row.name:SetTextColor(1, 0.82, 0)
+                end
+                if i == sel.option then
+                    row.mark:Show()
+                else
+                    row.mark:Hide()
+                end
+            end
+
+            -- The item slot.
+            if sel.pos and sel.item then
+                drop.icon:SetTexture((texture_at(sel.pos)))
+                local link = link_at(sel.pos)
+                itemName:SetText(link and link:gsub("|H.-|h(.-)|h", "%1") or "")
+                for si = 1, 3 do
+                    local line, s = eslots[si], sel.item.slots[si]
+                    local text
+                    if s.id == 0 then
+                        text = "|cff9d9d9dempty|r"
+                    elseif s.tier == 0 then
+                        text = s.name .. " |cff9d9d9d(not random)|r"
+                    else
+                        text = enchant_text(s)
+                    end
+                    line.text:SetText("|cffffd100" .. SLOT_NAMES[si] .. ":|r " .. text)
+                    line.usable = slot_ok(option, s)
+                    line.text:SetAlpha((line.usable or option.needs == "bag") and 1 or 0.55)
+                    if si == sel.eslot then
+                        line.mark:Show()
+                    else
+                        line.mark:Hide()
+                    end
+                    line:Show()
+                end
+            else
+                drop.icon:SetTexture(nil)
+                itemName:SetText(pending and "" or "|cff9d9d9dEmpty|r")
+                for si = 1, 3 do
+                    eslots[si]:Hide()
+                end
+            end
+
+            effect:SetText(effect_text(option, sel.eslot))
+            local can = sel.item and not refusal(option) and not pending
+            if can and option.action ~= A_ABSORB then
+                local need = option.action == A_AWAKEN and B.awaken or cost_of(option, sel.eslot)
+                can = need <= B.charges
+            end
+            if can then
+                apply:Enable()
+            else
+                apply:Disable()
+            end
+
+            -- The grid.
+            local list = grid_positions()
+            scroll = math.min(scroll, max_scroll(table.getn(list)))
+            for i = 1, COLS * SHOWN_ROWS do
+                local cell, pos = cells[i], list[scroll * COLS + i]
+                cell.pos = pos
+                if pos then
+                    local texture, count = texture_at(pos)
+                    cell.filled = texture ~= nil
+                    cell.icon:SetTexture(texture)
+                    local usable = texture and equippable(link_at(pos))
+                    cell.icon:SetDesaturated(texture and not usable or false)
+                    cell.icon:SetAlpha(usable and 1 or 0.45)
+                    cell.count:SetText((count and count > 1) and count or "")
+                    if same_pos(pos, sel.pos) then
+                        cell.mark:Show()
+                    else
+                        cell.mark:Hide()
+                    end
+                    cell:Show()
+                else
+                    cell.filled = false
+                    cell:Hide()
+                end
+            end
+            if max_scroll(table.getn(list)) > 0 then
+                more:SetText("Scroll for more")
+            else
+                more:SetText("")
+            end
+            if tab == "bags" then
+                tabs.bags:LockHighlight()
+                tabs.worn:UnlockHighlight()
+            else
+                tabs.worn:LockHighlight()
+                tabs.bags:UnlockHighlight()
+            end
+        end
+
+        -- Choosing and applying ----------------------------------------------------------------
+
+        local function wait()
+            pending, waited = true, 0
+        end
+
+        local function clear_item()
+            sel.pos, sel.item, sel.eslot = nil, nil, nil
+        end
+
+        function RustWrathBottle_Pick(pos)
+            if pending then
+                return
+            end
+            sel.pos, sel.item = pos, nil
+            result:SetText("")
+            local bag, slot = server_pos(pos)
+            wait()
+            RustWrathBottle_Render()
+            send("PICK\t" .. bag .. "\t" .. slot)
+        end
+
+        -- An item dropped on the slot: the position the last pickup took it from, if the cursor
+        -- still holds that item. The pickup goes back where it was.
+        local function take_cursor()
+            if not CursorHasItem() then
+                return false
+            end
+            local kind, id = GetCursorInfo()
+            local pos = picked
+            if kind ~= "item" or not pos or entry_at(pos) ~= id then
+                ClearCursor()
+                result:SetText("|cffff6060Drag an item from your bags or your character.|r")
+                return true
+            end
+            ClearCursor()
+            RustWrathBottle_Pick(pos)
+            return true
+        end
+
+        if hooksecurefunc then
+            hooksecurefunc("PickupContainerItem", function(bag, slot)
+                picked = { kind = "bag", bag = bag, slot = slot }
+            end)
+            hooksecurefunc("PickupInventoryItem", function(id)
+                picked = { kind = "worn", id = id }
+            end)
+        end
+
+        drop:SetScript("OnReceiveDrag", function() take_cursor() end)
+        drop:SetScript("OnClick", function(_, button)
+            button = button or arg1
+            if take_cursor() then
+                return
+            end
+            if button == "RightButton" and not pending then
+                clear_item()
+                result:SetText("")
+                RustWrathBottle_Render()
+            end
+        end)
+        drop:SetScript("OnEnter", function()
+            if sel.pos and sel.item then
+                set_tooltip(drop, sel.pos)
+                GameTooltip:AddLine("Right-click to take it out.", 0.6, 0.6, 0.6)
+                GameTooltip:Show()
+            end
+        end)
+        drop:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+        local function send_apply(action, eslot)
+            local bag, slot = server_pos(sel.pos)
+            wait()
+            result:SetText("|cff9d9d9dWorking...|r")
+            RustWrathBottle_Render()
+            send("APPLY\t" .. action .. "\t" .. bag .. "\t" .. slot .. "\t" .. (eslot or 0))
+        end
 
         StaticPopupDialogs = StaticPopupDialogs or {}
         StaticPopupDialogs["RUSTWRATH_BOTTLE_ABSORB"] = {
-            text = "Destroy %s for %d charges?",
+            text = "Destroy %s for %s?",
             button1 = YES,
             button2 = NO,
             OnAccept = function()
-                local entry = B.confirm
-                B.confirm = nil
-                if entry then
-                    B.pending = true
-                    send("ABSORB\t" .. entry.bag .. "\t" .. entry.slot)
+                if sel.item and not pending then
+                    send_apply(A_ABSORB, 0)
                 end
             end,
             timeout = 0,
@@ -251,151 +781,72 @@
             showAlert = 1,
         }
 
-        -- Rendering ---------------------------------------------------------------------------
+        apply:SetScript("OnClick", function()
+            local option = OPTIONS[sel.option]
+            if not sel.item or pending or refusal(option) then
+                return
+            end
+            if option.action == A_ABSORB then
+                local link = link_at(sel.pos) or "this item"
+                StaticPopup_Show("RUSTWRATH_BOTTLE_ABSORB", link, charges_text(sel.item.absorb))
+                return
+            end
+            send_apply(option.action, sel.eslot)
+        end)
 
-        local function selected_item()
-            for _, item in ipairs(B.items) do
-                if item.equip == B.selected then
-                    return item
-                end
-            end
-            return nil
-        end
-
-        local function offer(button, action, label, cost, tip)
-            button.action = action
-            button.tip = tip
-            button:SetText(label .. " " .. cost)
-            if cost > B.charges or B.pending then
-                button:Disable()
-            else
-                button:Enable()
-            end
-            button:Show()
-        end
-
-        function RustWrathBottle_Render()
-            local top = 16
-            while top < B.charges do
-                top = top * 2
-            end
-            meter:SetMinMaxValues(0, top)
-            meter:SetValue(B.charges)
-            meterText:SetText(string.format("Essence: %d charge%s", B.charges,
-                B.charges == 1 and "" or "s"))
-            if B.stored ~= 0 then
-                imprint:SetText(string.format("Imprint: |c%s%s|r (T%d), pours for %d charges",
-                    TIER_COLOR[B.storedTier] or "ffffffff", B.storedName, B.storedTier, B.pour))
-            else
-                imprint:SetText("Imprint: none yet. Disenchant or absorb an item to imprint its best enchant.")
-            end
-
-            for i = 1, ROWS do
-                local row, item = rows[i], B.items[i]
-                if item then
-                    row.equip = item.equip
-                    local link = GetInventoryItemLink("player", item.equip + 1)
-                    local name, _, quality = GetItemInfo(link or item.entry)
-                    local color = quality and ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[quality]
-                    local count = 0
-                    for si = 1, 3 do
-                        if item.slots[si].tier > 0 then
-                            count = count + 1
-                        end
-                    end
-                    row.text:SetText(((color and color.hex) or "|cffffffff") .. (name or ("item " .. item.entry))
-                        .. "|r" .. (count > 0 and ("  |cff9d9d9d(" .. count .. ")|r") or ""))
-                    row.icon:SetTexture(GetInventoryItemTexture("player", item.equip + 1)
-                        or GetItemIcon(item.entry))
-                    if item.equip == B.selected then
-                        row.mark:Show()
-                    else
-                        row.mark:Hide()
-                    end
-                    row:Show()
-                else
-                    row.equip = nil
-                    row:Hide()
-                end
-            end
-
-            local item = selected_item()
-            for si = 1, 3 do
-                local card = cards[si]
-                for b = 1, 3 do
-                    card.buttons[b].action = nil
-                    card.buttons[b].tip = nil
-                    card.buttons[b]:Hide()
-                end
-                if not item then
-                    card.name:SetText(si == 1 and "|cff9d9d9dPick an equipped item on the left.|r" or "")
-                else
-                    local s = item.slots[si]
-                    if s.id == 0 then
-                        card.name:SetText("|cff9d9d9dEmpty|r")
-                        offer(card.buttons[1], A_AWAKEN, "Awaken", B.awaken,
-                            "Fills the slot with a random enchant rolled from the item's quality, "
-                            .. "as strong as your charges pay for (1.5x its tier value). "
-                            .. "The cost shown is the least.")
-                        if B.stored ~= 0 then
-                            offer(card.buttons[2], A_POUR, "Pour", B.pour,
-                                "Pours the imprinted " .. B.storedName .. " into this slot and empties the imprint.")
-                        end
-                    elseif s.tier == 0 then
-                        card.name:SetText(s.name .. "  |cff9d9d9d(not a random enchant)|r")
-                    else
-                        card.name:SetText(string.format("|c%s%s|r  |cff9d9d9dT%d|r",
-                            TIER_COLOR[s.tier] or "ffffffff", s.name, s.tier))
-                        offer(card.buttons[1], A_REROLL, "Reroll", s.reroll,
-                            "A different random enchant of the same tier.")
-                        offer(card.buttons[2], A_GAMBLE, "Gamble", s.reroll,
-                            "25% one tier down, 50% the same tier, 25% one tier up.")
-                        if s.empower > 0 then
-                            offer(card.buttons[3], A_EMPOWER, "Empower", s.empower,
-                                "The same stat, one tier up.")
-                        end
-                    end
-                end
-            end
-
-            for i = 1, SHELF do
-                local slotButton, entry = shelf[i], B.absorb[i]
-                if entry then
-                    slotButton.entry = entry
-                    local texture = GetContainerItemInfo(client_position(entry.bag, entry.slot))
-                    slotButton.icon:SetTexture(texture or GetItemIcon(entry.entry))
-                    slotButton:Show()
-                else
-                    slotButton.entry = nil
-                    slotButton:Hide()
-                end
-            end
-            if table.getn(B.absorb) > 0 then
-                shelfLabel:SetText("Absorb from your bags:")
-            else
-                shelfLabel:SetText("Absorb: no weapon or armour with random enchants in your bags.")
-            end
-        end
+        cancel:SetScript("OnClick", function() frame:Hide() end)
 
         -- The server link ---------------------------------------------------------------------
 
-        local function request()
-            B.pending = true
-            send("OPEN")
-        end
-
-        function RustWrathBottle_Act(action, si)
-            if B.selected == nil or B.pending then
+        local function on_item(f)
+            local pos = sel.pos
+            if not pos then
                 return
             end
-            B.pending = true
-            RustWrathBottle_Render()
-            send("ACT\t" .. action .. "\t" .. B.selected .. "\t" .. si)
+            local bag, slot = server_pos(pos)
+            if tonumber(f[2]) ~= bag or tonumber(f[3]) ~= slot then
+                return
+            end
+            if f[5] ~= "1" then
+                -- Gone (absorbed) or never a weapon or armor piece of the player's.
+                if sel.item == nil and (result:GetText() or "") == "" then
+                    result:SetText("|cffff6060The bottle works on weapons and armor only.|r")
+                end
+                clear_item()
+                return
+            end
+            local item = { entry = tonumber(f[4]) or 0, absorb = tonumber(f[6]) or 0, slots = {} }
+            for si = 1, 3 do
+                local at = 6 + (si - 1) * 5
+                item.slots[si] = { id = tonumber(f[at + 1]) or 0, tier = tonumber(f[at + 2]) or 0,
+                    reroll = tonumber(f[at + 3]) or 0, empower = tonumber(f[at + 4]) or 0,
+                    name = f[at + 5] or "" }
+            end
+            sel.item = item
         end
 
         local listener = CreateFrame("Frame")
         listener:RegisterEvent("CHAT_MSG_ADDON")
+        listener:RegisterEvent("PLAYER_ENTERING_WORLD")
+        listener:RegisterEvent("BAG_UPDATE")
+        listener:RegisterEvent("UNIT_INVENTORY_CHANGED")
         listener:SetScript("OnEvent", function(_, ev, prefix, msg)
+            ev = ev or event
+            if ev == "PLAYER_ENTERING_WORLD" then
+                -- Tells the server this client has the window, so `.bottle` opens it.
+                send("HELLO")
+                return
+            end
+            if ev == "BAG_UPDATE" or ev == "UNIT_INVENTORY_CHANGED" then
+                if frame:IsShown() then
+                    -- A moved item leaves the slot rather than stand for what replaced it.
+                    if sel.pos and sel.item and entry_at(sel.pos) ~= sel.item.entry and not pending then
+                        clear_item()
+                    end
+                    RustWrathBottle_Render()
+                end
+                return
+            end
             prefix = prefix or arg1
             msg = msg or arg2
             if prefix ~= PREFIX or type(msg) ~= "string" then
@@ -403,52 +854,64 @@
             end
             local f = split(msg)
             local verb = f[1]
-            if verb == "BEGIN" then
-                incoming = { charges = tonumber(f[2]) or 0, stored = tonumber(f[3]) or 0,
-                    storedTier = tonumber(f[4]) or 0, pour = tonumber(f[5]) or 0,
-                    awaken = tonumber(f[6]) or 0, storedName = f[7] or "", items = {}, absorb = {} }
-            elseif verb == "ITEM" and incoming then
-                local item = { equip = tonumber(f[2]), entry = tonumber(f[3]) or 0, slots = {} }
-                for si = 1, 3 do
-                    local at = 3 + (si - 1) * 5
-                    item.slots[si] = { id = tonumber(f[at + 1]) or 0, tier = tonumber(f[at + 2]) or 0,
-                        reroll = tonumber(f[at + 3]) or 0, empower = tonumber(f[at + 4]) or 0,
-                        name = f[at + 5] or "" }
+            if verb == "STATE" then
+                B.charges = tonumber(f[2]) or 0
+                B.stored = tonumber(f[3]) or 0
+                B.storedTier = tonumber(f[4]) or 0
+                B.pour = tonumber(f[5]) or 0
+                B.awaken = tonumber(f[6]) or 0
+                B.storedName = f[7] or ""
+            elseif verb == "ITEM" then
+                on_item(f)
+                pending = false
+            elseif verb == "RESULT" then
+                if f[2] == "1" then
+                    result:SetText("|cff66ff66" .. (f[3] or "") .. "|r")
+                else
+                    result:SetText("|cffff6060" .. (f[3] or "") .. "|r")
                 end
-                if item.equip then
-                    table.insert(incoming.items, item)
-                end
-            elseif verb == "ABS" and incoming then
-                local bag, slot = tonumber(f[2]), tonumber(f[3])
-                if bag and slot then
-                    table.insert(incoming.absorb, { bag = bag, slot = slot, entry = tonumber(f[4]) or 0,
-                        value = tonumber(f[5]) or 0, name = f[6] or "?" })
-                end
-            elseif verb == "END" and incoming then
-                for key, value in pairs(incoming) do
-                    B[key] = value
-                end
-                incoming = nil
-                B.pending = false
-                if not selected_item() then
-                    B.selected = B.items[1] and B.items[1].equip or nil
-                end
-                if frame:IsShown() then
-                    RustWrathBottle_Render()
-                end
+            elseif verb == "SHOW" then
+                frame:Show()
             elseif verb == "MSG" then
-                status:SetText(f[2] or "")
-                -- A result outside a request of ours (a disenchant) refreshes the panel.
-                if frame:IsShown() and not B.pending then
-                    request()
+                -- A result outside the window (a disenchant): show it and refresh.
+                if frame:IsShown() then
+                    result:SetText("|cff66ff66" .. (f[2] or "") .. "|r")
+                    send("OPEN")
+                end
+            else
+                return
+            end
+            if frame:IsShown() then
+                RustWrathBottle_Render()
+            end
+        end)
+
+        -- A server that never answers (its script not loaded) does not lock the window.
+        frame:SetScript("OnUpdate", function(_, elapsed)
+            if pending then
+                waited = waited + (elapsed or arg1 or 0)
+                if waited > 5 then
+                    pending = false
+                    if not sel.item then
+                        clear_item()
+                    end
+                    result:SetText("|cffff6060The server did not answer. Is rustwrath_enchant_bottle.lua loaded?|r")
+                    RustWrathBottle_Render()
                 end
             end
         end)
 
         frame:SetScript("OnShow", function()
-            status:SetText("")
+            result:SetText("")
             RustWrathBottle_Render()
-            request()
+            send("OPEN")
+        end)
+        frame:SetScript("OnHide", function()
+            clear_item()
+            pending = false
+            if StaticPopup_Hide then
+                StaticPopup_Hide("RUSTWRATH_BOTTLE_ABSORB")
+            end
         end)
 
         function RustWrathBottle_Toggle()
@@ -457,47 +920,6 @@
             else
                 frame:Show()
             end
-        end
-
-        -- Opening it: the bottle from the bags or the action bar, or /bottle ------------------
-
-        local function busy()
-            return (MerchantFrame and MerchantFrame:IsShown()) or (BankFrame and BankFrame:IsShown())
-                or (TradeFrame and TradeFrame:IsShown()) or (SendMailFrame and SendMailFrame:IsVisible())
-                or (AuctionFrame and AuctionFrame:IsShown()) or (GuildBankFrame and GuildBankFrame:IsShown())
-                or (SpellCanTargetItem and SpellCanTargetItem())
-        end
-
-        local function container_item_id(bag, slot)
-            local id = GetContainerItemID and GetContainerItemID(bag, slot)
-            if not id then
-                local link = GetContainerItemLink(bag, slot)
-                id = link and tonumber(link:match("item:(%d+)"))
-            end
-            return id
-        end
-
-        -- Deviation: the bottle's stock spell would show a placement cursor; RustWrath opens the
-        -- panel instead. Everything else, and the bottle at a vendor, bank, trade, mail or auction
-        -- window or under a spell waiting for an item, goes to the native use.
-        local useContainerItem = UseContainerItem
-        function UseContainerItem(bag, slot, ...)
-            local id = container_item_id(bag, slot)
-            if id and BOTTLE_ITEMS[id] and not busy() then
-                RustWrathBottle_Toggle()
-                return
-            end
-            return useContainerItem(bag, slot, ...)
-        end
-
-        local useAction = UseAction
-        function UseAction(action, ...)
-            local kind, id = GetActionInfo(action)
-            if kind == "item" and BOTTLE_ITEMS[id] then
-                RustWrathBottle_Toggle()
-                return
-            end
-            return useAction(action, ...)
         end
 
         SLASH_RUSTWRATHBOTTLE1 = "/bottle"

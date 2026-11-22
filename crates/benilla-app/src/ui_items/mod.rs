@@ -898,6 +898,24 @@ pub(crate) fn item_use_refused(script: &benilla_ui::script::UiScript, guid: Opti
     guid.is_some_and(|g| script.item_locked(g))
 }
 
+/// The Enchant Bottle's item entries: stock 44625 "Bottle of Aged Dalaran Red", and the dummy
+/// pool entry 800000 the server registers for its next start
+/// (`integrations/ale/rustwrath_enchant_bottle.lua`).
+pub(crate) fn is_enchant_bottle(entry: u32) -> bool {
+    matches!(entry, 44625 | 800_000)
+}
+
+/// Open, or when used again close, the Enchant Bottle window (`assets/ui/EnchantBottle.xml`),
+/// which talks to the server script itself. Without the layer (`WOW_STOCK_UI=1`) the global is
+/// absent and nothing opens.
+fn open_enchant_bottle(script: &benilla_ui::script::UiScript) {
+    debug!("ui_items: the Enchant Bottle opens its window instead of its stock spell");
+    if let Err(e) = script.eval::<()>("if RustWrathBottle_Toggle then RustWrathBottle_Toggle() end")
+    {
+        warn!("ui_items: the Enchant Bottle window did not open: {e}");
+    }
+}
+
 /// Send what [`item_use_route`] decides; the only place a `CMSG_USE_ITEM` leaves benilla. The
 /// reference's cast tail calls `0x6e5a90`, whose body is `call 0x6e4b60`, `TryCast`: the function
 /// the spellbook, `/cast` and the action bar run, with the item as an argument no gate skips for
@@ -918,6 +936,14 @@ pub(crate) fn send_item_use(
     // Passed in, not carried on `CastLadder`, so no system reaches it twice.
     ui_errors: &crate::ui_action::UiErrorKeys,
 ) -> bool {
+    // Deviation: RustWrath's Enchant Bottle reuses a stock item whose spell is a ground-targeted
+    // "set out a bottle", so the stock use shows a placement circle and its cast reaches the
+    // server's gossip fallback. Every use (bags, bag addons, the doll, action bars, keybinds,
+    // macros) comes through here, so the bottle opens its own window here instead.
+    if is_enchant_bottle(it.entry) {
+        open_enchant_bottle(script);
+        return false;
+    }
     // `0x5d8d00`'s requirement check (`0x5d8e0e`) and control gate (`0x5d8eaa`), past the
     // quest-starter arm (`0x5d8dcc`), which runs before them.
     if it.start_quest == 0 {
