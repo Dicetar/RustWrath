@@ -17,9 +17,10 @@ use crate::query_cache::Ask;
 use crate::script_calls::VmWith;
 use crate::ui_script::UiClock;
 use crate::wrath::{
-    WrathPartyKill, WrathSpellCastFailed, WrathSpellCastStart, WrathSpellCastSuccess,
-    WrathSpellDamage, WrathSpellDispelFailed, WrathSpellDispelLog, WrathSpellEnergize,
-    WrathSpellExecuteLog, WrathSpellExecuteLogRow, WrathSpellHeal, WrathSpellMiss,
+    WrathDamageShield, WrathEnchantLog, WrathEnvironmentalDamage, WrathPartyKill,
+    WrathSpellCastFailed, WrathSpellCastStart, WrathSpellCastSuccess, WrathSpellDamage,
+    WrathSpellDispelFailed, WrathSpellDispelLog, WrathSpellEnergize, WrathSpellExecuteLog,
+    WrathSpellExecuteLogRow, WrathSpellHeal, WrathSpellInstakill, WrathSpellMiss,
     WrathSpellPeriodicDamage, WrathSpellPeriodicDrain, WrathSpellPeriodicEnergize,
     WrathSpellPeriodicHeal, WrathSpellPeriodicMiss, WrathSwing, WrathWorldView,
     COMBAT_LOG_NAME_RETRY_SECONDS,
@@ -67,6 +68,8 @@ pub(crate) struct CombatLogMemo {
     enchant_unresolved: u64,
     environmental_damage_dropped: u64,
     environmental_damage_unresolved: u64,
+    damage_shield_dropped: u64,
+    damage_shield_unresolved: u64,
 }
 
 /// The visible marker for an endpoint whose name never resolved inside the retry window. It is
@@ -82,10 +85,12 @@ pub(crate) fn feed(
         Option<Res<'static, NetCommands>>,
         Option<Res<'static, crate::ui_action::Spells>>,
         Option<Res<'static, crate::item_names::ItemNames>>,
+        Option<Res<'static, crate::items::Enchants>>,
     )>,
     mut memo: Local<CombatLogMemo>,
 ) {
-    vm.feed(|script, (mut world, clock, names, net, spells, item_names), fires| {
+    vm.feed(
+        |script, (mut world, clock, names, net, spells, item_names, enchants), fires| {
         let Some(script) = script.filter(|script| script.target() == UiTarget::Wrath335) else {
             return;
         };
@@ -366,6 +371,20 @@ pub(crate) fn feed(
             );
         }
         memo.environmental_damage_unresolved = world.environmental_damage_unresolved;
+        if world.damage_shield_dropped > memo.damage_shield_dropped {
+            debug!(
+                dropped = world.damage_shield_dropped,
+                "wrath: combat-log queue capacity lost damage-shield rows"
+            );
+        }
+        memo.damage_shield_dropped = world.damage_shield_dropped;
+        if world.damage_shield_unresolved > memo.damage_shield_unresolved {
+            debug!(
+                unresolved = world.damage_shield_unresolved,
+                "wrath: combat-log damage-shield rows delivered with an unknown endpoint after name resolution timed out"
+            );
+        }
+        memo.damage_shield_unresolved = world.damage_shield_unresolved;
 
         let now = clock.as_deref().map_or(0.0, |clock| clock.ui_now);
         let ask = match net.as_deref() {
@@ -1267,6 +1286,220 @@ pub(crate) fn feed(
         }
 
         let mut index = 0;
+        while index < world.instakills.len() {
+            let hit = world.instakills[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                world.instakills.remove(index);
+                continue;
+            }
+            let known = spells
+                .as_deref()
+                .and_then(|spells| spells.catalog.get(hit.spell_id))
+                .is_some_and(|def| !spell_is_unnamed_or_hidden(def));
+            if spells.is_some() && !known {
+                world.instakills.remove(index);
+                continue;
+            }
+            let source = endpoint_name(script, world, names.as_deref(), hit.caster, ask);
+            let target = endpoint_name(script, world, names.as_deref(), hit.target, ask);
+            let timestamp = if hit.received_at > 0.0 { hit.received_at } else { now };
+            if source.is_none() || target.is_none() {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at {
+                    now - hit.received_at
+                } else {
+                    0.0
+                };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        instakill_args(
+                            timestamp,
+                            &hit,
+                            source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            spells.as_deref(),
+                        ),
+                    );
+                    world.instakill_unresolved = world.instakill_unresolved.saturating_add(1);
+                    world.instakills.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let (source, target) = (source.unwrap_or_default(), target.unwrap_or_default());
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                instakill_args(timestamp, &hit, &source, &target, spells.as_deref()),
+            );
+            world.instakills.remove(index);
+        }
+
+        let mut index = 0;
+        while index < world.enchant_logs.len() {
+            let hit = world.enchant_logs[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                world.enchant_logs.remove(index);
+                continue;
+            }
+            let Some(enchant_name) = enchants
+                .as_deref()
+                .and_then(|enchants| enchants.0.logged_name(hit.enchant_id))
+            else {
+                // `Packet_SMSG_ENCHANTMENTLOG` needs the DBC row and drops Flags & 0x2.
+                world.enchant_logs.remove(index);
+                continue;
+            };
+            // A caster-zero packet is `ENCHANT_REMOVED` and has no source at all; it must not
+            // wait for or invent one.
+            let source = (hit.caster != 0)
+                .then(|| endpoint_name(script, world, names.as_deref(), hit.caster, ask))
+                .flatten();
+            let target = endpoint_name(script, world, names.as_deref(), hit.target, ask);
+            let timestamp = if hit.received_at > 0.0 { hit.received_at } else { now };
+            if (hit.caster != 0 && source.is_none()) || target.is_none() {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at {
+                    now - hit.received_at
+                } else {
+                    0.0
+                };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    let item_name =
+                        item_names.as_deref().and_then(|names| names.name(hit.item_id, ask));
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        enchant_args(
+                            timestamp,
+                            &hit,
+                            source.as_deref(),
+                            Some(target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME)),
+                            enchant_name,
+                            item_name,
+                        ),
+                    );
+                    world.enchant_unresolved = world.enchant_unresolved.saturating_add(1);
+                    world.enchant_logs.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let item_name = item_names.as_deref().and_then(|names| names.name(hit.item_id, ask));
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                enchant_args(
+                    timestamp,
+                    &hit,
+                    source.as_deref(),
+                    target.as_deref(),
+                    enchant_name,
+                    item_name,
+                ),
+            );
+            world.enchant_logs.remove(index);
+        }
+
+        let mut index = 0;
+        while index < world.environmental_damages.len() {
+            let hit = world.environmental_damages[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                world.environmental_damages.remove(index);
+                continue;
+            }
+            let target = endpoint_name(script, world, names.as_deref(), hit.victim, ask);
+            let timestamp = if hit.received_at > 0.0 { hit.received_at } else { now };
+            if target.is_none() {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at {
+                    now - hit.received_at
+                } else {
+                    0.0
+                };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        environmental_damage_args(
+                            timestamp,
+                            &hit,
+                            target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                        ),
+                    );
+                    world.environmental_damage_unresolved =
+                        world.environmental_damage_unresolved.saturating_add(1);
+                    world.environmental_damages.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let target = target.unwrap_or_default();
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                environmental_damage_args(timestamp, &hit, &target),
+            );
+            world.environmental_damages.remove(index);
+        }
+
+        let mut index = 0;
+        while index < world.damage_shields.len() {
+            let hit = world.damage_shields[index];
+            if hit.session_epoch != world.session_epoch
+                || hit.world_generation != world.world_generation
+            {
+                world.damage_shields.remove(index);
+                continue;
+            }
+            let known = spells
+                .as_deref()
+                .and_then(|spells| spells.catalog.get(hit.spell_id))
+                .is_some_and(|def| !spell_is_unnamed_or_hidden(def));
+            if spells.is_some() && !known {
+                world.damage_shields.remove(index);
+                continue;
+            }
+            // `UnitCombatLogDamageShield` records the victim as source, the caster as dest.
+            let source = endpoint_name(script, world, names.as_deref(), hit.target, ask);
+            let target = endpoint_name(script, world, names.as_deref(), hit.attacker, ask);
+            let timestamp = if hit.received_at > 0.0 { hit.received_at } else { now };
+            if source.is_none() || target.is_none() {
+                let age = if hit.received_at > 0.0 && now >= hit.received_at {
+                    now - hit.received_at
+                } else {
+                    0.0
+                };
+                if age > COMBAT_LOG_NAME_RETRY_SECONDS {
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        damage_shield_args(
+                            timestamp,
+                            &hit,
+                            source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            spells.as_deref(),
+                        ),
+                    );
+                    world.damage_shield_unresolved =
+                        world.damage_shield_unresolved.saturating_add(1);
+                    world.damage_shields.remove(index);
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let (source, target) = (source.unwrap_or_default(), target.unwrap_or_default());
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                damage_shield_args(timestamp, &hit, &source, &target, spells.as_deref()),
+            );
+            world.damage_shields.remove(index);
+        }
+
+        let mut index = 0;
         while index < world.spell_misses.len() {
             let hit = world.spell_misses[index];
             if hit.session_epoch != world.session_epoch
@@ -1313,7 +1546,8 @@ pub(crate) fn feed(
             );
             world.spell_misses.remove(index);
         }
-    });
+        },
+    );
 }
 
 /// Resolve one endpoint for the event. The local player's seat has its own view; every other unit
@@ -1455,7 +1689,29 @@ fn swing_event_args(
 }
 
 /// The exactly eight values `CombatLogEntry::PushEvent` sends before an event-specific block
-/// (`UnitCombatLog_C.cpp:1241-1276`).
+/// (`UnitCombatLog_C.cpp:1241-1276`). A missing endpoint keeps guid 0, a Lua nil name and
+/// flags 0; the damage builders always pass a name, while a cast dest and an environmental
+/// source may be nil.
+fn combat_log_header_opt(
+    timestamp: f64,
+    subevent: &str,
+    source: u64,
+    source_name: Option<&str>,
+    target: u64,
+    target_name: Option<&str>,
+) -> Vec<ScriptValue> {
+    vec![
+        ScriptValue::Number(timestamp),
+        ScriptValue::Str(subevent.to_owned()),
+        ScriptValue::Str(guid_hex(source)),
+        source_name.map_or(ScriptValue::Nil, |name| ScriptValue::Str(name.to_owned())),
+        ScriptValue::Int(combat_log_flags(source)),
+        ScriptValue::Str(guid_hex(target)),
+        target_name.map_or(ScriptValue::Nil, |name| ScriptValue::Str(name.to_owned())),
+        ScriptValue::Int(combat_log_flags(target)),
+    ]
+}
+
 fn combat_log_header(
     timestamp: f64,
     subevent: &str,
@@ -1464,16 +1720,14 @@ fn combat_log_header(
     target: u64,
     target_name: &str,
 ) -> Vec<ScriptValue> {
-    vec![
-        ScriptValue::Number(timestamp),
-        ScriptValue::Str(subevent.to_owned()),
-        ScriptValue::Str(guid_hex(source)),
-        ScriptValue::Str(source_name.to_owned()),
-        ScriptValue::Int(combat_log_flags(source)),
-        ScriptValue::Str(guid_hex(target)),
-        ScriptValue::Str(target_name.to_owned()),
-        ScriptValue::Int(combat_log_flags(target)),
-    ]
+    combat_log_header_opt(
+        timestamp,
+        subevent,
+        source,
+        Some(source_name),
+        target,
+        Some(target_name),
+    )
 }
 
 /// The cast header differs from the damage header only in its nil destination: PushEvent pushes
@@ -1487,16 +1741,14 @@ fn cast_log_header(
     target: u64,
     target_name: Option<&str>,
 ) -> Vec<ScriptValue> {
-    vec![
-        ScriptValue::Number(timestamp),
-        ScriptValue::Str(subevent.to_owned()),
-        ScriptValue::Str(guid_hex(source)),
-        ScriptValue::Str(source_name.to_owned()),
-        ScriptValue::Int(combat_log_flags(source)),
-        ScriptValue::Str(guid_hex(target)),
-        target_name.map_or(ScriptValue::Nil, |name| ScriptValue::Str(name.to_owned())),
-        ScriptValue::Int(combat_log_flags(target)),
-    ]
+    combat_log_header_opt(
+        timestamp,
+        subevent,
+        source,
+        Some(source_name),
+        target,
+        target_name,
+    )
 }
 
 /// The three spell values PushEvent appends when the entry carries a spell id
@@ -1525,6 +1777,13 @@ fn spell_is_hidden_in_combat_log(def: &benilla_formats::SpellDisplay) -> bool {
         || def.name.is_empty()
         || def.effects.contains(&36)
         || def.attributes_ex4 & 1 != 0
+}
+
+/// The narrower gate `UnitCombatLogInstakill` and `UnitCombatLogDamageShield` use: a DBC row
+/// with `Attributes & 0x180` clear and a non-empty name. They do not apply the cast-line
+/// learn-spell/AttributesExD filters.
+fn spell_is_unnamed_or_hidden(def: &benilla_formats::SpellDisplay) -> bool {
+    def.attributes & 0x180 != 0 || def.name.is_empty()
 }
 
 /// SPELL_CAST_START: 11 values, the eight header values plus the spell trio, with a nil
@@ -1661,15 +1920,37 @@ fn swing_missed_args(
     args
 }
 
-/// The twenty values `CombatLogEntry::PushEvent` sends for `SPELL_DAMAGE`
-/// (`UnitCombatLog_C.cpp:1241-1361`, `SendDamageEvent` at `:2373`, `HandleSpellNonMeleeDamageLog`
-/// at `:2520`): 8 header values, then spellId/spellName/spellSchoolMask (3), then the 0x10 block
-/// damage, overkill, school, resisted, blocked, absorbed, critical, glancing, crushing (9). The
-/// packet school byte is kept as 12340's raw school mask here (unlike the 1.12 chat translation
-/// which converts to an index). Absent resisted/blocked/absorbed are nil, not 0. Critical/glancing/
-/// crushing are 1.0 or nil. `HandleSpellNonMeleeDamageLog` reads crit as `hitInfo & 0x2`; the spell
-/// non-melee path passes glancing/crushing as false to `SendDamageEvent`. If the spell record is
-/// missing, `PushEvent` pushes nil name and 0 school.
+/// `HandleSpellNonMeleeDamageLog` (`UnitCombatLog_C.cpp:2520`) picks the row by
+/// `hitInfo & 0x8` first (event 42 `DAMAGE_SPLIT`), then by the spell's
+/// `AttributesEx3 & 0x8000` for nonzero damage (event 3 `RANGE_DAMAGE`), else event 9
+/// `SPELL_DAMAGE`. A zero-damage row is `RANGE_MISSED`, which is outside this slice.
+fn spell_damage_subevent(
+    hit: &WrathSpellDamage,
+    spells: Option<&crate::ui_action::Spells>,
+) -> &'static str {
+    if hit.hit_info & 0x8 != 0 {
+        "DAMAGE_SPLIT"
+    } else if hit.damage != 0
+        && spells
+            .and_then(|spells| spells.catalog.get(hit.spell_id))
+            .is_some_and(|def| def.melee_white_damage())
+    {
+        "RANGE_DAMAGE"
+    } else {
+        "SPELL_DAMAGE"
+    }
+}
+
+/// The twenty values `CombatLogEntry::PushEvent` sends for `SPELL_DAMAGE`, `DAMAGE_SPLIT`
+/// and `RANGE_DAMAGE` (`UnitCombatLog_C.cpp:1241-1361`, `SendDamageEvent` at `:2373`,
+/// `HandleSpellNonMeleeDamageLog` at `:2520`): 8 header values, then
+/// spellId/spellName/spellSchoolMask (3), then the 0x10 block damage, overkill, school,
+/// resisted, blocked, absorbed, critical, glancing, crushing (9). The packet school byte is kept
+/// as 12340's raw school mask here (unlike the 1.12 chat translation which converts to an index).
+/// Absent resisted/blocked/absorbed are nil, not 0. Critical/glancing/crushing are 1.0 or nil.
+/// `HandleSpellNonMeleeDamageLog` reads crit as `hitInfo & 0x2`; the spell non-melee path
+/// passes glancing/crushing as false to `SendDamageEvent`. If the spell record is missing,
+/// `PushEvent` pushes nil name and 0 school.
 fn spell_damage_args(
     timestamp: f64,
     hit: &WrathSpellDamage,
@@ -1679,7 +1960,7 @@ fn spell_damage_args(
 ) -> Vec<ScriptValue> {
     let mut args = combat_log_header(
         timestamp,
-        "SPELL_DAMAGE",
+        spell_damage_subevent(hit, spells),
         hit.attacker,
         source_name,
         hit.target,
@@ -1702,6 +1983,133 @@ fn spell_damage_args(
         nonzero(i64::from(hit.blocked)),
         nonzero(i64::from(hit.absorb)),
         present(hit.hit_info & 0x2 != 0),
+        ScriptValue::Nil,
+        ScriptValue::Nil,
+    ]);
+    args
+}
+
+/// `SPELL_INSTAKILL` has only the eight header values and the spell trio
+/// (`UnitCombatLogInstakill`, `UnitCombatLog_C.cpp:1157`, event 14): 11 values.
+fn instakill_args(
+    timestamp: f64,
+    hit: &WrathSpellInstakill,
+    source_name: &str,
+    target_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+) -> Vec<ScriptValue> {
+    let mut args = combat_log_header(
+        timestamp,
+        "SPELL_INSTAKILL",
+        hit.caster,
+        source_name,
+        hit.target,
+        target_name,
+    );
+    cast_spell_values(&mut args, hit.spell_id, spells);
+    args
+}
+
+/// `ENCHANT_APPLIED`/`ENCHANT_REMOVED` (`Packet_SMSG_ENCHANTMENTLOG`,
+/// `UnitCombatLog_C.cpp:1530`): 8 header values, the 0x1000 enchant name, then the 0x200
+/// item block (item id, item name) = 11 values. A caster-zero `ENCHANT_REMOVED` keeps a nil
+/// source name because `GetCombatLogEntry` only names a nonzero source.
+fn enchant_args(
+    timestamp: f64,
+    hit: &WrathEnchantLog,
+    source_name: Option<&str>,
+    target_name: Option<&str>,
+    enchant_name: &str,
+    item_name: Option<&str>,
+) -> Vec<ScriptValue> {
+    let subevent = if hit.caster == 0 {
+        "ENCHANT_REMOVED"
+    } else {
+        "ENCHANT_APPLIED"
+    };
+    let mut args = combat_log_header_opt(
+        timestamp,
+        subevent,
+        hit.caster,
+        source_name,
+        hit.target,
+        target_name,
+    );
+    args.push(ScriptValue::Str(enchant_name.to_owned()));
+    args.push(ScriptValue::Int(i64::from(hit.item_id)));
+    args.push(item_name.map_or(ScriptValue::Nil, |name| ScriptValue::Str(name.to_owned())));
+    args
+}
+
+/// `ENVIRONMENTAL_DAMAGE` (event 0, `UnitCombatLog` at `UnitCombatLog_C.cpp:3151`):
+/// 8 header values with a nil source, the 0x8 type string, then the 0x10 block damage,
+/// overkill 0, school mask, resisted or nil, blocked nil, absorbed or nil, and three nil
+/// critical/glancing/crushing values = 18 values.
+fn environmental_damage_args(
+    timestamp: f64,
+    hit: &WrathEnvironmentalDamage,
+    target_name: &str,
+) -> Vec<ScriptValue> {
+    let (kind, school) = match hit.damage_type {
+        0 => ("FATIGUE", 1),
+        1 => ("DROWNING", 1),
+        2 => ("FALLING", 1),
+        3 => ("LAVA", 4),
+        4 => ("SLIME", 8),
+        5 => ("FIRE", 4),
+        _ => ("FATIGUE", 1),
+    };
+    let mut args = combat_log_header_opt(
+        timestamp,
+        "ENVIRONMENTAL_DAMAGE",
+        0,
+        None,
+        hit.victim,
+        Some(target_name),
+    );
+    args.push(ScriptValue::Str(kind.to_owned()));
+    args.extend([
+        ScriptValue::Number(f64::from(hit.damage)),
+        ScriptValue::Number(0.0),
+        ScriptValue::Int(i64::from(school)),
+        nonzero(i64::from(hit.resisted)),
+        ScriptValue::Nil,
+        nonzero(i64::from(hit.absorbed)),
+        ScriptValue::Nil,
+        ScriptValue::Nil,
+        ScriptValue::Nil,
+    ]);
+    args
+}
+
+/// `DAMAGE_SHIELD` (event 40, `UnitCombatLogDamageShield` at `UnitCombatLog_C.cpp:1183`):
+/// 8 header values with the victim as source and the caster as destination, the spell trio,
+/// then the 0x10 block damage, overkill, school mask, and six nil resisted/blocked/absorbed/
+/// critical/glancing/crushing values = 20 values.
+fn damage_shield_args(
+    timestamp: f64,
+    hit: &WrathDamageShield,
+    source_name: &str,
+    target_name: &str,
+    spells: Option<&crate::ui_action::Spells>,
+) -> Vec<ScriptValue> {
+    let mut args = combat_log_header(
+        timestamp,
+        "DAMAGE_SHIELD",
+        hit.target,
+        source_name,
+        hit.attacker,
+        target_name,
+    );
+    cast_spell_values(&mut args, hit.spell_id, spells);
+    args.extend([
+        ScriptValue::Number(f64::from(hit.damage)),
+        ScriptValue::Number(f64::from(hit.overkill)),
+        ScriptValue::Int(i64::from(hit.school)),
+        ScriptValue::Nil,
+        ScriptValue::Nil,
+        ScriptValue::Nil,
+        ScriptValue::Nil,
         ScriptValue::Nil,
         ScriptValue::Nil,
     ]);
@@ -3292,6 +3700,246 @@ mod tests {
             "crit 1.0, glance/crush nil"
         );
         assert_eq!(extra, None, "exactly the twenty SPELL_DAMAGE values");
+    }
+
+    /// `DAMAGE_SHIELD` posts the reference's 20 values with the victim as source and the
+    /// shield's caster as destination (`UnitCombatLogDamageShield`, event 40).
+    #[test]
+    fn damage_shield_has_the_twenty_values_in_source_victim_order() {
+        let hit = WrathDamageShield {
+            target: 0xF130_0000_0000_0022,
+            attacker: 0x0000_0000_0000_0011,
+            spell_id: 12345,
+            damage: 77,
+            overkill: 3,
+            school: 4,
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 3,
+            received_at: 10.0,
+        };
+        let mut display = cast_display(12345, "Lightning Shield");
+        display.school = 3; // Nature
+        let spells = cast_spells([(12345, display)]);
+        let args = damage_shield_args(10.0, &hit, "Kobold Vermin", "Firna", Some(&spells));
+        assert_eq!(args.len(), 20);
+        assert_eq!(args[1], ScriptValue::Str("DAMAGE_SHIELD".to_owned()));
+        assert_eq!(
+            args[2],
+            ScriptValue::Str("0xF130000000000022".to_owned()),
+            "the victim is the source"
+        );
+        assert_eq!(args[3], ScriptValue::Str("Kobold Vermin".to_owned()));
+        assert_eq!(args[4], ScriptValue::Int(0x800));
+        assert_eq!(
+            args[5],
+            ScriptValue::Str("0x0000000000000011".to_owned()),
+            "the caster is the destination"
+        );
+        assert_eq!(args[6], ScriptValue::Str("Firna".to_owned()));
+        assert_eq!(args[7], ScriptValue::Int(0x400));
+        assert_eq!(args[8], ScriptValue::Int(12345));
+        assert_eq!(args[9], ScriptValue::Str("Lightning Shield".to_owned()));
+        assert_eq!(args[10], ScriptValue::Int(8)); // school mask for Lightning Shield
+        assert_eq!(args[11], ScriptValue::Number(77.0));
+        assert_eq!(args[12], ScriptValue::Number(3.0));
+        assert_eq!(args[13], ScriptValue::Int(4));
+        assert_eq!(
+            &args[14..],
+            &[
+                ScriptValue::Nil,
+                ScriptValue::Nil,
+                ScriptValue::Nil,
+                ScriptValue::Nil,
+                ScriptValue::Nil,
+                ScriptValue::Nil,
+            ]
+        );
+    }
+
+    /// `hitInfo & 0x8` selects `DAMAGE_SPLIT` (event 42) before the ranged-spell test.
+    #[test]
+    fn damage_split_uses_the_split_damage_row() {
+        let mut hit = spell_damage_hit();
+        hit.hit_info = 0x8 | 0x2;
+        let args = spell_damage_args(10.0, &hit, "Firna", "Kobold Vermin", None);
+        assert_eq!(args[1], ScriptValue::Str("DAMAGE_SPLIT".to_owned()));
+        assert_eq!(args.len(), 20);
+    }
+
+    /// A nonzero 0x250 row whose spell carries `AttributesEx3 & 0x8000` posts `RANGE_DAMAGE`
+    /// (event 3), the basic ranged shots.
+    #[test]
+    fn range_damage_uses_the_ranged_spell_attribute() {
+        let mut display = cast_display(75, "Auto Shot");
+        display.attributes_ex3 = 0x8000;
+        let spells = cast_spells([(75, display)]);
+        let mut hit = spell_damage_hit();
+        hit.spell_id = 75;
+        let args = spell_damage_args(10.0, &hit, "Firna", "Kobold Vermin", Some(&spells));
+        assert_eq!(args[1], ScriptValue::Str("RANGE_DAMAGE".to_owned()));
+        assert_eq!(args[8], ScriptValue::Int(75));
+        assert_eq!(args[9], ScriptValue::Str("Auto Shot".to_owned()));
+        assert_eq!(args.len(), 20);
+    }
+
+    /// `SPELL_INSTAKILL` posts the eight header values and the spell trio = 11 values.
+    #[test]
+    fn instakill_has_the_eleven_values() {
+        let hit = WrathSpellInstakill {
+            caster: 0x0000_0000_0000_0011,
+            target: 0xF130_0000_0000_0022,
+            spell_id: 133,
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 3,
+            received_at: 10.0,
+        };
+        let mut display = cast_display(133, "Fireball");
+        display.school = 2; // Fire
+        let spells = cast_spells([(133, display)]);
+        let args = instakill_args(10.0, &hit, "Firna", "Kobold Vermin", Some(&spells));
+        assert_eq!(args.len(), 11);
+        assert_eq!(args[0], ScriptValue::Number(10.0));
+        assert_eq!(args[1], ScriptValue::Str("SPELL_INSTAKILL".to_owned()));
+        assert_eq!(args[2], ScriptValue::Str("0x0000000000000011".to_owned()));
+        assert_eq!(args[3], ScriptValue::Str("Firna".to_owned()));
+        assert_eq!(args[4], ScriptValue::Int(0x400));
+        assert_eq!(args[5], ScriptValue::Str("0xF130000000000022".to_owned()));
+        assert_eq!(args[6], ScriptValue::Str("Kobold Vermin".to_owned()));
+        assert_eq!(args[7], ScriptValue::Int(0x800));
+        assert_eq!(args[8], ScriptValue::Int(133));
+        assert_eq!(args[9], ScriptValue::Str("Fireball".to_owned()));
+        assert_eq!(args[10], ScriptValue::Int(4)); // Fire
+    }
+
+    /// `ENCHANT_APPLIED` names the enchant and item; a caster-zero packet is
+    /// `ENCHANT_REMOVED` with a nil source name. Both are 11 values.
+    #[test]
+    fn enchant_applied_names_the_enchant_and_item_and_fade_is_removed() {
+        let applied = WrathEnchantLog {
+            caster: 0x0000_0000_0000_0011,
+            target: 0xF130_0000_0000_0022,
+            item_id: 25,
+            enchant_id: 7,
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 3,
+            received_at: 10.0,
+        };
+        let args = enchant_args(
+            10.0,
+            &applied,
+            Some("Firna"),
+            Some("Kobold Vermin"),
+            "Crusader",
+            Some("Worn Shortsword"),
+        );
+        assert_eq!(args.len(), 11);
+        assert_eq!(args[1], ScriptValue::Str("ENCHANT_APPLIED".to_owned()));
+        assert_eq!(args[2], ScriptValue::Str("0x0000000000000011".to_owned()));
+        assert_eq!(args[3], ScriptValue::Str("Firna".to_owned()));
+        assert_eq!(args[5], ScriptValue::Str("0xF130000000000022".to_owned()));
+        assert_eq!(args[6], ScriptValue::Str("Kobold Vermin".to_owned()));
+        assert_eq!(args[8], ScriptValue::Str("Crusader".to_owned()));
+        assert_eq!(args[9], ScriptValue::Int(25));
+        assert_eq!(args[10], ScriptValue::Str("Worn Shortsword".to_owned()));
+
+        let removed = WrathEnchantLog {
+            caster: 0,
+            ..applied
+        };
+        let args = enchant_args(
+            10.0,
+            &removed,
+            None,
+            Some("Kobold Vermin"),
+            "Crusader",
+            Some("Worn Shortsword"),
+        );
+        assert_eq!(args.len(), 11);
+        assert_eq!(args[1], ScriptValue::Str("ENCHANT_REMOVED".to_owned()));
+        assert_eq!(args[2], ScriptValue::Str("0x0000000000000000".to_owned()));
+        assert_eq!(args[3], ScriptValue::Nil, "no caster: nil source name");
+        assert_eq!(args[4], ScriptValue::Int(0));
+    }
+
+    /// `ENVIRONMENTAL_DAMAGE` posts the nil-source header, the type string and the 0x10
+    /// block = 18 values, with the type's school mask.
+    #[test]
+    fn environmental_damage_names_the_type_and_school() {
+        let hit = WrathEnvironmentalDamage {
+            victim: 0xF130_0000_0000_0022,
+            damage_type: 2, // FALLING
+            damage: 120,
+            absorbed: 9,
+            resisted: 5,
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 3,
+            received_at: 10.0,
+        };
+        let args = environmental_damage_args(10.0, &hit, "Kobold Vermin");
+        assert_eq!(args.len(), 18);
+        assert_eq!(args[1], ScriptValue::Str("ENVIRONMENTAL_DAMAGE".to_owned()));
+        assert_eq!(args[2], ScriptValue::Str("0x0000000000000000".to_owned()));
+        assert_eq!(args[3], ScriptValue::Nil, "the source is nil");
+        assert_eq!(args[4], ScriptValue::Int(0));
+        assert_eq!(args[5], ScriptValue::Str("0xF130000000000022".to_owned()));
+        assert_eq!(args[6], ScriptValue::Str("Kobold Vermin".to_owned()));
+        assert_eq!(args[8], ScriptValue::Str("FALLING".to_owned()));
+        assert_eq!(args[9], ScriptValue::Number(120.0));
+        assert_eq!(args[10], ScriptValue::Number(0.0), "overkill is 0");
+        assert_eq!(args[11], ScriptValue::Int(1), "FALLING is physical");
+        assert_eq!(args[12], ScriptValue::Number(5.0));
+        assert_eq!(args[13], ScriptValue::Nil);
+        assert_eq!(args[14], ScriptValue::Number(9.0));
+        assert_eq!(
+            &args[15..],
+            &[ScriptValue::Nil, ScriptValue::Nil, ScriptValue::Nil]
+        );
+    }
+
+    /// `HandleEnvironmentDamage` writes no row when damage, absorbed and resisted are all zero.
+    #[test]
+    fn zero_environmental_rows_are_dropped() {
+        let mut world = WrathWorldView::default();
+        world.apply_environmental_damage(
+            WrathEnvironmentalDamage {
+                victim: 0xF130_0000_0000_0022,
+                damage_type: 2,
+                damage: 0,
+                absorbed: 0,
+                resisted: 0,
+                session_epoch: 1,
+                world_generation: 2,
+                revision: 0,
+                received_at: 10.0,
+            },
+            1,
+            2,
+            10.0,
+        );
+        assert!(world.environmental_damages.is_empty());
+        assert_eq!(world.environmental_damage_revision, 0);
+
+        world.apply_environmental_damage(
+            WrathEnvironmentalDamage {
+                victim: 0xF130_0000_0000_0022,
+                damage_type: 2,
+                damage: 0,
+                absorbed: 0,
+                resisted: 7,
+                session_epoch: 1,
+                world_generation: 2,
+                revision: 0,
+                received_at: 10.0,
+            },
+            1,
+            2,
+            10.0,
+        );
+        assert_eq!(world.environmental_damages.len(), 1, "a resisted hit stays");
     }
 
     /// If the spell record is missing, \`PushEvent\` pushes nil name and 0 school

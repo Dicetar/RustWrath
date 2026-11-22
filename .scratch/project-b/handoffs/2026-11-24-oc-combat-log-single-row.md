@@ -1,10 +1,32 @@
-# Remaining single-row combat-log packets: INSTAKILL / ENCHANT / ENVIRONMENTAL_DAMAGE
+# Single-row combat-log packets and damage classifications
 
-Status: blocked
-Owner: OpenCode / Nemotron 3.5 Lightning Free (partial)
+Status: in progress
+Owner: OpenCode / DeepSeek V4.1 Flash
 Branch: oc/combat-log-single-row
 Issue: none
-Next: the branch does not compile (CI 44990691706). Add the missing WrathWorldView instakill/enchant/environmental queues and counters with defaults and clears, add the EnchantRemoved feed variant, and handle the four new ServerEvent/WrathFeedEvent variants in translate_gameplay and wrath_net_drain. Then rerun CI.
+Next: push the repaired decode/queue/feed layer, read the CI run, and fix until green. Then mark ready to merge and record the CI run id.
+
+## Delivery this round
+
+- Rebased the parked branch on `origin/main` (`ff0205077`) and finished the partial layer.
+- Single-row packets: `SPELL_INSTAKILL` (`0x32F`), `ENCHANT_APPLIED`/`ENCHANT_REMOVED`
+  (`0x1D7`), `ENVIRONMENTAL_DAMAGE` (`0x1FC`). Added the WrathWorldView queues,
+  revisions, dropped/unresolved counters, defaults and scope clears, the `EnchantRemoved`
+  feed variant, and the `translate_gameplay`/`wrath_net_drain` arms.
+- Damage classifications: `DAMAGE_SHIELD` (`0x24F`), `DAMAGE_SPLIT` (`0x250`
+  `hitInfo & 0x8`) and `RANGE_DAMAGE` (`0x250` nonzero row whose spell has
+  `AttributesEx3 & 0x8000`). Added a separate damage-shield queue; split/range stay on the
+  existing 0x250 spell-damage queue and are selected by the reference's own tests in the feed.
+- Tests: `instakill_enchant_and_environmental_decode_in_their_reference_shapes`,
+  `damage_shield_decodes_victim_caster_and_school_mask`, `instakill_has_the_eleven_values`,
+  `enchant_applied_names_the_enchant_and_item_and_fade_is_removed`,
+  `environmental_damage_names_the_type_and_school`,
+  `zero_environmental_rows_are_dropped`,
+  `damage_shield_has_the_twenty_values_in_source_victim_order`,
+  `damage_split_uses_the_split_damage_row`,
+  `range_damage_uses_the_ranged_spell_attribute`.
+- Verification: rustfmt on the four edited files; no Cargo, client or server was run. CI: not
+  run yet. Nothing has been observed in the stock combat-log frame.
 
 ## Scope
 
@@ -36,6 +58,24 @@ Do not edit `crates/benilla-ui/src/script/combat_log.rs`, `wrath_native.rs`,
   - The local AzerothCore writer emits resisted before absorbed; the 12340 client reads
     absorbed then resisted. Decode per the reference and state the difference in the note.
 - `CombatLogEntry::PushEvent` OFFSET `0x0074E290`.
+- Damage shield: `Packet_SMSG_SPELLDAMAGESHIELD` OFFSET `0x006D3750`
+  (`Player_C.cpp:3630`), body u64 victim, u64 caster, u32 spellId, u32 damage, u32 overkill,
+  u32 schoolMask. `UnitCombatLogDamageShield` OFFSET `0x00752C90`
+  (`UnitCombatLog_C.cpp:1183`), event 40. Its `GetCombatLogEntry(victim, caster)` makes the
+  victim the source and the caster the destination; the 0x10 block is damage, overkill,
+  school mask, then nil/nil/nil, and crit/glance/crush are nil. 20 values.
+- Damage split: `HandleSpellNonMeleeDamageLog` OFFSET `0x006D3840`
+  (`UnitCombatLog_C.cpp:2520`) tests `hitInfo & 0x8` first and calls
+  `UnitCombatLogSplitDamage` OFFSET `0x00752DE0` (event 42). Same 20-value 0x10 block as a
+  spell-damage row, with source caster and destination target.
+- Range damage: the same handler uses event 3 when the spell's `m_attributesExC & 0x8000`
+  (Spell.dbc `AttributesEx3`, our `SpellDisplay::attributes_ex3` /
+  `melee_white_damage()`) is set and damage is nonzero. Same 20-value block. A zero-damage
+  row would be event 4 `RANGE_MISSED`, outside this slice.
+- Instakill/Enchant/Environmental are unchanged from the reference block above. The local
+  AzerothCore environmental writer still emits resisted before absorbed while 12340 reads
+  absorbed then resisted; the decoder follows 12340. This is recorded here rather than
+  silently normalised.
 
 ## Behaviour
 

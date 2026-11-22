@@ -2264,6 +2264,18 @@ pub enum ServerEvent {
         blocked: u32,
         hit_info: u32,
     },
+    /// `SMSG_SPELLDAMAGESHIELD` (`0x24F`, `UnitCombatLogDamageShield` event 40): raw
+    /// `u64` victim, raw `u64` caster, `u32` spellId, `u32` damage, `u32` overkill,
+    /// `u32` schoolMask. The reference records the victim as source and the caster as
+    /// destination for `DAMAGE_SHIELD`.
+    DamageShield {
+        target: u64,
+        attacker: u64,
+        spell_id: u32,
+        damage: u32,
+        overkill: u32,
+        school: u32,
+    },
     /// `SMSG_SPELL_INSTAKILL_LOG` (`0x32F`, `Player_C.cpp` `UnitCombatLogInstakill` event 14):
     /// The writer sends the caster's raw `u64` and then the victim's.
     SpellInstakill {
@@ -2271,7 +2283,7 @@ pub enum ServerEvent {
         target: u64,
         spell_id: u32,
     },
-    /// `SMSG_ENCHANTATION_LOG` (`0x1D7`, `UnitCombatLog_C.cpp:1530`):
+    /// `SMSG_ENCHANTMENTLOG` (`0x1D7`, `UnitCombatLog_C.cpp:1530`):
     /// packed target, packed caster, u32 itemId, u32 enchantId.
     /// Event 31 ENCHANT_APPLIED when caster != 0, else event 32 ENCHANT_REMOVED.
     EnchantApplied {
@@ -2289,9 +2301,11 @@ pub enum ServerEvent {
     },
     /// `SMSG_ENVIRONMENTAL_DAMAGE_LOG` (`0x1FC`):
     /// body: u64 victim, u8 type, u32 damage, u32 absorbed, u32 resisted.
-    /// Drop when damage, absorbed and resisted are all zero.
+    /// `damage_type` indexes FATIGUE/DROWNING/FALLING/LAVA/SLIME/FIRE; the feed drops a row
+    /// when damage, absorbed and resisted are all zero, as `HandleEnvironmentDamage` does.
     EnvironmentalDamage {
         victim: u64,
+        damage_type: u8,
         damage: u32,
         absorbed: u32,
         resisted: i32,
@@ -3359,10 +3373,11 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_CONVERT_RUNE => wrath_systems::read_convert_rune(body).map(ServerEvent::RuneConvert),
         SMSG_RESYNC_RUNES => wrath_systems::read_resync_runes(body).map(ServerEvent::RuneState),
         SMSG_ADD_RUNE_POWER => wrath_systems::read_add_rune_power(body).map(ServerEvent::RunePower),
-        // Instakill/Enchant/Environmental (single-row combat-log packets)
-        0x32F => read_spell_instakill(body),
-        0x1D7 => read_enchant_log(body),
-        0x1FC => read_environmental_damage(body),
+        // Single-row combat-log packets.
+        SMSG_SPELL_INSTAKILL_LOG => read_spell_instakill(body),
+        SMSG_ENCHANTMENTLOG => read_enchant_log(body),
+        SMSG_ENVIRONMENTALDAMAGELOG => read_environmental_damage(body),
+        SMSG_SPELLDAMAGESHIELD => read_damage_shield(body),
         SMSG_LOAD_EQUIPMENT_SET => {
             equipment_set::read_load_equipment_set(body).map(ServerEvent::EquipmentSetList)
         }
@@ -4013,10 +4028,14 @@ fn read_spell_instakill(b: &[u8]) -> Result<ServerEvent> {
     let caster = r.u64()?;
     let target = r.u64()?;
     let spell_id = r.u32()?;
-    Ok(ServerEvent::SpellInstakill { caster, target, spell_id })
+    Ok(ServerEvent::SpellInstakill {
+        caster,
+        target,
+        spell_id,
+    })
 }
 
-/// `SMSG_ENCHANTATION_LOG` (`0x1D7`, `UnitCombatLog_C.cpp:1530`):
+/// `SMSG_ENCHANTMENTLOG` (`0x1D7`, `UnitCombatLog_C.cpp:1530`):
 /// packed target, packed caster, u32 itemId, u32 enchantId.
 /// Event 31 ENCHANT_APPLIED when caster != 0, else event 32 ENCHANT_REMOVED.
 /// Payload: 8 header + 0x1000 enchant name + 0x200 block (itemId, item name) = 11 values.
@@ -4028,32 +4047,72 @@ fn read_enchant_log(b: &[u8]) -> Result<ServerEvent> {
     let item_id = r.u32()?;
     let enchant_id = r.u32()?;
     if caster == 0 {
-        Ok(ServerEvent::EnchantRemoved { caster, target, item_id, enchant_id })
+        Ok(ServerEvent::EnchantRemoved {
+            caster,
+            target,
+            item_id,
+            enchant_id,
+        })
     } else {
-        Ok(ServerEvent::EnchantApplied { caster, target, item_id, enchant_id })
+        Ok(ServerEvent::EnchantApplied {
+            caster,
+            target,
+            item_id,
+            enchant_id,
+        })
     }
 }
 
-/// `SMSG_ENVIRONMENTAL_DAMAGE_LOG` (`0x1FC`):
+/// `SMSG_SPELLDAMAGESHIELD` (`0x24F`, `Player_C.cpp` `Packet_SMSG_SPELLDAMAGESHIELD`
+/// at `0x006D3750`, `UnitCombatLogDamageShield` at `0x00752C90`): raw victim, raw caster,
+/// spell, damage, overkill, school mask. The reference names the victim as source and the
+/// caster as destination for event 40 `DAMAGE_SHIELD`.
+fn read_damage_shield(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let target = r.u64()?;
+    let attacker = r.u64()?;
+    let spell_id = r.u32()?;
+    let damage = r.u32()?;
+    let overkill = r.u32()?;
+    let school = r.u32()?;
+    Ok(ServerEvent::DamageShield {
+        target,
+        attacker,
+        spell_id,
+        damage,
+        overkill,
+        school,
+    })
+}
+
+/// `SMSG_ENVIRONMENTALDAMAGELOG` (`0x1FC`):
 /// body: u64 victim, u8 type, u32 damage, u32 absorbed, u32 resisted.
-/// Drop when damage, absorbed and resisted are all zero.
 /// Event 0. 8 header with a nil source and the victim as destination,
 /// then the 0x8 type string and the 0x10 block: damage, overkill 0, school mask,
 /// resisted or nil, blocked nil, absorbed or nil, critical / glancing / crushing nil = 18 values.
 /// Type strings: FATIGUE, DROWNING, FALLING, LAVA, SLIME, FIRE.
-/// School masks: 1 << {0,0,0,2,3,2}[type].
+/// School masks: 1 << {0,0,0,2,3,2}[type]. The reference reads absorbed before resisted;
+/// the local AzerothCore writer emits resisted before absorbed (recorded in the handoff).
+/// A zero row is kept here and dropped by the feed, where `HandleEnvironmentDamage` tests it.
 fn read_environmental_damage(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let victim = r.u64()?;
-    r.u8()?; // type byte (consumed but not stored in the minimal shape)
+    let damage_type = r.u8()?;
+    if damage_type > 5 {
+        return Err(anyhow::anyhow!(
+            "environmental damage type {damage_type} is outside 0..=5"
+        ));
+    }
     let damage = r.u32()?;
     let absorbed = r.u32()?;
     let resisted = r.u32()? as i32;
-    // Drop entirely when damage, absorbed and resisted are all zero.
-    if damage == 0 && absorbed == 0 && resisted == 0 {
-        return Err(anyhow::anyhow!("environmental damage with zero damage/absorbed/resisted")).into();
-    }
-    Ok(ServerEvent::EnvironmentalDamage { victim, damage, absorbed, resisted })
+    Ok(ServerEvent::EnvironmentalDamage {
+        victim,
+        damage_type,
+        damage,
+        absorbed,
+        resisted,
+    })
 }
 
 /// `SMSG_SPELLNONMELEEDAMAGELOG` (`Unit.cpp:6679-6724`): the 12340 body carries an `Overkill`
@@ -6043,6 +6102,110 @@ mod tests {
             .expect("the opcode is translated")
             .expect("the 16-byte body is valid");
         assert_eq!(event, ServerEvent::PartyKillLog { killer, victim });
+    }
+
+    /// `SMSG_SPELL_INSTAKILL_LOG` (`0x32F`), `SMSG_ENCHANTMENTLOG` (`0x1D7`) and
+    /// `SMSG_ENVIRONMENTALDAMAGELOG` (`0x1FC`) in the reference's own field order.
+    #[test]
+    fn instakill_enchant_and_environmental_decode_in_their_reference_shapes() {
+        let caster = 0x0000_0000_0000_0011u64;
+        let target = 0xF130_0000_0000_0022u64;
+
+        let mut body = caster.to_le_bytes().to_vec();
+        body.extend_from_slice(&target.to_le_bytes());
+        body.extend_from_slice(&133u32.to_le_bytes());
+        let event = parse(SMSG_SPELL_INSTAKILL_LOG, &body)
+            .expect("the instakill opcode is translated")
+            .expect("the 20-byte instakill body is valid");
+        assert_eq!(
+            event,
+            ServerEvent::SpellInstakill {
+                caster,
+                target,
+                spell_id: 133,
+            }
+        );
+
+        let mut body = vec![0x01, 0x22]; // packed target 0x22
+        body.extend_from_slice(&[0x01, 0x11]); // packed caster 0x11
+        body.extend_from_slice(&25u32.to_le_bytes()); // item
+        body.extend_from_slice(&7u32.to_le_bytes()); // enchant
+        let event = parse(SMSG_ENCHANTMENTLOG, &body)
+            .expect("the enchant opcode is translated")
+            .expect("the 12-byte enchant body is valid");
+        assert_eq!(
+            event,
+            ServerEvent::EnchantApplied {
+                caster: 0x11,
+                target: 0x22,
+                item_id: 25,
+                enchant_id: 7,
+            }
+        );
+
+        let mut body = vec![0x01, 0x22]; // packed target 0x22
+        body.extend_from_slice(&[0x00]); // caster 0: the fade
+        body.extend_from_slice(&25u32.to_le_bytes());
+        body.extend_from_slice(&7u32.to_le_bytes());
+        let event = parse(SMSG_ENCHANTMENTLOG, &body)
+            .expect("the enchant opcode is translated")
+            .expect("the 11-byte fade body is valid");
+        assert_eq!(
+            event,
+            ServerEvent::EnchantRemoved {
+                caster: 0,
+                target: 0x22,
+                item_id: 25,
+                enchant_id: 7,
+            }
+        );
+
+        let mut body = target.to_le_bytes().to_vec();
+        body.push(2); // FALLING
+        body.extend_from_slice(&120u32.to_le_bytes()); // damage
+        body.extend_from_slice(&9u32.to_le_bytes()); // absorbed
+        body.extend_from_slice(&5u32.to_le_bytes()); // resisted
+        let event = parse(SMSG_ENVIRONMENTALDAMAGELOG, &body)
+            .expect("the environmental opcode is translated")
+            .expect("the 21-byte environmental body is valid");
+        assert_eq!(
+            event,
+            ServerEvent::EnvironmentalDamage {
+                victim: target,
+                damage_type: 2,
+                damage: 120,
+                absorbed: 9,
+                resisted: 5,
+            }
+        );
+    }
+
+    /// `SMSG_SPELLDAMAGESHIELD` (`0x24F`): raw victim, raw caster, spell, damage, overkill,
+    /// school mask; no hit-info block and no absorb/block/resist words.
+    #[test]
+    fn damage_shield_decodes_victim_caster_and_school_mask() {
+        let victim = 0xF130_0000_0000_0022u64;
+        let caster = 0x0000_0000_0000_0011u64;
+        let mut body = victim.to_le_bytes().to_vec();
+        body.extend_from_slice(&caster.to_le_bytes());
+        body.extend_from_slice(&12345u32.to_le_bytes()); // spell
+        body.extend_from_slice(&77u32.to_le_bytes()); // damage
+        body.extend_from_slice(&3u32.to_le_bytes()); // overkill
+        body.extend_from_slice(&4u32.to_le_bytes()); // school mask
+        let event = parse(SMSG_SPELLDAMAGESHIELD, &body)
+            .expect("the damage-shield opcode is translated")
+            .expect("the 32-byte damage-shield body is valid");
+        assert_eq!(
+            event,
+            ServerEvent::DamageShield {
+                target: victim,
+                attacker: caster,
+                spell_id: 12345,
+                damage: 77,
+                overkill: 3,
+                school: 4,
+            }
+        );
     }
 
     /// The marker table indexes the raw 3.3.5 status; a 1.12 remap turned AVAILABLE (8) into 5,

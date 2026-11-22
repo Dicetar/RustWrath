@@ -830,7 +830,7 @@ pub enum WrathFeedEvent {
         session_epoch: u64,
         world_generation: u64,
     },
-    /// `SMSG_ENCHANTATION_LOG`: enchant applied (caster != 0) or removed (caster == 0).
+    /// `SMSG_ENCHANTMENTLOG`: enchant applied (caster != 0) or removed (caster == 0).
     EnchantApplied {
         caster: u64,
         target: u64,
@@ -839,12 +839,34 @@ pub enum WrathFeedEvent {
         session_epoch: u64,
         world_generation: u64,
     },
-    /// `SMSG_ENVIRONMENTAL_DAMAGE_LOG`: environmental damage event.
+    /// The caster-zero half of `SMSG_ENCHANTMENTLOG`: event 32 `ENCHANT_REMOVED`.
+    EnchantRemoved {
+        caster: u64,
+        target: u64,
+        item_id: u32,
+        enchant_id: u32,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_ENVIRONMENTALDAMAGELOG`: environmental damage event.
     EnvironmentalDamage {
         victim: u64,
+        damage_type: u8,
         damage: u32,
         absorbed: u32,
         resisted: i32,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_SPELLDAMAGESHIELD`: one reflected shield hit. The victim is the source and the
+    /// caster is the destination, as `UnitCombatLogDamageShield` records it.
+    DamageShield {
+        target: u64,
+        attacker: u64,
+        spell_id: u32,
+        damage: u32,
+        overkill: u32,
+        school: u32,
         session_epoch: u64,
         world_generation: u64,
     },
@@ -2601,6 +2623,62 @@ pub struct WrathSpellDispelFailed {
     pub received_at: f64,
 }
 
+/// One decoded `SMSG_SPELL_INSTAKILL_LOG` row: event 14 `SPELL_INSTAKILL`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathSpellInstakill {
+    pub caster: u64,
+    pub target: u64,
+    pub spell_id: u32,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    pub received_at: f64,
+}
+
+/// One decoded `SMSG_ENCHANTMENTLOG` row: event 31 `ENCHANT_APPLIED`, or event 32
+/// `ENCHANT_REMOVED` when the packet's caster is 0.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathEnchantLog {
+    pub caster: u64,
+    pub target: u64,
+    pub item_id: u32,
+    pub enchant_id: u32,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    pub received_at: f64,
+}
+
+/// One decoded `SMSG_ENVIRONMENTALDAMAGELOG` row: event 0 `ENVIRONMENTAL_DAMAGE`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathEnvironmentalDamage {
+    pub victim: u64,
+    pub damage_type: u8,
+    pub damage: u32,
+    pub absorbed: u32,
+    pub resisted: i32,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    pub received_at: f64,
+}
+
+/// One decoded `SMSG_SPELLDAMAGESHIELD` row: event 40 `DAMAGE_SHIELD`. The victim is the
+/// source and the shield's caster is the destination, matching `UnitCombatLogDamageShield`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathDamageShield {
+    pub target: u64,
+    pub attacker: u64,
+    pub spell_id: u32,
+    pub damage: u32,
+    pub overkill: u32,
+    pub school: u32,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+    pub received_at: f64,
+}
+
 /// The decoded `SMSG_CALENDAR_SEND_CALENDAR` snapshot, kept as the wire delivered it. The UI
 /// reads the date from `zone_time` and pending invites from `invites`; the other rows stay here
 /// for the calendar windows that need them.
@@ -2787,6 +2865,26 @@ pub struct WrathWorldView {
     pub spell_dispel_failed_revision: u64,
     pub spell_dispel_failed_dropped: u64,
     pub spell_dispel_failed_unresolved: u64,
+    /// Instakill rows (`SMSG_SPELL_INSTAKILL_LOG`) waiting for the UI feed.
+    pub instakills: VecDeque<WrathSpellInstakill>,
+    pub instakill_revision: u64,
+    pub instakill_dropped: u64,
+    pub instakill_unresolved: u64,
+    /// Enchant applied/removed rows (`SMSG_ENCHANTMENTLOG`) waiting for the UI feed.
+    pub enchant_logs: VecDeque<WrathEnchantLog>,
+    pub enchant_revision: u64,
+    pub enchant_dropped: u64,
+    pub enchant_unresolved: u64,
+    /// Environmental-damage rows (`SMSG_ENVIRONMENTALDAMAGELOG`) waiting for the UI feed.
+    pub environmental_damages: VecDeque<WrathEnvironmentalDamage>,
+    pub environmental_damage_revision: u64,
+    pub environmental_damage_dropped: u64,
+    pub environmental_damage_unresolved: u64,
+    /// Damage-shield rows (`SMSG_SPELLDAMAGESHIELD`) waiting for the UI feed.
+    pub damage_shields: VecDeque<WrathDamageShield>,
+    pub damage_shield_revision: u64,
+    pub damage_shield_dropped: u64,
+    pub damage_shield_unresolved: u64,
     /// Presentation mirror of the authority's active casts, keyed by caster, retaining 12340
     /// identity/timing beyond the vanilla cast-bar edges. Written only from resolved snapshots;
     /// never re-resolves wire facts. UI clocks are stamped here, not in the authority.
@@ -2904,6 +3002,22 @@ impl Default for WrathWorldView {
             spell_dispel_failed_revision: 0,
             spell_dispel_failed_dropped: 0,
             spell_dispel_failed_unresolved: 0,
+            instakills: VecDeque::new(),
+            instakill_revision: 0,
+            instakill_dropped: 0,
+            instakill_unresolved: 0,
+            enchant_logs: VecDeque::new(),
+            enchant_revision: 0,
+            enchant_dropped: 0,
+            enchant_unresolved: 0,
+            environmental_damages: VecDeque::new(),
+            environmental_damage_revision: 0,
+            environmental_damage_dropped: 0,
+            environmental_damage_unresolved: 0,
+            damage_shields: VecDeque::new(),
+            damage_shield_revision: 0,
+            damage_shield_dropped: 0,
+            damage_shield_unresolved: 0,
             casts: BTreeMap::new(),
             channels: BTreeMap::new(),
             last_cast_end: None,
@@ -3488,6 +3602,96 @@ impl WrathWorldView {
         });
     }
 
+    pub(crate) fn apply_spell_instakill(
+        &mut self,
+        hit: WrathSpellInstakill,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        self.instakill_revision = self.instakill_revision.saturating_add(1);
+        if self.instakills.len() >= SPELL_LOG_CAPACITY {
+            self.instakills.pop_front();
+            self.instakill_dropped = self.instakill_dropped.saturating_add(1);
+        }
+        self.instakills.push_back(WrathSpellInstakill {
+            session_epoch,
+            world_generation,
+            revision: self.instakill_revision,
+            received_at,
+            ..hit
+        });
+    }
+
+    pub(crate) fn apply_enchant_log(
+        &mut self,
+        hit: WrathEnchantLog,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        self.enchant_revision = self.enchant_revision.saturating_add(1);
+        if self.enchant_logs.len() >= SPELL_LOG_CAPACITY {
+            self.enchant_logs.pop_front();
+            self.enchant_dropped = self.enchant_dropped.saturating_add(1);
+        }
+        self.enchant_logs.push_back(WrathEnchantLog {
+            session_epoch,
+            world_generation,
+            revision: self.enchant_revision,
+            received_at,
+            ..hit
+        });
+    }
+
+    /// `HandleEnvironmentDamage` (`UnitCombat_C.cpp:57`) writes no row when damage, absorbed
+    /// and resisted are all zero; the visual kit is a separate consumer.
+    pub(crate) fn apply_environmental_damage(
+        &mut self,
+        hit: WrathEnvironmentalDamage,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        if hit.damage == 0 && hit.absorbed == 0 && hit.resisted == 0 {
+            return;
+        }
+        self.environmental_damage_revision = self.environmental_damage_revision.saturating_add(1);
+        if self.environmental_damages.len() >= SPELL_LOG_CAPACITY {
+            self.environmental_damages.pop_front();
+            self.environmental_damage_dropped = self.environmental_damage_dropped.saturating_add(1);
+        }
+        self.environmental_damages
+            .push_back(WrathEnvironmentalDamage {
+                session_epoch,
+                world_generation,
+                revision: self.environmental_damage_revision,
+                received_at,
+                ..hit
+            });
+    }
+
+    pub(crate) fn apply_damage_shield(
+        &mut self,
+        hit: WrathDamageShield,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
+        self.damage_shield_revision = self.damage_shield_revision.saturating_add(1);
+        if self.damage_shields.len() >= SPELL_LOG_CAPACITY {
+            self.damage_shields.pop_front();
+            self.damage_shield_dropped = self.damage_shield_dropped.saturating_add(1);
+        }
+        self.damage_shields.push_back(WrathDamageShield {
+            session_epoch,
+            world_generation,
+            revision: self.damage_shield_revision,
+            received_at,
+            ..hit
+        });
+    }
+
     /// Clear every scoped rune/calendar/combat-log/LFG fact on a session end or world transfer.
     fn clear_rune_calendar(&mut self) {
         self.runes.clear();
@@ -3546,12 +3750,18 @@ impl WrathWorldView {
         self.spell_dispel_faileds.clear();
         self.spell_dispel_failed_dropped = 0;
         self.spell_dispel_failed_unresolved = 0;
+        self.instakills.clear();
         self.instakill_dropped = 0;
         self.instakill_unresolved = 0;
+        self.enchant_logs.clear();
         self.enchant_dropped = 0;
         self.enchant_unresolved = 0;
+        self.environmental_damages.clear();
         self.environmental_damage_dropped = 0;
         self.environmental_damage_unresolved = 0;
+        self.damage_shields.clear();
+        self.damage_shield_dropped = 0;
+        self.damage_shield_unresolved = 0;
         self.lfg_join_result = None;
         self.lfg_queue_status = None;
         self.lfg_update_player = None;
@@ -4986,6 +5196,11 @@ fn translate_gameplay(
             blocked,
             hit_info,
         })],
+        WrathGameplayEvent::DamageShield { .. } => Vec::new(),
+        WrathGameplayEvent::SpellInstakill { .. } => Vec::new(),
+        WrathGameplayEvent::EnchantApplied { .. } => Vec::new(),
+        WrathGameplayEvent::EnchantRemoved { .. } => Vec::new(),
+        WrathGameplayEvent::EnvironmentalDamage { .. } => Vec::new(),
         WrathGameplayEvent::SpellMiss { .. } => Vec::new(),
         WrathGameplayEvent::SpellExecuteLog { .. } => Vec::new(),
         WrathGameplayEvent::SpellDispelLog { .. } => Vec::new(),
@@ -10393,6 +10608,142 @@ fn wrath_net_drain(
                     );
                 }
             }
+            WrathFeedEvent::SpellInstakill {
+                caster,
+                target,
+                spell_id,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_spell_instakill(
+                        WrathSpellInstakill {
+                            caster,
+                            target,
+                            spell_id,
+                            session_epoch,
+                            world_generation,
+                            revision: 0,
+                            received_at: 0.0,
+                        },
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
+            WrathFeedEvent::EnchantApplied {
+                caster,
+                target,
+                item_id,
+                enchant_id,
+                session_epoch,
+                world_generation,
+            }
+            | WrathFeedEvent::EnchantRemoved {
+                caster,
+                target,
+                item_id,
+                enchant_id,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_enchant_log(
+                        WrathEnchantLog {
+                            caster,
+                            target,
+                            item_id,
+                            enchant_id,
+                            session_epoch,
+                            world_generation,
+                            revision: 0,
+                            received_at: 0.0,
+                        },
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
+            WrathFeedEvent::EnvironmentalDamage {
+                victim,
+                damage_type,
+                damage,
+                absorbed,
+                resisted,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_environmental_damage(
+                        WrathEnvironmentalDamage {
+                            victim,
+                            damage_type,
+                            damage,
+                            absorbed,
+                            resisted,
+                            session_epoch,
+                            world_generation,
+                            revision: 0,
+                            received_at: 0.0,
+                        },
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
+            WrathFeedEvent::DamageShield {
+                target,
+                attacker,
+                spell_id,
+                damage,
+                overkill,
+                school,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_damage_shield(
+                        WrathDamageShield {
+                            target,
+                            attacker,
+                            spell_id,
+                            damage,
+                            overkill,
+                            school,
+                            session_epoch,
+                            world_generation,
+                            revision: 0,
+                            received_at: 0.0,
+                        },
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
             WrathFeedEvent::PartyKillLog {
                 killer,
                 victim,
@@ -15540,9 +15891,10 @@ pub fn run_session_with_cancel(
                                 }
                             }
                         }
-                        Ok(WrathGameplayEvent::EnvironmentalDamage { victim, damage, absorbed, resisted }) => {
+                        Ok(WrathGameplayEvent::EnvironmentalDamage { victim, damage_type, damage, absorbed, resisted }) => {
                             feed.push_event(WrathFeedEvent::EnvironmentalDamage {
                                 victim,
+                                damage_type,
                                 damage,
                                 absorbed,
                                 resisted,
@@ -15551,7 +15903,28 @@ pub fn run_session_with_cancel(
                             });
                             if session.player_guid().is_some() {
                                 for event in translate_live(
-                                    WrathGameplayEvent::EnvironmentalDamage { victim, damage, absorbed, resisted },
+                                    WrathGameplayEvent::EnvironmentalDamage { victim, damage_type, damage, absorbed, resisted },
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
+                                }
+                            }
+                        }
+                        Ok(WrathGameplayEvent::DamageShield { target, attacker, spell_id, damage, overkill, school }) => {
+                            feed.push_event(WrathFeedEvent::DamageShield {
+                                target,
+                                attacker,
+                                spell_id,
+                                damage,
+                                overkill,
+                                school,
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                            if session.player_guid().is_some() {
+                                for event in translate_live(
+                                    WrathGameplayEvent::DamageShield { target, attacker, spell_id, damage, overkill, school },
                                     session.player_guid().unwrap_or(0),
                                     received_at,
                                 ) {
