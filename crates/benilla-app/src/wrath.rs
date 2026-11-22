@@ -13946,6 +13946,9 @@ fn roster_from(records: &[gameplay::CharEnumRecord]) -> Vec<Character> {
         .collect()
 }
 
+#[path = "session_failure.rs"]
+mod session_failure;
+
 /// The app-owned session loop. `cancel` is checked between bounded socket reads and before every
 /// packet step; a cancelled session exits as a clean `SessionEnded` without manufacturing packets.
 /// `parked` is the parked character select after a clean logout: the fresh session serves the
@@ -13961,6 +13964,34 @@ pub fn run_session_with_cancel(
     events_out: Option<Arc<Mutex<SessionReplies>>>,
     parked: Option<ParkedInput>,
     publisher_retire: Option<Sender<benilla_wm_native::PublisherRetirement>>,
+) -> anyhow::Result<()> {
+    let mut recorder = session_failure::Recorder::new();
+    let result = run_recorded_session(
+        feed,
+        config,
+        cancel,
+        commands,
+        events_out,
+        parked,
+        publisher_retire,
+        &mut recorder,
+    );
+    if let Err(error) = &result {
+        recorder.persist(error);
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_recorded_session(
+    feed: &WrathFeed,
+    config: &WrathSessionConfig,
+    cancel: &AtomicBool,
+    commands: Option<WrathOutbox>,
+    events_out: Option<Arc<Mutex<SessionReplies>>>,
+    parked: Option<ParkedInput>,
+    publisher_retire: Option<Sender<benilla_wm_native::PublisherRetirement>>,
+    recorder: &mut session_failure::Recorder,
 ) -> anyhow::Result<()> {
     use benilla_wm_native::{pump_once, replace_publisher, PublisherConfig};
 
@@ -14056,6 +14087,7 @@ pub fn run_session_with_cancel(
     let mut roster_asked_next = roster_asked;
 
     let (mut world, guid) = 'realm: loop {
+        recorder.unauthenticated();
         feed.authenticated.store(false, Ordering::SeqCst);
         let realm_id = if config.login_generation.is_some() {
             if let Some(id) = pending_realm.take() {
@@ -14190,7 +14222,7 @@ pub fn run_session_with_cancel(
                 }
                 anyhow::bail!("timeout waiting for world authentication");
             }
-            match world.recv() {
+            match recorder.recv(&mut world) {
                 Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_AUTH_RESPONSE => {
                     let code = *p
                         .payload
@@ -14241,6 +14273,7 @@ pub fn run_session_with_cancel(
                 Err(e) => return Err(e),
             }
         }
+        recorder.authenticated();
         feed.authenticated.store(true, Ordering::SeqCst);
         if let Some(generation) = live_generation() {
             send_glue(SessionEvent::WorldAuthenticated {
@@ -14254,7 +14287,11 @@ pub fn run_session_with_cancel(
         // Character selection: reuse the renderless driver's create-first flow is intentionally
         // out of scope here — the graphical path logs into an existing character (issue 23's
         // driver owns creation). Enumerate before resolving a named boot or parked-screen pick.
-        world.send(benilla_protocol_wrath::opcode::CMSG_CHAR_ENUM, &[])?;
+        recorder.send(
+            &mut world,
+            benilla_protocol_wrath::opcode::CMSG_CHAR_ENUM,
+            &[],
+        )?;
         let mut records: Option<Vec<gameplay::CharEnumRecord>> = None;
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while records.is_none() {
@@ -14294,7 +14331,7 @@ pub fn run_session_with_cancel(
                 }
                 anyhow::bail!("timeout waiting for SMSG_CHAR_ENUM");
             }
-            match world.recv() {
+            match recorder.recv(&mut world) {
                 Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_CHAR_ENUM => {
                     records = Some(benilla_protocol_wrath::gameplay::parse_char_enum(
                         &p.payload,
@@ -14370,14 +14407,19 @@ pub fn run_session_with_cancel(
                 for request in parked.try_iter() {
                     match request {
                         WrathParkedCommand::RealmSplit(state) => {
-                            world.send(
+                            recorder.send(
+                                &mut world,
                                 benilla_protocol_wrath::opcode::CMSG_REALM_SPLIT,
                                 &state.to_le_bytes(),
                             )?;
                             debug!("wrath: sent realm split choice={state}");
                         }
                         WrathParkedCommand::Enumerate => {
-                            world.send(benilla_protocol_wrath::opcode::CMSG_CHAR_ENUM, &[])?;
+                            recorder.send(
+                                &mut world,
+                                benilla_protocol_wrath::opcode::CMSG_CHAR_ENUM,
+                                &[],
+                            )?;
                         }
                         WrathParkedCommand::Enter(picked) => {
                             if roster_mutation.is_none()
@@ -14396,7 +14438,8 @@ pub fn run_session_with_cancel(
                         WrathParkedCommand::Create(request) if roster_mutation.is_none() => {
                             // AC CharacterHandler::HandleCharCreateOpcode: name CString, eight
                             // appearance/race/class bytes and outfit byte, identical to this encoder.
-                            world.send(
+                            recorder.send(
+                                &mut world,
                                 benilla_protocol_wrath::opcode::CMSG_CHAR_CREATE,
                                 &benilla_protocol::messages::char_create(&request),
                             )?;
@@ -14407,7 +14450,8 @@ pub fn run_session_with_cancel(
                             if roster_mutation.is_none()
                                 && records.iter().any(|record| record.guid == guid) =>
                         {
-                            world.send(
+                            recorder.send(
+                                &mut world,
                                 benilla_protocol_wrath::opcode::CMSG_CHAR_DELETE,
                                 &guid.to_le_bytes(),
                             )?;
@@ -14418,7 +14462,8 @@ pub fn run_session_with_cancel(
                             if roster_mutation.is_none()
                                 && records.iter().any(|record| record.guid == guid) =>
                         {
-                            world.send(
+                            recorder.send(
+                                &mut world,
                                 benilla_protocol_wrath::opcode::CMSG_CHAR_RENAME,
                                 &encode_char_rename(guid, &name),
                             )?;
@@ -14442,7 +14487,8 @@ pub fn run_session_with_cancel(
                         }
                         WrathParkedCommand::Close => return Ok(()),
                         WrathParkedCommand::MulticlassRequest(payload) => {
-                            world.send(
+                            recorder.send(
+                                &mut world,
                                 benilla_protocol_wrath::opcode::CMSG_MULTICLASS_REQUEST,
                                 &payload,
                             )?;
@@ -14455,9 +14501,12 @@ pub fn run_session_with_cancel(
                 }
                 if let Some(multiclass) = &multiclass {
                     multiclass.selection(roster_mutation.is_none());
-                    multiclass.dispatch(&mut world)?;
+                    recorder.step("multiclass dispatch", None);
+                    multiclass.dispatch_with(|opcode, payload| {
+                        recorder.send(&mut world, opcode, payload)
+                    })?;
                 }
-                match world.recv() {
+                match recorder.recv(&mut world) {
                     Ok(p)
                         if p.opcode == benilla_protocol_wrath::multiclass::SERVER_OPCODE
                             && multiclass.is_some() =>
@@ -14465,7 +14514,10 @@ pub fn run_session_with_cancel(
                         multiclass
                             .as_ref()
                             .expect("enabled multiclass")
-                            .receive(&p.payload)?;
+                            .receive(&p.payload)
+                            .inspect_err(|_| {
+                                recorder.step("multiclass receive", Some(u32::from(p.opcode)));
+                            })?;
                     }
                     Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_REALM_SPLIT => {
                         let reply =
@@ -14522,7 +14574,11 @@ pub fn run_session_with_cancel(
                         if (action == benilla_protocol::CharAction::Create && raw == 0x2f)
                             || (action == benilla_protocol::CharAction::Delete && raw == 0x47)
                         {
-                            world.send(benilla_protocol_wrath::opcode::CMSG_CHAR_ENUM, &[])?;
+                            recorder.send(
+                                &mut world,
+                                benilla_protocol_wrath::opcode::CMSG_CHAR_ENUM,
+                                &[],
+                            )?;
                         }
                     }
                     Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_CHAR_RENAME => {
@@ -14775,7 +14831,8 @@ pub fn run_session_with_cancel(
         login_generation: live_generation(),
         map_id: session.map_id(),
     });
-    world.send(
+    recorder.send(
+        &mut world,
         benilla_protocol_wrath::opcode::CMSG_PLAYER_LOGIN,
         &guid.to_le_bytes(),
     )?;
@@ -14799,7 +14856,9 @@ pub fn run_session_with_cancel(
         }
         if let Some(multiclass) = &multiclass {
             multiclass.world(session.phase(), session.world_generation());
-            multiclass.dispatch(&mut world)?;
+            recorder.step("multiclass dispatch", None);
+            multiclass
+                .dispatch_with(|opcode, payload| recorder.send(&mut world, opcode, payload))?;
         }
         // Bounded ownership (R04): once the reply queue overflowed, ordered replies have already
         // been lost. End the session through the one terminal path instead of continuing to read
@@ -14810,6 +14869,7 @@ pub fn run_session_with_cancel(
                 .map(|replies| replies.overloaded())
                 .unwrap_or(false)
             {
+                recorder.step("reply-backlog bail", None);
                 anyhow::bail!(
                     "session reply backlog exceeded {WRATH_SESSION_REPLY_CAP} entries; \
                      ordered reply delivery was lost"
@@ -14889,7 +14949,7 @@ pub fn run_session_with_cancel(
                 if stale_trace {
                     continue;
                 }
-                let result = world.send(command.opcode, &command.payload);
+                let result = recorder.send(&mut world, command.opcode, &command.payload);
                 if command.movement {
                     if let Some(seq) = command.movement_seq {
                         if result.is_ok() {
@@ -14984,7 +15044,7 @@ pub fn run_session_with_cancel(
         if last_ping.elapsed() >= Duration::from_secs(10) {
             let mut ping = ping_seq.to_le_bytes().to_vec();
             ping.extend_from_slice(&0u32.to_le_bytes());
-            world.send(benilla_protocol_wrath::opcode::CMSG_PING, &ping)?;
+            recorder.send(&mut world, benilla_protocol_wrath::opcode::CMSG_PING, &ping)?;
             ping_seq += 1;
             last_ping = std::time::Instant::now();
         }
@@ -15017,7 +15077,7 @@ pub fn run_session_with_cancel(
             publisher.retire_all();
             return Ok(());
         }
-        match world.recv() {
+        match recorder.recv(&mut world) {
             Ok(p)
                 if p.opcode == benilla_protocol_wrath::multiclass::SERVER_OPCODE
                     && multiclass.is_some() =>
@@ -15026,7 +15086,10 @@ pub fn run_session_with_cancel(
                 multiclass
                     .as_ref()
                     .expect("enabled multiclass")
-                    .receive(&p.payload)?;
+                    .receive(&p.payload)
+                    .inspect_err(|_| {
+                        recorder.step("multiclass receive", Some(u32::from(p.opcode)));
+                    })?;
             }
             Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_CHARACTER_LOGIN_FAILED => {
                 // AzerothCore sends LoginFailureReason, not ResponseCodes. The 12340
@@ -15098,7 +15161,9 @@ pub fn run_session_with_cancel(
                         trace.observe(scope, None, stage);
                     }
                 }
+                recorder.step("reducer", Some(u32::from(p.opcode)));
                 reduced?;
+                recorder.step("packet handling", Some(u32::from(p.opcode)));
                 // A saved store's answer hands its bytes on ahead of its record, as the 1.12
                 // stream does (`crate::net::io::inbound`), so the store can save them and decode
                 // them again after a decoder patch (`crate::wdb`). Gated like the record itself.
@@ -16049,7 +16114,7 @@ pub fn run_session_with_cancel(
                     if p.payload.len() >= 4 {
                         let mut resp = p.payload[0..4].to_vec();
                         resp.extend_from_slice(&wrath_client_ms().to_le_bytes());
-                        world.send(0x391, &resp)?;
+                        recorder.send(&mut world, 0x391, &resp)?;
                     }
                 }
             }
@@ -16094,6 +16159,7 @@ pub fn run_session_with_cancel(
             }
             publisher.retire_all();
             native.invalidate_scope();
+            recorder.step("server response timeout", None);
             anyhow::bail!(
                 "world server made no response for {} s",
                 SERVER_RESPONSE_TIMEOUT.as_secs()
@@ -16118,7 +16184,8 @@ pub fn run_session_with_cancel(
             let mut ack = enc_pack_guid(guid);
             ack.extend_from_slice(&0u32.to_le_bytes());
             ack.extend_from_slice(&0u32.to_le_bytes());
-            world.send(
+            recorder.send(
+                &mut world,
                 benilla_protocol_wrath::opcode::MSG_MOVE_TELEPORT_ACK as u32,
                 &ack,
             )?;
@@ -16126,7 +16193,7 @@ pub fn run_session_with_cancel(
         // Far transfer: the NEW_WORLD was processed; tear down, then acknowledge so the
         // server sends the new world's visibility traffic.
         if session.phase() == Phase::Loading {
-            world.send(0x0DCu32, &[])?; // MSG_MOVE_WORLDPORT_ACK (empty payload)
+            recorder.send(&mut world, 0x0DCu32, &[])?; // MSG_MOVE_WORLDPORT_ACK (empty payload)
             session.worldport_acknowledged();
         }
         // Publish a full-world digest whenever source state advanced â€” independent of the WM
@@ -16182,10 +16249,14 @@ pub fn run_session_with_cancel(
         }
     }
 
-    world.send(benilla_protocol_wrath::opcode::CMSG_LOGOUT_REQUEST, &[])?;
+    recorder.send(
+        &mut world,
+        benilla_protocol_wrath::opcode::CMSG_LOGOUT_REQUEST,
+        &[],
+    )?;
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while std::time::Instant::now() < deadline {
-        match world.recv() {
+        match recorder.recv(&mut world) {
             Ok(p) if p.opcode == 0x04D => {
                 session.finish_session();
                 feed.push_event(WrathFeedEvent::Phase {
@@ -16203,6 +16274,7 @@ pub fn run_session_with_cancel(
             Err(e) => return Err(e),
         }
     }
+    recorder.step("logout timeout", None);
     anyhow::bail!("SMSG_LOGOUT_COMPLETE never arrived")
 }
 

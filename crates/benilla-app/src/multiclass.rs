@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use benilla_protocol_wrath::{multiclass as wire, session::Phase, world::WorldConnection};
+use benilla_protocol_wrath::{multiclass as wire, session::Phase};
 use benilla_ui::mlua;
 use benilla_ui::script::{MulticlassHost, UiScript, VmKind};
 use bevy::prelude::*;
@@ -266,7 +266,10 @@ impl Connection {
         });
     }
 
-    pub(crate) fn dispatch(&self, socket: &mut WorldConnection) -> anyhow::Result<()> {
+    pub(crate) fn dispatch_with(
+        &self,
+        mut send: impl FnMut(u32, &[u8]) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
         let packet = {
             let mut state = self
                 .bridge
@@ -292,7 +295,7 @@ impl Connection {
             );
             pending.request.encode(pending.wire_id)
         };
-        socket.send(wire::CLIENT_OPCODE, &packet)
+        send(wire::CLIENT_OPCODE, &packet)
     }
 
     pub(crate) fn receive(&self, bytes: &[u8]) -> anyhow::Result<()> {
