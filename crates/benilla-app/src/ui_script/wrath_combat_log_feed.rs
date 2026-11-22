@@ -61,8 +61,6 @@ pub(crate) struct CombatLogMemo {
     spell_execute_log_unresolved: u64,
     spell_dispel_log_dropped: u64,
     spell_dispel_log_unresolved: u64,
-    spell_dispel_failed_dropped: u64,
-    spell_dispel_failed_unresolved: u64,
 }
 
 /// The visible marker for an endpoint whose name never resolved inside the retry window. It is
@@ -1127,7 +1125,6 @@ pub(crate) fn feed(
                             source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
                             target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
                             spells.as_deref(),
-                            ask,
                         ),
                     );
                     world.spell_dispel_log_unresolved =
@@ -1147,7 +1144,6 @@ pub(crate) fn feed(
                     &source,
                     &target,
                     spells.as_deref(),
-                    ask,
                 ),
             );
             world.spell_dispel_logs.remove(index);
@@ -1196,7 +1192,6 @@ pub(crate) fn feed(
                             source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
                             target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
                             spells.as_deref(),
-                            ask,
                         ),
                     );
                     world.spell_dispel_failed_unresolved =
@@ -1216,7 +1211,6 @@ pub(crate) fn feed(
                     &source,
                     &target,
                     spells.as_deref(),
-                    ask,
                 ),
             );
             world.spell_dispel_faileds.remove(index);
@@ -1985,7 +1979,6 @@ fn spell_dispel_log_args(
     source_name: &str,
     target_name: &str,
     spells: Option<&crate::ui_action::Spells>,
-    ask: Ask<'_>,
 ) -> Vec<ScriptValue> {
     let subevent = if hit.stolen {
         "SPELL_STOLEN"
@@ -2034,7 +2027,6 @@ fn spell_dispel_failed_args(
     source_name: &str,
     target_name: &str,
     spells: Option<&crate::ui_action::Spells>,
-    ask: Ask<'_>,
 ) -> Vec<ScriptValue> {
     let mut args = combat_log_header(
         timestamp,
