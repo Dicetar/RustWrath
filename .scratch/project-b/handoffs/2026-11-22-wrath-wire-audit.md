@@ -91,10 +91,12 @@ stays out.
 Test: `ascend_and_descend_relays_update_an_observer_position`
 (`crates/benilla-protocol-wrath/tests/session.rs:140`).
 
-### 5. Neighbouring test's clippy deny (`src/updates.rs:436`)
+### 5. Neighbouring test's clippy deny (merged from `origin/main`)
 
 The `029c41f98` regression test used `3.14` as an unused speed sentinel; `clippy::approx_constant`
-is deny-by-default and failed the crate's test target. Changed to `3.2`. Test intent unchanged.
+is deny-by-default and failed the crate's test target. `origin/main` fixed it in `0e1c59530`
+(`3.5`); this branch carried the same fix and the end-of-task merge keeps main's value. Test
+intent unchanged.
 
 ## Checked and correct (no change)
 
@@ -198,7 +200,7 @@ Gameplay/session surfaces:
 - `crates/benilla-protocol-wrath/src/opcode.rs`
 - `crates/benilla-protocol-wrath/src/gameplay.rs`
 - `crates/benilla-protocol-wrath/src/session.rs`
-- `crates/benilla-protocol-wrath/src/updates.rs` (clippy-only test constant)
+- `crates/benilla-protocol-wrath/src/updates.rs` (clippy-only test constant; merge takes main's `0e1c59530`)
 - `crates/benilla-protocol-wrath/tests/session.rs`
 - `.scratch/project-b/handoffs/2026-11-22-wrath-wire-audit.md`
 
