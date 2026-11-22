@@ -29,8 +29,11 @@ pub mod move_flags {
     pub const SPLINE_ENABLED: u32 = 0x0800_0000;
 }
 
-/// The extra movement flags carrying `MOVEMENTFLAG2_INTERPOLATED_MOVEMENT`.
-pub const MOVE2_INTERPOLATED: u16 = 0x1;
+/// `MOVEMENTFLAG2_INTERPOLATED_MOVEMENT` (`UnitDefines.h:440`): only this extra flag puts the
+/// transport's `time2` on the wire (`Unit::BuildMovementPacket`, `Unit.cpp:15894-15895`). `0x1`
+/// is `MOVEMENTFLAG2_NO_STRAFE`, which vehicles carry; reading `time2` on it shifted every later
+/// field by four bytes and dropped the session ("unknown update block type").
+pub const MOVE2_INTERPOLATED: u16 = 0x400;
 
 /// `MOVEMENTFLAG2_ALWAYS_ALLOW_PITCHING` (`UnitDefines.h:435`), set on every vehicle whose
 /// Vehicle.dbc row allows pitching (`Vehicle.cpp:604-605`).
@@ -405,5 +408,40 @@ mod tests {
         let mut r = Reader::new(&p);
         standalone_movement_block(&mut r).unwrap();
         assert!(r.done());
+    }
+
+    /// A vehicle riding a transport with `NO_STRAFE` and friends set (`0x1b`, seen live on a
+    /// `0xF150…` vehicle): no `time2` follows the seat, so the speeds start right after the fall
+    /// time. Reading `time2` on `0x1` shifted them and the next block read as type 42.
+    #[test]
+    fn transport_time2_follows_only_interpolated_movement() {
+        for (extra, time2) in [(0x1bu16, false), (MOVE2_INTERPOLATED | 0x1b, true)] {
+            let mut p = update_flags::LIVING.to_le_bytes().to_vec();
+            p.extend(move_flags::ON_TRANSPORT.to_le_bytes());
+            p.extend(extra.to_le_bytes());
+            p.extend(7u32.to_le_bytes()); // time
+            for v in [1.0f32, 2.0, 3.0, 0.5] {
+                p.extend(v.to_le_bytes());
+            }
+            p.extend([0x01, 0x42]); // packed transport guid 0x42
+            for v in [0.1f32, 0.2, 0.3, 0.0] {
+                p.extend(v.to_le_bytes());
+            }
+            p.extend(99u32.to_le_bytes()); // transport time
+            p.push(2); // seat
+            if time2 {
+                p.extend(55u32.to_le_bytes());
+            }
+            p.extend(0u32.to_le_bytes()); // fall time
+            let speeds = [2.5f32, 7.0, 4.5, 4.72, 2.5, 7.0, 4.5, 3.14, 3.14];
+            for s in speeds {
+                p.extend(s.to_le_bytes());
+            }
+            let mut r = Reader::new(&p);
+            let snap = movement_block(&mut r).unwrap();
+            assert!(r.done(), "extra {extra:#x}");
+            assert_eq!(snap.speeds, Some(speeds), "extra {extra:#x}");
+            assert_eq!(snap.transport, Some((0x42, 2)));
+        }
     }
 }
