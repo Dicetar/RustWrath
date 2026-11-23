@@ -1,10 +1,10 @@
 # net names no feature: the handler registry inverted
 
-Status: in progress; bounded feature-handler extraction implemented, CI packaging fix pending
+Status: in progress; bounded feature-handler extraction implemented; corrective CI failed on concurrent main changes
 Owner: Codex / GPT-5
 Branch: refactor/net-handler-registry
 Issue: none
-Next: add the test-only order dumper source, push the CI fix, and read the corrective run
+Next: validate against merged main, then push the merge and read its CI run
 
 Step 3 of the build-speed plan (`2026-11-22-split-benilla-app.md`): make the core's `net` module
 stop naming feature modules, so features can leave `crates/benilla-app` for crates that compile in
@@ -171,7 +171,13 @@ and access guard need a separate bounded design. No client, game, or server vali
   `--jobs-frontend=8` run took 1.22s because it reused the single-thread artifacts. These are not
   a cold parallelism comparison; the 1.22s result is incremental no-op latency.
 
-The production commit is `02a813000`. Its first CI run was `45212711399` and failed before testing
-because the test-only `order_dump_tests` source was left uncommitted while `net.rs` referenced it;
-`fmt` and Windows `check` both reported the missing module. The restored `record_answered` re-export
-is test-only to avoid a normal-build unused-import warning. The corrective source commit is pending.
+The production commit is `02a813000`; `189567988` adds the missing test-only `order_dump_tests`
+source referenced by `net.rs`. Initial CI `45212711399` failed on that missing module. Corrective CI
+`45214182287` passed fmt, clippy, test-build, and live-code-check, but both platforms' test step then
+failed on `world_api_wall`: concurrent main commit `9f4c10182` had changed the API classifier, and
+its fix was not in this branch's test checkout. The failure reports 131 leaks (ceiling 111). The API
+repair itself had passed its focused test and its own CI. Main has now been merged locally at
+`af14e2601`; this merge and its handoff update are not yet pushed. The registry feature tests and
+order comparison remain as documented above. A local retry was blocked because the cargo executable
+panicked resolving its runtime paths from this environment. The restored `record_answered` re-export
+is test-only to avoid a normal-build unused-import warning.
