@@ -29,7 +29,23 @@ pub(super) fn register(app: &mut App) {
         .net_handler(K::PlayedTime, on_played_time)
         .net_handler(K::ChannelNotify, on_channel_notify)
         .net_handler(K::RandomRoll, on_random_roll)
-        .net_handler(K::Disconnected, on_session_end);
+        .net_handler(K::Disconnected, on_session_end)
+        .net_handler_in(
+            K::ItemTemplate,
+            crate::net::HandlerSlot::ItemHeldLines,
+            on_item_answered,
+        );
+}
+
+/// The combat log's callback for its held lines (`0x6294b0`), in the slot past an item record's
+/// own callbacks: it writes each line whose item the cache now holds.
+fn on_item_answered(In(ev): In<SessionEvent>, chat: Option<Res<ChatLog>>) {
+    let SessionEvent::ItemTemplate { entry, .. } = ev else {
+        return;
+    };
+    if let Some(chat) = chat {
+        chat.answer_landed(super::Answer::Item(entry));
+    }
 }
 
 fn on_chat(

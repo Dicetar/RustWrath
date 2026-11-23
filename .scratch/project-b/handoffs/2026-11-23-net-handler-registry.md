@@ -1,10 +1,10 @@
 # net names no feature: the handler registry inverted
 
-Status: in progress
+Status: in progress; bounded feature-handler extraction implemented, local verification complete; final CI pending
 Owner: Codex / GPT-5
 Branch: refactor/net-handler-registry
 Issue: none
-Next: publish this ownership update, then compile the current registry WIP and finish the remaining net edges without changing packet order
+Next: commit the bounded extraction, push once, and read its single CI run
 
 Step 3 of the build-speed plan (`2026-11-22-split-benilla-app.md`): make the core's `net` module
 stop naming feature modules, so features can leave `crates/benilla-app` for crates that compile in
@@ -137,6 +137,40 @@ things to settle first: the lanes' guard tests read every handler's declared acc
 (`lanes/guard_tests.rs`), and an exclusive handler declares all of it; and `GroupState` is touched
 at four places in the walk, so the party's hooks are four.
 
+## Current checkpoint (2026-11-24)
+
+The bounded handler-registry extraction is implemented in the worktree. The core reserves slots and
+feature plugins fill them independent of plugin build order. The WIP includes the reputation halves,
+worldport roster hook, item-answer callbacks (loot, chat and auction), session cooldown cleanup, and
+the per-handler animation-edit hook. The item-answer loot callbacks retain the original callback
+order by recording each callback's lane stamp in the core and replaying the feature work at that
+stamp.
+
+The watcher walk in `net/objects/update.rs` remains deliberately untouched: its per-block interleaving
+and access guard need a separate bounded design. No client, game, or server validation was run.
+
 ## Checks run
 
-None yet.
+- Registry tests passed 11/11.
+- Object-update tests passed 27/27.
+- Auction sort tests passed 27/27.
+- Loot tests passed 119/122. The three failures hit the existing `UIParent.lua:329` syntax/loader
+  failure; item-answer callback tests passed.
+- Reputation tests passed 9/10. The unchanged remaining test assumes installed faction 1052 has the
+  `HEADER` bit; installed data reports `0x00`.
+- Built-client census: 307 event kinds, 380 handlers, zero unreserved fills, and zero probe failures.
+- Before/after order dump: all 307 handler-kind sections and all 20 schedule headers match. After
+  removing the eight intentionally extracted feature registrations from the current dump, the
+  complete dump is identical to the detached-base dump. Artifacts:
+  `.scratch/project-b/handler-order-before.txt` in the detached base worktree and
+  `.scratch/project-b/handler-order-current.txt` in this worktree.
+- `cargo fmt --all` and `git diff --check` passed.
+- Nightly frontend measurement used `rustc/cargo 1.102.0-nightly`, the worktree target, and
+  `C:\Users\Qraag\.cargo\bin\sccache.exe`: `--jobs-frontend=8` completed in 38.91s after a
+  partially compiling launch; a warm `--jobs-frontend=1` run took 231.2s, and the repeated
+  `--jobs-frontend=8` run took 1.22s because it reused the single-thread artifacts. These are not
+  a cold parallelism comparison; the 1.22s result is incremental no-op latency.
+
+No code commit or CI run has been made for this final WIP yet. The branch is ready for one final
+local diff inspection, commit, push, and CI verification. The restored `record_answered` re-export
+is test-only to avoid a normal-build unused-import warning.

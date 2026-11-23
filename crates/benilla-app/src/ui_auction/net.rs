@@ -27,6 +27,11 @@ pub(super) fn register(app: &mut App) {
     use crate::lanes::LaneApp;
     use SessionEventKind as K;
     app.init_resource::<HouseLane>()
+        .net_handler_in(
+            K::ItemTemplate,
+            crate::net::HandlerSlot::ItemAuctionLists,
+            on_item_answered,
+        )
         .add_lane(
             "auction house",
             |world| world.get_resource::<HouseLane>()?.peek(),
@@ -555,6 +560,22 @@ fn on_session_end(In(_): In<SessionEvent>, mut auction: ResMut<AuctionOpen>) {
 /// its lines: the Lua state they were for is replaced at the session end.
 fn end_session_house(mut lane: ResMut<HouseLane>) {
     lane.clear();
+}
+
+/// The auction lists' callbacks (`0x4cc9bf`, `0x4ccbff`, `0x4cce4f`), in the slot past an item
+/// record's own callbacks, a record or a refusal: a page that now waits on nothing runs its tail.
+fn on_item_answered(
+    In(ev): In<SessionEvent>,
+    auction: Option<ResMut<AuctionOpen>>,
+    house: Option<ResMut<HouseLane>>,
+    items: Res<crate::items::Items>,
+) {
+    let SessionEvent::ItemTemplate { entry, .. } = ev else {
+        return;
+    };
+    if let (Some(mut auction), Some(mut house)) = (auction, house) {
+        record_answered(&mut auction, &mut house, &items, entry);
+    }
 }
 
 /// An item record answered in the packet being handled, a record or a refusal: each list whose

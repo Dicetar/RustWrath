@@ -4,7 +4,7 @@
 //! bright arc toward the camera. The vertical fade on wall and ledge pieces is matched to
 //! captures: the reference's edge-fade ramp (`0x6147f0`) is untraced.
 
-use benilla_formats::{load_faction_catalog, FactionCatalog, Reaction};
+use benilla_formats::{load_faction_catalog, Reaction};
 use benilla_protocol::EntityKind;
 use bevy::prelude::*;
 
@@ -60,22 +60,8 @@ const RING_DEAD: Color = Color::linear_rgb(0.498, 0.498, 0.498);
 const RING_PARTY: Color = Color::linear_rgb(0.667, 0.667, 1.0); // 0xFFAAAAFF
 const RING_PARTY_PVP: Color = Color::linear_rgb(0.667, 1.0, 0.667); // 0xFFAAFFAA
 
-/// The FactionTemplate.dbc catalog; absent if it failed to load, and the faction legs then read
-/// neutral. Shared, so the Lua API's copy of the relation inputs costs no table.
-#[derive(Resource, Clone)]
-pub struct Factions(std::sync::Arc<FactionCatalog>);
-
-impl Factions {
-    pub fn catalog(&self) -> &FactionCatalog {
-        &self.0
-    }
-
-    /// Wrap a catalog, for tests; a running client builds the resource once, from the DBC.
-    #[cfg(test)]
-    pub(crate) fn from_catalog(catalog: FactionCatalog) -> Self {
-        Self(std::sync::Arc::new(catalog))
-    }
-}
+/// Moved into the core with the standing rule that reads it; the ring loads it.
+pub use crate::net::Factions;
 
 /// The colour class `GetSelectionCircleColor` resolves, shared by the ground ring and the overhead
 /// name, which both read the selector (`vtable+0x2c`).
@@ -221,7 +207,7 @@ pub(super) fn load_factions(mut commands: Commands, world_assets: Option<Res<Wor
     match load_faction_catalog(&mut chain) {
         Ok(catalog) => {
             info!("faction catalog: {} template rows", catalog.len());
-            commands.insert_resource(Factions(std::sync::Arc::new(catalog)));
+            commands.insert_resource(Factions::new(catalog));
         }
         Err(e) => warn!("faction catalog unavailable, ring stays neutral: {e:#}"),
     }

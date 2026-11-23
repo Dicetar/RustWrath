@@ -22,7 +22,37 @@ pub(super) fn register(app: &mut App) {
         .net_handler(K::FishNotHooked, on_fish_verdict)
         .net_handler(K::FishEscaped, on_fish_verdict)
         .net_handler(K::ItemPushResult, on_item_push_result)
-        .net_handler(K::Disconnected, on_session_end);
+        .net_handler(K::Disconnected, on_session_end)
+        .net_handler_in(
+            K::ItemTemplate,
+            crate::net::HandlerSlot::ItemLootCallbacks,
+            on_item_answered,
+        );
+}
+
+/// An item record's answer, in the slot past its own callbacks: the window's callbacks it took, a
+/// row's (`0x4c2ac0`, whose refusal releases the row, this window's deviation) and a push's
+/// (`0x491ee0`), each queued at the stamp of its place among them.
+fn on_item_answered(
+    In(ev): In<SessionEvent>,
+    mut answers: ResMut<crate::net::LootAnswers>,
+    loot: Option<ResMut<LootState>>,
+    items: Res<crate::items::Items>,
+) {
+    let SessionEvent::ItemTemplate { entry, .. } = ev else {
+        return;
+    };
+    let taken = std::mem::take(&mut answers.0);
+    let Some(mut loot) = loot else {
+        return;
+    };
+    for (callback, at) in taken {
+        match callback {
+            crate::items::RecordCallback::LootRow => loot.row_answered(&items, at),
+            crate::items::RecordCallback::Push => loot.push_answered(&items, entry, at),
+            _ => {}
+        }
+    }
 }
 
 /// An admitted response for an object we hold selects a looted unit (`0x5ebc35` → `0x48f3a0`)
@@ -1723,7 +1753,10 @@ mod tests {
             .resource_mut::<crate::items::Items>()
             .insert_template(LINEN, Some(crate::items::test_template("Linen Cloth")));
         world.resource_scope(|world, mut loot: Mut<LootState>| {
-            loot.row_answered(world.resource::<crate::items::Items>())
+            loot.row_answered(
+                world.resource::<crate::items::Items>(),
+                crate::lanes::stamp(),
+            )
         });
         world
             .run_system_once_with(

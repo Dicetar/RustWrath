@@ -36,7 +36,9 @@ use crate::ui_session::{CoreCloses, LatchApp, LatchedWindow, NpcWindow};
 mod net;
 mod verbs;
 
-pub(crate) use net::{record_answered, HouseLane};
+#[cfg(test)]
+pub(crate) use net::record_answered;
+pub(crate) use net::HouseLane;
 pub(crate) use verbs::AuctionVerbs;
 
 #[cfg(test)]

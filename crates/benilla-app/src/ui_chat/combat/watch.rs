@@ -107,12 +107,8 @@ fn push_at(at: crate::lanes::Stamp, log: &ChatLog, line: PendingCombat) {
 /// as "destroyed", `0x62c320`'s byte table: totems, summoned objects, guardians.
 const DESTROYED_EFFECTS: [u32; 10] = [50, 74, 87, 88, 89, 90, 104, 105, 106, 107];
 
-/// Bit 3 of a unit's `+0xc58`: an XP award named it (`0x60a0e6`, from `0x637f1d`). Only the unit's
-/// constructor clears the word (`0x5fae7a`), so the mark lives as long as the unit does,
-/// released and brought back included. The death line stands down for a marked unit
-/// (`0x62c232`-`0x62c23e`): the XP line ("X dies, you gain N experience.") is its sentence.
-#[derive(Component, Clone, Copy, Debug, Default)]
-pub(crate) struct XpAwarded;
+/// The XP award's mark, in the core: the object manager keeps it across a release.
+pub(crate) use crate::net::XpAwarded;
 
 /// Each death line's place, by its health edge's stamp: where `PresentUnitDeath` (`0x6058ae` →
 /// `0x62c160`) comes in the death's legs, between `0x5e99b0`'s list and `PLAYER_DEAD`, which the

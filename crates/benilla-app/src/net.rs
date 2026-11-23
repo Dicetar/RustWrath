@@ -28,12 +28,18 @@ mod objects;
 #[cfg(test)]
 pub(crate) use objects::wire;
 pub(crate) use objects::Listed;
+pub(crate) use objects::LootAnswers;
 pub(crate) use objects::{release_unheld, ReleasePending};
+#[cfg(test)]
+mod order_dump_tests;
 mod reputations;
 mod session;
 mod world;
 
+pub(crate) use handlers::HandlerSlot;
+pub use reputations::Factions;
 pub(crate) use reputations::Reputations;
+pub(crate) use reputations::{SelfFacts, StandingLatches};
 
 pub(crate) use apply::apply_net_updates;
 pub(crate) use apply::enter_world_on_self_create;
@@ -109,6 +115,7 @@ impl Plugin for NetPlugin {
             .init_resource::<ServerTime>()
             .init_resource::<ServerWallClock>()
             .init_resource::<Reputations>()
+            .init_resource::<StandingLatches>()
             .init_resource::<HomeBind>()
             .init_resource::<PlayedTimeAnswer>()
             .init_resource::<Proficiencies>()
@@ -450,6 +457,39 @@ pub struct Embodied;
 /// are attached to but lost control of still follows the server.
 #[derive(Component)]
 pub(crate) struct ActiveMover;
+
+/// Bit 3 of a unit's `+0xc58`: an XP award named it (`0x60a0e6`, from `0x637f1d`). Only the unit's
+/// constructor clears the word (`0x5fae7a`), so the mark lives as long as the unit does,
+/// released and brought back included. The death line stands down for a marked unit
+/// (`0x62c232`-`0x62c23e`): the XP line ("X dies, you gain N experience.") is its sentence. The
+/// combat log sets it; the object manager keeps it across a release.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub(crate) struct XpAwarded;
+
+/// A deselect that applies only if the selection is this guid (`0x493910(guid, 1)`), raised by
+/// every loot close for a dead unit (`0x48f369`) and by the object manager's pet watcher, and
+/// drained by the target's `clear_target_requests`.
+#[derive(bevy::ecs::message::Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DeselectGuid(pub(crate) u64);
+
+/// The emote-audio catalog (also the chat sender's `/name` → text-id resolver), loaded by the
+/// sound layer (`crate::sound`), which holds its other readers; the display facing reads an
+/// emote's flags here.
+#[derive(Resource)]
+pub(crate) struct EmoteSounds(pub(crate) benilla_formats::EmoteSoundCatalog);
+
+impl EmoteSounds {
+    /// An `Emotes.dbc` id's raw `EmoteFlags`, read by the posture-eligibility gate (`0x47db40`).
+    pub(crate) fn emote_flags(&self, emote_id: u32) -> Option<u32> {
+        self.0.emote_flags(emote_id)
+    }
+}
+
+/// The `"npc"` unit: the latched object's world entity and guid, published by the interaction
+/// session (`crate::ui_session`), read by the portrait booth as it reads the selection for
+/// `"target"`, and by the display facing ([`drive_display_facing`], row 9).
+#[derive(Resource, Default, PartialEq, Eq, Debug)]
+pub struct InteractNpc(pub(crate) Option<Entity>, pub Option<u64>);
 
 // ── ECS state: resources ─────────────────────────────────────────────────────────────────────────
 

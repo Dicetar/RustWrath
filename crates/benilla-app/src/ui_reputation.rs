@@ -25,8 +25,12 @@ use bevy::prelude::*;
 
 use benilla_ui::script::{CallTail, FactionEntry, ReputationCall, ReputationState, UiScript};
 
-use crate::net::{ClientCommand, NetCommands, ObjectStore, Reputations, SelfPlayer};
-use crate::target::Factions;
+use benilla_protocol::SessionEvent;
+
+use crate::net::{
+    ClientCommand, Factions, GuidIndex, HandlerSlot, NetCommands, NetHandlerApp, ObjectStore,
+    Reputations, SelfFacts, SelfGuid, SelfPlayer, StandingLatches,
+};
 use crate::ui_chat::ChatLog;
 use crate::ui_script::UiFeed;
 
@@ -40,6 +44,7 @@ pub(crate) struct UiReputationPlugin;
 
 impl Plugin for UiReputationPlugin {
     fn build(&self, app: &mut App) {
+        register_net(app);
         app.add_systems(
             Update,
             // A seat: the world-enter cascade's rebuild signals over the list it pushes.
@@ -48,6 +53,114 @@ impl Plugin for UiReputationPlugin {
                 .in_set(crate::ui_unit::field_events::FieldEventPushes)
                 .in_set(crate::ui_unit::WorldEnterSeats),
         );
+    }
+}
+
+/// The reputation messages' halves the store's handlers leave to the pane, each in the slot the
+/// core reserved for it beside its own half.
+pub(crate) fn register_net(app: &mut App) {
+    use benilla_protocol::SessionEventKind as K;
+    app.net_handler_in(
+        K::ReputationDelta,
+        HandlerSlot::StandingLines,
+        on_standing_lines,
+    )
+    .net_handler_in(
+        K::ReputationDelta,
+        HandlerSlot::StandingFollowUps,
+        on_standing_follow_ups,
+    )
+    .net_handler_in(
+        K::ReputationVisible,
+        HandlerSlot::VisibleLine,
+        on_visible_line,
+    );
+}
+
+/// The local player's facts the lines read, `None` before the self object streams in.
+fn self_facts(index: &GuidIndex, me: &SelfGuid, stores: &Query<&ObjectStore>) -> Option<SelfFacts> {
+    let entity = *index.0.get(&me.0?)?;
+    SelfFacts::read(stores.get(entity).ok()?)
+}
+
+/// `SMSG_SET_FACTION_STANDING`'s chat lines, ahead of the store write they read the deltas
+/// against: the combat log's "increased by" line first, then the rank lines, as the reference's
+/// entry loop orders them (`0x4d57f5`, `0x4d5896`).
+fn on_standing_lines(
+    In(ev): In<SessionEvent>,
+    index: Res<GuidIndex>,
+    me: Res<SelfGuid>,
+    stores: Query<&ObjectStore>,
+    reputations: Res<Reputations>,
+    factions: Option<Res<Factions>>,
+    chat_log: Res<ChatLog>,
+) {
+    let SessionEvent::ReputationDelta { standings } = ev else {
+        return;
+    };
+    crate::combat_log::chat::faction_standing(
+        &standings,
+        &reputations,
+        factions.as_deref(),
+        &chat_log,
+    );
+    if let (Some(f), Some(me)) = (factions.as_deref(), self_facts(&index, &me, &stores)) {
+        let lines = delta_lines(&standings, &reputations, f.catalog(), me.race, me.class);
+        queue_standing_lines(lines, f.catalog(), me.female, &chat_log);
+    }
+}
+
+/// What a standing message drives past the store, after it: the questgiver re-ask (standing feeds
+/// `SatisfyQuestReputation`), the quest log's rebuild on a moved rank (`0x4d58ea`), and the
+/// reputation tutorial with the active player held at level 10 or more (`0x4d5963`-`0x4d597a`).
+#[allow(clippy::too_many_arguments)] // one handler's full input set
+fn on_standing_follow_ups(
+    In(ev): In<SessionEvent>,
+    latches: Res<StandingLatches>,
+    index: Res<GuidIndex>,
+    me: Res<SelfGuid>,
+    stores: Query<&ObjectStore>,
+    mut quest: ResMut<crate::ui_quest::QuestGiver>,
+    quest_log: Option<ResMut<crate::ui_quest_log::QuestLog>>,
+    tutorials: Option<Res<crate::tutorial::Tutorials>>,
+) {
+    let SessionEvent::ReputationDelta { .. } = ev else {
+        return;
+    };
+    quest.bump_reask();
+    if latches.rank_moved {
+        if let Some(mut quest_log) = quest_log {
+            quest_log.note_faction_rank_move();
+        }
+    }
+    let level =
+        me.0.and_then(|g| index.0.get(&g))
+            .and_then(|e| stores.get(*e).ok())
+            .and_then(|s| s.0.unit_level());
+    if level.is_some_and(|l| l as i32 >= 10) {
+        if let Some(tutorials) = tutorials.as_deref() {
+            tutorials.trigger_now(crate::tutorial::id::REPUTATION);
+        }
+    }
+}
+
+/// `SMSG_SET_FACTION_VISIBLE`'s chat line, which names the rank, so it reads the store before the
+/// flag lands.
+fn on_visible_line(
+    In(ev): In<SessionEvent>,
+    index: Res<GuidIndex>,
+    me: Res<SelfGuid>,
+    stores: Query<&ObjectStore>,
+    reputations: Res<Reputations>,
+    factions: Option<Res<Factions>>,
+    chat: Res<ChatLog>,
+) {
+    let SessionEvent::ReputationVisible { list_id } = ev else {
+        return;
+    };
+    if let (Some(f), Some(me)) = (factions.as_deref(), self_facts(&index, &me, &stores)) {
+        let line = visible_line(list_id, &reputations, f.catalog(), me.race, me.class);
+        queue_standing_lines(line, f.catalog(), me.female, &chat);
     }
 }
 
@@ -225,23 +338,6 @@ pub(crate) fn delta_lines(
         }
     }
     lines
-}
-
-/// `GetFactionStandingReaction 0x4d63a0` of the faction slot `slot` holds (`0x4d5620`): its base for
-/// `race`/`class` plus the slot's wire standing, ranked; a slot no faction holds stands at 0, so
-/// Neutral (`0x4d6390`).
-pub(crate) fn slot_rank(
-    catalog: &benilla_formats::FactionCatalog,
-    store: &Reputations,
-    race: u8,
-    class: u8,
-    slot: usize,
-) -> u8 {
-    let standing = catalog
-        .reputation_factions()
-        .find(|(_, f)| usize::try_from(f.rep_index) == Ok(slot))
-        .map_or(0, |(_, f)| f.base_for(race, class) + store.standing(slot));
-    benilla_formats::reputation_rank(standing)
 }
 
 /// Park the lines in the chat log, after whatever the same packet already queued. The faction's

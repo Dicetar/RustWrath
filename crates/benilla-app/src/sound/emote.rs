@@ -5,7 +5,6 @@
 
 use bevy::prelude::*;
 
-use benilla_formats::EmoteSoundCatalog;
 use benilla_protocol::messages::ObjectType;
 
 use crate::entities::{AttachPoints, Creatures};
@@ -20,9 +19,8 @@ use super::kit::{
 };
 use super::{AudioListener, SoundConfig, SoundOutput};
 
-/// The emote-audio catalog (also the chat sender's `/name` → text-id resolver).
-#[derive(Resource)]
-pub(crate) struct EmoteSounds(pub(crate) EmoteSoundCatalog);
+/// The emote catalog, in the core: the display facing reads an emote's flags.
+pub(crate) use crate::net::EmoteSounds;
 
 impl EmoteSounds {
     /// Resolve a `/command` name (case-insensitive) to its EmotesText id.
@@ -48,11 +46,6 @@ impl EmoteSounds {
     /// The `Emotes.dbc` id in one of the five hard-coded gesture slots.
     pub(crate) fn gesture(&self, slot: usize) -> Option<u32> {
         self.0.gesture(slot)
-    }
-
-    /// An `Emotes.dbc` id's raw `EmoteFlags`, read by the posture-eligibility gate (`0x47db40`).
-    pub(crate) fn emote_flags(&self, emote_id: u32) -> Option<u32> {
-        self.0.emote_flags(emote_id)
     }
 
     /// The stand state a posture emote (`EmoteSpecProc == 1`) sets, as in `DoEmote`'s state

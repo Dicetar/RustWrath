@@ -41,7 +41,35 @@ pub(super) fn register(app: &mut App) {
         .net_handler(K::RaidInstanceInfo, on_raid_instance_info)
         .net_handler(K::PlayerName, on_player_name)
         .net_handler(K::Disconnected, on_session_end)
+        .net_handler_in(
+            K::Worldport,
+            crate::net::HandlerSlot::WorldportRoster,
+            on_worldport_roster,
+        )
         .add_message::<DeselectGuid>();
+}
+
+/// A worldport's roster hook, in the slot ahead of the teardown: every streamed roster member is
+/// about to be freed, and each one's destructor runs it (`0x5dd6a0` → `0x4e85d0` mode 0). The
+/// records it snapshots are logged for the views a listener reads.
+fn on_worldport_roster(
+    In(ev): In<SessionEvent>,
+    mut group: ResMut<GroupState>,
+    index: Res<GuidIndex>,
+    stores: Query<&mut ObjectStore>,
+    names: Res<NameCache>,
+    script: Option<NonSend<UiScript>>,
+    net: Res<NetCommands>,
+    view_log: Option<ResMut<crate::ui_unit::views::ViewLog>>,
+) {
+    let SessionEvent::Worldport { .. } = ev else {
+        return;
+    };
+    let before = view_log.as_ref().map(|_| group.stats.clone());
+    roster_deactivated(&mut group, &index, &stores, &names, script.as_deref(), &net);
+    if let (Some(mut log), Some(before)) = (view_log, before) {
+        log.records(&before, &group.stats);
+    }
 }
 
 /// The popup's signal; the feed shows its line after the event ([`GroupState::apply_invited`]).

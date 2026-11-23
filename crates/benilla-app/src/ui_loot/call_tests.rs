@@ -881,7 +881,7 @@ fn a_replaced_sessions_close_keeps_the_next_copiers_end() {
         .resource_mut::<Items>()
         .insert_template(UNCACHED, Some(crate::items::test_template("Silk Cloth")));
     world.resource_scope(|world, mut loot: Mut<LootState>| {
-        loot.row_answered(world.resource::<Items>())
+        loot.row_answered(world.resource::<Items>(), crate::lanes::stamp())
     });
     feed(&mut l);
     assert_eq!(seen(&mut l), "LOOT_OPENED");
@@ -910,7 +910,7 @@ fn a_row_answered_after_the_response_is_named_at_loot_opened() {
         .resource_mut::<Items>()
         .insert_template(UNCACHED, Some(crate::items::test_template("Ruined Pelt")));
     world.resource_scope(|world, mut loot: Mut<LootState>| {
-        loot.row_answered(world.resource::<Items>())
+        loot.row_answered(world.resource::<Items>(), crate::lanes::stamp())
     });
     feed(&mut l);
     assert_eq!(seen(&mut l), "LOOT_OPENED");

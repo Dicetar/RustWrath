@@ -6,7 +6,7 @@
 use benilla_protocol::SessionEvent;
 use bevy::prelude::*;
 
-use super::{on_reputation_delta, on_reputations};
+use super::on_reputations;
 use crate::field_watch::{FieldNotice, NoticeLane};
 use crate::net::{ObjectStore, Reputations, SelfGuid, SelfPlayer};
 use benilla_protocol::ObjectFields;
@@ -40,7 +40,6 @@ fn app() -> Option<(App, u32)> {
         .init_resource::<crate::net::NetStatus>()
         .init_resource::<crate::names::NameCache>()
         .init_resource::<crate::items::Items>()
-        .init_resource::<crate::spell::Cooldowns>()
         .init_resource::<Reputations>()
         .init_resource::<crate::net::ServerTime>()
         .init_resource::<crate::net::ServerWallClock>()
@@ -49,9 +48,10 @@ fn app() -> Option<(App, u32)> {
         .init_resource::<crate::net::DroppedOpcodes>()
         .init_resource::<crate::ui_quest::QuestGiver>()
         .init_resource::<crate::ui_chat::ChatLog>()
-        .insert_resource(crate::target::Factions::from_catalog(catalog))
+        .insert_resource(crate::net::Factions::from_catalog(catalog))
         .insert_resource(crate::net::NetCommands(crossbeam_channel::unbounded().0))
         .insert_non_send_resource(script);
+    handlers(&mut app);
     let me = app
         .world_mut()
         .spawn((
@@ -66,22 +66,28 @@ fn app() -> Option<(App, u32)> {
     Some((app, slot))
 }
 
-/// Run one packet's handler as the bridge runs it, in wire order; nothing drains the chat log.
+/// The session's handlers and the pane's halves in the slots beside them, as the client registers
+/// them.
+fn handlers(app: &mut App) {
+    super::register(app);
+    crate::ui_reputation::register_net(app);
+    app.init_resource::<crate::net::StandingLatches>();
+}
+
+/// Run one packet's handlers as the bridge runs them, in wire order; nothing drains the chat log.
 fn send(app: &mut App, ev: SessionEvent) {
-    // The handler `register` binds to the event's kind.
-    match ev {
-        SessionEvent::ReputationVisible { .. } | SessionEvent::ReputationAtWar { .. } => {
-            app.world_mut()
-                .run_system_cached_with(on_reputations, ev)
-                .unwrap();
-        }
-        SessionEvent::ReputationDelta { .. } => {
-            app.world_mut()
-                .run_system_cached_with(on_reputation_delta, ev)
-                .unwrap();
-        }
-        _ => panic!("not a reputation event"),
-    }
+    assert!(
+        matches!(
+            ev,
+            SessionEvent::ReputationVisible { .. }
+                | SessionEvent::ReputationAtWar { .. }
+                | SessionEvent::ReputationDelta { .. }
+                | SessionEvent::ForcedReactions { .. }
+                | SessionEvent::Reputations { .. }
+        ),
+        "not a reputation event"
+    );
+    crate::net::handlers::dispatch(app.world_mut(), vec![ev]);
 }
 
 fn chat(app: &App) -> &crate::ui_chat::ChatLog {
@@ -209,7 +215,6 @@ fn synthetic_app() -> App {
         .init_resource::<crate::net::NetStatus>()
         .init_resource::<crate::names::NameCache>()
         .init_resource::<crate::items::Items>()
-        .init_resource::<crate::spell::Cooldowns>()
         .init_resource::<Reputations>()
         .init_resource::<crate::net::ServerTime>()
         .init_resource::<crate::net::ServerWallClock>()
@@ -218,9 +223,10 @@ fn synthetic_app() -> App {
         .init_resource::<crate::net::DroppedOpcodes>()
         .init_resource::<crate::ui_quest::QuestGiver>()
         .init_resource::<crate::ui_chat::ChatLog>()
-        .insert_resource(crate::target::Factions::from_catalog(catalog))
+        .insert_resource(crate::net::Factions::from_catalog(catalog))
         .insert_resource(crate::net::NetCommands(crossbeam_channel::unbounded().0))
         .init_resource::<NoticeLane>();
+    handlers(&mut app);
     // A player (`OBJECT_FIELD_TYPE` 0x19) whose `UNIT_FIELD_SUMMON` (8-9) is [`PET`].
     let me = app
         .world_mut()
@@ -595,7 +601,6 @@ fn a_standing_change_at_level_ten_triggers_the_reputation_tutorial() {
             .init_resource::<crate::net::NetStatus>()
             .init_resource::<crate::names::NameCache>()
             .init_resource::<crate::items::Items>()
-            .init_resource::<crate::spell::Cooldowns>()
             .init_resource::<Reputations>()
             .init_resource::<crate::net::ServerTime>()
             .init_resource::<crate::net::ServerWallClock>()
@@ -606,6 +611,7 @@ fn a_standing_change_at_level_ten_triggers_the_reputation_tutorial() {
             .init_resource::<crate::ui_chat::ChatLog>()
             .init_resource::<crate::tutorial::Tutorials>()
             .insert_resource(crate::net::NetCommands(crossbeam_channel::unbounded().0));
+        handlers(&mut app);
         app.world()
             .resource::<crate::tutorial::Tutorials>()
             .lock()
@@ -625,14 +631,12 @@ fn a_standing_change_at_level_ten_triggers_the_reputation_tutorial() {
             .resource_mut::<crate::net::GuidIndex>()
             .0
             .insert(ME, me);
-        app.world_mut()
-            .run_system_cached_with(
-                on_reputation_delta,
-                SessionEvent::ReputationDelta {
-                    standings: vec![(0, 100)],
-                },
-            )
-            .unwrap();
+        send(
+            &mut app,
+            SessionEvent::ReputationDelta {
+                standings: vec![(0, 100)],
+            },
+        );
         assert_eq!(
             app.world()
                 .resource::<crate::tutorial::Tutorials>()
