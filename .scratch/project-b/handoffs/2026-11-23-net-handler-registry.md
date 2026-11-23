@@ -1,10 +1,10 @@
 # net names no feature: the handler registry inverted
 
-Status: in progress; bounded feature-handler extraction implemented, local verification complete; final CI pending
+Status: in progress; bounded feature-handler extraction implemented, CI packaging fix pending
 Owner: Codex / GPT-5
 Branch: refactor/net-handler-registry
 Issue: none
-Next: commit the bounded extraction, push once, and read its single CI run
+Next: add the test-only order dumper source, push the CI fix, and read the corrective run
 
 Step 3 of the build-speed plan (`2026-11-22-split-benilla-app.md`): make the core's `net` module
 stop naming feature modules, so features can leave `crates/benilla-app` for crates that compile in
@@ -171,6 +171,7 @@ and access guard need a separate bounded design. No client, game, or server vali
   `--jobs-frontend=8` run took 1.22s because it reused the single-thread artifacts. These are not
   a cold parallelism comparison; the 1.22s result is incremental no-op latency.
 
-No code commit or CI run has been made for this final WIP yet. The branch is ready for one final
-local diff inspection, commit, push, and CI verification. The restored `record_answered` re-export
-is test-only to avoid a normal-build unused-import warning.
+The production commit is `02a813000`. Its first CI run was `45212711399` and failed before testing
+because the test-only `order_dump_tests` source was left uncommitted while `net.rs` referenced it;
+`fmt` and Windows `check` both reported the missing module. The restored `record_answered` re-export
+is test-only to avoid a normal-build unused-import warning. The corrective source commit is pending.
