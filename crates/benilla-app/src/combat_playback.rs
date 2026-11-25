@@ -432,7 +432,7 @@ fn advance_playback(
     state.attack_haste = mode
         .as_deref()
         .filter(|mode| mode.effective == CombatMode::Experimental)
-        .and_then(|_| world.as_deref())
+        .and(world.as_deref())
         .and_then(|world| world.self_observation.as_ref())
         .map(|observation| observation.resources)
         .filter(|resources| resources.power_type == Some(1))

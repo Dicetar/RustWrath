@@ -41,3 +41,12 @@ Next: rebuild the client; shield Int still has no spell-block path (see "Blocked
   tuning pass, not a code constant.
 - Adaptation feedback: the client still ignores `ADAPT`; showing it needs a HUD text element and
   a font handle the HUD does not load today.
+
+## Consolidation CI (2026-11-25)
+
+The consolidation push (`27a67ee3f`) merged the ER work with the net-handler registry and native
+bags. Run `45588533286` was green through fmt, clippy, test-build, test, doc links, catalog and
+live-code-check, then failed `player-clippy` on one lint:
+`unnecessary_lazy_evaluations` at `combat_playback.rs:435` (`.and_then(|_| world.as_deref())`).
+Fixed with `.and(world.as_deref())`; `cargo clippy -p benilla-app --lib --no-deps -- -D warnings`
+passes locally.
