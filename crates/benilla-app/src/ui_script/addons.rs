@@ -2241,8 +2241,7 @@ mod tests {
         let _ = benilla_formats::wow_data_or_skip!();
         // The donor secure list and its `.toc.sig` files are a 1.12 fixture; the 3.3.5a chain
         // carries its own signed set.
-        if !benilla_formats::wow_data()
-            .is_some_and(|data| benilla_formats::is_donor_install(&data))
+        if !benilla_formats::wow_data().is_some_and(|data| benilla_formats::is_donor_install(&data))
         {
             return;
         }
