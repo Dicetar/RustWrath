@@ -424,6 +424,24 @@ fn install_font_block(lua: &Lua, m: &Table) -> mlua::Result<()> {
             })?,
         )?;
     }
+    // SetCursorPosition(position): a 3.3.5a EditBox method addons use to place the caret after
+    // filling the box. The caret is host-driven here, so the position is accepted and the
+    // current caret stands.
+    if lua
+        .app_data_ref::<crate::script::Model>()
+        .expect("model")
+        .target
+        == crate::script::UiTarget::Wrath335
+    {
+        m.set(
+            "SetCursorPosition",
+            lua.create_function(|lua, (this, position): (Table, Value)| {
+                let _ = with_editbox(lua, &this, |_eb| ())?;
+                let _ = position;
+                Ok(())
+            })?,
+        )?;
+    }
     Ok(())
 }
 

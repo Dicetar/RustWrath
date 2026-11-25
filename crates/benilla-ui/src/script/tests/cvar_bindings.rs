@@ -4,7 +4,7 @@
 use crate::script::UiScript;
 
 #[test]
-fn wrath_glue_rejects_unknown_cvars_instead_of_inventing_defaults() {
+fn wrath_answers_nil_for_unknown_cvar_values_but_limits_still_raise() {
     let s = UiScript::glue_with_target(crate::script::UiTarget::Wrath335).unwrap();
     s.register_cvars([("Sound_NumChannels", "32")]);
     assert_eq!(
@@ -12,7 +12,16 @@ fn wrath_glue_rejects_unknown_cvars_instead_of_inventing_defaults() {
             .unwrap(),
         "32"
     );
-    for call in ["GetCVar", "GetCVarDefault", "GetCVarMin", "GetCVarMax"] {
+    // The value getters answer nil for a name the host has not seated yet; a private-server
+    // addon's options row must not die on it. The donor still raises.
+    for call in ["GetCVar", "GetCVarDefault"] {
+        assert!(s
+            .eval::<Option<String>>(&format!("return {call}('missing-setting')"))
+            .unwrap()
+            .is_none());
+    }
+    // The glue-only limits still reject, so a dropdown cannot invent a range.
+    for call in ["GetCVarMin", "GetCVarMax"] {
         assert!(s
             .run(&format!("{call}('missing-setting')"))
             .unwrap_err()

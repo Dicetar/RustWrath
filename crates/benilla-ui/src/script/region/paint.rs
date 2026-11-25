@@ -142,6 +142,21 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
         )?;
     }
 
+    // 3.3.5a Texture tiling (SetHorizTile/SetVertTile): the quad renderer stretches rather than
+    // tiles today, so these accept the flag and store nothing; the names keep the addons that
+    // call them from dying. A tiling pass can read the flag when it exists.
+    if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
+        for name in ["SetHorizTile", "SetVertTile"] {
+            m.set(
+                name,
+                lua.create_function(|lua, (this, flag): (Table, Value)| {
+                    let _ = region_handle_of(lua, &this)?;
+                    let _on = crate::script::binding_abi::bool_or_default(Some(&flag), true);
+                    Ok(())
+                })?,
+            )?;
+        }
+    }
     m.set(
         "SetTexture",
         // The path form reads one argument (`0x770200`), the colour form (`0x770360`) up to four,

@@ -21,5 +21,8 @@ SpellBookAdapters.xml
 ScriptLogFrame.xml
 # Our fixes to the stock Lua.
 FrameXMLFixes.xml
+# The retail BackdropTemplate name over the stock frame's 3.3.5a backdrop methods.
+BackdropCompat.xml
+BackdropCompat.lua
 # RustWrath's Enchant Bottle panel, opened by the bottle item and `/bottle`.
 EnchantBottle.xml

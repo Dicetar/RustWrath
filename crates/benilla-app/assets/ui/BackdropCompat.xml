@@ -1,0 +1,5 @@
+<!-- The 9.x BackdropTemplate name backport: 3.3.5a frames already carry SetBackdrop and its
+     colour setters, so the template only has to exist for CreateFrame(..., "BackdropTemplate"). -->
+<Ui>
+    <Frame name="BackdropTemplate" virtual="true"/>
+</Ui>

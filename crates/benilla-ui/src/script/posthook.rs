@@ -53,6 +53,12 @@ fn register(lua: &Lua, args: MultiValue) -> mlua::Result<()> {
             };
             (table.clone(), name.clone(), hook.clone())
         }
+        // 4.x+ callers pass the function value itself. The 3.3.5a binding has no name to
+        // replace, so the registration is accepted and the hook cannot be wired; the addon's
+        // call site does not raise.
+        Some(Value::Function(_)) if matches!(args.get(1), Some(Value::Function(_))) => {
+            return Ok(());
+        }
         _ => return Err(invalid()),
     };
     let original: Value = table.get(name.clone())?;

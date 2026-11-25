@@ -1145,6 +1145,7 @@ fn seat_a_session(script: &mut UiScript) {
     if script.target() == benilla_ui::script::UiTarget::Wrath335 {
         script.register_cvars(crate::ui_script::WRATH_UI_CVARS.iter().copied());
         seat_wrath_class_catalog(script);
+        crate::ui_auction::seat_harness_categories(script);
     }
     // A display: `GetScreenResolutions()` empty and `GetCurrentResolution()` 0 is no state the 1.12
     // client can be in (`CT_Viewport` indexes its screen size by it at load). One mode, the

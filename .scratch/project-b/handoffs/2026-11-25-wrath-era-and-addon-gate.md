@@ -94,3 +94,38 @@ methods `Texture:SetHorizTile/SetVertTile`, `FontString:SetWordWrap`, `ColorSele
 and `EditBox:SetCursorPosition`; `GetAuctionItemClasses` needs the app's twelve-class push in the
 harness (the production client installs it); Questie's HBD `GetCurrentPlayerPosition`; Bagnon's
 `GetDummyBag` (its format line reads `select(12, GetAuctionItemClasses())`, empty in the harness).
+
+## Corpus pass 2: session survival
+
+The first pass's 37 CVar deaths and one inventory-slot death are closed. The survey now reports:
+
+- loaded without a load error: **39/49** (strict 37: two packages name files they do not ship)
+- survived a session start: **34/49** (was 0/49)
+- drew something: 7/49; survived being used: 4/49; UI probe: 0/49 (the probe's bounds, not a
+  load result)
+
+Closed this pass:
+
+- `GetCritChance` (melee crit from `PLAYER_CRIT_PERCENTAGE`), `GetExpertise` (main/offhand),
+  `GetExpertisePercent`, `GetShieldBlock` and `GetDodgeBlockParryChanceFromDefense` — the stock
+  `PaperDollFrame.lua:1026` stat pane calls them on every session start;
+- `GetCVar`/`GetCVarDefault` answer nil for an unregistered name on a Wrath VM (the donor and the
+  glue-only `GetCVarMin`/`GetCVarMax` keep the reference's raise), so an addon's options row
+  cannot die on a setting the host has not seated;
+- the missing stock CVars `fctComboPoints`, `fctCombatState`, `fctEnergyGains`,
+  `UnitNameEnemyGuardianName`, `UnitNameEnemyTotemName`, `nameplateAllowOverlap`;
+- the Wrath inventory-slot reader's `lua_tonumber` coercion for `GetInventoryItemLink` and
+  `GetInventoryItemCount` (Bagnon's `false` keyring slot);
+- `GetQuestLink` (nil until the quest-log link projection exists) and the 4.x
+  `hooksecurefunc(function, hook)` form (accepted; the 3.3.5a binding cannot replace a value);
+- the harness seats the app's twelve `GetAuctionItemClasses` rows, unblocking Bagnon's
+  `select(12, ...)` and its `GetDummyBag` definitions;
+- the Wrath layer adds `BackdropTemplate` + `BackdropTemplateMixin`, and the Wrath VM answers
+  `Texture:SetHorizTile/SetVertTile`, `FontString:SetWordWrap`, `ColorSelect:GetColorAlpha` and
+  `EditBox:SetCursorPosition` (tiling/wrap are accepted, not yet rendered).
+
+Remaining, all single-addon or out-of-era: the 10 load failures (3 `table index is nil`, 2
+`setmetatable`, 2 `format`, one missing template, one `GetAddOnMetadata`, one `core` nil) and
+five session-start first errors (invalid frame handle, one `hooksecurefunc` shape, one nil call,
+Ace `EmbedPlugin`, one `format`). The real `reference/lua_globals_30300.tsv` still needs the
+stock client's capture addon run.

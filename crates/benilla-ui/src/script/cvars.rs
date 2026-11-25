@@ -4,8 +4,11 @@
 //! The host registers the vars it backs and drains Lua's writes from a change queue; its own
 //! writes do not queue. The table dies with the VM, where the reference's outlives every
 //! `ReloadUI`, so the host seeds each new VM with the saved values before anything registers.
-//! `GetCVar`, `SetCVar` and `GetCVarDefault` raise `Couldn't find CVar named '%s'` on an unknown
-//! name (`0x842310`, at `0x488be7`, `0x488c53` and `0x488d37`); the host-side writes and the
+//! The donor's `GetCVar`, `SetCVar` and `GetCVarDefault` raise `Couldn't find CVar named '%s'`
+//! on an unknown name (`0x842310`, at `0x488be7`, `0x488c53` and `0x488d37`). A 3.3.5a VM
+//! answers nil from the two value getters instead: a private-server host registers the stock
+//! table over time, and an addon's options row must not die on a setting it has not seated. The
+//! glue-only `GetCVarMin`/`GetCVarMax` keep the reference's raise; the host-side writes and the
 //! other by-name bindings warn once and ignore it.
 
 use mlua::{Lua, Value};
@@ -617,8 +620,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             match model.cvars.get(&name.to_ascii_lowercase()) {
                 Some(slot) => Ok(Value::String(lua.create_string(&slot.value)?)),
-                // Wrath 12340 0x004DDD10 also rejects unregistered names. Missing stock
-                // settings belong in the host registry, with their actual defaults.
+                // 12340 rejects unregistered names too, but a private-server host registers the
+                // stock table over time; a 3.3.5a VM answers nil meanwhile so an addon's options
+                // row cannot die on a setting the client simply has not seated yet. The donor
+                // keeps the reference's raise.
+                None if model.target == super::UiTarget::Wrath335 => Ok(Value::Nil),
                 None => Err(unknown_cvar(&name)),
             }
         })?,
@@ -634,6 +640,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             match model.cvars.get(&name.to_ascii_lowercase()) {
                 Some(slot) => Ok(Value::String(lua.create_string(&slot.default)?)),
+                None if model.target == super::UiTarget::Wrath335 => Ok(Value::Nil),
                 None => Err(unknown_cvar(&name)),
             }
         })?,

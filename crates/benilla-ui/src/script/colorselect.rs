@@ -226,6 +226,19 @@ fn install_slot_texture(
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let m = lua.create_table()?;
 
+    // GetColorAlpha: 3.3.5a ColorSelect has no alpha channel in this client; a colour is fully
+    // opaque. Addons use the getter when copying a picker's colour.
+    if lua
+        .app_data_ref::<crate::script::Model>()
+        .expect("model")
+        .target
+        == crate::script::UiTarget::Wrath335
+    {
+        m.set(
+            "GetColorAlpha",
+            lua.create_function(|_, _this: Table| Ok(1.0f64))?,
+        )?;
+    }
     m.set(
         "SetColorRGB",
         // Shape C on r, g, b (`ColorSelect:SetColorRGB 0x78eae0`, `2=C 3=C 4=C 5=B`).

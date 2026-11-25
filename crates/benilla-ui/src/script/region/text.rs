@@ -44,6 +44,18 @@ fn store_text(lua: &Lua, rh: crate::widget::RegionHandle, text: Option<String>) 
 
 /// Install the FontString methods into `m`.
 pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
+    // SetWordWrap(flag): the text layout wraps by design, so the flag is accepted and the
+    // string keeps its current layout.
+    if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
+        m.set(
+            "SetWordWrap",
+            lua.create_function(|lua, (this, flag): (Table, Value)| {
+                let _ = region_handle_of(lua, &this)?;
+                let _on = crate::script::binding_abi::bool_or_default(Some(&flag), true);
+                Ok(())
+            })?,
+        )?;
+    }
     m.set(
         "SetText",
         lua.create_function(|lua, (this, text): (Table, Option<mlua::Value>)| {

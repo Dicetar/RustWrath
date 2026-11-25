@@ -94,6 +94,30 @@ fn auction_classes(target: benilla_ui::script::UiTarget) -> &'static [(u32, bool
     }
 }
 
+/// Seat the twelve 3.3.5a auction classes on a harness VM. The production client's auction
+/// plugin pushes them at login; the corpus survey has no app plugin, and Bagnon's
+/// `select(12, GetAuctionItemClasses())` reads the Quest row at file scope.
+pub(crate) fn seat_harness_categories(script: &mut benilla_ui::script::UiScript) {
+    let Some(data) = benilla_formats::wow_data() else {
+        return;
+    };
+    let Ok(mut chain) = benilla_formats::open_chain(&data) else {
+        return;
+    };
+    let Ok(classes) = benilla_formats::load_item_classes(&mut chain) else {
+        return;
+    };
+    let Ok(subclasses) = benilla_formats::load_item_sub_classes(&mut chain) else {
+        return;
+    };
+    let tree = categories(
+        script.target(),
+        Some(&crate::ui_items::ItemClasses(classes)),
+        Some(&crate::ui_items::ItemSubClasses(subclasses)),
+    );
+    script.set_auction_item_classes(tree);
+}
+
 /// `ItemSubClass.dbc` `Flags` bit `0x200`: the subclass offers the inventory-slot rows beneath it
 /// (`GetAuctionInvTypes`, `0x4cfb63`). Set on Armor 0 to 4 only, not Shield, Libram, Idol or Totem.
 const SUBCLASS_OFFERS_INV_TYPES: u32 = 0x200;

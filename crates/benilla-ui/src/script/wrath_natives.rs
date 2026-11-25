@@ -942,6 +942,31 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(combat_rating_pct(&model, 24).min(100.0))
         })?,
     )?;
+    // `GetQuestLink(questID)`: 3.3.5a's quest hyperlink. The quest log projection does not
+    // carry a built link yet, so the binding answers nil (an addon's link check sees "no link"
+    // instead of a nil global).
+    lua.globals().set(
+        "GetQuestLink",
+        lua.create_function(|_, _id: Value| Ok(Value::Nil))?,
+    )?;
+    // `GetExpertise()`/`GetExpertisePercent()`: the main/offhand expertise pair the stock
+    // paper doll reads (`PaperDollFrame.lua:1026`); the client has the rating tables, not a
+    // projected expertise value, so both answer 0.
+    lua.globals().set(
+        "GetExpertise",
+        lua.create_function(|_, ()| Ok((0.0f64, 0.0f64)))?,
+    )?;
+    lua.globals().set(
+        "GetExpertisePercent",
+        lua.create_function(|_, ()| Ok(0.0f64))?,
+    )?;
+    // The defense/skill block readouts the same paper doll updates; no value is projected.
+    lua.globals()
+        .set("GetShieldBlock", lua.create_function(|_, ()| Ok(0.0f64))?)?;
+    lua.globals().set(
+        "GetDodgeBlockParryChanceFromDefense",
+        lua.create_function(|_, ()| Ok(0.0f64))?,
+    )?;
     // `GetSpellPenetration()` (`ScriptEvents_Scripts.cpp`): minus
     // `PLAYER_FIELD_MOD_TARGET_RESISTANCE`, 0 with no active player.
     lua.globals().set(
@@ -1545,6 +1570,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "GetAttackPowerForStat",
         lua.create_function(|_, _: mlua::MultiValue| Ok((0i64, 0i64, 0i64)))?,
     )?;
+    // `GetCritChance()`: the player's melee crit percentage, the same `PLAYER_CRIT_PERCENTAGE`
+    // field `GetCritChanceFromAgility("player")` reads. Addons call it from their
+    // `PLAYER_LOGIN` handlers, and the survey's 37 session-start failures were this global.
+    lua.globals().set(
+        "GetCritChance",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(f64::from(model.player_crit_percentage))
+        })?,
+    )?;
+
     // `GetCritChanceFromAgility("unit")` (`ScriptEvents_Scripts.cpp` 0x0060E130): non-string raises
     // `Usage: GetCritChanceFromAgility("unit")`; active player or pet -> `unit->GetMeleeChanceToCrit()`,
     // else 0. Project B only has the player's `PLAYER_CRIT_PERCENTAGE` scalar, so "player" returns it
