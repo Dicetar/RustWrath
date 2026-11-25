@@ -1,9 +1,10 @@
 # ER combat: guard, stamina and the poise bar
 
-Status: ready for a build and a server script reload
+Status: merged to main; CI green (`45593462128`)
 Owner: DeepSeek V4.1 Flash (opencode-go)
-Branch: main (uncommitted integration tree)
-Next: rebuild the client; shield Int still has no spell-block path (see "Blocked")
+Branch: main (`27a67ee3f`, fix `4d8227f89`)
+Next: rebuild the client (the checked-in binary predates the poise bar and the stamina guard);
+shield Int still has no spell-block path (see "Blocked")
 
 ## What changed
 
@@ -50,3 +51,6 @@ live-code-check, then failed `player-clippy` on one lint:
 `unnecessary_lazy_evaluations` at `combat_playback.rs:435` (`.and_then(|_| world.as_deref())`).
 Fixed with `.and(world.as_deref())`; `cargo clippy -p benilla-app --lib --no-deps -- -D warnings`
 passes locally.
+
+The final run `45593462128` passed both the gates and windows jobs, so the ER combat, net-handler
+registry, API-wall classifier and native bags all landed together on main.
