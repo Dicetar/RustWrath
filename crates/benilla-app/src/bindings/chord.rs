@@ -139,6 +139,25 @@ pub(crate) fn walk_name(k: KeyCode, layout: &LayoutNames) -> Option<String> {
     )
 }
 
+/// The 12340 walk's `arg1` for the same key: a modifier goes by its side-specific name, the
+/// six `KeyCodeToString` returns (`0x4F5FB0`: `LSHIFT`, `RSHIFT`, `LCTRL`, `RCTRL`, `LALT`,
+/// `RALT`), because 12340 signals `MODIFIER_STATE_CHANGED` with that name and never walks the
+/// modifier. Every other key keeps 1.12's name.
+pub(crate) fn wrath_walk_name(k: KeyCode, layout: &LayoutNames) -> Option<String> {
+    Some(
+        match k {
+            KeyCode::ShiftLeft => "LSHIFT",
+            KeyCode::ShiftRight => "RSHIFT",
+            KeyCode::ControlLeft => "LCTRL",
+            KeyCode::ControlRight => "RCTRL",
+            KeyCode::AltLeft => "LALT",
+            KeyCode::AltRight => "RALT",
+            _ => return walk_name(k, layout),
+        }
+        .to_string(),
+    )
+}
+
 /// The fixed half of `0x42d800` and the Mac table: every key no layout names
 /// ([`super::layout::position`]).
 fn fixed_name(k: KeyCode) -> Option<KeyName> {

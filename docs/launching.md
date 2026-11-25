@@ -65,6 +65,8 @@ use the supplied data root directly. The `wm-hd` manifest still defines archive 
 Logs are under `benilla-config/Logs/Launcher`; only three launch generations are retained.
 The local world endpoint defaults to `127.0.0.1:8095`; pass `-WorldServer ''` to use the
 address advertised by the selected realm instead.
+Default launches load benilla's layer: the Wrath-only server windows (the Enchant Bottle) and
+the glue realmlist control. `-StockUi` boots the stock interface alone, as a diagnostic.
 No unattended probe, automatic character pick, combat action or timeout is enabled.
 
 The intended stock workflow is login, optional realm choice, roster selection and world entry,

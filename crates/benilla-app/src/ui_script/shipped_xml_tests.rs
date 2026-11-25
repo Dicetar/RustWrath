@@ -46,6 +46,53 @@ fn the_whole_shipped_manifest_loads_without_errors() {
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 
+/// The Wrath layer (`WRATH_LAYER`) is loaded only on the 3.3.5a target, which the test above does
+/// not build; without this one a Wrath-only window's script can fail to load unnoticed. The
+/// window must define its toggle and open on it.
+#[test]
+fn the_wrath_layer_loads_without_errors() {
+    benilla_formats::wow_data_or_skip!();
+    let mut s =
+        benilla_ui::script::UiScript::with_target(benilla_ui::script::UiTarget::Wrath335).unwrap();
+    s.keep_calls();
+    s.set_screen_size(1024.0, 768.0);
+    s.set_unit(
+        "player",
+        Some(benilla_ui::script::UnitState {
+            exists: true,
+            name: Some("Probefour".into()),
+            level: 80,
+            ..Default::default()
+        }),
+    );
+    let failures = super::load_default_ui(&s);
+    // The Wrath core loads with pre-existing stock-FrameXML errors in a bare harness (unseeded
+    // CVars, absent localized lists); only this layer's own file is the subject here.
+    let ours: Vec<&String> = failures
+        .iter()
+        .filter(|f| f.contains("EnchantBottle"))
+        .collect();
+    assert!(ours.is_empty(), "EnchantBottle load errors: {ours:#?}");
+    s.resolve();
+    assert!(
+        s.eval::<bool>("return type(RustWrathBottle_Toggle) == 'function'")
+            .unwrap(),
+        "the Enchant Bottle's toggle survived the load"
+    );
+    let before = s.errors().len();
+    s.run("RustWrathBottle_Toggle()").unwrap();
+    s.resolve();
+    assert!(
+        s.eval::<bool>(
+            "return RustWrathBottleFrame ~= nil and RustWrathBottleFrame:IsShown() == 1"
+        )
+        .unwrap(),
+        "the bottle window opens"
+    );
+    let after: Vec<String> = s.errors().into_iter().skip(before).collect();
+    assert!(after.is_empty(), "toggle errors: {after:#?}");
+}
+
 /// Loading the UI makes no sound: a dropdown's OnLoad runs `UIDropDownMenu_Initialize`, which calls
 /// its init at once (`UIDropDownMenu.lua:50`), and a unit popup's init reaches `UnitPopup_ShowMenu`
 /// and its closing `PlaySound("igMainMenuOpen")` unless `UnitPopup_HideButtons` leaves only CANCEL

@@ -176,6 +176,11 @@ impl super::UiScript {
         self.model_mut().wrath_currency = state;
     }
 
+    /// Snapshot the app-fed currency rows for native consumers.
+    pub fn wrath_currency_view(&self) -> WrathCurrencyState {
+        self.model_ref().wrath_currency.clone()
+    }
+
     /// Read the persisted expansion state for a sorted currency category.
     pub fn wrath_currency_expanded(&self, category_id: u32) -> bool {
         self.model_ref()

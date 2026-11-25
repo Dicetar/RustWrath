@@ -779,3 +779,65 @@ fn a_printscreen_up_with_no_consumer_walks_as_a_key_down() {
     assert_eq!(s.key_up("PRINTSCREEN"), KeyUp::Delivered);
     assert!(s.errors().is_empty(), "{:?}", s.errors());
 }
+
+/// 12340 `CGWorldFrame::OnLayerKeyDown`/`OnLayerKeyUp` (`0x4F6AE0`, `0x4F6B70`): a key at or
+/// below `KEY_RALT` signals `MODIFIER_STATE_CHANGED` with its side name and returns before the
+/// walk, so the Wrath binding window never sees a bare modifier. 1.12 walks it and its own
+/// binding window filters the bare name out.
+#[test]
+fn wrath_modifiers_signal_state_changed_and_never_reach_a_frame() {
+    use crate::script::{KeyUp, KeyWalk, UiScript, UiTarget};
+    let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+    s.run(
+        r#"
+        events, keys = {}, {}
+        local e = CreateFrame("Frame", "KbModEvent")
+        e:RegisterEvent("MODIFIER_STATE_CHANGED")
+        e:SetScript("OnEvent", function() table.insert(events, arg1 .. arg2) end)
+        f = CreateFrame("Frame", "KbModWalk")
+        f:EnableKeyboard(true)
+        f:SetScript("OnKeyDown", function() table.insert(keys, arg1) end)
+        f:SetScript("OnKeyUp", function() table.insert(keys, "^" .. arg1) end)
+    "#,
+    )
+    .unwrap();
+
+    assert_eq!(s.key_down("LCTRL"), KeyWalk::Frame, "consumed, not walked");
+    assert_eq!(s.key_up("LCTRL"), KeyUp::Delivered);
+    assert_eq!(
+        s.key_down("CTRL"),
+        KeyWalk::Frame,
+        "the bare 1.12 name is a modifier too"
+    );
+    assert_eq!(
+        s.eval::<String>("return table.concat(events, ',')")
+            .unwrap(),
+        "LCTRL1,LCTRL0,CTRL1"
+    );
+    assert_eq!(
+        s.eval::<String>("return table.concat(keys, ',')").unwrap(),
+        "",
+        "no frame handler saw a modifier"
+    );
+    assert_eq!(s.key_down("A"), KeyWalk::Frame, "a real key still walks");
+    assert_eq!(
+        s.eval::<String>("return table.concat(keys, ',')").unwrap(),
+        "A"
+    );
+
+    let mut vanilla = script();
+    vanilla
+        .run(
+            r#"
+        got = ""
+        v = CreateFrame("Frame", "KbVanillaMod")
+        v:EnableKeyboard(true)
+        v:SetScript("OnKeyDown", function() got = arg1 end)
+    "#,
+        )
+        .unwrap();
+    assert_eq!(vanilla.key_down("CTRL"), KeyWalk::Frame);
+    assert_eq!(vanilla.eval::<String>("return got").unwrap(), "CTRL");
+    assert!(s.errors().is_empty(), "{:?}", s.errors());
+    assert!(vanilla.errors().is_empty(), "{:?}", vanilla.errors());
+}

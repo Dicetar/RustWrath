@@ -1574,7 +1574,14 @@ pub(crate) fn feed_containers(
                 );
             }
         }
-        Some((player.is_some().then_some(fresh), key_pair, vm_reset, gate))
+        let fresh_view = fresh.clone();
+        Some((
+            player.is_some().then_some(fresh),
+            key_pair,
+            vm_reset,
+            gate,
+            fresh_view,
+        ))
     });
     vm.run(|script| {
         let Some(script) = script else {
@@ -1583,9 +1590,10 @@ pub(crate) fn feed_containers(
         if let Some(owed) = owed {
             owed.put(script);
         }
-        let Some((source, key_pair, vm_reset, gate)) = bags else {
+        let Some((source, key_pair, vm_reset, gate, latest)) = bags else {
             return;
         };
+        view.latest = latest;
         let memory = memory.get(script);
         let changed = push_changed(script, memory, source);
         if !changed.is_empty() {
@@ -1631,6 +1639,8 @@ pub(crate) fn feed_containers(
 /// resolves against the live store (`ui_items::drain`).
 #[derive(Resource, Default)]
 pub(crate) struct BagView {
+    /// The current packet-derived inventory snapshot for native consumers.
+    latest: HashMap<i64, ContainerState>,
     /// The stamp of the frame's first handler call that wrote our player or an item.
     written: Option<crate::lanes::Stamp>,
     swap: Option<Swap>,
@@ -1662,6 +1672,10 @@ impl View {
 }
 
 impl BagView {
+    pub(crate) fn snapshot(&self) -> &HashMap<i64, ContainerState> {
+        &self.latest
+    }
+
     /// A handler wrote our player or an item: the first of the frame stamps the swap.
     pub(crate) fn wrote(&mut self) {
         if self.written.is_none() {

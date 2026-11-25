@@ -44,7 +44,7 @@ mod retarget;
 mod server;
 mod targets;
 
-use benilla_combat_core::{Kit, KitAction, Milli, TickRate};
+use benilla_combat_core::{ActionKind, Kit, KitAction, Milli, TickRate};
 use benilla_world::schedule::WorldStage;
 use bevy::prelude::*;
 
@@ -145,7 +145,24 @@ fn running_action<'a>(
         id,
         started: now.0.saturating_sub(elapsed),
     };
-    Some((instance, action, kit.frame_at_tick(rate, elapsed)))
+    let frame = presented_frame(
+        kit.frame_at_tick(rate, elapsed),
+        playback.attack_haste,
+        action.kind,
+    );
+    Some((instance, action, frame))
+}
+
+/// The frame a running action is presented at. Rage's ER bonus scales melee frames, so the swing
+/// animation and its hit contact come sooner together; rolls, parries and every other action keep
+/// the authored speed (their windows are engine ticks, and hasting those would desync them).
+fn presented_frame(frame: Milli, haste: Option<u32>, kind: ActionKind) -> Milli {
+    match haste {
+        Some(per_mille) if matches!(kind, ActionKind::MeleeLight | ActionKind::MeleeHeavy) => {
+            Milli((i64::from(frame.0) * i64::from(per_mille) / 1000) as i32)
+        }
+        _ => frame,
+    }
 }
 
 /// Whether `frame` is inside the half-open window `[from, to)`.
@@ -163,5 +180,27 @@ mod tests {
         assert!(in_window(Milli(23999), (Milli(5000), Milli(24000))));
         assert!(!in_window(Milli(24000), (Milli(5000), Milli(24000))));
         assert!(!in_window(Milli(4999), (Milli(5000), Milli(24000))));
+    }
+
+    /// Rage's ER bonus scales melee frames only: 1000 per-mille is authored speed, 1150 is +15 %,
+    /// and a dodge or parry keeps the authored frame so its engine-tick windows do not move.
+    #[test]
+    fn melee_frames_are_hasted_and_other_actions_are_not() {
+        assert_eq!(
+            presented_frame(Milli(1_000), None, ActionKind::MeleeLight),
+            Milli(1_000)
+        );
+        assert_eq!(
+            presented_frame(Milli(1_000), Some(1_000), ActionKind::MeleeLight),
+            Milli(1_000)
+        );
+        assert_eq!(
+            presented_frame(Milli(1_000), Some(1_150), ActionKind::MeleeHeavy),
+            Milli(1_150)
+        );
+        assert_eq!(
+            presented_frame(Milli(1_000), Some(1_150), ActionKind::Dodge),
+            Milli(1_000)
+        );
     }
 }

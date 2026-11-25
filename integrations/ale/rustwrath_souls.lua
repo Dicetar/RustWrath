@@ -23,7 +23,8 @@ Client -> server
   HIT <mv%> <guid,guid,...> [hands]   one hit window's struck units, nearest first; Elden Ring
                                 damage with cleave (hands 2: a one-handed weapon held in both)
   SWING <action>                 relayed to Souls players nearby as SWING <guid> <action>
-  VERDICT <id> <hit|guard|parry|dodge|miss>   the client's judgement of strike <id>
+  VERDICT <id> <hit|guard|parry|dodge|miss> [age ms]   the client's judgement of strike <id>;
+                                a parry carries how long the blow sat inside its 65 % window
 
 Server -> client
   STRIKE <id> <creature guid> <windup ms> <reach yd, centre to centre> <1 if you judge it|0>
@@ -33,6 +34,10 @@ Server -> client
   SWING <player guid> <action>
   EYE <0 standing|1 hidden|2 crouched, seen> <suspicion 0-100> <creature guid|0>   the eye meter
   SNEAK <creature guid>          a sneak attack landed on it
+  POISE <creature guid> <cur> <max>   the creature's stance (ER poise), for the bar over it
+  ADAPT <creature guid> <variant>  the creature learned a trick from being parried (feint,
+                                flurry, enrage, guard_break, poise_guard, swift, heavy, ward,
+                                lunge, mend)
 
 ESTIMATE values are marked; tune them in play.
 ]]
@@ -45,6 +50,7 @@ local PACKET_EVENT_ON_PACKET_RECEIVE = 5
 local ADDON_EVENT_ON_MESSAGE = 30
 local ALE_EVENT_ON_LUA_STATE_CLOSE = 16
 local PLAYER_EVENT_ON_LOGOUT = 4
+local PLAYER_EVENT_ON_DAMAGE = 66
 
 -- Update fields (AzerothCore UpdateFields.h, OBJECT_END = 6).
 local UNIT_FIELD_FLAGS = 6 + 0x35
@@ -96,6 +102,34 @@ local GUARD_TAKEN_NO_SHIELD = 0.4   -- ESTIMATE: a weapon guard lets 40 % throug
 local PARRY_STAGGER_MS = 2500       -- ESTIMATE: a parried creature's next strike waits this long
 local RIPOSTE_MS = 3000             -- ESTIMATE: a hit this soon after a parry is a riposte...
 local RIPOSTE_MULTIPLIER = 3.0      -- ...for this many times the damage
+-- A parry's lesson is inverted from its quality: a perfect read teaches almost nothing, a flimsy
+-- early press teaches the most (up to 10 %). The chance accumulates with no cap and resets when a
+-- variant triggers.
+local PARRY_TIERS = {
+    { ms = 120, chance = 0.01 },   -- perfect: the blow landed in the window's first 120 ms
+    { ms = 200, chance = 0.03 },
+    { ms = 300, chance = 0.05 },
+    { ms = 450, chance = 0.07 },
+}
+local PARRY_CHANCE_WORST = 0.10    -- anything later in the window (a spam press), or no age sent
+local KIND_DAMAGE = { thrust = 0.75, sweep = 1.0, slam = 1.7 }  -- ESTIMATE: weight per strike shape
+local ELITE_DAMAGE = 1.35           -- ESTIMATE: an elite's blows hit this much harder
+local ENRAGE_DAMAGE = 1.15
+local ENRAGE_MS = 6000
+local BROKEN_MULTIPLIER = 1.35   -- ESTIMATE: a stance-broken creature takes this much more
+-- What a parried creature may learn, each with a weight so one never repeats back to back.
+local ADAPTATIONS = {
+    { name = "feint", weight = 26 },
+    { name = "flurry", weight = 18 },
+    { name = "enrage", weight = 16 },
+    { name = "guard_break", weight = 14 },
+    { name = "poise_guard", weight = 8 },
+    { name = "swift", weight = 12 },
+    { name = "heavy", weight = 10 },
+    { name = "ward", weight = 10 },
+    { name = "lunge", weight = 10 },
+    { name = "mend", weight = 8 },
+}
 -- Elden Ring damage per hit (see `defended` and on_hit): the weapon's roll times the attack's
 -- motion value, the grip and counter bonuses, then the defense curve.
 local TWO_HAND_BONUS = 1.15         -- ESTIMATE: ER's two-handed Str x1.5 on a Str weapon's AR
@@ -814,6 +848,12 @@ end
 local break_stance, react_to_hit
 
 -- The player's own hit report.
+-- One creature's stance (ER poise) as the window's bar reads it.
+local function poise_text(creature, m)
+    return string.format("POISE\t%s\t%d\t%d", key(creature:GetGUID()),
+        math.max(0, math.floor(m.stance)), math.floor(m.stance_max))
+end
+
 local function on_hit(player, state, fields)
     local now = now_ms()
     local second = math.floor(now / 1000)
@@ -867,6 +907,9 @@ local function on_hit(player, state, fields)
         local sneak = hidden and unaware(state, unit)
         local attack = roll * mv * grip * counter * (riposte and RIPOSTE_MULTIPLIER or 1)
             * (sneak and SNEAK_MULTIPLIER or 1)
+        if m and m.broken_until and now < m.broken_until then
+            attack = attack * BROKEN_MULTIPLIER
+        end
         if sneak then
             send(player, "SNEAK\t" .. key(unit:GetGUID()))
             trace("sneak attack on %s", key(unit:GetGUID()))
@@ -875,6 +918,7 @@ local function on_hit(player, state, fields)
         local damage = math.max(1, math.floor(landed * share[i] + 0.5))
         if riposte then
             m.parried_until = nil
+            m.parried_by = nil
         end
         trace("hit %s: roll %.1f x mv %.2f x grip %.2f x counter %.2f%s = %.1f; armour lets %.2f, cleave %.2f -> %d",
             key(unit:GetGUID()), roll, mv, grip, counter, riposte and " x riposte" or "", attack, through,
@@ -885,9 +929,14 @@ local function on_hit(player, state, fields)
             local cost = STANCE_PER_MOTION * mv * share[i] * (riposte and RIPOSTE_MULTIPLIER or 1)
             if m.stance_refill_at and now >= m.stance_refill_at then
                 m.stance = m.stance_max
+                send(player, poise_text(unit, m))
+            end
+            if m.stance_guard_until and now < m.stance_guard_until then
+                cost = cost * 0.5
             end
             m.stance = m.stance - cost
             m.stance_refill_at = now + STANCE_REFILL_MS
+            send(player, poise_text(unit, m))
             if m.stance <= 0 then
                 break_stance(unit, key(unit:GetGUID()), m, now)
             elseif cost > 0 then
@@ -925,6 +974,9 @@ local function on_verdict(player, fields)
         if strike and strike.id == id and strike.victim_key == k then
             if outcome == "hit" or outcome == "guard" or outcome == "parry" or outcome == "dodge" or outcome == "miss" then
                 strike.verdict = outcome
+                -- A parry carries how long the strike waited inside its window; the client sends
+                -- it so the server can tell a read (perfect) from an early press.
+                strike.parry_age = tonumber(fields[4])
             end
             return
         end
@@ -1095,6 +1147,79 @@ local STRIKE_SHAPES = {
     slam = { half_cone = math.pi, extra_reach = 0, windup_scale = 1.5 },
 }
 
+-- What one parry teaches: a perfect read barely anything, a flimsy early press the most.
+local function parry_chance(age)
+    if not age or age < 0 then
+        return PARRY_CHANCE_WORST
+    end
+    for _, tier in ipairs(PARRY_TIERS) do
+        if age <= tier.ms then
+            return tier.chance
+        end
+    end
+    return PARRY_CHANCE_WORST
+end
+
+-- One adaptation the creature learns from being parried: a weighted draw that never repeats the
+-- previous one. Each variant arms the creature's next blows and clears when consumed.
+local function pick_adaptation(m)
+    local list, total = {}, 0
+    for _, a in ipairs(ADAPTATIONS) do
+        if a.name ~= m.last_variant then
+            list[#list + 1] = a
+            total = total + a.weight
+        end
+    end
+    if total <= 0 then
+        return "feint"
+    end
+    local roll = math.random() * total
+    for _, a in ipairs(list) do
+        roll = roll - a.weight
+        if roll <= 0 then
+            return a.name
+        end
+    end
+    return list[#list].name
+end
+
+local function adapt(creature, ck, m, now)
+    local name = pick_adaptation(m)
+    m.last_variant = name
+    -- A new lesson replaces whatever the creature had armed: one trick at a time.
+    m.feint, m.flurry, m.guard_break, m.heavy_next, m.lunge_next = nil, nil, nil, nil, nil
+    if name == "feint" then
+        m.feint = true
+    elseif name == "flurry" then
+        m.flurry = 2
+    elseif name == "enrage" then
+        m.enrage_until = now + ENRAGE_MS
+    elseif name == "guard_break" then
+        m.guard_break = true
+        m.enrage_until = now + 4000
+    elseif name == "poise_guard" then
+        m.stance = m.stance_max
+        m.stance_guard_until = now + ENRAGE_MS
+    elseif name == "swift" then
+        m.swift_until = now + ENRAGE_MS
+    elseif name == "heavy" then
+        m.heavy_next = true
+    elseif name == "ward" then
+        m.riposte_guard_until = now + ENRAGE_MS
+    elseif name == "lunge" then
+        m.lunge_next = true
+    elseif name == "mend" then
+        local max_health = creature:GetMaxHealth()
+        local healed = math.min(max_health,
+            creature:GetHealth() + math.floor(max_health * 0.10))
+        pcall(function() creature:SetHealth(healed) end)
+    end
+    for _, watcher in ipairs(strike_watchers(creature, m.strike)) do
+        send(watcher, "ADAPT\t" .. ck .. "\t" .. name)
+    end
+    trace("adaptation %s for %s", name, ck)
+end
+
 local function start_strike(creature, ck, m, victim, now)
     -- AzerothCore keeps the attack time as a float (Unit::SetAttackTime); read as an integer it
     -- is the float's bits (2000.0 reads 1157234688), which put every next strike days away.
@@ -1102,15 +1227,41 @@ local function start_strike(creature, ck, m, victim, now)
     if not (attack_ms >= 500 and attack_ms <= 10000) then
         attack_ms = 2000
     end
-    local kind = STRIKE_KIND_BY_ENTRY[creature:GetEntry()] or "sweep"
+    -- A swift creature's next blows come faster; a heavy one turns the next into a slam; a lunge
+    -- stretches its reach. Each is consumed here, like a feint.
+    if m.swift_until and now < m.swift_until then
+        attack_ms = attack_ms * 0.8
+    end
+    local heavy = m.heavy_next and true or false
+    m.heavy_next = nil
+    local lunge = m.lunge_next and true or false
+    m.lunge_next = nil
+    local kind = heavy and "slam" or (STRIKE_KIND_BY_ENTRY[creature:GetEntry()] or "sweep")
     local shape = STRIKE_SHAPES[kind]
-    local windup = math.floor(math.max(WINDUP_MIN_MS, math.min(WINDUP_MAX_MS, attack_ms * WINDUP_SHARE)) * shape.windup_scale)
+    -- A feint shortens the windup and deals nothing; a flurry shortens the next two. Both are
+    -- consumed here, so a learned variant arms exactly the blows it promises.
+    local feint = m.feint and true or false
+    m.feint = nil
+    local guard_break = m.guard_break and true or false
+    m.guard_break = nil
+    local windup_scale = shape.windup_scale
+    if feint then
+        windup_scale = windup_scale * 0.6
+    end
+    if m.flurry and m.flurry > 0 then
+        m.flurry = m.flurry - 1
+        windup_scale = windup_scale * 0.7
+    end
+    local windup = math.floor(math.max(WINDUP_MIN_MS, math.min(WINDUP_MAX_MS, attack_ms * WINDUP_SHARE)) * windup_scale)
     local id = next_strike_id
     next_strike_id = next_strike_id + 1
     -- The stock chase stops inside the melee range; a strike reaches as far as it may start, so a
     -- victim who stays put is hit and one who steps back out of it is missed. It does not stretch
     -- to where the victim stands.
     local reach = melee_reach(creature, victim) + START_SLACK_YARDS
+    if lunge then
+        reach = reach + 3
+    end
     -- Decision 9: the creature stops and its facing locks for the windup. A root, not MoveIdle:
     -- MoveIdle leaves a running chase on top of the motion master, and the stock chase resumes
     -- by itself once the root is lifted.
@@ -1124,6 +1275,8 @@ local function start_strike(creature, ck, m, victim, now)
         kind = kind,
         resolve_at = now + windup,
         verdict = nil,
+        feint = feint,
+        guard_break = guard_break,
     }
     m.next_at = now + math.max(attack_ms, windup + 400)
     trace("strike %d from %s on %s: windup %d ms, next in %d ms", id, ck, m.strike.victim_key, windup,
@@ -1154,19 +1307,56 @@ local function resolve_strike(creature, ck, m, now)
     if victim and victim:IsAlive() then
         local is_souls = souls[strike.victim_key] ~= nil
         outcome = (is_souls and strike.verdict) or area_check(creature, victim, strike)
+        if strike.feint then
+            -- A feint spends the defender's window and deals nothing at all.
+            outcome = "miss"
+        elseif strike.guard_break and outcome == "parry" then
+            -- An unparryable blow: a parry still takes it, as a guard takes chip damage.
+            outcome = "guard"
+        end
+        -- The shape's weight, then an elite's strength and any enrage.
+        local weight = KIND_DAMAGE[strike.kind] or 1
+        if creature:IsElite() then
+            weight = weight * ELITE_DAMAGE
+        end
+        if m.enrage_until and now < m.enrage_until then
+            weight = weight * ENRAGE_DAMAGE
+        end
         -- The player's armour, on the same curve.
-        local roll = defended(creature, victim, weapon_roll(creature))
+        local roll = defended(creature, victim, weapon_roll(creature) * weight)
         if outcome == "hit" then
             creature:DealDamage(victim, math.max(1, math.floor(roll + 0.5)), true)
         elseif outcome == "guard" then
-            -- Sent even at zero, so the client's guard pays its stamina for the blow.
-            local taken = has_shield(victim) and 0 or GUARD_TAKEN_NO_SHIELD
+            -- Sent even at zero, so the client's guard pays its stamina for the blow. The share
+            -- that gets through shrinks with Stamina and armour; a shield stops far more than a
+            -- weapon, and an unparryable blow is the creature's answer to a shield.
+            local stamina = victim:GetStat(2) or 0
+            local armour = victim:GetUInt32Value(UNIT_FIELD_RESISTANCES) or 0
+            local taken
+            if has_shield(victim) then
+                taken = 0.55 * 120 / (120 + stamina) + 0.20 * 3000 / (3000 + armour)
+                taken = math.max(0.10, math.min(0.60, taken))
+            else
+                taken = 0.80 * 120 / (120 + stamina)
+                taken = math.max(0.35, math.min(0.80, taken))
+            end
+            if strike.guard_break then
+                taken = math.max(taken, 0.40)
+            end
             creature:DealDamage(victim, math.floor(roll * taken + 0.5), false)
         elseif outcome == "parry" then
             m.parried_until = now + RIPOSTE_MS
+            m.parried_by = strike.victim_key
             m.next_at = now + PARRY_STAGGER_MS
             creature:PerformEmote(EMOTE_ONESHOT_WOUND)
             send(victim, string.format("PARRIED\t%s\t%d", ck, RIPOSTE_MS))
+            -- A perfect read teaches almost nothing; a flimsy early press up to 10 %. Uncapped,
+            -- and a triggered variant resets it.
+            m.adapt_chance = (m.adapt_chance or 0) + parry_chance(strike.parry_age)
+            if math.random() < m.adapt_chance then
+                m.adapt_chance = 0
+                adapt(creature, ck, m, now)
+            end
         end
     end
     for _, watcher in ipairs(strike_watchers(creature, strike)) do
@@ -1209,7 +1399,12 @@ break_stance = function(creature, ck, m, now)
     end
     m.broken_until = now + STANCE_BREAK_MS
     m.parried_until = nil
+    m.parried_by = nil
     m.next_at = now + STANCE_BREAK_MS + 400
+    m.stance = 0
+    for _, watcher in ipairs(strike_watchers(creature, nil)) do
+        send(watcher, poise_text(creature, m))
+    end
     m.stance = m.stance_max
     m.stance_refill_at = nil
     creature:InterruptSpell(1)  -- CURRENT_GENERIC_SPELL
@@ -1243,6 +1438,10 @@ on_critical = function(player, state, guid, back)
                 if away and not fighting_player then
                     state.next_backstab = now + 1000
                     local damage = defended(player, creature, weapon_roll(player) * CRITICAL_MULTIPLIER)
+                    -- The crit is its own bonus: never let the riposte multiply it again.
+                    if m then
+                        m.parried_until, m.parried_by = nil, nil
+                    end
                     player:DealDamage(creature, math.max(1, math.floor(damage + 0.5)), true)
                     reward_rage(player, math.max(1, math.floor(damage + 0.5)), true)
                     unhide(player, state, true)
@@ -1270,9 +1469,40 @@ on_critical = function(player, state, guid, back)
         send(watcher, "BROKEN\t" .. guid .. "\t0")
     end
     local damage = defended(player, creature, weapon_roll(player) * CRITICAL_MULTIPLIER)
+    -- The crit is its own bonus: never let the riposte multiply it again.
+    m.parried_until, m.parried_by = nil, nil
     player:DealDamage(creature, math.max(1, math.floor(damage + 0.5)), true)
     reward_rage(player, math.max(1, math.floor(damage + 0.5)), true)
     trace("critical %s: %.1f damage", guid, damage)
+end
+
+-- A player dealing damage: while a riposte window is open, the parrier's next damage on that
+-- creature is multiplied here. This is the one path an ability's own spell damage passes through,
+-- so Heroic Strike, Cleave, Overpower and every proc are covered, not just the client's swing.
+local function on_damage_dealt(event, player, target, damage)
+    if not player or not target or not damage or damage <= 0 then
+        return
+    end
+    local m = managed[key(target:GetGUID())]
+    if not m or not m.parried_until or now_ms() >= m.parried_until then
+        return
+    end
+    if not m.parried_by or key(player:GetGUID()) ~= m.parried_by then
+        return
+    end
+    m.parried_until = nil
+    m.parried_by = nil
+    -- A warded creature protects its opening: its riposte bonus is cut, not removed.
+    local multiplier = RIPOSTE_MULTIPLIER
+    if m.riposte_guard_until and now_ms() < m.riposte_guard_until then
+        multiplier = 1.5
+    end
+    if m.broken_until and now_ms() < m.broken_until then
+        multiplier = multiplier * BROKEN_MULTIPLIER
+    end
+    local boosted = math.max(1, math.floor(damage * multiplier + 0.5))
+    trace("riposte on %s: %d -> %d", key(target:GetGUID()), damage, boosted)
+    return boosted
 end
 
 local function adopt(creature, now)
@@ -1305,6 +1535,11 @@ local function tick()
             souls[k] = nil
         else
             send_load(player, state, false)
+            -- Souls swings are the client's; a stock attack (Charge sets one server-side)
+            -- would auto-swing on its own.
+            if player:GetVictim() then
+                player:AttackStop()
+            end
             keep_speed(player, state)
             stealth_tick(player, state, now)
         end
@@ -1372,5 +1607,6 @@ end
 RegisterServerEvent(ADDON_EVENT_ON_MESSAGE, on_addon)
 RegisterServerEvent(ALE_EVENT_ON_LUA_STATE_CLOSE, on_close)
 RegisterPlayerEvent(PLAYER_EVENT_ON_LOGOUT, on_logout)
+RegisterPlayerEvent(PLAYER_EVENT_ON_DAMAGE, on_damage_dealt)
 RegisterPacketEvent(CMSG_ATTACKSWING, PACKET_EVENT_ON_PACKET_RECEIVE, on_attack_swing)
 CreateLuaEvent(tick, TICK_MS, 0)

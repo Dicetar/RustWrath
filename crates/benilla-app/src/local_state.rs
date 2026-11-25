@@ -277,6 +277,11 @@ pub(crate) fn layout_character_path(realm: &str, character: &str) -> Option<Path
     character_path(CharacterFile::Layout, realm, character)
 }
 
+/// `benilla-config/layout/native-bags.txt`: account-level native inventory layout and sorting.
+pub(crate) fn native_bags_path() -> Option<PathBuf> {
+    home().map(|h| h.join("layout/native-bags.txt"))
+}
+
 /// The state benilla keeps per character, the analog of the reference's per-character folder
 /// `WTF\Account\<account>\<realm>\<character>\`, each a file or folder named
 /// `<realm>-<character>` in a folder of its kind. Every per-character path goes through

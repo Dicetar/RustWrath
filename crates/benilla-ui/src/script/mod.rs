@@ -1630,6 +1630,16 @@ impl UiScript {
     /// ([`Self::editbox_action`], [`Self::paste`]); `Frame`, a frame that took it, and the host
     /// runs neither the action nor the key's binding (`0x76b7d0`).
     pub fn key_down(&mut self, key: &str) -> KeyWalk {
+        // 12340 `CGWorldFrame::OnLayerKeyDown` (0x4F6AE0): a key at or below `KEY_RALT` signals
+        // `MODIFIER_STATE_CHANGED` and returns before the walk, so no frame's `OnKeyDown` sees a
+        // modifier. 1.12 walks it and its binding window ignores a bare modifier itself.
+        if self.is_wrath_modifier(key) {
+            self.fire_event(
+                "MODIFIER_STATE_CHANGED",
+                vec![ScriptValue::Str(key.to_owned()), ScriptValue::Int(1)],
+            );
+            return KeyWalk::Frame;
+        }
         keyboard::key_down(&self.lua, key)
     }
 
@@ -1642,7 +1652,35 @@ impl UiScript {
     /// A key released, by the name its press went by: the key-up dispatcher (`0x765fd0`) runs
     /// `OnKeyUp` on the frame that consumed that key's last down.
     pub fn key_up(&mut self, key: &str) -> KeyUp {
+        // The release arm of the same branch: the modifier signals state 0 and never reaches a
+        // frame's `OnKeyUp` (`CGWorldFrame::OnLayerKeyUp`, 0x4F6B70).
+        if self.is_wrath_modifier(key) {
+            self.fire_event(
+                "MODIFIER_STATE_CHANGED",
+                vec![ScriptValue::Str(key.to_owned()), ScriptValue::Int(0)],
+            );
+            return KeyUp::Delivered;
+        }
         keyboard::key_up(&self.lua, key)
+    }
+
+    /// Whether `key` is one of the six modifier names the 12340 walk folds into
+    /// `MODIFIER_STATE_CHANGED`, by its side name (`KeyCodeToString`, `0x4F5FB0`) or the bare
+    /// name 1.12's walk uses. Only the Wrath target takes the modifier arm.
+    fn is_wrath_modifier(&self, key: &str) -> bool {
+        self.target() == UiTarget::Wrath335
+            && matches!(
+                key,
+                "LSHIFT"
+                    | "RSHIFT"
+                    | "LCTRL"
+                    | "RCTRL"
+                    | "LALT"
+                    | "RALT"
+                    | "SHIFT"
+                    | "CTRL"
+                    | "ALT"
+            )
     }
 
     /// A binding took this key's press: the world frame is its consumer (`0x483b70`).

@@ -34,7 +34,7 @@
 
 use bevy::prelude::*;
 
-use super::input::{in_iframes, in_parry_window};
+use super::input::{in_iframes, in_parry_window, PARRY_WINDOW_SHARE};
 use super::targets::off_facing;
 use super::{current_kit, running_action, souls_on, Instance, SoulsConfig, SoulsState};
 use crate::combat_kit::PlayerKit;
@@ -151,6 +151,32 @@ enum Inbound {
     Eye(Eye),
     /// A sneak attack landed on this creature.
     Sneak(u64),
+    /// A creature's stance (ER poise), `current` of `max`.
+    Poise {
+        creature: u64,
+        current: u32,
+        max: u32,
+    },
+}
+
+/// A creature's stance as the server last sent it, for the bar over its plate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PoiseMeter {
+    pub(crate) creature: u64,
+    pub(crate) current: u32,
+    pub(crate) max: u32,
+    /// App seconds when this reading arrived.
+    pub(crate) at: f32,
+}
+
+impl PoiseMeter {
+    pub(crate) fn ratio(self) -> f32 {
+        if self.max == 0 {
+            0.0
+        } else {
+            (self.current as f32 / self.max as f32).clamp(0.0, 1.0)
+        }
+    }
 }
 
 /// The crouch stealth as the server last sent it.
@@ -231,6 +257,11 @@ fn parse(body: &str) -> Option<Inbound> {
         "LOAD" => Inbound::Load(next()?.parse::<u32>().ok()?.min(255) as u8),
         "EYE" => Inbound::Eye(Eye::parse(next()?, next()?, next()?)?),
         "SNEAK" => Inbound::Sneak(next()?.parse().ok()?),
+        "POISE" => Inbound::Poise {
+            creature: next()?.parse().ok()?,
+            current: next()?.parse().ok()?,
+            max: next()?.parse().ok()?,
+        },
         _ => return None,
     })
 }
@@ -261,6 +292,9 @@ pub(crate) struct StrikeShown {
     /// Where the dodge window opens, as a fraction of the windup: a roll pressed from here to the
     /// end covers the strike ([`DODGE_LEAD_SECONDS`]).
     pub(crate) dodge_from: f32,
+    /// Where the parry window opens, the same row cut to [`PARRY_WINDOW_SHARE`]: a parry pressed
+    /// from here to the end is a parry.
+    pub(crate) parry_from: f32,
     pub(crate) mine: bool,
     pub(crate) kind: StrikeKind,
 }
@@ -302,6 +336,8 @@ pub(crate) struct SoulsLink {
     iframes_span: Option<(f32, f32)>,
     /// The latest parry's active window, kept the same way as the i-frames.
     parry_span: Option<(f32, f32)>,
+    /// The last stance reading, for the poise bar over that creature's plate.
+    pub(crate) poise: Option<PoiseMeter>,
 }
 
 impl SoulsLink {
@@ -346,6 +382,7 @@ impl SoulsLink {
             && self.load.is_none()
             && self.eye.is_none()
             && self.sneak.is_none()
+            && self.poise.is_none()
     }
 }
 
@@ -364,6 +401,22 @@ fn dodge_from(windup: f32) -> f32 {
     } else {
         0.0
     }
+}
+
+/// Where the parry window opens on a strike bar of `windup` seconds, as a fraction of it: the
+/// kit's i-frame row cut to [`PARRY_WINDOW_SHARE`], so its tick sits later than the dodge's.
+fn parry_from(windup: f32) -> f32 {
+    if windup > 0.0 {
+        (1.0 - DODGE_LEAD_SECONDS * PARRY_WINDOW_SHARE / windup).clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+/// How long a strike landed into the parry window, ms; `None` when it landed outside it.
+fn parry_age(span: Option<(f32, f32)>, moment: f32) -> Option<i64> {
+    span.filter(|(from, to)| *from <= moment && moment <= *to)
+        .map(|(from, _)| ((moment - from).max(0.0) * 1000.0).round() as i64)
 }
 
 /// The latest i-frame span after this frame: extended while the i-frames run (a chained dodge
@@ -620,6 +673,18 @@ pub(super) fn drive_link(
                     link.broken = Some((creature, t + riposte_ms as f32 / 1000.0));
                 }
             }
+            Inbound::Poise {
+                creature,
+                current,
+                max,
+            } => {
+                link.poise = Some(PoiseMeter {
+                    creature,
+                    current,
+                    max,
+                    at: t,
+                });
+            }
             Inbound::Swing {
                 player: guid,
                 action,
@@ -714,6 +779,7 @@ pub(super) fn drive_link(
                     unit,
                     progress: progress.clamp(0.0, 1.0),
                     dodge_from: dodge_from(strike.windup),
+                    parry_from: parry_from(strike.windup),
                     mine: strike.mine,
                     kind: strike.kind,
                 });
@@ -734,12 +800,17 @@ pub(super) fn drive_link(
             <= strike.kind.reach(strike.reach) + STRIKE_SLACK_YARDS;
         let facing = at.compute_transform().rotation.to_euler(EulerRot::YXZ).0;
         let in_cone = strike.kind.contains_angle(off_facing(facing, to_me));
+        // `parry_span` is tracked through `in_parry_window`, which already cuts the kit row to
+        // `PARRY_WINDOW_SHARE`; cutting it again here would halve it twice.
         let defence = Defence {
             parrying: dodged(parry_span, strike.deadline),
             dodging: dodged(iframes_span, strike.deadline),
             ..defence
         };
         let said = verdict(in_reach, in_cone, defence);
+        // How long the strike sat inside the parry window: 0 at its start (the press landed just
+        // before the blow). The server reads <= 120 ms as a perfect parry.
+        let parry_age = parry_age(parry_span, strike.deadline);
         let around = |span: Option<(f32, f32)>| {
             span.map(|(from, to)| (from - strike.deadline, to - strike.deadline))
         };
@@ -750,7 +821,15 @@ pub(super) fn drive_link(
             around(parry_span)
         );
         strike.verdict = Some(said);
-        verdicts.push(format!("VERDICT\t{}\t{said}", strike.id));
+        if said == "parry" {
+            verdicts.push(format!(
+                "VERDICT\t{}\tparry\t{}",
+                strike.id,
+                parry_age.unwrap_or(-1)
+            ));
+        } else {
+            verdicts.push(format!("VERDICT\t{}\t{said}", strike.id));
+        }
     }
     link.shown = shown;
     link.outbox.extend(verdicts);
@@ -848,6 +927,14 @@ mod tests {
             Some(Inbound::Broken {
                 creature: 42,
                 riposte_ms: 3000
+            })
+        );
+        assert_eq!(
+            parse("POISE\t42\t7\t30"),
+            Some(Inbound::Poise {
+                creature: 42,
+                current: 7,
+                max: 30
             })
         );
         assert_eq!(
@@ -972,5 +1059,24 @@ mod tests {
             link.outbox,
             vec!["HIT\t125\t42,7\t1".to_owned(), "HIT\t90\t5\t2".to_owned()]
         );
+    }
+
+    /// A parry's window is the kit's i-frame row cut to 65 %, so its tick sits later than the
+    /// dodge's; a strike's age is read from the window's own start.
+    #[test]
+    fn the_parry_window_is_short_and_its_age_is_read_from_its_start() {
+        assert!((parry_from(2.0) - 0.853_75).abs() < 1e-4, "parry_from(2.0)");
+        assert!(
+            parry_from(2.0) > dodge_from(2.0),
+            "the parry tick sits later than the dodge tick"
+        );
+        assert_eq!(parry_age(Some((10.0, 10.65)), 10.0), Some(0));
+        assert_eq!(parry_age(Some((10.0, 10.65)), 10.12), Some(120));
+        assert_eq!(
+            parry_age(Some((10.0, 10.65)), 10.7),
+            None,
+            "outside the window"
+        );
+        assert_eq!(parry_age(None, 10.0), None);
     }
 }

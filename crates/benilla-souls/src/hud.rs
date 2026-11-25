@@ -46,6 +46,12 @@ const STRIKE_HEIGHT: f32 = 8.0;
 const STRIKE_TICK: f32 = 2.0;
 const STRIKE_TICK_OVERHANG: f32 = 3.0;
 const STRIKE_GAP: f32 = 3.0;
+/// The creature stance (ER poise) bar: its size, and its gap over the plate, px.
+const POISE_WIDTH: f32 = 88.0;
+const POISE_HEIGHT: f32 = 5.0;
+const POISE_GAP: f32 = 16.0;
+/// A stance reading stays up this long after it arrived, seconds.
+const POISE_SHOW_SECONDS: f32 = 5.0;
 /// The eye meter: its size and its gap over the stamina bar, px.
 const EYE_WIDTH: f32 = 96.0;
 const EYE_HEIGHT: f32 = 6.0;
@@ -61,7 +67,7 @@ pub(super) enum HudPart {
     Fill,
     Chip,
     Lock,
-    /// The n-th strike bar's track; the three below are its children.
+    /// The n-th strike bar's track; the four below are its children.
     Strike(u8),
     /// The dodge zone: from [`super::server::StrikeShown::dodge_from`] to the end.
     StrikeZone(u8),
@@ -69,6 +75,11 @@ pub(super) enum HudPart {
     StrikeFill(u8),
     /// The tick where the dodge zone starts.
     StrikeTick(u8),
+    /// The tick where the parry window starts, inside the dodge zone.
+    StrikeParry(u8),
+    /// The stance bar over a creature's plate, and its fill.
+    Poise,
+    PoiseFill,
     /// The eye meter's track; the fill is its child.
     Eye,
     EyeFill,
@@ -140,6 +151,31 @@ pub(super) fn spawn_hud(mut commands: Commands) {
         GlobalZIndex(900),
         Visibility::Hidden,
     ));
+    commands
+        .spawn((
+            HudPart::Poise,
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Px(POISE_WIDTH),
+                height: Val::Px(POISE_HEIGHT),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+            GlobalZIndex(900),
+            Visibility::Hidden,
+        ))
+        .with_children(|bar| {
+            bar.spawn((
+                HudPart::PoiseFill,
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.45, 0.65, 0.95)),
+                Visibility::Inherited,
+            ));
+        });
     for index in 0..STRIKE_BARS {
         let child = |left: Val, width: Val, top: Val, height: Val| Node {
             position_type: PositionType::Absolute,
@@ -193,6 +229,18 @@ pub(super) fn spawn_hud(mut commands: Commands) {
                         Val::Px(STRIKE_HEIGHT + 2.0 * STRIKE_TICK_OVERHANG),
                     ),
                     BackgroundColor(Color::WHITE),
+                ));
+                // The parry window's start, later than the dodge's: gold, so a parry read is
+                // told apart from a roll at a glance.
+                track.spawn((
+                    HudPart::StrikeParry(index),
+                    child(
+                        Val::Percent(100.0),
+                        Val::Px(STRIKE_TICK),
+                        Val::Px(-STRIKE_TICK_OVERHANG),
+                        Val::Px(STRIKE_HEIGHT + 2.0 * STRIKE_TICK_OVERHANG),
+                    ),
+                    BackgroundColor(Color::srgb(0.95, 0.8, 0.2)),
                 ));
             });
     }
@@ -262,6 +310,7 @@ struct StrikeBar {
     at: Vec2,
     progress: f32,
     dodge_from: f32,
+    parry_from: f32,
     mine: bool,
     kind: StrikeKind,
 }
@@ -305,6 +354,15 @@ impl StrikeBar {
             Color::WHITE
         } else {
             Color::srgb(0.55, 0.55, 0.55)
+        }
+    }
+
+    /// The parry tick: gold, dimmed on someone else's strike.
+    fn parry_tick(&self) -> Color {
+        if self.mine {
+            Color::srgb(0.95, 0.8, 0.2)
+        } else {
+            Color::srgb(0.55, 0.48, 0.2)
         }
     }
 }
@@ -395,12 +453,29 @@ pub(super) fn drive_hud(
                 at,
                 progress: strike.progress,
                 dodge_from: strike.dodge_from,
+                parry_from: strike.parry_from,
                 mine: strike.mine,
                 kind: strike.kind,
             })
         })
         .take(usize::from(STRIKE_BARS))
         .collect();
+    // The stance (poise) bar: over the plate of the creature whose stance last moved, while it
+    // is below full and the reading is fresh.
+    let poise = link
+        .poise
+        .filter(|poise| on && poise.current < poise.max && t - poise.at < POISE_SHOW_SECONDS)
+        .and_then(|poise| {
+            let entity = index.0.get(&poise.creature).copied()?;
+            let tf = units.get(entity).ok()?;
+            let head = overhead_anchor(entity, tf, attach, poses, fallbacks, &targets, mounts);
+            let at = if plates.0.contains(&entity) {
+                project(head + Vec3::Y * PLATE_LIFT)? + Vec2::Y * (plate_h + POISE_GAP)
+            } else {
+                project(head)? + Vec2::Y * POISE_GAP
+            };
+            Some((at, poise.ratio()))
+        });
     let broken = link
         .broken
         .and_then(|(guid, _)| index.0.get(&guid).copied());
@@ -450,6 +525,12 @@ pub(super) fn drive_hud(
             HudPart::StrikeTick(index) => {
                 (true, strikes.get(usize::from(*index)).map(StrikeBar::tick))
             }
+            HudPart::StrikeParry(index) => (
+                true,
+                strikes.get(usize::from(*index)).map(StrikeBar::parry_tick),
+            ),
+            HudPart::Poise => (poise.is_some(), None),
+            HudPart::PoiseFill => (true, None),
             HudPart::Eye => (eye.is_some() || flash, Some(eye_track)),
             HudPart::EyeFill => (true, Some(eye_fill(suspicion))),
             HudPart::EyeMark => (eye_mark.is_some(), Some(eye_fill(suspicion))),
@@ -460,6 +541,8 @@ pub(super) fn drive_hud(
                 | HudPart::StrikeZone(_)
                 | HudPart::StrikeFill(_)
                 | HudPart::StrikeTick(_)
+                | HudPart::StrikeParry(_)
+                | HudPart::PoiseFill
                 | HudPart::EyeFill
         );
         let visible = if child {
@@ -526,6 +609,34 @@ pub(super) fn drive_hud(
                         Val::Px((at - STRIKE_TICK / 2.0).clamp(0.0, STRIKE_WIDTH - STRIKE_TICK));
                     if node.left != left {
                         node.left = left;
+                    }
+                }
+            }
+            HudPart::StrikeParry(index) => {
+                if let Some(strike) = strikes.get(usize::from(*index)) {
+                    let at = strike.parry_from.clamp(0.0, 1.0) * STRIKE_WIDTH;
+                    let left =
+                        Val::Px((at - STRIKE_TICK / 2.0).clamp(0.0, STRIKE_WIDTH - STRIKE_TICK));
+                    if node.left != left {
+                        node.left = left;
+                    }
+                }
+            }
+            HudPart::Poise => {
+                if let Some((at, _)) = poise {
+                    let left = Val::Px(at.x - POISE_WIDTH / 2.0);
+                    let top = Val::Px(at.y);
+                    if node.left != left || node.top != top {
+                        node.left = left;
+                        node.top = top;
+                    }
+                }
+            }
+            HudPart::PoiseFill => {
+                if let Some((_, ratio)) = poise {
+                    let width = Val::Percent(ratio.clamp(0.0, 1.0) * 100.0);
+                    if node.width != width {
+                        node.width = width;
                     }
                 }
             }

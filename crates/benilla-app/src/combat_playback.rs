@@ -131,6 +131,9 @@ pub struct CombatPlaybackState {
     pub guarded_hits: u32,
     /// Landed hits poise absorbed since the Souls systems last read them.
     pub poised_hits: u32,
+    /// Melee attack haste as per-mille of the authored speed (`None` is 1000): rage's ER bonus.
+    /// Only melee kit frames are scaled, so rolls, parries and i-frames keep their timing.
+    pub attack_haste: Option<u32>,
 }
 
 /// What stands between an incoming landed hit and the running action.
@@ -415,6 +418,7 @@ pub fn play_starts(
 fn advance_playback(
     time: Res<Time>,
     world: Option<Res<WrathWorldView>>,
+    mode: Option<Res<CombatModeView>>,
     profiles: Res<CombatProfiles>,
     mut state: ResMut<CombatPlaybackState>,
     mut play_seq: ResMut<PlaySeq>,
@@ -423,6 +427,17 @@ fn advance_playback(
     mut actions: MessageWriter<ActionAnim>,
 ) {
     state.advance_clock(time.delta());
+    // Rage's ER bonus: +0.15 % melee attack speed per point, so 0..100 reads 1000..1150 in
+    // per-mille. Only Experimental (F10) pays it, and only melee frames consume it.
+    state.attack_haste = mode
+        .as_deref()
+        .filter(|mode| mode.effective == CombatMode::Experimental)
+        .and_then(|_| world.as_deref())
+        .and_then(|world| world.self_observation.as_ref())
+        .map(|observation| observation.resources)
+        .filter(|resources| resources.power_type == Some(1))
+        .and_then(|resources| resources.power)
+        .map(|power| 1000 + power.min(100) * 15 / 10);
     let Ok(entity) = me.single() else {
         return;
     };

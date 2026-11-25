@@ -183,6 +183,8 @@ pub(super) fn feed_ui_input(
     layout: Res<crate::bindings::LayoutNames>,
     // Lent to the VM for the pass, so a click's or an Enter's script calls apply in the call.
     mut host: Option<crate::script_calls::ScriptCallHost>,
+    native_bags: Res<crate::ui_items::feed::BagView>,
+    native_window: Res<crate::ui_items::native::NativeBagWindow>,
 ) {
     let (keyboard, keys, capture, clipboard) = (&mut kbd.0, &kbd.1, &mut kbd.2, &mut kbd.3);
     // In the world the bindings pass sends the key-ups, in event order with the presses it
@@ -270,7 +272,16 @@ pub(super) fn feed_ui_input(
                     );
                 }
             }
+            let native_over = native_window.covers_pointer(
+                Vec2::new(window.width(), window.height()),
+                cursor,
+                crate::ui_items::native::combined_slot_count(native_bags.snapshot()),
+            );
             for (btn, name) in UI_MOUSE_BUTTONS {
+                if native_over && (buttons.just_pressed(btn) || buttons.just_released(btn)) {
+                    press_consumed.0 = true;
+                    continue;
+                }
                 if buttons.just_pressed(btn) {
                     // A left press whose release the payload takes (`world_press_consumed`: an
                     // item, a spell or an action over terrain, any payload over nothing) is
@@ -445,8 +456,14 @@ pub(crate) fn feed_keys<'a>(
         // name it was bound under.
         let token = crate::bindings::chord::key_token(ev.key_code, layout);
         // `None` is a key the client drops before any walk (a Windows or Command key, a media
-        // key): no down, no up, and no focus granted to an `autoFocus` box.
-        let name = crate::bindings::chord::walk_name(ev.key_code, layout);
+        // key): no down, no up, and no focus granted to an `autoFocus` box. 12340 names a
+        // modifier by its side and turns it into `MODIFIER_STATE_CHANGED`; 1.12 walks the bare
+        // name and its binding window ignores it.
+        let name = if script.target() == benilla_ui::script::UiTarget::Wrath335 {
+            crate::bindings::chord::wrath_walk_name(ev.key_code, layout)
+        } else {
+            crate::bindings::chord::walk_name(ev.key_code, layout)
+        };
         if ev.state != ButtonState::Pressed {
             down.release(ev.key_code);
             if let Some(name) = name.as_deref().filter(|_| releases) {

@@ -9,7 +9,7 @@
 //! The raw keys run through the binding dispatch's typing gate ([`UiKeyboardCapture`]): a focused
 //! EditBox eats every key and a shown keyboard frame eats the key it consumed.
 
-use benilla_combat_core::{ActionId, ActionKind, ActionRefusal, EngineEvent, Kit};
+use benilla_combat_core::{ActionId, ActionKind, ActionRefusal, EngineEvent, Kit, Milli};
 use bevy::prelude::*;
 
 use super::config::{SoulsBind, SoulsFeatures, SoulsKey};
@@ -292,14 +292,25 @@ pub(super) fn in_iframes(playback: &CombatPlaybackState, profiles: &CombatProfil
     dodge && playback.phase(profiles) == Some(ActionPhase::Active)
 }
 
-/// Whether the running action is the kit's `Parry` inside its window (its `iframes` row): a hit
-/// there is deflected, and an enemy strike judged there is a parry ([`super::server`]).
+/// The share of the kit's `iframes` row a `Parry` is active for. A parry is a read, not a
+/// default: the window is cut so a mistimed press is a commitment, where a dodge keeps its row.
+pub(super) const PARRY_WINDOW_SHARE: f32 = 0.65;
+
+/// The kit's `iframes` row cut to [`PARRY_WINDOW_SHARE`], starting where the row starts.
+pub(super) fn parry_window((from, to): (Milli, Milli)) -> (Milli, Milli) {
+    let len = ((to.0 - from.0) as f32 * PARRY_WINDOW_SHARE).round() as i32;
+    (from, Milli(from.0 + len))
+}
+
+/// Whether the running action is the kit's `Parry` inside its window (its `iframes` row, cut to
+/// [`PARRY_WINDOW_SHARE`]): a hit there is deflected, and an enemy strike judged there is a parry
+/// ([`super::server`]).
 pub(super) fn in_parry_window(kit: &Kit, playback: &CombatPlaybackState) -> bool {
     running_action(kit, playback).is_some_and(|(_, action, frame)| {
         action.name == "Parry"
             && action
                 .iframes
-                .is_some_and(|window| in_window(frame, window))
+                .is_some_and(|window| in_window(frame, parry_window(window)))
     })
 }
 
@@ -422,9 +433,18 @@ pub(super) fn souls_input(
     let guarded = std::mem::take(&mut playback.guarded_hits);
     if guarded > 0 {
         if let Some(engine) = playback.engine.as_mut() {
+            // Stamina stat widens the bar's effective depth: the same blow costs less of it.
+            let stamina_stat = critical
+                .1
+                .me_store()
+                .and_then(|store| store.0.unit_stat(2))
+                .unwrap_or(0)
+                .min(2_000);
             let cost = GUARD_HIT_POINTS
                 .saturating_mul(scale)
-                .saturating_mul(guarded);
+                .saturating_mul(guarded)
+                .saturating_mul(120)
+                / (120 + stamina_stat);
             let stamina = engine.stamina();
             if stamina <= cost {
                 engine.set_stamina(0, now);
@@ -971,5 +991,15 @@ mod tests {
         );
         assert_eq!(uncharged(&kit, ActionId(117)), Some(ActionId(118)));
         assert_eq!(uncharged(&kit, ActionId(118)), None);
+    }
+
+    /// The kit's i-frame row is cut to 65 % for a parry; a dodge keeps its own row.
+    #[test]
+    fn the_parry_window_is_cut_to_65_percent_of_the_kit_row() {
+        assert_eq!(
+            parry_window((Milli(1_000), Milli(2_000))),
+            (Milli(1_000), Milli(1_650))
+        );
+        assert_eq!(parry_window((Milli(0), Milli(0))), (Milli(0), Milli(0)));
     }
 }

@@ -15,6 +15,9 @@ param(
     [switch]$WithMulticlass,
     [string]$MulticlassGluePath = 'D:\Projects\wow\server\wm-project\client_extensions\multiclass\multiclass_glue.lua',
     [bool]$WithMovementHotpatch = $true,
+    # The diagnostic boot the stock interface alone. The layer is the player path: it carries
+    # RustWrath's own windows (the Enchant Bottle) and the glue realmlist control.
+    [switch]$StockUi,
     # Whole-client live code (ADR-0002): dx builds the dev client with `live_code` and patches
     # every saved source edit into it. Runs in this window; close the game or Ctrl+C to stop.
     [switch]$LiveCode
@@ -148,6 +151,12 @@ if ($BuildLatest -and !$LiveCode -and !$isRelease -and !$releaseRequested) {
         $cargo = Get-Command cargo -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     }
     $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
+    # Prefer rustup's cargo: a package-manager shim on PATH (scoop, chocolatey) can drive a
+    # different toolchain than the one the repo pins, and sccache cannot resolve a shim.
+    $rustupCargo = Join-Path $cargoHome 'bin\cargo.exe'
+    if (Test-Path -LiteralPath $rustupCargo -PathType Leaf) {
+        $cargo = Get-Command $rustupCargo -ErrorAction SilentlyContinue
+    }
     if (!$cargo) {
         $cargoExe = Join-Path $cargoHome 'bin\cargo.exe'
         if (Test-Path -LiteralPath $cargoExe -PathType Leaf) {
@@ -168,11 +177,26 @@ if ($BuildLatest -and !$LiveCode -and !$isRelease -and !$releaseRequested) {
     if (!$cache) {
         throw "sccache is required by .cargo/config.toml, but was not found in PATH or at $env:USERPROFILE\.cargo\bin\sccache.exe.`nInstall it by running:`n  `$env:RUSTC_WRAPPER=''; cargo install sccache --locked"
     }
+    # sccache runs the compiler itself. Point RUSTC at the real binary of the pinned toolchain:
+    # a shim (scoop's rustc.exe) leaves sccache with "cannot find binary path".
+    $rustc = $null
+    $channel = (Select-String -LiteralPath (Join-Path $repo 'rust-toolchain.toml') -Pattern 'channel\s*=\s*"([^"]+)"').Matches.Groups[1].Value
+    $rustupHome = if ($env:RUSTUP_HOME) { $env:RUSTUP_HOME } else { Join-Path $env:USERPROFILE '.rustup' }
+    if ($channel) {
+        $candidate = Join-Path $rustupHome "toolchains\$channel-x86_64-pc-windows-msvc\bin\rustc.exe"
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { $rustc = $candidate }
+    }
+    if (!$rustc) {
+        $rustup = Get-Command rustup -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($rustup) { $rustc = (& $rustup.Source which rustc 2>$null | Select-Object -First 1) }
+    }
     $previousWrapper = $env:RUSTC_WRAPPER
     $previousIncremental = $env:CARGO_INCREMENTAL
+    $previousRustc = $env:RUSTC
     try {
         $env:RUSTC_WRAPPER = $cache.Source
         $env:CARGO_INCREMENTAL = '0'
+        if ($rustc) { $env:RUSTC = $rustc }
         & $cargo.Source build --manifest-path (Join-Path $repo 'Cargo.toml') --target-dir (Join-Path $repo 'target') -p benilla --features hotpatch
         if ($LASTEXITCODE -ne 0) {
             throw 'RustWrath build failed. See the build output above.'
@@ -180,6 +204,7 @@ if ($BuildLatest -and !$LiveCode -and !$isRelease -and !$releaseRequested) {
     } finally {
         $env:RUSTC_WRAPPER = $previousWrapper
         $env:CARGO_INCREMENTAL = $previousIncremental
+        $env:RUSTC = $previousRustc
     }
 }
 if (!$LiveCode -and !(Test-Path -LiteralPath $binary)) {
@@ -261,7 +286,7 @@ $env:WOW_WRATH_AUTH = $AuthServer
 if ($WorldServer) { $env:WOW_WRATH_WORLD = $WorldServer }
 $env:WOW_HOST = $AuthServer
 $env:WOW_DATA = $DataPath
-$env:WOW_STOCK_UI = '1'
+if ($StockUi) { $env:WOW_STOCK_UI = '1' }
 $env:WOW_GM = 'off'
 $env:WOW_HOTPATCH_MOVEMENT = if ($WithMovementHotpatch) { '1' } else { '0' }
 $env:WM_ASSET_MANIFEST = Join-Path $repo 'docs\profiles\wm-hd.mpqlist'

@@ -199,6 +199,10 @@ pub(crate) struct UiPaint;
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UiInput;
 
+/// Scripted keyboard ownership has been resolved; native inventory input precedes bindings.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct UiKeyFeed;
+
 /// The frame's atomic (`Instant`, `GetTime`) pair, the one base for mapping a store `Instant` onto
 /// `GetTime`: `anchor`'s steps are the VM clock's deltas, so a mapped start is stable frame to
 /// frame. Neither leg restarts with the VM: the reference's `GetTime` is `GetTickCount`, and stock
@@ -460,7 +464,7 @@ impl Plugin for UiScriptPlugin {
                 Update,
                 (
                     extract::tick_script,
-                    input::feed_ui_input.run_if(
+                    input::feed_ui_input.in_set(UiKeyFeed).run_if(
                         in_state(crate::client_state::ClientState::InWorld).or(glue::glue_ui_up),
                     ),
                     input::feed_ui_wheel.run_if(

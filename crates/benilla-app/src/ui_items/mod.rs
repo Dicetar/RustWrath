@@ -25,6 +25,7 @@ mod equip_error;
 pub(crate) mod feed;
 mod lock_openers;
 pub(crate) mod locks;
+pub(crate) mod native;
 mod net;
 #[cfg(test)]
 mod verb_tests;
@@ -906,14 +907,31 @@ pub(crate) fn is_enchant_bottle(entry: u32) -> bool {
 }
 
 /// Open, or when used again close, the Enchant Bottle window (`assets/ui/EnchantBottle.xml`),
-/// which talks to the server script itself. Without the layer (`WOW_STOCK_UI=1`) the global is
-/// absent and nothing opens.
-fn open_enchant_bottle(script: &benilla_ui::script::UiScript) {
-    debug!("ui_items: the Enchant Bottle opens its window instead of its stock spell");
-    if let Err(e) = script.eval::<()>("if RustWrathBottle_Toggle then RustWrathBottle_Toggle() end")
-    {
-        warn!("ui_items: the Enchant Bottle window did not open: {e}");
+/// which talks to the server script itself. Answers whether the layer's toggle exists and ran.
+///
+/// Without the layer (`WOW_STOCK_UI=1`, or a UI build without it) the global is absent: a use
+/// that still returned "handled" would be a dead item, so the caller falls through to the stock
+/// use instead, and the warning names the missing window.
+fn open_enchant_bottle(script: &benilla_ui::script::UiScript) -> bool {
+    match script.eval::<bool>("return type(RustWrathBottle_Toggle) == 'function'") {
+        Ok(true) => {}
+        Ok(false) => {
+            warn!(
+                "ui_items: the Enchant Bottle window is not loaded (is the layer off?);                  using the stock item instead"
+            );
+            return false;
+        }
+        Err(e) => {
+            warn!("ui_items: the Enchant Bottle window cannot be asked for: {e}");
+            return false;
+        }
     }
+    if let Err(e) = script.eval::<()>("RustWrathBottle_Toggle()") {
+        warn!("ui_items: the Enchant Bottle window did not open: {e}");
+        return false;
+    }
+    debug!("ui_items: the Enchant Bottle toggled its window instead of its stock spell");
+    true
 }
 
 /// Send what [`item_use_route`] decides; the only place a `CMSG_USE_ITEM` leaves benilla. The
@@ -940,8 +958,7 @@ pub(crate) fn send_item_use(
     // "set out a bottle", so the stock use shows a placement circle and its cast reaches the
     // server's gossip fallback. Every use (bags, bag addons, the doll, action bars, keybinds,
     // macros) comes through here, so the bottle opens its own window here instead.
-    if is_enchant_bottle(it.entry) {
-        open_enchant_bottle(script);
+    if is_enchant_bottle(it.entry) && open_enchant_bottle(script) {
         return false;
     }
     // `0x5d8d00`'s requirement check (`0x5d8e0e`) and control gate (`0x5d8eaa`), past the
@@ -1386,6 +1403,7 @@ impl Plugin for UiItemsPlugin {
         crate::item_lane::add_item_lane(app);
         equip_error::add_equip_error_lane(app);
         feed::add_bag_view_lane(app);
+        native::install(app);
         // The icons come from the equipment renderer's `ItemDisplays`.
         app.init_resource::<crate::ui_items::locks::HeldItemLocks>()
             .init_resource::<crate::ui_items::locks::LockWatch>()
@@ -2553,5 +2571,21 @@ mod wrath_read_tests {
         let view = PlayerInventory::new(&store, Some(&inv), true);
         assert_eq!(view.bank(0), 0, "delivered zero is a clear, not a miss");
         assert_eq!(view.bank(1), 0xD2, "never observed still reads the donor");
+    }
+
+    /// A bottle use with no window in the VM must not be swallowed: without the layer's toggle
+    /// the helper answers false and the stock item path runs; with it the toggle runs instead.
+    #[test]
+    fn the_bottle_window_falls_back_when_the_layer_is_not_loaded() {
+        let mut s = benilla_ui::script::UiScript::new().unwrap();
+        assert!(
+            !super::open_enchant_bottle(&s),
+            "no layer: the stock use must go on"
+        );
+        s.run("RustWrathBottle_Toggle = function() TOGGLED = (TOGGLED or 0) + 1 end")
+            .unwrap();
+        assert!(super::open_enchant_bottle(&s));
+        assert_eq!(s.eval::<i64>("return TOGGLED").unwrap(), 1);
+        assert!(s.errors().is_empty(), "{:?}", s.errors());
     }
 }
