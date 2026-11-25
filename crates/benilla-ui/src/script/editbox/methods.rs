@@ -436,7 +436,7 @@ fn install_font_block(lua: &Lua, m: &Table) -> mlua::Result<()> {
         m.set(
             "SetCursorPosition",
             lua.create_function(|lua, (this, position): (Table, Value)| {
-                let _ = with_editbox(lua, &this, |_eb| ())?;
+                with_editbox(lua, &this, |_eb| ())?;
                 let _ = position;
                 Ok(())
             })?,
