@@ -35,9 +35,28 @@ fn make_glue_vm() -> mlua::Result<UiScript> {
 }
 
 /// Settings read by Wrath FrameXML during startup, with the defaults used by the stock UI fixture.
-pub(super) const WRATH_UI_CVARS: &[(&str, &str)] = &[
+pub(crate) const WRATH_UI_CVARS: &[(&str, &str)] = &[
     // 12340 GameUI_CVar.cpp:647: stock spellbook rank-display preference.
     ("ShowAllSpellRanks", "1"),
+    // InterfaceOptionsFrame.lua:359 and OptionsPanelTemplates.lua:335 read these when an addon
+    // or the player opens the options panel; an unregistered name raises in GetCVar, and the
+    // survey showed 37/49 addons dying there.
+    ("fctComboPoints", "1"),
+    ("fctCombatState", "1"),
+    ("fctDamageTaken", "1"),
+    ("fctDodgeParryMiss", "1"),
+    ("fctEnergyGains", "1"),
+    ("fctFriendlyHealing", "1"),
+    ("fctHonorGains", "1"),
+    ("fctPeriodicEnergyGains", "1"),
+    ("fctReputationGains", "1"),
+    ("fctXP", "1"),
+    ("UnitNameEnemyGuardianName", "1"),
+    ("UnitNameEnemyTotemName", "1"),
+    ("UnitNameEnemyPetName", "1"),
+    ("UnitNameFriendlyGuardianName", "1"),
+    ("UnitNameFriendlyTotemName", "1"),
+    ("UnitNameFriendlyPetName", "1"),
     ("Sound_OutputDriverIndex", "0"),
     // 12340 SoundInterface2_CVar.cpp / ConsoleDevice_CVar.cpp.
     ("Sound_EnableAllSound", "1"),

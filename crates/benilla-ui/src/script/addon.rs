@@ -469,8 +469,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, (key, field): (Value, Value)| {
             let model = lua.app_data_ref::<Model>().expect("model");
             let key = addon_key(lua, &model, &key, USAGE_METADATA)?;
-            // A missing or non-string argument 2 raises the same `Usage:` (`0x48e59c`, `0x48e5cb`).
-            let field = super::binding_abi::string_arg(lua, field, USAGE_METADATA)?;
+            // A missing or non-string argument 2 raises the same `Usage:` (`0x48e59c`, `0x48e5cb`)
+            // on the donor. Wrath addons probe the key (and one survey addon stopped there), so a
+            // Wrath VM answers nil instead of raising.
+            let field = match super::binding_abi::string_arg(lua, field, USAGE_METADATA) {
+                Ok(field) => field,
+                Err(_)
+                    if lua.app_data_ref::<Model>().expect("model").target
+                        == super::UiTarget::Wrath335 =>
+                {
+                    return Ok(Value::Nil);
+                }
+                Err(error) => return Err(error),
+            };
             let Some(i) = row_of(&model, &key) else {
                 return Ok(Value::Nil);
             };

@@ -14,8 +14,15 @@ use super::Model;
 /// then `dec` into the 0-based slot and the whitelist; a failure of either raises `message`. The
 /// 0-based slot, `-1` for Lua 0, the ammo leg.
 pub(super) fn inventory_slot_arg(lua: &Lua, v: Value, message: &'static str) -> mlua::Result<i32> {
-    let slot0 = number_arg(lua, v, message)?.wrapping_sub(1);
     let target = lua.app_data_ref::<Model>().expect("model app_data").target;
+    // 3.3.5a reads the slot through `lua_tonumber` (0 for nil/false); Bagnon's keyring pass is
+    // `GetInventoryItemLink("player", false)`, which must resolve to the ammo slot, not raise.
+    let slot0 = if target == super::UiTarget::Wrath335 {
+        let n = lua.coerce_number(v)?.unwrap_or(0.0);
+        super::binding_abi::ftol(n).wrapping_sub(1)
+    } else {
+        number_arg(lua, v, message)?.wrapping_sub(1)
+    };
     if !inventory_slot_reader_accepts(slot0, target) {
         return Err(mlua::Error::RuntimeError(message.into()));
     }

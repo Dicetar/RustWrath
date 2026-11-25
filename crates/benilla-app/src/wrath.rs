@@ -998,15 +998,6 @@ pub struct WrathSessionConfig {
     pub actions: Option<ActionBridge>,
 }
 
-/// Whether this launch is the donor 1.12 client. It is never the default: the 3.3.5a client is
-/// the client, and the donor remains only for its reference fixtures. `WOW_DONOR_112=1` selects it
-/// explicitly; `WOW_WRATH` is accepted but no longer decides.
-pub fn donor_selected_from_env() -> bool {
-    std::env::var("WOW_DONOR_112")
-        .ok()
-        .is_some_and(|value| !value.is_empty() && value != "0")
-}
-
 /// Whether this launch is the 3.3.5a client. The library default is the donor fixture; the
 /// production boot selects Wrath (`benilla-client`) unless `WOW_DONOR_112=1`.
 pub fn selected_from_env() -> bool {

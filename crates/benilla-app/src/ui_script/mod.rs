@@ -564,6 +564,7 @@ fn arbitrate_pointer_over_ui(
 /// The session lifecycle: the VM's birth, identity, death and reload.
 mod lifecycle;
 pub use lifecycle::PendingEntryUiLoad;
+pub(crate) use lifecycle::WRATH_UI_CVARS;
 pub(crate) use lifecycle::{
     ingame_ui_up, run_pending_reload, setup_script, strings_vm, AddOnIdentity, ReloadUiPending,
     SessionEnd,

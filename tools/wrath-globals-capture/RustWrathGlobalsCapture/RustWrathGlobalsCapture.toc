@@ -1,0 +1,9 @@
+## Interface: 30300
+## Title: RustWrath Globals Capture
+## Notes: Dumps the client's _G names and Lua types into a SavedVariable for the addon harness.
+## Author: RustWrath
+## Version: 1
+## SavedVariables: RustWrathGlobalsCapture
+## SavedVariables: RustWrathGlobalsCaptureBuild
+## DefaultState: enabled
+RustWrathGlobalsCapture.lua

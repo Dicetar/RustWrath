@@ -69,13 +69,51 @@ fn render_frames(frames: &[String]) -> String {
 /// reference lacks can send an addon down a path the real client never takes. `lod` rows are the
 /// twelve LoadOnDemand `Blizzard_*` addons' names, counted apart as a live capture misses them.
 fn surface_report(deep: bool, dump_path: Option<String>) {
-    let tsv = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../reference/lua_globals.tsv"
-    );
-    let Ok(text) = std::fs::read_to_string(tsv) else {
-        eprintln!("cannot read the reference surface at {tsv}");
-        std::process::exit(1);
+    let wrath = benilla_app::wrath_selected_from_env();
+    let tsv = if wrath {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../reference/lua_globals_30300.tsv"
+        )
+    } else {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../reference/lua_globals.tsv"
+        )
+    };
+    let ours: std::collections::BTreeMap<String, String> =
+        addon_harness::surface().into_iter().collect();
+
+    // `--surface-dump <file>` writes our raw `_G` as `name<TAB>type`, the reference TSV's shape.
+    if let Some(path) = dump_path {
+        let body: String = ours
+            .iter()
+            .map(|(n, k)| format!("{n}\t{k}\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        match std::fs::write(&path, format!("# our _G - {} names\n{body}", ours.len())) {
+            Ok(()) => println!("  wrote {} names to {path}", ours.len()),
+            Err(e) => eprintln!("  could not write {path}: {e}"),
+        }
+    }
+    let text = match std::fs::read_to_string(tsv) {
+        Ok(text) => text,
+        Err(_) if wrath => {
+            // The 1.12 capture is not the 3.3.5a surface; comparing against it would invent
+            // missing names and hide real ones. The capture addon fills this file.
+            println!(
+                "\n  SURFACE DIFF - 3.3.5a capture pending at {tsv}; the 1.12 oracle is not applied"
+            );
+            println!(
+                "  run tools/wrath-globals-capture in the stock 3.3.5a client, then \
+                 tools/import-globals-capture.ps1"
+            );
+            return;
+        }
+        Err(_) => {
+            eprintln!("cannot read the reference surface at {tsv}");
+            std::process::exit(1);
+        }
     };
 
     let mut reference: std::collections::BTreeMap<String, String> = Default::default();
@@ -88,23 +126,10 @@ fn surface_report(deep: bool, dump_path: Option<String>) {
         }
     }
 
-    let ours: std::collections::BTreeMap<String, String> =
-        addon_harness::surface().into_iter().collect();
-
-    // `--surface-dump <file>` writes our raw `_G` as `name<TAB>type`, the reference TSV's shape.
-    if let Some(path) = dump_path {
-        let body: String = ours
-            .iter()
-            .map(|(n, k)| format!("{n}\t{k}\n"))
-            .collect::<Vec<_>>()
-            .concat();
-        match std::fs::write(&path, format!("# our _G — {} names\n{body}", ours.len())) {
-            Ok(()) => println!("  wrote {} names to {path}", ours.len()),
-            Err(e) => eprintln!("  could not write {path}: {e}"),
-        }
-    }
-
-    println!("\n  SURFACE DIFF — our _G vs the captured 1.12 _G");
+    println!(
+        "\n  SURFACE DIFF - our _G vs the captured {} _G",
+        if wrath { "3.3.5a" } else { "1.12" }
+    );
     println!("  FrameXML digest : {}", addon_harness::framexml_digest());
     println!("  reference names : {}", reference.len());
     println!("  ours            : {}", ours.len());

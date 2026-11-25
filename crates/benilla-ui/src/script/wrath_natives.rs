@@ -292,6 +292,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, ()| Ok(false))?,
     )?;
 
+    // `GetCurrentRegion`: the 3.3.5a region id, 1 US, 2 Korea, 3 Europe, 4 Taiwan, 5 China. The
+    // private server speaks the US realm list, and addons use it only for region-specific defaults.
+    lua.globals()
+        .set("GetCurrentRegion", lua.create_function(|_, ()| Ok(1.0))?)?;
+    // `GetMinimapShape`: the stock 3.3.5a minimap mask is round.
+    lua.globals()
+        .set("GetMinimapShape", lua.create_function(|_, ()| Ok("ROUND"))?)?;
+
     // The 3.3.5a video panels' Defaults buttons (`VideoOptionsPanels.lua:92`, `:403`, `:579`):
     // one page of `ConsoleDeviceDefaults` each ([`super::cvars::restore_video_page`]). No return.
     for (name, page, restart) in [

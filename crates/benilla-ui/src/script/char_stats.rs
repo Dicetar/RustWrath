@@ -1246,10 +1246,16 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "GetInventoryItemCount",
         lua.create_function(|lua, (unit, slot): (Value, Value)| {
             let token = super::binding_abi::string_arg(lua, unit, USAGE_GET_INVENTORY_ITEM_COUNT)?;
-            let slot0 =
-                super::binding_abi::number_arg(lua, slot, INVALID_SLOT_GET_INVENTORY_ITEM_COUNT)?;
-            let slot0 = slot0.wrapping_sub(1);
             let target = lua.app_data_ref::<Model>().expect("model app_data").target;
+            // 3.3.5a reads the slot through `lua_tonumber`; Bagnon's keyring pass is
+            // `GetInventoryItemCount("player", false)`, which resolves to the ammo slot.
+            let slot0 = if target == super::UiTarget::Wrath335 {
+                let n = lua.coerce_number(slot)?.unwrap_or(0.0);
+                super::binding_abi::ftol(n).wrapping_sub(1)
+            } else {
+                super::binding_abi::number_arg(lua, slot, INVALID_SLOT_GET_INVENTORY_ITEM_COUNT)?
+                    .wrapping_sub(1)
+            };
             if !inventory_slot_reader_accepts(slot0, target) {
                 return Err(mlua::Error::RuntimeError(
                     INVALID_SLOT_GET_INVENTORY_ITEM_COUNT.into(),

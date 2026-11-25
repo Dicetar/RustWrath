@@ -139,7 +139,7 @@ pub fn survey(root: &Path) -> Vec<AddonReport> {
 /// A VM with our whole interface under it (see the module doc), a session seated and the AddOn
 /// API answering for the whole installed set.
 fn stock_vm(root: &Path, registry: &[benilla_ui::script::AddOnInfo]) -> Result<UiScript, String> {
-    let mut script = UiScript::new().map_err(|e| e.to_string())?;
+    let mut script = UiScript::with_target(harness_target()).map_err(|e| e.to_string())?;
     // A time bound, so one non-terminating addon cannot stall the survey: about 50x the heaviest
     // corpus addon (Enchantrix, 4M instructions), so a runaway reports in about a second.
     script.set_instruction_budget(ADDON_INSTRUCTION_BUDGET);
@@ -1035,11 +1035,22 @@ pub fn framexml_digest() -> String {
     crate::ui_script::framexml_digest()
 }
 
+/// The client contract this survey hosts: the production era when the launch selects Wrath,
+/// the donor fixture otherwise.
+fn harness_target() -> benilla_ui::script::UiTarget {
+    if crate::wrath::selected_from_env() {
+        benilla_ui::script::UiTarget::Wrath335
+    } else {
+        benilla_ui::script::UiTarget::Vanilla112
+    }
+}
+
 /// Every name our VM publishes into `_G`, with its Lua type, with no addons loaded: our side of the
-/// diff against the 1.12 client's in-world `_G` (`reference/lua_globals.tsv`). Dumped in Lua,
-/// since `_G` is what an addon sees.
+/// diff against the selected client's in-world `_G` (`reference/lua_globals.tsv` for the donor,
+/// `reference/lua_globals_30300.tsv` for the 3.3.5a capture). Dumped in Lua, since `_G` is what
+/// an addon sees.
 pub fn surface() -> Vec<(String, String)> {
-    let Ok(mut script) = UiScript::new() else {
+    let Ok(mut script) = UiScript::with_target(harness_target()) else {
         return Vec::new();
     };
     script.set_instruction_budget(ADDON_INSTRUCTION_BUDGET);
@@ -1091,6 +1102,29 @@ fn global_strings() -> Option<&'static str> {
     .as_deref()
 }
 
+/// The 3.3.5a `Constants.lua` ends with `FillLocalizedClassList`; without the catalog it aborts
+/// there and every later constant (the world-map tiles, the action-bar count, the totem count) is
+/// missing for the whole session. The harness has no Bevy store, so it projects the catalog off
+/// the chain directly.
+fn seat_wrath_class_catalog(script: &mut UiScript) {
+    let Some(data) = benilla_formats::wow_data() else {
+        return;
+    };
+    let Ok(mut chain) = benilla_formats::open_chain(&data) else {
+        return;
+    };
+    let locale = script.locale();
+    let Ok(classes) = benilla_formats::load_chr_classes(&mut chain) else {
+        return;
+    };
+    let Ok(rows) = crate::chr_classes::localized_class_names(&classes, locale) else {
+        return;
+    };
+    if let Err(error) = script.set_localized_class_names(locale, rows) {
+        eprintln!("addon_harness: the localized class catalog was refused: {error}");
+    }
+}
+
 /// Put a player and a realm in the VM before the addon loads: the 1.12 client runs `AddOn_Load`
 /// from `UI_Init`, after the world is entered, so an addon's file scope always sees a real
 /// character (AceDB-2.0 opens with
@@ -1108,6 +1142,10 @@ fn seat_a_session(script: &mut UiScript) {
     }
     // The shipped CVar table, before the realm below writes into it.
     script.register_cvars(crate::cvars::registered_pairs());
+    if script.target() == benilla_ui::script::UiTarget::Wrath335 {
+        script.register_cvars(crate::ui_script::WRATH_UI_CVARS.iter().copied());
+        seat_wrath_class_catalog(script);
+    }
     // A display: `GetScreenResolutions()` empty and `GetCurrentResolution()` 0 is no state the 1.12
     // client can be in (`CT_Viewport` indexes its screen size by it at load). One mode, the
     // `set_screen_size(1024, 768)` the interface is already told.

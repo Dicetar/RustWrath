@@ -9,7 +9,7 @@ Next: capture the 3.3.5a `_G`/event oracle, then run the addon corpus
 
 The library's era switch still defaulted to the donor 1.12 client; only `WOW_WRATH=1` selected the
 3.3.5a session. The addon gate was also the 1.12 `IsAddOnLoadable` law even when the VM target was
-30300: no `INCOMPATIBLE` floor, the demand rule inverted, and dependencies checked with the
+no `INCOMPATIBLE` floor, the demand rule inverted, and dependencies checked with the
 caller's demand flag.
 
 ## What changed
@@ -59,3 +59,38 @@ caller's demand flag.
 2. Run `addon_harness` with `WOW_WRATH=1` on the install's corpus and rank the gaps.
 3. 3.3.5a addon messages (`RegisterAddonMessagePrefix` + the addon opcode), secure templates,
    and the `GetAddOnMetadata`/SavedVariables edge cases the corpus hits.
+
+## Addon corpus survey (2026-11-25, after the era slice)
+
+The harness now hosts the 3.3.5a contract: `harness_target()`, the stock 3.3.5a UI, the
+localized class catalog before `Constants.lua`, and the Wrath CVar list. `--surface` dumps
+31,909 names and refuses to apply the 1.12 oracle; `tools/wrath-globals-capture` (a stock-client
+addon) plus `tools/import-globals-capture.ps1` produce `reference/lua_globals_30300.tsv` for
+the real diff. `WOW_ADDONS_PATH` remains the authoritative corpus override.
+
+Survey of the install's `Interface\AddOns` (49 addons with manifests):
+
+- loaded without a single load error: **39/49**
+- first session-start errors: 37 `Couldn't find CVar named ...` + 1 invalid inventory slot
+  → after the fixes below, **zero** first session-start errors
+- drew something: 7/49; survived being used: 4/49
+- missing-global counts: 29 addons at 0, 7 at 1–2, 6 at 3–5, 5 at 6–15, 2 at 16+
+
+Fixes this run forced:
+
+- the stock options panel's combat-text/unit-name CVars (`fctComboPoints`, `fctCombatState`,
+  `fctDamageTaken`, `fctDodgeParryMiss`, `fctEnergyGains`, `fctFriendlyHealing`,
+  `fctHonorGains`, `fctPeriodicEnergyGains`, `fctReputationGains`, `fctXP`, the six
+  `UnitName*Name` toggles) registered in `WRATH_UI_CVARS`;
+- `GetCurrentRegion` (1) and `GetMinimapShape` ("ROUND") as 3.3.5a natives;
+- `GetAddOnMetadata` answers nil for a missing/non-string key on a Wrath VM instead of raising;
+- the shared inventory-slot reader and `GetInventoryItemCount` read a non-number as Lua's
+  `tonumber` 0 (Bagnon's keyring pass is `GetInventoryItem(..., false)`), so it resolves to
+  the ammo slot rather than raising.
+
+Remaining corpus blockers, in order: the stock templates `ActionBarButtonSpellActivationAlert`,
+`InsetFrameTemplate`, `DialogBorderOpaqueTemplate` and the `BackdropTemplate` shim; the widget
+methods `Texture:SetHorizTile/SetVertTile`, `FontString:SetWordWrap`, `ColorSelect:GetColorAlpha`
+and `EditBox:SetCursorPosition`; `GetAuctionItemClasses` needs the app's twelve-class push in the
+harness (the production client installs it); Questie's HBD `GetCurrentPlayerPosition`; Bagnon's
+`GetDummyBag` (its format line reads `select(12, GetAuctionItemClasses())`, empty in the harness).
