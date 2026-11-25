@@ -214,7 +214,8 @@ pub use net::Objects;
 pub use target::Interact;
 // The explicit Wrath session the assembler's boot reads from the environment.
 pub use wrath::WrathSessionConfig;
-// Whether `$WOW_WRATH` selects the Wrath session; the Souls server link reads it.
+// Whether this process runs the 3.3.5a session; the production boot selects it unless
+// `WOW_DONOR_112=1`, and the Souls server link reads the same answer.
 pub use wrath::selected_from_env as wrath_selected_from_env;
 
 /// What `benilla-souls` names in the core, by the module path it names it under. Only these items

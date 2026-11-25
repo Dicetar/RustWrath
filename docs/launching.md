@@ -100,5 +100,8 @@ Default launches leave this extension disabled.
 Coordinate checks under [the project workflow](agents/workflow.md). Documentation updates
 alone need no compilation, client run or server interaction.
 
-Developer direct-entry runners remain separate: `WOW_WRATH=1` without
-`WOW_WRATH_LOGIN_UI=1` retains their explicit environment identity and named-character path.
+The client is the **3.3.5a session** by default: the boot selects the Wrath network and UI
+target, and the stock 3.3.5a interface, without an environment switch. `WOW_DONOR_112=1` is the
+only way back to the donor 1.12 path (fixtures and reference tests). Developer direct-entry
+runners remain separate: `WOW_WRATH=1` without `WOW_WRATH_LOGIN_UI=1` retains their explicit
+environment identity and named-character path.

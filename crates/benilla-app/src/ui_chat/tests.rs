@@ -564,7 +564,7 @@ fn an_addon_registering_our_own_chat_frame_does_not_double_print() {
 /// Listeners run in registration order, as the reference's do, and `ChatFrame1` registered first.
 #[test]
 fn an_addons_handler_sees_the_line_already_in_the_window() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = chat_vm();
     let mut windows = super::frames::ChatWindows::default();
     s.run(

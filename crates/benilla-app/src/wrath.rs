@@ -976,7 +976,7 @@ impl WrathFeed {
     }
 }
 
-/// A lab session configuration for the IO thread. Credentials come from the owner's
+/// A 3.3.5a session configuration for the IO thread. Credentials come from the owner's
 /// environment/launcher, never from committed files (system review Â§8).
 #[derive(Clone)]
 pub struct WrathSessionConfig {
@@ -998,14 +998,25 @@ pub struct WrathSessionConfig {
     pub actions: Option<ActionBridge>,
 }
 
-/// Whether this launch explicitly selects the Wrath session path. The stock 1.12 path stays the
-/// default; selection is one environment switch, never an implicit detection.
+/// Whether this launch is the donor 1.12 client. It is never the default: the 3.3.5a client is
+/// the client, and the donor remains only for its reference fixtures. `WOW_DONOR_112=1` selects it
+/// explicitly; `WOW_WRATH` is accepted but no longer decides.
+pub fn donor_selected_from_env() -> bool {
+    std::env::var("WOW_DONOR_112")
+        .ok()
+        .is_some_and(|value| !value.is_empty() && value != "0")
+}
+
+/// Whether this launch is the 3.3.5a client. The library default is the donor fixture; the
+/// production boot selects Wrath (`benilla-client`) unless `WOW_DONOR_112=1`.
 pub fn selected_from_env() -> bool {
     std::env::var("WOW_WRATH")
         .ok()
         .is_some_and(|value| !value.is_empty() && value != "0")
 }
 
+/// An explicit request for the interactive login screen. The default launch is interactive
+/// whenever the environment does not supply both credentials.
 pub fn interactive_from_env() -> bool {
     std::env::var("WOW_WRATH_LOGIN_UI").is_ok_and(|v| v == "1")
 }
@@ -1099,10 +1110,13 @@ impl WrathSessionConfig {
     /// client uses. Credentials never come from committed source or command-line arguments.
     pub fn from_env() -> anyhow::Result<Option<Self>> {
         use anyhow::Context;
+        // The 3.3.5a client is the session; the donor is an explicit fixture.
         if !selected_from_env() {
             return Ok(None);
         }
-        let interactive = interactive_from_env();
+        // The graphical default is the login screen. Environment credentials (both) are the
+        // direct-entry path; `WOW_WRATH_LOGIN_UI=1` forces the screen even when they exist.
+        let interactive = !crate::run_mode::env_login() || interactive_from_env();
         let account = if interactive {
             String::new()
         } else {

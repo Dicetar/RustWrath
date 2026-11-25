@@ -65,13 +65,14 @@ crate of its own or a fork, and benilla opens a piece of itself to such a crate 
   beside the binary in the player build; every path to it resolves through `crate::local_state`.
   Player settings are CVars persisted as a diff in `benilla-config/config.toml`.
 - **The core UI is the stock UI; benilla's own is one layer on top.** The core loads the stock
-  1.12 FrameXML off the player's own chain, byte for byte, and builds the engine verbs those
+  3.3.5a FrameXML off the player's own chain, byte for byte, and builds the engine verbs those
   files call, never stubbing one to make a file load. benilla's own interface (its options
   window, its game-menu look, its fixes to the stock Lua) is one layer that loads after the
-  stock files and before third-party addons, the way an addon does: written against the 1.12 API
-  alone, listed in no addon list and always on, and offering nothing another addon can build on.
-  Anything that changes what the stock UI does or shows lives in the layer, and the layer does
-  not grow: a test names its files and fails on a new one.
+  stock files and before third-party addons, the way an addon does: listed in no addon list and
+  always on, and offering nothing another addon can build on. The 1.12 client is the donor
+  reference: its captures and fixtures stay in tests, behind an explicit donor switch, and are
+  never the shipping target. Anything that changes what the stock UI does or shows lives in the
+  layer, and the layer does not grow: a test names its files and fails on a new one.
 - **A setting's default is the reference's default.** Every option boots at the stock 1.12
   value. Shipping another value costs an explicit `Deviates` row with the reason, and a test
   fails a row that drifts either way.

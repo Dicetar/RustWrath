@@ -370,21 +370,26 @@ pub fn root() -> Option<PathBuf> {
     roots().into_iter().next()
 }
 
-/// All configured AddOns directories in priority order. In Wrath, `<wow_install>/Interface/AddOns`
-/// comes first, followed by `benilla-config/AddOns` so users can place 3.3.5a addons in either
-/// location without modifying their game install.
+/// All configured AddOns directories in priority order. `WOW_ADDONS_PATH`, when set, is
+/// authoritative: only that folder is read, so a corpus or a hermetic test never sees the
+/// install's own addons. Otherwise, in Wrath, `<wow_install>/Interface/AddOns` comes first,
+/// followed by `benilla-config/AddOns` so users can place 3.3.5a addons in either location
+/// without modifying their game install.
 pub(crate) fn roots() -> Vec<PathBuf> {
     if std::env::var_os("WOW_CAPTURE").is_some() {
         return Vec::new();
     }
     let home = crate::local_state::home();
     if crate::wrath::selected_from_env() {
-        let mut out = Vec::new();
+        // An explicit corpus is the whole corpus, never an extra prefix.
         if let Some(explicit) = std::env::var_os("WOW_ADDONS_PATH").map(PathBuf::from) {
-            if explicit.is_dir() && !out.contains(&explicit) {
-                out.push(explicit);
-            }
+            return if explicit.is_dir() {
+                vec![explicit]
+            } else {
+                Vec::new()
+            };
         }
+        let mut out = Vec::new();
         if let Some(d) = benilla_formats::wow_data() {
             let direct = d.join("Interface").join(ADDONS_DIR);
             if direct.is_dir() && !out.contains(&direct) {
@@ -438,8 +443,12 @@ const BLIZZARD_ADDONS: [&str; 12] = [
 /// startup addons. Vanilla retains its twelve known LoadOnDemand archive rows.
 fn chain_addons() -> Vec<Addon> {
     if crate::wrath::selected_from_env() {
+        // An explicit corpus (`WOW_ADDONS_PATH`) isolates third-party addons; the stock chain's
+        // `Blizzard_*` rows stay, because the interface opens windows through them.
+        let explicit_corpus = std::env::var_os("WOW_ADDONS_PATH").is_some();
         return super::reference_ui::addon_manifests()
             .into_iter()
+            .filter(|(name, _)| !explicit_corpus || name.starts_with("Blizzard_"))
             .filter_map(|(name, path)| {
                 let bytes = super::reference_ui::read(&path)?;
                 Some(Addon {
@@ -1341,21 +1350,34 @@ mod tests {
             rows.iter().map(|a| &a.name).collect::<Vec<_>>()
         );
         for a in &rows {
+            // 3.3.5a's chain mixes eager and on-demand manifests; the known eight below are the
+            // on-demand set this test names.
+            if ![
+                "Blizzard_AuctionUI",
+                "Blizzard_CraftUI",
+                "Blizzard_InspectUI",
+                "Blizzard_MacroUI",
+                "Blizzard_RaidUI",
+                "Blizzard_TalentUI",
+                "Blizzard_TradeSkillUI",
+                "Blizzard_TrainerUI",
+            ]
+            .contains(&a.name.as_str())
+            {
+                continue;
+            }
             assert!(a.toc.load_on_demand(), "{} is LoadOnDemand", a.name);
-            assert!(
-                matches!(a.source, Source::Chain),
-                "{} comes off the chain",
-                a.name
-            );
+            assert!(a.is_chain(), "{} comes off the chain", a.name);
             assert!(
                 info_for(a).chain,
                 "{}'s registry row is marked chain-sourced",
                 a.name
             );
         }
+        // The 3.3.5a chain's on-demand windows; `Blizzard_CraftUI` is a donor-only row (Wrath
+        // merged crafting into the trade-skill window).
         for name in [
             "Blizzard_AuctionUI",
-            "Blizzard_CraftUI",
             "Blizzard_InspectUI",
             "Blizzard_MacroUI",
             "Blizzard_RaidUI",
@@ -2004,16 +2026,33 @@ mod tests {
     // ────────────────────────── the AddOn API and enable state ──────────────────────────
 
     /// An AddOns root under a temp `benilla-config`, `BENILLA_HOME` on it while the guard lives.
-    fn hermetic_root(tag: &str) -> (PathBuf, crate::local_state::test_env::EnvGuard) {
+    fn hermetic_root(
+        tag: &str,
+    ) -> (
+        PathBuf,
+        (
+            crate::local_state::test_env::EnvGuard,
+            crate::local_state::test_env::EnvGuard,
+            crate::local_state::test_env::EnvGuard,
+        ),
+    ) {
         // The pid keeps two test binaries running at once from wiping each other's tree.
         let tmp =
             std::env::temp_dir().join(format!("benilla-addon-api-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let home = tmp.join("benilla-config");
-        std::fs::create_dir_all(home.join("AddOns")).unwrap();
+        let addons = home.join("AddOns");
+        std::fs::create_dir_all(&addons).unwrap();
         let guard =
             crate::local_state::test_env::EnvGuard::set("BENILLA_HOME", home.to_str().unwrap());
-        (home, guard)
+        // The corpus is this fixture alone, never the real install's AddOns tree, and these
+        // fixtures describe the donor client's addon law.
+        let addons_guard = crate::local_state::test_env::EnvGuard::set(
+            "WOW_ADDONS_PATH",
+            addons.to_str().unwrap(),
+        );
+        let donor_guard = crate::local_state::test_env::EnvGuard::set("WOW_DONOR_112", "1");
+        (home, (guard, addons_guard, donor_guard))
     }
 
     /// `AddOn_CanLoad` check 6: exact `==`, a missing `## Interface` is 0 and out of date, and a
@@ -2200,6 +2239,13 @@ mod tests {
     #[test]
     fn the_chain_carries_a_signature_file_for_each_stock_addon() {
         let _ = benilla_formats::wow_data_or_skip!();
+        // The donor secure list and its `.toc.sig` files are a 1.12 fixture; the 3.3.5a chain
+        // carries its own signed set.
+        if !benilla_formats::wow_data()
+            .is_some_and(|data| benilla_formats::is_donor_install(&data))
+        {
+            return;
+        }
         for addon in benilla_protocol::messages::STOCK_SECURE_ADDONS {
             let name = addon.name;
             let sig = crate::ui_script::reference_ui::read(&format!(

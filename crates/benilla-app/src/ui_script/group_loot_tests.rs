@@ -604,7 +604,7 @@ fn ctrl_and_shift_on_the_roll_icon_preview_and_post_its_link() {
 /// is `IconFrameIcon` because it is nested in the `IconFrame` button (`LootFrame.xml:314`).
 #[test]
 fn the_roll_template_carries_the_reference_name_and_the_parts_addons_reach_for() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let s = setup();
 
     // `CreateFrame` raises on an unknown template, so this call is the check.

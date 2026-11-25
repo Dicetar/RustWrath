@@ -495,7 +495,7 @@ fn a_cursor_seated_gameobject_plate_is_owned() {
 /// (`0x530a60`), and the publisher sets the owner before the plate shows.
 #[test]
 fn a_cursor_seated_gameobject_plate_survives_an_addons_on_show_hook() {
-    benilla_formats::wow_data_or_skip!();
+    benilla_formats::donor_data_or_skip!();
     let mut s = harness(&[]);
     // Questie's hook, in one line: the plate's own show event calls Show() again.
     s.run(r#"GameTooltip:SetScript("OnShow", function() GameTooltip:Show() end)"#)
@@ -531,7 +531,7 @@ fn a_corner_seated_gameobject_plate_is_owned_and_shown() {
 /// The corner plate survives the same `OnShow` hook through the existence gate `0x530a80`.
 #[test]
 fn a_corner_seated_gameobject_plate_survives_an_addons_on_show_hook() {
-    benilla_formats::wow_data_or_skip!();
+    benilla_formats::donor_data_or_skip!();
     let mut s = harness(&[]);
     s.run(r#"GameTooltip:SetScript("OnShow", function() GameTooltip:Show() end)"#)
         .unwrap();

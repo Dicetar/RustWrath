@@ -129,8 +129,13 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
     // With `$WOW_CAPTURE` set the app runs a deterministic, server-less capture (net off, so no
     // NPCs stream in) and exits.
     let capturing = run_mode::scenario_active();
-    // `$WOW_WRATH` selects the Wrath graphical session explicitly. It is mutually exclusive with
-    // the stock 1.12 NetPlugin's connection, so one network/session owner exists.
+    // The 3.3.5a client is the client: the boot selects the Wrath session unless the donor
+    // fixture is forced. `WOW_DONOR_112=1` is the only way back to the 1.12 path.
+    if std::env::var_os("WOW_DONOR_112").is_none() {
+        std::env::set_var("WOW_WRATH", "1");
+    }
+    // The Wrath session is mutually exclusive with the stock NetPlugin's connection, so one
+    // network/session owner exists.
     let wrath_config = match crate::wrath::WrathSessionConfig::from_env() {
         Ok(config) => config,
         Err(error) => {

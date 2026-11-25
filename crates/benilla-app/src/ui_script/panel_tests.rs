@@ -933,7 +933,7 @@ fn an_overflowing_gossip_menu_scrolls_instead_of_spilling() {
 /// window does.
 #[test]
 fn an_addons_own_frame_registered_in_uipanelwindows_takes_the_left_slot() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);

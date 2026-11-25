@@ -284,13 +284,26 @@ pub(crate) fn invoke_with_globals(
     } else {
         None
     };
+    let event_global = if wrath && event_payload {
+        extra.first().cloned()
+    } else {
+        None
+    };
     let payload: Vec<Value> = if wrath && event_payload {
         extra.into_iter().skip(1).collect()
     } else {
         extra
     };
-    let mut globals: Vec<(&str, Value)> = Vec::with_capacity(2 + payload.len());
-    globals.push(("this", Value::Table(wrapper)));
+    let mut globals: Vec<(&str, Value)> = Vec::with_capacity(4 + payload.len());
+    // 3.3.5a FrameXML keeps legacy handler chunks that read `self` and `event` as globals
+    // (the donor's chunks read `this` and `argN` only).
+    globals.push(("this", Value::Table(wrapper.clone())));
+    if wrath {
+        globals.push(("self", Value::Table(wrapper)));
+        if let Some(name) = event_global {
+            globals.push(("event", name));
+        }
+    }
     let names: Vec<Cow<'static, str>> = (1..=payload.len()).map(arg_name).collect();
     for (name, v) in names.iter().zip(payload) {
         globals.push((name.as_ref(), v));

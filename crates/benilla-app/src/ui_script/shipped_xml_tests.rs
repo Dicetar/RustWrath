@@ -1925,7 +1925,7 @@ fn the_video_windows_ten_composed_names_stay_nil() {
 /// (`0x790980`) raises on nil in the reference too.
 #[test]
 fn the_stock_options_windows_load_and_save_are_reachable_for_addons() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = benilla_ui::script::UiScript::new().unwrap();
     s.keep_calls();
     // No host: the Okay's `ClearTutorials()` (`UIOptionsFrame.lua:325`) is kept, not applied.

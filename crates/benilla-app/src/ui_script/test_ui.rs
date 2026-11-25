@@ -120,10 +120,7 @@ fn load_entry(s: &UiScript, entry: &str, strict_templates: bool, no_warnings: bo
     s.register_cvars(crate::cvars::registered_pairs());
     if s.target() == benilla_ui::script::UiTarget::Wrath335 {
         s.register_cvars(super::lifecycle::WRATH_UI_CVARS.iter().copied());
-        if WRATH_KIT_READY.with(|ready| ready.borrow_mut().insert(s.session())) {
-            s.run(WRATH_KIT_CONSTANTS)
-                .expect("Wrath kit: the Constants.lua stand-ins run");
-        }
+        seat_wrath_kit(s);
     }
     let path = entry.replace('\\', "/");
     let bytes = read(&path).unwrap_or_else(|| panic!("{entry}: not found"));
@@ -503,6 +500,15 @@ thread_local! {
 /// file defines (the chain's copy is the source). Loading `Constants.lua` itself needs the
 /// localized class/race catalogs seated first, which the kit loader cannot do without a mutable
 /// VM; the handful of constants the loaded frames read are defined here instead.
+/// Seat the Wrath `Constants.lua` stand-ins once per session: the full-UI `production_load` and
+/// the per-file `load_entry` both need them before the stock files' `OnLoad` loops run.
+pub(super) fn seat_wrath_kit(s: &UiScript) {
+    if WRATH_KIT_READY.with(|ready| ready.borrow_mut().insert(s.session())) {
+        s.run(WRATH_KIT_CONSTANTS)
+            .expect("Wrath kit: the Constants.lua stand-ins run");
+    }
+}
+
 const WRATH_KIT_CONSTANTS: &str = r#"
     -- 3.3.5a `Constants.lua:87`'s `MAX_EQUIPMENT_SETS_PER_PLAYER = 10`.
     MAX_EQUIPMENT_SETS_PER_PLAYER = 10

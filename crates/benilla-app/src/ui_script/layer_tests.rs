@@ -27,15 +27,36 @@ f:SetScript("OnEvent", function() table.insert(ADDON_LOADED_LOG, arg1) end)
 
 /// A VM after the production in-game load, with one third-party addon, `ZZOrder`, in a hermetic
 /// AddOns root; the layer on unless `stock_ui`. Returns the VM and the load's failures.
+/// The 1.12 layer's options, error log and plates are off the 3.3.5a interface by design
+/// (`manifest::WRATH_LAYER` is the bottle alone), so their tests are donor fixtures.
+fn donor_layer_off() -> bool {
+    let off = crate::wrath::selected_from_env()
+        || !benilla_formats::wow_data()
+            .is_some_and(|data| benilla_formats::is_donor_install(&data));
+    if off {
+        eprintln!("skipping: the donor 1.12 layer needs a donor install, not the 3.3.5a chain");
+    }
+    off
+}
+
 fn production_load(tag: &str, stock_ui: bool) -> (UiScript, Vec<String>) {
     let before = format!("{DEFINE_LOG}\n{ADDON_LOADED_LOG}");
     production_load_with(tag, stock_ui, &before, |root| {
         let dir = root.join("ZZOrder");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("ZZOrder.toc"), "## Interface: 11200\nprobe.lua\n").unwrap();
+        let interface = if crate::wrath::selected_from_env() {
+            "30300"
+        } else {
+            "11200"
+        };
+        std::fs::write(
+            dir.join("ZZOrder.toc"),
+            format!("## Interface: {interface}\nprobe.lua\n"),
+        )
+        .unwrap();
         std::fs::write(
             dir.join("probe.lua"),
-            "ZZORDER_SAW_LAYER = BenillaOptionsFrame ~= nil\n",
+            "ZZORDER_SAW_LAYER = (BenillaOptionsFrame or RustWrathBottle_Toggle) ~= nil\n",
         )
         .unwrap();
     })
@@ -58,17 +79,33 @@ pub(crate) fn production_load_with(
     addons(&root);
     let _c = EnvGuard::unset("WOW_CAPTURE");
     let _h = EnvGuard::set("BENILLA_HOME", home.to_str().unwrap());
-
-    let mut s = UiScript::new().unwrap();
+    // The production frame set: the install's Wrath chain on a Wrath VM, or the donor fixture's
+    // own client. The corpus is this test's folder alone.
+    let _a = EnvGuard::set("WOW_ADDONS_PATH", root.to_str().unwrap());
+    let target = if crate::wrath::selected_from_env() {
+        benilla_ui::script::UiTarget::Wrath335
+    } else {
+        benilla_ui::script::UiTarget::Vanilla112
+    };
+    let mut s = UiScript::with_target(target).unwrap();
     // No engine behind it: the calls the stock paths make are kept, not refused.
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
+    // `UIParent.lua`'s `UpdateMenuBarTop` reads the resolution list at load; an empty list
+    // leaves width/height nil and the menu-bar offset arithmetic raises.
+    let resolution = benilla_ui::script::ScreenResolution {
+        width: 1024,
+        height: 768,
+    };
+    s.set_screen_resolutions(vec![resolution.clone()], Some(resolution));
     s.set_unit(
         "player",
         Some(benilla_ui::script::UnitState {
             exists: true,
             name: Some("Probesix".into()),
             level: 60,
+            race: Some("Human".into()),
+            race_file: Some("Human".into()),
             class: Some("Warrior".into()),
             class_file: Some("WARRIOR".into()),
             ..Default::default()
@@ -77,6 +114,18 @@ pub(crate) fn production_load_with(
     // A reply that hid nothing, so `GetNumAddOns` counts the registry.
     s.note_addon_info_reply(&[]);
     s.register_cvars(crate::cvars::registered_pairs());
+    if target == benilla_ui::script::UiTarget::Wrath335 {
+        s.register_cvars(super::lifecycle::WRATH_UI_CVARS.iter().copied());
+        super::test_ui::seat_wrath_kit(&s);
+        // `Constants.lua` ends with `FillLocalizedClassList`, which aborts the file (and with it
+        // every later constant) until the catalog is seated.
+        if let Some(data) = benilla_formats::wow_data() {
+            if let Ok(mut chain) = benilla_formats::open_chain(&data) {
+                crate::chr_classes::seat_localized_class_names_from_chain(&mut s, &mut chain)
+                    .expect("the Wrath class catalog must seat before Constants.lua");
+            }
+        }
+    }
     s.run(before).unwrap();
     // The layer passed in, not set through `WOW_STOCK_UI`: every test in this process reads it.
     let mut failures = Vec::new();
@@ -121,10 +170,17 @@ fn stock_framexml_globals() -> std::collections::HashSet<String> {
 /// defined from the layer's start on is a stock FrameXML global.
 #[test]
 fn the_layer_loads_after_every_stock_file_and_before_the_addons() {
-    benilla_formats::wow_data_or_skip!();
+    let data = benilla_formats::wow_data_or_skip!();
+    if benilla_formats::is_donor_install(&data) {
+        eprintln!("skipping: this test is the 3.3.5a chain's, not the donor 1.12 install");
+        return;
+    }
     let _l = ENV_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // This test is the 3.3.5a stock interface's: force the Wrath target even though the test
+    // binary's default is the donor fixture.
+    let _w = crate::local_state::test_env::EnvGuard::set("WOW_WRATH", "1");
     let (s, failures) = production_load("order", false);
     assert!(failures.is_empty(), "load failures: {failures:#?}");
     let log: Vec<String> = s.eval("return DEFINE_LOG").unwrap();
@@ -132,12 +188,22 @@ fn the_layer_loads_after_every_stock_file_and_before_the_addons() {
     // The core's last row that defines a global (RaidWarning.xml; ClassTrainerFrameTemplates.xml
     // declares templates alone), the layer's first file (ScrollTemplates.xml) and last
     // (FrameXMLFixes.xml is all redefinitions, so ScriptLogFrame.xml), then the addon.
-    let order = [
-        "RaidWarningFrame_OnLoad",
-        "BenillaScrollBar_Step",
-        "BenillaScriptLog_Toggle",
-        "ZZORDER_SAW_LAYER",
-    ];
+    let order: &[&str] = if s.target() == benilla_ui::script::UiTarget::Wrath335 {
+        // The Wrath layer is the bottle panel alone; the 1.12 adapters stay off the stock 3.3.5a
+        // interface.
+        &[
+            "RaidWarningFrame_OnLoad",
+            "RustWrathBottle_Toggle",
+            "ZZORDER_SAW_LAYER",
+        ]
+    } else {
+        &[
+            "RaidWarningFrame_OnLoad",
+            "BenillaScrollBar_Step",
+            "BenillaScriptLog_Toggle",
+            "ZZORDER_SAW_LAYER",
+        ]
+    };
     let at: Vec<usize> = order.iter().map(|n| defined_at(&log, n)).collect();
     for w in 0..order.len() - 1 {
         assert!(
@@ -177,6 +243,9 @@ fn the_layer_loads_after_every_stock_file_and_before_the_addons() {
 /// character-select AddOns screen.
 #[test]
 fn the_layer_is_absent_from_the_addon_api() {
+    if donor_layer_off() {
+        return;
+    }
     benilla_formats::wow_data_or_skip!();
     let _l = ENV_LOCK
         .lock()
@@ -236,6 +305,9 @@ fn the_stock_ui_switch_is_a_dev_builds_alone() {
 /// raise nothing.
 #[test]
 fn the_stock_ui_switch_boots_the_core_without_the_layer() {
+    if donor_layer_off() {
+        return;
+    }
     benilla_formats::wow_data_or_skip!();
     let _l = ENV_LOCK
         .lock()
@@ -289,6 +361,9 @@ fn type_line(s: &UiScript, line: &str) -> i64 {
 /// the forwarding hook `SubmitChatInput` is gone.
 #[test]
 fn the_layers_commands_are_slash_rows_and_convertraid_is_unknown() {
+    if donor_layer_off() {
+        return;
+    }
     benilla_formats::wow_data_or_skip!();
     let _l = ENV_LOCK
         .lock()
@@ -336,6 +411,9 @@ fn the_layers_commands_are_slash_rows_and_convertraid_is_unknown() {
 /// that hands the host its line.
 #[test]
 fn the_dev_commands_are_host_rows_in_a_dev_build_alone() {
+    if donor_layer_off() {
+        return;
+    }
     benilla_formats::wow_data_or_skip!();
     let _l = ENV_LOCK
         .lock()
@@ -388,6 +466,9 @@ fn the_dev_commands_are_host_rows_in_a_dev_build_alone() {
 /// loaded (the engine hands caught errors to the handler after the load).
 #[test]
 fn the_error_log_collects_off_the_error_handler() {
+    if donor_layer_off() {
+        return;
+    }
     benilla_formats::wow_data_or_skip!();
     let _l = ENV_LOCK
         .lock()
@@ -460,6 +541,9 @@ fn the_error_log_collects_off_the_error_handler() {
 /// global the layer redefines keeps its name and is not a new definition here.
 #[test]
 fn every_global_the_layer_defines_takes_the_benilla_prefix() {
+    if donor_layer_off() {
+        return;
+    }
     benilla_formats::wow_data_or_skip!();
     let _l = ENV_LOCK
         .lock()
@@ -543,6 +627,9 @@ fn plate_globals(app: &bevy::app::App) -> (Option<i64>, Option<i64>) {
 /// though the saved variable says on, and the saved variable is left as it was.
 #[test]
 fn on_the_stock_ui_friendly_plates_are_off_after_entry_and_the_saved_value_stands() {
+    if donor_layer_off() {
+        return;
+    }
     benilla_formats::wow_data_or_skip!();
     let _l = ENV_LOCK
         .lock()
@@ -573,6 +660,9 @@ fn on_the_stock_ui_friendly_plates_are_off_after_entry_and_the_saved_value_stand
 /// save, and after a `ReloadUI()` on the saved file.
 #[test]
 fn with_the_layer_plates_turned_on_stay_on_after_entry_and_reload() {
+    if donor_layer_off() {
+        return;
+    }
     benilla_formats::wow_data_or_skip!();
     let _l = ENV_LOCK
         .lock()
@@ -626,6 +716,9 @@ fn window_rect(s: &UiScript, window: &str, frame: &str) -> (f32, f32, f32, f32) 
 /// at 224 and 305, -420). The detail ends above the buttons, as the trainer's does at -407.
 #[test]
 fn the_error_log_lays_out_on_the_trainer_art_as_the_class_trainer_does() {
+    if donor_layer_off() {
+        return;
+    }
     benilla_formats::wow_data_or_skip!();
     let mut s = super::trainer_tests::trainer_script();
     // The file registers its commands in the stock table, which `ChatFrame.lua` declares and this
@@ -828,6 +921,9 @@ fn detail_geometry(s: &UiScript) -> (f64, f64, f64, f64, f64) {
 /// the text draws once, where the FontString drew it.
 #[test]
 fn the_error_logs_detail_is_a_box_holding_the_whole_error() {
+    if donor_layer_off() {
+        return;
+    }
     benilla_formats::wow_data_or_skip!();
     let (mut s, msg) = error_log_selected();
     assert_eq!(
@@ -917,6 +1013,9 @@ fn the_error_logs_detail_is_a_box_holding_the_whole_error() {
 /// (`SendMailScrollChildFrame`'s `OnMouseUp`, `MailFrame.xml:651`).
 #[test]
 fn a_click_below_the_detail_text_focuses_the_box_and_selects_it_all() {
+    if donor_layer_off() {
+        return;
+    }
     benilla_formats::wow_data_or_skip!();
     let (mut s, _) = error_log_selected();
     s.run("BenillaScriptLog_Record('short') BenillaScriptLogRow2:Click()")
@@ -961,6 +1060,9 @@ fn a_click_below_the_detail_text_focuses_the_box_and_selects_it_all() {
 /// the box with the new text.
 #[test]
 fn a_click_on_the_detail_selects_all_and_copy_returns_the_whole_error() {
+    if donor_layer_off() {
+        return;
+    }
     benilla_formats::wow_data_or_skip!();
     let (mut s, msg) = error_log_selected();
     assert_eq!(s.editbox_copy(), None, "nothing to copy before a click");
@@ -986,6 +1088,9 @@ fn a_click_on_the_detail_selects_all_and_copy_returns_the_whole_error() {
 /// box's resize, whose re-seat fires once more with the text unchanged (`0x77ba7f`).
 #[test]
 fn an_edit_of_the_detail_box_is_undone() {
+    if donor_layer_off() {
+        return;
+    }
     benilla_formats::wow_data_or_skip!();
     let (mut s, msg) = error_log_selected();
     click_detail(&mut s);
@@ -1043,6 +1148,9 @@ fn an_edit_of_the_detail_box_is_undone() {
 /// Escape clears the box's focus (`MailFrame.xml:644`), and leaves its text.
 #[test]
 fn escape_clears_the_detail_boxs_focus() {
+    if donor_layer_off() {
+        return;
+    }
     benilla_formats::wow_data_or_skip!();
     let (mut s, msg) = error_log_selected();
     click_detail(&mut s);

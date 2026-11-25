@@ -2496,7 +2496,7 @@ end)
 /// `TempEnchant1` once the saved variables are in.
 #[test]
 fn addons_load_against_the_buff_anchors_the_xml_gives() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let _l = ENV_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);

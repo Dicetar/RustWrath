@@ -2676,7 +2676,7 @@ mod tests {
     /// made (the server's) hears it from the unit feed with none up, and its cast is refused.
     #[test]
     fn a_tab_targets_and_the_addons_target_handler_casts() {
-        benilla_formats::wow_data_or_skip!();
+        benilla_formats::donor_data_or_skip!();
         let mut f = frame(true);
         with_factions(&mut f, FRIEND, &[]);
         spawn_mob(&mut f, &[(TEMPLATE, FOE)]);

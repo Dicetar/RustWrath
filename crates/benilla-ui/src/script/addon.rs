@@ -363,10 +363,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // In-game `0x48e390` returns seven: `name, title, notes, enabled, loadable, reason,
-    // security`, the flags the number 1 or nil (`lua_pushnumber` via `0x6f3810`). The glue's
-    // `0x46d460` returns eight, `url` fourth, from `0x51e180`: the server's, never the `.toc`'s.
-    // In-game no verb returns it.
+    // 3.3.5a `Script_GetAddOnInfo` (`Ui/GameUI_Scripts.cpp`, `0x00511240`) returns seven:
+    // `name, title, notes, enabled, loaded, reason, security`. Unlike the donor's fifth return
+    // (loadable), the Wrath fifth is the loaded flag, and the reason is nil once the addon loads.
     g.set(
         "GetAddOnInfo",
         lua.create_function(|lua, key: Value| {
@@ -375,8 +374,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 AddonKey::Index(i) => i,
                 AddonKey::Name(name) => match by_name(&model, &name) {
                     Some(i) => i,
-                    // An unknown name answers placeholders, the caller's own string first
-                    // (`0x48e401`).
+                    // An unknown name answers placeholders, the caller's own string first.
                     None => {
                         return Ok(MultiValue::from_vec(vec![
                             lua_str(lua, &name)?,
@@ -390,14 +388,25 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     }
                 },
             };
-            let reason = verdict(&model, i).token();
             let a = &model.addons[i];
+            let wrath = model.target == super::UiTarget::Wrath335;
+            let reason = if wrath && a.loaded {
+                None
+            } else {
+                verdict(&model, i).token()
+            };
+            // 3.3.5a's fifth return is the loaded flag; the donor's is loadable.
+            let fifth = if wrath {
+                flag(a.loaded)
+            } else {
+                flag(reason.is_none())
+            };
             Ok(MultiValue::from_vec(vec![
                 lua_str(lua, &a.name)?,
                 opt_str(lua, &a.title)?,
                 opt_str(lua, &a.notes)?,
                 flag(a.enabled),
-                flag(reason.is_none()),
+                fifth,
                 match &reason {
                     Some(r) => lua_str(lua, r)?,
                     None => Value::Nil,
@@ -412,11 +421,16 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, key: Value| {
             let model = lua.app_data_ref::<Model>().expect("model");
             let key = addon_key(lua, &model, &key, USAGE_LOADED)?;
-            // `0x51e6f0` answers the record's loaded byte `[rec+0x18]`; an unknown name pushes nil
-            // (`0x48e95b`).
-            Ok(flag(
-                row_of(&model, &key).is_some_and(|i| model.addons[i].loaded),
-            ))
+            // 3.3.5a returns two: `IsAddOnLoading`, then `IsAddOnLoaded`
+            // (`Ui/GameUI_Scripts.cpp`, `0x00511B30`). The load is synchronous here, so the
+            // transient loading flag is never observed; the second return is the record's loaded
+            // byte. The donor client returns the loaded flag alone.
+            let loaded = row_of(&model, &key).is_some_and(|i| model.addons[i].loaded);
+            if model.target == super::UiTarget::Wrath335 {
+                Ok(MultiValue::from_vec(vec![Value::Nil, flag(loaded)]))
+            } else {
+                Ok(MultiValue::from_vec(vec![flag(loaded)]))
+            }
         })?,
     )?;
 

@@ -570,7 +570,7 @@ fn the_cooldown_sweep_paints_over_the_buttons_icon_and_ring() {
 /// A cooldown-count addon's wrap of `CooldownFrame_SetTimer` leaves the sweep as it was.
 #[test]
 fn a_cooldown_count_addons_hook_leaves_the_sweep_running() {
-    benilla_formats::wow_data_or_skip!();
+    benilla_formats::donor_data_or_skip!();
     use benilla_ui::script::ActionState;
 
     let mut s = UiScript::new().unwrap();
