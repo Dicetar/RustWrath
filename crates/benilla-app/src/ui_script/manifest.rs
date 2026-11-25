@@ -302,11 +302,7 @@ fn load_layer(script: &UiScript) -> Vec<String> {
 /// The [`LAYER_MANIFEST`] entries the Wrath target loads: windows for RustWrath's own server
 /// features, which the stock 3.3.5a interface has no counterpart for. Each is written in closures
 /// that read neither `this` nor `self`, so it runs in either dialect.
-pub(super) const WRATH_LAYER: &[&str] = &[
-    "BackdropCompat.xml",
-    "BackdropCompat.lua",
-    "EnchantBottle.xml",
-];
+pub(super) const WRATH_LAYER: &[&str] = &["BackdropCompat.xml", "EnchantBottle.xml"];
 
 /// The in-game UI, the core, then the layer unless [`layer_enabled`] says no, then every
 /// third-party addon, on entering the world. The reference loads both in `CGGameUI::Initialize`
@@ -361,14 +357,7 @@ mod tests {
     /// `layer.toc` row, so a rename cannot drop it from the Wrath load silently.
     #[test]
     fn wrath_layer_is_the_bottle_panel_and_in_the_manifest() {
-        assert_eq!(
-            WRATH_LAYER,
-            [
-                "BackdropCompat.xml",
-                "BackdropCompat.lua",
-                "EnchantBottle.xml"
-            ]
-        );
+        assert_eq!(WRATH_LAYER, ["BackdropCompat.xml", "EnchantBottle.xml"]);
         let files = Addon::layer().toc.files;
         for name in WRATH_LAYER {
             assert!(
