@@ -8,19 +8,18 @@ use bevy::prelude::*;
 
 use crate::items::Items;
 use crate::names::NameCache;
-use crate::ui_quest::QuestGiver;
 
 use benilla_protocol::{SessionEvent, SessionEventKind};
 use benilla_ui::script::ReputationListOp;
 use bevy::ecs::system::SystemParam;
 
-use super::{clock_tick, ServerTime};
+use super::{clock_tick, HandlerSlot, SelfFacts, ServerTime, StandingLatches};
 use super::{
     AddonInfoMessage, CharActionResultMessage, CharListMessage, CharacterLoginFailedMessage,
     CinematicTriggeredMessage, ClientControlMessage, DisconnectedMessage, DroppedOpcodes,
     EnteredWorldMessage, GuidIndex, HomeBind, KnockBackMessage, LoggedOutMessage,
-    LoginFailedMessage, LoginQueuedMessage, LoginStageMessage, NetCommands, NetHandlerApp,
-    NetStatus, ObjectStore, PendingTransfer, Proficiencies, RealmListMessage, Reputations,
+    LoginFailedMessage, LoginQueuedMessage, LoginStageMessage, NetHandlerApp, NetStatus,
+    ObjectStore, PendingTransfer, Proficiencies, RealmListMessage, Reputations,
     RosterFailedMessage, SelfGuid, ServerWallClock, TeleportMessage, WorldAuthMessage,
     WorldportMessage,
 };
@@ -45,9 +44,11 @@ pub(super) fn register(app: &mut App) {
         .net_handler(K::Connected, on_connected)
         .net_handler(K::LoggedOut, on_logged_out)
         .net_handler(K::Disconnected, on_disconnected)
+        .net_slot(K::Disconnected, HandlerSlot::SessionCooldowns)
         .net_handler(K::Teleport, on_mover_edge)
         .net_handler(K::KnockBack, on_mover_edge)
         .net_handler(K::ClientControl, on_mover_edge)
+        .net_slot(K::Worldport, HandlerSlot::WorldportRoster)
         .net_handler(K::Worldport, on_worldport)
         .net_handler(K::TransferPending, on_transfer)
         .net_handler(K::TransferAborted, on_transfer)
@@ -57,8 +58,11 @@ pub(super) fn register(app: &mut App) {
         .net_handler(K::GameTimeSet, on_clock)
         .net_handler(K::ServerUnixTime, on_clock)
         .net_handler(K::Reputations, on_reputations)
+        .net_slot(K::ReputationDelta, HandlerSlot::StandingLines)
         .net_handler(K::ReputationDelta, on_reputation_delta)
+        .net_slot(K::ReputationDelta, HandlerSlot::StandingFollowUps)
         .net_handler(K::ForcedReactions, on_reputations)
+        .net_slot(K::ReputationVisible, HandlerSlot::VisibleLine)
         .net_handler(K::ReputationVisible, on_reputations)
         .net_handler(K::ReputationAtWar, on_reputations)
         .net_handler(K::BindPoint, on_player_store)
@@ -104,14 +108,12 @@ pub(crate) struct Bridge<'w, 's> {
     status: ResMut<'w, NetStatus>,
     names: ResMut<'w, NameCache>,
     items: ResMut<'w, Items>,
-    cooldowns: ResMut<'w, crate::spell::Cooldowns>,
     reputations: ResMut<'w, Reputations>,
     server_time: ResMut<'w, ServerTime>,
     wall_clock: ResMut<'w, ServerWallClock>,
     home_bind: ResMut<'w, HomeBind>,
     proficiencies: ResMut<'w, Proficiencies>,
     dropped: ResMut<'w, DroppedOpcodes>,
-    net: Res<'w, NetCommands>,
     stores: Query<'w, 's, &'static mut ObjectStore>,
     transports: Query<'w, 's, &'static crate::transport::Transport>,
 }
@@ -391,7 +393,6 @@ fn on_disconnected(
             &mut b.status,
             &mut b.names,
             &mut b.items,
-            &mut b.cooldowns,
             &mut e.transfer,
             &mut e.disconnects,
         );
@@ -452,8 +453,6 @@ fn on_worldport(
     In(ev): In<SessionEvent>,
     mut e: Edges,
     mut b: Bridge,
-    mut group: ResMut<crate::ui_party::GroupState>,
-    script: Option<NonSend<benilla_ui::script::UiScript>>,
     mut released: ResMut<super::objects::Released>,
     view_log: Option<ResMut<crate::ui_unit::views::ViewLog>>,
     player: Option<Res<crate::player::Player>>,
@@ -467,21 +466,7 @@ fn on_worldport(
         needs_ack,
     } = ev
     {
-        // Every streamed roster member is about to be freed, and each one's destructor runs the
-        // roster hook (`0x5dd6a0` → `0x4e85d0` mode 0).
-        let before = view_log.as_ref().map(|_| group.stats.clone());
-        crate::ui_party::net::roster_deactivated(
-            &mut group,
-            &b.index,
-            &b.stores,
-            &b.names,
-            script.as_deref(),
-            &b.net,
-        );
-        let mut view_log = view_log;
-        if let (Some(log), Some(before)) = (view_log.as_deref_mut(), before) {
-            log.records(&before, &group.stats);
-        }
+        // The roster hook ran in the slot ahead ([`HandlerSlot::WorldportRoster`]).
         log_teardown(view_log, &b);
         worldport(
             map_id,
@@ -606,8 +591,6 @@ fn refresh_player_reaction(b: &Bridge, lane: &mut crate::field_watch::NoticeLane
 fn on_reputations(
     In(ev): In<SessionEvent>,
     mut b: Bridge,
-    factions: Option<Res<crate::target::ring::Factions>>,
-    chat: Res<crate::ui_chat::ChatLog>,
     // Absent in a harness with no interface.
     mut lane: Option<ResMut<crate::field_watch::NoticeLane>>,
 ) {
@@ -634,17 +617,8 @@ fn on_reputations(
             }
         }
         SessionEvent::ReputationVisible { list_id } => {
-            // The chat line names the rank, so it reads the store before the flag lands.
-            if let (Some(f), Some(me)) = (factions.as_deref(), self_facts(&b)) {
-                let line = crate::ui_reputation::visible_line(
-                    list_id,
-                    &b.reputations,
-                    f.catalog(),
-                    me.race,
-                    me.class,
-                );
-                crate::ui_reputation::queue_standing_lines(line, f.catalog(), me.female, &chat);
-            }
+            // The chat line, which names the rank before the flag lands, ran in the slot ahead
+            // ([`HandlerSlot::VisibleLine`]).
             // A slot newly visible is added and sorted, which signals (`0x4d5738`, `0x4d574a` →
             // `0x4d5dab`).
             let listed = reputation_visible(list_id, &mut b.reputations);
@@ -664,63 +638,30 @@ fn on_reputations(
     }
 }
 
-/// What the reputation chat lines read of the local player.
-struct SelfFacts {
-    race: u8,
-    class: u8,
-    female: bool,
-}
-
-/// The local player's race, class and gender, `None` before the self object streams in; the
-/// reference's `0x62c670` prints nothing without it (`0x62c6bf`). The gender is the real one
-/// (`UNIT_FIELD_BYTES_0` byte 2), where `0x5ed5b0` reads `PLAYER_BYTES_3` byte 0 whole and so
-/// takes a drunk female on vmangos for a male: that byte carries the drunk bits.
+/// The local player's facts ([`SelfFacts`]), `None` before the self object streams in.
 fn self_facts(b: &Bridge) -> Option<SelfFacts> {
     let entity = *b.index.0.get(&b.self_guid.0?)?;
-    let store = b.stores.get(entity).ok()?;
-    Some(SelfFacts {
-        race: store.0.unit_race()?,
-        class: store.0.unit_class()?,
-        female: store.0.unit_gender() == Some(1),
-    })
+    SelfFacts::read(b.stores.get(entity).ok()?)
 }
 
-/// The chat lines read the deltas against the store, so they must run before the overwrite. The
-/// "increased by" line comes first, then the rank lines, as the reference's entry loop orders them
-/// (`0x4d57f5`, `0x4d5896`).
+/// The store's half of `SMSG_SET_FACTION_STANDING` (`0x4d5760`). The chat lines read the deltas
+/// against the store, so they run in the slot ahead of this one ([`HandlerSlot::StandingLines`]);
+/// what the latches drive outside the store runs in the slot after it
+/// ([`HandlerSlot::StandingFollowUps`]), which reads [`StandingLatches`].
 fn on_reputation_delta(
     In(ev): In<SessionEvent>,
     mut b: Bridge,
-    factions: Option<Res<crate::target::ring::Factions>>,
-    chat_log: Res<crate::ui_chat::ChatLog>,
-    mut quest: ResMut<QuestGiver>,
-    quest_log: Option<ResMut<crate::ui_quest_log::QuestLog>>,
+    factions: Option<Res<super::Factions>>,
+    mut out: ResMut<StandingLatches>,
     // Absent in a harness with no interface.
     mut lane: Option<ResMut<crate::field_watch::NoticeLane>>,
-    tutorials: Option<Res<crate::tutorial::Tutorials>>,
 ) {
     if let SessionEvent::ReputationDelta { standings } = ev {
-        crate::combat_log::chat::faction_standing(
-            &standings,
-            &b.reputations,
-            factions.as_deref(),
-            &chat_log,
-        );
-        if let (Some(f), Some(me)) = (factions.as_deref(), self_facts(&b)) {
-            let lines = crate::ui_reputation::delta_lines(
-                &standings,
-                &b.reputations,
-                f.catalog(),
-                me.race,
-                me.class,
-            );
-            crate::ui_reputation::queue_standing_lines(lines, f.catalog(), me.female, &chat_log);
-        }
         let ranks = factions
             .as_deref()
             .zip(self_facts(&b))
             .map(|(f, me)| (f.catalog(), me.race, me.class));
-        let latches = reputation_delta(standings, &mut b.reputations, ranks, &mut quest);
+        let latches = reputation_delta(standings, &mut b.reputations, ranks);
         b.reputations.list_ops.push(ReputationListOp::Standing {
             listed: latches.listed.clone(),
             flags_moved: latches.flags_moved,
@@ -731,32 +672,20 @@ fn on_reputation_delta(
                 lane.write(UPDATE_FACTION);
             }
         }
-        // A moved rank rebuilds the quest log and refreshes the active player's reaction once
-        // for the message (`0x4d58ea`-`0x4d5905`); `ranks` holds only with the player.
+        // A moved rank refreshes the active player's reaction once for the message
+        // (`0x4d58ea`-`0x4d5905`); `ranks` holds only with the player.
         if latches.rank_moved {
-            if let Some(mut quest_log) = quest_log {
-                quest_log.note_faction_rank_move();
-            }
             if let Some(lane) = lane.as_deref_mut() {
                 refresh_player_reaction(&b, lane);
-            }
-        }
-        // Reputation, with the active player held at level 10 or more (`0x4d5963`-`0x4d597a`).
-        let level = b
-            .self_guid
-            .0
-            .and_then(|g| b.index.0.get(&g))
-            .and_then(|e| b.stores.get(*e).ok())
-            .and_then(|s| s.0.unit_level());
-        if level.is_some_and(|l| l as i32 >= 10) {
-            if let Some(tutorials) = tutorials.as_deref() {
-                tutorials.trigger_now(crate::tutorial::id::REPUTATION);
             }
         }
         // The message's own signal, whatever it held, none included (`0x4d597f`-`0x4d5984`).
         if let Some(lane) = lane.as_deref_mut() {
             lane.write(UPDATE_FACTION);
         }
+        *out = StandingLatches {
+            rank_moved: latches.rank_moved,
+        };
     }
 }
 
@@ -919,7 +848,6 @@ fn disconnected(
     status: &mut NetStatus,
     names: &mut NameCache,
     items: &mut Items,
-    cooldowns: &mut crate::spell::Cooldowns,
     pending_transfer: &mut PendingTransfer,
     disconnects: &mut MessageWriter<DisconnectedMessage>,
 ) {
@@ -955,9 +883,7 @@ fn disconnected(
     // In-flight name queries died with the socket.
     names.clear_pending();
     items.clear_session();
-    // `SMSG_INITIAL_SPELLS` resends every running cooldown at world entry and `seed_initial`
-    // appends, so the list must not outlive the session.
-    cooldowns.clear_session();
+    // The cooldown list goes in the slot after this ([`HandlerSlot::SessionCooldowns`]).
 }
 
 /// `MSG_MOVE_TELEPORT_ACK`: only our own is forwarded to the controller, whose ack resumes our
@@ -1120,12 +1046,11 @@ fn reputation_delta(
     standings: Vec<(u32, i32)>,
     reputations: &mut Reputations,
     ranks: Option<(&benilla_formats::FactionCatalog, u8, u8)>,
-    quest: &mut QuestGiver,
 ) -> DeltaLatches {
     use benilla_formats::faction_flags as flag;
     let rank = |reputations: &Reputations, slot: usize| {
         ranks.map(|(catalog, race, class)| {
-            crate::ui_reputation::slot_rank(catalog, reputations, race, class, slot)
+            super::reputations::slot_rank(catalog, reputations, race, class, slot)
         })
     };
     let mut latches = DeltaLatches::default();
@@ -1152,8 +1077,6 @@ fn reputation_delta(
         latches.flags_moved |= flags != reputations.flags(i);
         reputations.set_flags(i, flags);
     }
-    // Standing feeds questgiver status (`SatisfyQuestReputation`); the reference re-asks here too.
-    quest.bump_reask();
     latches
 }
 
@@ -1255,7 +1178,6 @@ mod teardown_tests {
             .init_resource::<NetStatus>()
             .init_resource::<NameCache>()
             .init_resource::<Items>()
-            .init_resource::<crate::spell::Cooldowns>()
             .init_resource::<PendingTransfer>()
             .add_message::<DisconnectedMessage>();
         let avatar = app.world_mut().spawn_empty().id();
@@ -1271,7 +1193,6 @@ mod teardown_tests {
                       mut status: ResMut<NetStatus>,
                       mut names: ResMut<NameCache>,
                       mut items: ResMut<Items>,
-                      mut cooldowns: ResMut<crate::spell::Cooldowns>,
                       mut transfer: ResMut<PendingTransfer>,
                       mut out: MessageWriter<DisconnectedMessage>| {
                     disconnected(
@@ -1283,7 +1204,6 @@ mod teardown_tests {
                         &mut status,
                         &mut names,
                         &mut items,
-                        &mut cooldowns,
                         &mut transfer,
                         &mut out,
                     );
@@ -1330,9 +1250,7 @@ mod forced_reaction_tests {
     /// The registered session handlers over the plugin's own resources.
     fn app() -> App {
         let mut app = App::new();
-        app.add_plugins(crate::net::NetPlugin { connect: false })
-            .init_resource::<crate::spell::Cooldowns>()
-            .init_resource::<crate::ui_chat::ChatLog>();
+        app.add_plugins(crate::net::NetPlugin { connect: false });
         app
     }
 

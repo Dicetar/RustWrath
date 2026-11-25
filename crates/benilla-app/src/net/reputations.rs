@@ -137,3 +137,72 @@ impl Reputations {
         self.set_slots(&[]);
     }
 }
+
+/// The FactionTemplate.dbc catalog; absent if it failed to load, and the faction legs then read
+/// neutral. Shared, so the Lua API's copy of the relation inputs costs no table. Loaded by the
+/// target ring (`crate::target::ring`), read by the standing rule here.
+#[derive(Resource, Clone)]
+pub struct Factions(Arc<benilla_formats::FactionCatalog>);
+
+impl Factions {
+    /// The loaded catalog, as the client builds the resource once from the DBC.
+    pub(crate) fn new(catalog: benilla_formats::FactionCatalog) -> Self {
+        Self(Arc::new(catalog))
+    }
+
+    pub fn catalog(&self) -> &benilla_formats::FactionCatalog {
+        &self.0
+    }
+
+    /// Wrap a catalog, for tests; a running client builds the resource once, from the DBC.
+    #[cfg(test)]
+    pub(crate) fn from_catalog(catalog: benilla_formats::FactionCatalog) -> Self {
+        Self::new(catalog)
+    }
+}
+
+/// A slot's rank, as `0x4d63a0` reads it: the base of the faction whose `reputationIndex` is the
+/// slot, for `race`/`class` plus the slot's wire standing, ranked; a slot no faction holds stands at
+/// 0, so Neutral (`0x4d6390`).
+pub(crate) fn slot_rank(
+    catalog: &benilla_formats::FactionCatalog,
+    store: &Reputations,
+    race: u8,
+    class: u8,
+    slot: usize,
+) -> u8 {
+    let standing = catalog
+        .reputation_factions()
+        .find(|(_, f)| usize::try_from(f.rep_index) == Ok(slot))
+        .map_or(0, |(_, f)| f.base_for(race, class) + store.standing(slot));
+    benilla_formats::reputation_rank(standing)
+}
+
+/// What the reputation chat lines read of the local player.
+pub(crate) struct SelfFacts {
+    pub race: u8,
+    pub class: u8,
+    pub female: bool,
+}
+
+impl SelfFacts {
+    /// The local player's race, class and gender, `None` before the self object streams in; the
+    /// reference's `0x62c670` prints nothing without it (`0x62c6bf`). The gender is the real one
+    /// (`UNIT_FIELD_BYTES_0` byte 2), where `0x5ed5b0` reads `PLAYER_BYTES_3` byte 0 whole and so
+    /// takes a drunk female on vmangos for a male: that byte carries the drunk bits.
+    pub(crate) fn read(store: &super::ObjectStore) -> Option<Self> {
+        Some(Self {
+            race: store.0.unit_race()?,
+            class: store.0.unit_class()?,
+            female: store.0.unit_gender() == Some(1),
+        })
+    }
+}
+
+/// What the last `SMSG_SET_FACTION_STANDING` latched past the store, for the half of the handler
+/// that runs after it ([`super::handlers::HandlerSlot::StandingFollowUps`]).
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StandingLatches {
+    /// A slot's rank moved: the quest log rebuilds (`0x4d58ea`).
+    pub rank_moved: bool,
+}

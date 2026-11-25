@@ -387,7 +387,11 @@ impl LootState {
 
     /// Queue `step` on the lane behind everything stamped before it.
     fn queue(&mut self, step: Step) {
-        let stamp = crate::lanes::stamp();
+        self.queue_at(crate::lanes::stamp(), step);
+    }
+
+    /// [`Self::queue`] at a stamp taken where the step was raised.
+    fn queue_at(&mut self, stamp: crate::lanes::Stamp, step: Step) {
         let at = self.steps.partition_point(|(s, _)| *s < stamp);
         self.steps.insert(at, (stamp, step));
     }
@@ -421,22 +425,26 @@ impl LootState {
     /// A row's record answered, or was refused (`0x4c2ac0`; [`templates_outstanding`]'s
     /// deviation): at the last of the session's answers the copier ends (`0x4c2afc`), on the
     /// session's window as the answer finds it.
-    pub(crate) fn row_answered(&mut self, items: &Items) {
+    ///
+    /// `at` is the callback's place among the answer's ([`crate::net::LootAnswers`]).
+    pub(crate) fn row_answered(&mut self, items: &Items, at: crate::lanes::Stamp) {
         if self.copier_due && !self.records_pending(items) {
             self.copier_due = false;
-            self.queue(Step::CopierEnd(self.window.clone()));
+            self.queue_at(at, Step::CopierEnd(self.window.clone()));
         }
     }
 
     /// A push's record answered (`0x491ee0`): the first push waiting on `entry` runs, once its
     /// record is held.
-    pub(crate) fn push_answered(&mut self, items: &Items, entry: u32) {
+    ///
+    /// `at` is the callback's place among the answer's ([`crate::net::LootAnswers`]).
+    pub(crate) fn push_answered(&mut self, items: &Items, entry: u32, at: crate::lanes::Stamp) {
         if items.template(entry, 0, Ask::Read).is_none() {
             return;
         }
-        if let Some(at) = self.waiting.iter().position(|r| r.entry == entry) {
-            let r = self.waiting.remove(at);
-            self.queue(Step::Push(r));
+        if let Some(i) = self.waiting.iter().position(|r| r.entry == entry) {
+            let r = self.waiting.remove(i);
+            self.queue_at(at, Step::Push(r));
         }
     }
 
@@ -2334,7 +2342,7 @@ mod tests {
                 .resource_mut::<Items>()
                 .insert_template(TOUGH_JERKY, answer.clone());
             world.resource_scope(|world, mut loot: Mut<LootState>| {
-                loot.row_answered(world.resource::<Items>())
+                loot.row_answered(world.resource::<Items>(), crate::lanes::stamp())
             });
             app.update();
             assert_eq!(opens(&mut app), 1, "opened when the last template answered");

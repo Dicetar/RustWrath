@@ -74,6 +74,9 @@ const INSTRUMENT_CONSUMERS: &[&str] = &["capture", "crash", "debug_panel", "perf
 
 /// Is this file one of the app-side instruments?
 fn is_instrument_consumer(rel: &str) -> bool {
+    if rel.starts_with("benilla-dev/") {
+        return true;
+    }
     let root = rel.split(['/', '.']).next().unwrap_or("");
     INSTRUMENT_CONSUMERS.contains(&root)
 }
@@ -479,8 +482,8 @@ fn measure() -> BTreeMap<String, BTreeSet<String>> {
 }
 
 /// The crates split off `benilla-app` that sit on the game side of the engine: the assembler,
-/// whose boot names the engine's plugin groups, and the features and instruments moved on top of
-/// the core.
+/// whose boot names the engine's plugin groups, and the gameplay features moved on top of the core.
+/// `benilla-dev` is scanned too, but its instrument-only references stay outside the doorway.
 const GAME_CRATES: &[&str] = &["benilla-client", "benilla-souls", "benilla-dev"];
 
 /// Drop every entry that is only the path to another entry: `particles::buffer` and

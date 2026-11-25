@@ -1119,6 +1119,9 @@ pub(crate) struct CreatureAnimPlugin;
 impl Plugin for CreatureAnimPlugin {
     fn build(&self, app: &mut App) {
         net::register(app);
+        // The unit edits a handler's seams queued, applied with its commands, before the next
+        // event.
+        crate::net::NetHandlerApp::net_after_each_handler(app, apply_unit_edits);
         twist::plugin(app);
         lod::plugin(app);
         breath::register(app);

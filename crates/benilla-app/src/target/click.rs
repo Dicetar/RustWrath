@@ -2126,10 +2126,9 @@ pub(crate) fn clear_selection_on_world_teardown(mut selection: ResMut<Selection>
     selection.lit = None;
 }
 
-/// A deselect that applies only if the selection is this guid (`0x493910(guid, 1)`), raised by
-/// every loot close for a dead unit (`0x48f369`) and drained by [`clear_target_requests`].
-#[derive(bevy::ecs::message::Message, Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct DeselectGuid(pub(crate) u64);
+/// The guid-scoped deselect, in the core: the object manager's pet watcher raises it too. Drained
+/// by [`clear_target_requests`].
+pub(crate) use crate::net::DeselectGuid;
 
 /// `SetSelection(0,0)` (`0x493540` → `0x4938f3`): the deselect of Esc, a click off and a target's
 /// death, which stamps the outgoing target into the last-target pair before its teardown

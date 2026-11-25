@@ -127,10 +127,8 @@ pub(crate) fn close_npc_session_out_of_range<T: NpcSession>(
     }
 }
 
-/// The `"npc"` unit: the latched object's world entity and guid, read by the portrait booth as it
-/// reads [`crate::target::Selection`] for `"target"`.
-#[derive(Resource, Default, PartialEq, Eq, Debug)]
-pub struct InteractNpc(pub(crate) Option<Entity>, pub Option<u64>);
+/// The `"npc"` unit, in the core: the display facing reads it (row 9).
+pub use crate::net::InteractNpc;
 
 /// Publish the latch as [`InteractNpc`]. The reference's `"npc"` is the latch itself (`0x515c00`),
 /// a trade's partner included, but a quest panel opened from a bag item, the mailbox and the text

@@ -49,7 +49,11 @@ fn gameobject_anim_event(
 pub(super) fn register(app: &mut App) {
     use SessionEventKind as K;
     update::register(app);
+    app.init_resource::<LootAnswers>();
     app.net_handler(K::ItemTemplate, on_item)
+        .net_slot(K::ItemTemplate, super::HandlerSlot::ItemLootCallbacks)
+        .net_slot(K::ItemTemplate, super::HandlerSlot::ItemHeldLines)
+        .net_slot(K::ItemTemplate, super::HandlerSlot::ItemAuctionLists)
         .net_handler(K::ItemTime, on_item)
         .net_handler(K::ItemEnchantTime, on_item)
         .net_handler(K::MoveTimeSkipped, on_move_time_skipped)
@@ -79,7 +83,7 @@ pub(crate) struct Scene<'w, 's> {
     countdowns: Query<'w, 's, &'static mut crate::items::Countdowns>,
     remote: Query<'w, 's, &'static mut RemoteMotion>,
     modes: Query<'w, 's, &'static mut UnitMoveModes>,
-    xp_awarded: Query<'w, 's, (), With<crate::ui_chat::combat::watch::XpAwarded>>,
+    xp_awarded: Query<'w, 's, (), With<super::XpAwarded>>,
     riders: Query<'w, 's, &'static mut crate::transport::TransportRider>,
     /// A transport's clock, which only a new object's create sets (`0x5f7080`).
     anchors: Query<'w, 's, &'static crate::transport::TransportAnchor>,
@@ -98,13 +102,11 @@ pub(crate) struct Scene<'w, 's> {
     view_log: ResMut<'w, crate::ui_unit::views::ViewLog>,
     field_notices: ResMut<'w, crate::field_watch::NoticeLane>,
     /// The guid-scoped selection teardowns (`0x493910(guid, 1)`) a watcher raises.
-    deselect: MessageWriter<'w, crate::target::DeselectGuid>,
+    deselect: MessageWriter<'w, super::DeselectGuid>,
     speed_changes: MessageWriter<'w, SpeedChangeMessage>,
     self_moves: MessageWriter<'w, super::SelfMoveMessage>,
     hard_landings: MessageWriter<'w, crate::creature_anim::HardLanding>,
     names: Res<'w, NameCache>,
-    // The combat lines held for an item's name, shown where its answer lands.
-    chat: Option<Res<'w, crate::ui_chat::ChatLog>>,
     items: ResMut<'w, Items>,
     go_templates: ResMut<'w, GameObjectTemplates>,
     death_net: ResMut<'w, crate::death::DeathNet>,
@@ -113,11 +115,6 @@ pub(crate) struct Scene<'w, 's> {
     guilds: Option<ResMut<'w, crate::ui_guild::GuildState>>,
     // The own offer the coinage watcher trims (`0x5ddf30`).
     trade: Option<ResMut<'w, crate::ui_trade::TradeSession>>,
-    // The auction lists whose pages wait on an item's record, and the steps their tails take.
-    auction: Option<ResMut<'w, crate::ui_auction::AuctionOpen>>,
-    house: Option<ResMut<'w, crate::ui_auction::HouseLane>>,
-    // The loot window's rows and the pushes that wait on an item's record.
-    loot: Option<ResMut<'w, crate::ui_loot::LootState>>,
     pass: ResMut<'w, update::UpdatePass>,
     released: ResMut<'w, Released>,
     nets: Query<'w, 's, &'static NetEntity>,
@@ -157,9 +154,10 @@ fn item_watch<'a, 'w, 's>(
 /// Items past their create block: `SMSG_ITEM_QUERY_SINGLE_RESPONSE`, whose refusal the next
 /// create or entry change of that entry asks again; and the lifetime and enchant countdowns,
 /// written into the item's own [`crate::items::Countdowns`].
-fn on_item(In(ev): In<SessionEvent>, mut sc: Scene) {
+fn on_item(In(ev): In<SessionEvent>, mut sc: Scene, mut loot: ResMut<LootAnswers>) {
     match ev {
         SessionEvent::ItemTemplate { entry, info } => {
+            loot.0.clear();
             let info = info.map(|b| *b);
             debug!("net: item template {entry} → {info:?}");
             let answered = info.is_some();
@@ -206,17 +204,10 @@ fn on_item(In(ev): In<SessionEvent>, mut sc: Scene) {
                             .entry_run(guid, entry, &sc.bag_cache);
                         sc.item_lane.push(run);
                     }
-                    // A refusal releases a row ([`crate::ui_loot`]'s deviation).
-                    Cb::LootRow => {
-                        if let Some(loot) = sc.loot.as_mut() {
-                            loot.row_answered(&sc.items);
-                        }
-                    }
-                    Cb::Push => {
-                        if let Some(loot) = sc.loot.as_mut() {
-                            loot.push_answered(&sc.items, entry);
-                        }
-                    }
+                    // The loot window's, a refusal releasing a row (the window's deviation), run in
+                    // the slot after this at the place each takes here
+                    // ([`super::HandlerSlot::ItemLootCallbacks`]).
+                    Cb::LootRow | Cb::Push => loot.0.push((callback, crate::lanes::stamp())),
                     // The trade and the ammo getters' callbacks run for a ready record only
                     // (`0x4c0343`, `0x4c84f6`).
                     Cb::Trade if answered => sc.item_lane.push(crate::item_watch::Run {
@@ -235,16 +226,8 @@ fn on_item(In(ev): In<SessionEvent>, mut sc: Scene) {
                     Cb::Swap | Cb::AutoEquip => sc.items.run_with_vm(entry, callback, answered),
                 }
             }
-            // The combat log's callback for its held lines (`0x6294b0`), which writes each one
-            // whose item the cache now holds.
-            if let Some(chat) = &sc.chat {
-                chat.answer_landed(crate::ui_chat::Answer::Item(entry));
-            }
-            // The auction lists' callbacks (`0x4cc9bf`, `0x4ccbff`, `0x4cce4f`), a record or a
-            // refusal: a page that now waits on nothing runs its tail.
-            if let (Some(auction), Some(house)) = (sc.auction.as_mut(), sc.house.as_mut()) {
-                crate::ui_auction::record_answered(auction, house, &sc.items, entry);
-            }
+            // The combat log's held lines and the auction lists' callbacks run in the slots
+            // after this ([`super::HandlerSlot::ItemHeldLines`], `ItemAuctionLists`).
         }
         // `0x5e4f30`'s two arms share the item lookup (`0x468460`, `TYPEMASK_ITEM`) and differ on
         // a miss.
@@ -286,6 +269,12 @@ fn on_item(In(ev): In<SessionEvent>, mut sc: Scene) {
         _ => {}
     }
 }
+
+/// The loot window's record callbacks an item answer took (`0x4c2ac0` for a row, `0x491ee0` for a
+/// push), each with the stamp of its place among the answer's callbacks, for the slot after
+/// [`on_item`] ([`super::HandlerSlot::ItemLootCallbacks`]), which queues its steps at those stamps.
+#[derive(Resource, Default)]
+pub(crate) struct LootAnswers(pub(crate) Vec<(crate::items::RecordCallback, crate::lanes::Stamp)>);
 
 /// `CGItem_C::ApplyRecord`'s replay (`0x5ebde0` at `0x5d85b7`): the enchant times queued on the
 /// active player while the item was not held, set as of now. The record set-up reaches it only

@@ -3,6 +3,12 @@
 //! dropping an unregistered opcode in silence. Here each subsystem registers one-shot systems per
 //! [`SessionEventKind`] through [`NetHandlerApp::net_handler`], and the exclusive drain runs them
 //! in packet order, each seeing what the one before it did.
+//!
+//! The core names no feature here. Where a reference handler is the session's work with a
+//! feature's inline (a chat line, a pane's callback), the core registers its half and reserves a
+//! [`HandlerSlot`] beside it ([`NetHandlerApp::net_slot`]); the feature fills the slot from its own
+//! plugin ([`NetHandlerApp::net_handler_in`]), and its half runs where the core put it, whatever
+//! the plugin order.
 
 use std::collections::HashMap;
 
@@ -13,10 +19,83 @@ use bevy::prelude::*;
 /// One registered handler: the one-shot system and its name for the census.
 type Handler = (SystemId<In<SessionEvent>>, &'static str);
 
+/// A place the core reserves among one kind's handlers for a feature's half of a reference
+/// handler. Each names the reference work that stands there, never the module that fills it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum HandlerSlot {
+    /// `SMSG_SET_FACTION_STANDING`'s chat lines, the "increased by" line and then the rank lines
+    /// (`0x4d57f5`, `0x4d5896`), ahead of the store write they read the deltas against.
+    StandingLines,
+    /// What a standing message's latches drive past the store
+    /// ([`crate::net::StandingLatches`]): the quest log's rebuild on a moved rank (`0x4d58ea`),
+    /// the reputation tutorial (`0x4d5963`) and the questgiver re-ask.
+    StandingFollowUps,
+    /// `SMSG_SET_FACTION_VISIBLE`'s chat line, which names the rank before the flag lands.
+    VisibleLine,
+    /// A worldport's roster hook: every streamed roster member is about to be freed, and each
+    /// one's destructor runs it (`0x5dd6a0` → `0x4e85d0` mode 0), ahead of the teardown.
+    WorldportRoster,
+    /// `SMSG_ITEM_QUERY_SINGLE_RESPONSE`'s loot window callbacks (`0x4c2ac0` for a row,
+    /// `0x491ee0` for a push), each at the stamp the core took at its place among the record's
+    /// callbacks ([`crate::net::LootAnswers`]).
+    ItemLootCallbacks,
+    /// Past the record callbacks: the combat log's callback for its held lines (`0x6294b0`).
+    ItemHeldLines,
+    /// Then the auction lists' callbacks (`0x4cc9bf`, `0x4ccbff`, `0x4cce4f`).
+    ItemAuctionLists,
+    /// The session's end, past the bridge's teardown: the cooldown list, which
+    /// `SMSG_INITIAL_SPELLS` refills at the next world entry.
+    SessionCooldowns,
+}
+
+impl HandlerSlot {
+    /// The one kind this slot sits among.
+    pub(crate) fn kind(self) -> SessionEventKind {
+        use SessionEventKind as K;
+        match self {
+            Self::StandingLines | Self::StandingFollowUps => K::ReputationDelta,
+            Self::VisibleLine => K::ReputationVisible,
+            Self::WorldportRoster => K::Worldport,
+            Self::ItemLootCallbacks | Self::ItemHeldLines | Self::ItemAuctionLists => {
+                K::ItemTemplate
+            }
+            Self::SessionCooldowns => K::Disconnected,
+        }
+    }
+}
+
+/// One place in a kind's list: a handler, or a reserved slot and what filled it.
+enum Entry {
+    One(Handler),
+    Slot(HandlerSlot, Vec<Handler>),
+}
+
+impl Entry {
+    fn handlers(&self) -> &[Handler] {
+        match self {
+            Self::One(h) => std::slice::from_ref(h),
+            Self::Slot(_, hs) => hs,
+        }
+    }
+
+    #[cfg(test)]
+    fn handlers_mut(&mut self) -> &mut [Handler] {
+        match self {
+            Self::One(h) => std::slice::from_mut(h),
+            Self::Slot(_, hs) => hs,
+        }
+    }
+}
+
 /// The table, filled at plugin build and read by the drain.
 #[derive(Resource, Default)]
 pub(crate) struct NetHandlers {
-    by_kind: HashMap<SessionEventKind, Vec<Handler>>,
+    by_kind: HashMap<SessionEventKind, Vec<Entry>>,
+    /// Fills of a slot the core has not reserved yet: a plugin built ahead of the core's. The
+    /// reservation takes them, in their order.
+    early: HashMap<HandlerSlot, Vec<Handler>>,
+    /// What runs after every handler, before the next ([`NetHandlerApp::net_after_each_handler`]).
+    after_each: Vec<fn(&mut World)>,
     /// Every handler in registration order, for [`measure`].
     #[cfg(test)]
     registered: Vec<Handler>,
@@ -40,7 +119,25 @@ impl NetHandlers {
     pub(crate) fn census(&self) -> std::collections::BTreeMap<SessionEventKind, Vec<&'static str>> {
         self.by_kind
             .iter()
-            .map(|(k, v)| (*k, v.iter().map(|(_, n)| *n).collect()))
+            .map(|(k, v)| {
+                let names: Vec<&'static str> = v
+                    .iter()
+                    .flat_map(Entry::handlers)
+                    .map(|(_, n)| *n)
+                    .collect();
+                (*k, names)
+            })
+            .filter(|(_, names)| !names.is_empty())
+            .collect()
+    }
+
+    /// The slots filled and never reserved: their handlers never run.
+    #[cfg(test)]
+    pub(crate) fn unreserved(&self) -> Vec<HandlerSlot> {
+        self.early
+            .iter()
+            .filter(|(_, hs)| !hs.is_empty())
+            .map(|(s, _)| *s)
             .collect()
     }
 
@@ -50,7 +147,7 @@ impl NetHandlers {
     pub(crate) fn probe(&self, world: &mut World, ev: &SessionEvent) -> Vec<String> {
         let mut failed = Vec::new();
         for (kind, list) in &self.by_kind {
-            for (id, name) in list {
+            for (id, name) in list.iter().flat_map(Entry::handlers) {
                 if let Err(e) = world.run_system_with(*id, ev.clone()) {
                     failed.push(format!("{kind:?}: `{name}` — {e}"));
                 }
@@ -63,24 +160,63 @@ impl NetHandlers {
     fn push(&mut self, kind: SessionEventKind, handler: Handler, ahead: bool) {
         let list = self.by_kind.entry(kind).or_default();
         if ahead {
-            list.insert(0, handler);
+            list.insert(0, Entry::One(handler));
         } else {
-            list.push(handler);
+            list.push(Entry::One(handler));
         }
     }
 
-    /// Runs the event's handlers in registration order.
+    /// Reserves `slot` at the end of its kind's list, with whatever filled it already.
+    fn reserve(&mut self, kind: SessionEventKind, slot: HandlerSlot) {
+        assert_eq!(
+            slot.kind(),
+            kind,
+            "{slot:?} is reserved under the wrong kind"
+        );
+        let list = self.by_kind.entry(kind).or_default();
+        assert!(
+            !list
+                .iter()
+                .any(|e| matches!(e, Entry::Slot(s, _) if *s == slot)),
+            "{slot:?} is reserved twice"
+        );
+        let early = self.early.remove(&slot).unwrap_or_default();
+        list.push(Entry::Slot(slot, early));
+    }
+
+    /// Adds `handler` to `slot`, reserved or not yet.
+    fn fill(&mut self, kind: SessionEventKind, slot: HandlerSlot, handler: Handler) {
+        assert_eq!(slot.kind(), kind, "{slot:?} is filled under the wrong kind");
+        let reserved = self.by_kind.get_mut(&kind).and_then(|list| {
+            list.iter_mut().find_map(|e| match e {
+                Entry::Slot(s, hs) if *s == slot => Some(hs),
+                _ => None,
+            })
+        });
+        match reserved {
+            Some(hs) => hs.push(handler),
+            None => self.early.entry(slot).or_default().push(handler),
+        }
+    }
+
+    /// Runs the event's handlers in registration order, each slot's where it was reserved.
     fn run(&self, world: &mut World, ev: SessionEvent) {
         let Some(list) = self.by_kind.get(&SessionEventKind::from(&ev)) else {
             return;
         };
-        let Some(((last_id, last_name), rest)) = list.split_last() else {
-            return;
-        };
-        for (id, name) in rest {
-            call(world, *id, name, ev.clone());
+        let mut left: usize = list.iter().map(|e| e.handlers().len()).sum();
+        let mut ev = Some(ev);
+        for (id, name) in list.iter().flat_map(Entry::handlers) {
+            left -= 1;
+            // The last handler takes the event; the ones before it a copy each.
+            let this = if left == 0 { ev.take() } else { ev.clone() };
+            if let Some(this) = this {
+                call(world, *id, name, this);
+                for hook in &self.after_each {
+                    hook(world);
+                }
+            }
         }
-        call(world, *last_id, last_name, ev);
     }
 }
 
@@ -89,8 +225,6 @@ fn call(world: &mut World, id: SystemId<In<SessionEvent>>, name: &str, ev: Sessi
         // A plugin bug (most likely a missing resource), logged loud so the smoke gate sees it.
         error!("net: handler `{name}` did not run: {e}");
     }
-    // The unit edits a handler's seams queued, applied with its commands, before the next event.
-    crate::creature_anim::apply_unit_edits(world);
 }
 
 /// `app.net_handler(SessionEventKind::X, on_x)` registers a system taking `In<SessionEvent>`;
@@ -109,6 +243,23 @@ pub(crate) trait NetHandlerApp {
         kind: SessionEventKind,
         handler: impl IntoSystem<In<SessionEvent>, (), M> + 'static,
     ) -> &mut Self;
+
+    /// Runs `hook` after every handler, its commands applied, before the next: the animation
+    /// layer's unit edits a handler's seams queued.
+    fn net_after_each_handler(&mut self, hook: fn(&mut World)) -> &mut Self;
+
+    /// Reserves `slot` here, after `kind`'s handlers registered so far: the core's call, beside
+    /// its own half of the reference handler.
+    fn net_slot(&mut self, kind: SessionEventKind, slot: HandlerSlot) -> &mut Self;
+
+    /// [`Self::net_handler`] into a slot the core reserves: it runs where the slot sits, whatever
+    /// the plugin order. `kind` is the slot's own ([`HandlerSlot::kind`]).
+    fn net_handler_in<M>(
+        &mut self,
+        kind: SessionEventKind,
+        slot: HandlerSlot,
+        handler: impl IntoSystem<In<SessionEvent>, (), M> + 'static,
+    ) -> &mut Self;
 }
 
 impl NetHandlerApp for App {
@@ -117,7 +268,7 @@ impl NetHandlerApp for App {
         kind: SessionEventKind,
         handler: impl IntoSystem<In<SessionEvent>, (), M> + 'static,
     ) -> &mut Self {
-        register(self, kind, handler, false)
+        register(self, kind, handler, Place::Last)
     }
 
     fn net_handler_ahead<M>(
@@ -125,20 +276,55 @@ impl NetHandlerApp for App {
         kind: SessionEventKind,
         handler: impl IntoSystem<In<SessionEvent>, (), M> + 'static,
     ) -> &mut Self {
-        register(self, kind, handler, true)
+        register(self, kind, handler, Place::Ahead)
     }
+
+    fn net_after_each_handler(&mut self, hook: fn(&mut World)) -> &mut Self {
+        self.world_mut()
+            .get_resource_or_init::<NetHandlers>()
+            .after_each
+            .push(hook);
+        self
+    }
+
+    fn net_slot(&mut self, kind: SessionEventKind, slot: HandlerSlot) -> &mut Self {
+        self.world_mut()
+            .get_resource_or_init::<NetHandlers>()
+            .reserve(kind, slot);
+        self
+    }
+
+    fn net_handler_in<M>(
+        &mut self,
+        kind: SessionEventKind,
+        slot: HandlerSlot,
+        handler: impl IntoSystem<In<SessionEvent>, (), M> + 'static,
+    ) -> &mut Self {
+        register(self, kind, handler, Place::In(slot))
+    }
+}
+
+/// Where a registration goes in its kind's list.
+enum Place {
+    Last,
+    Ahead,
+    In(HandlerSlot),
 }
 
 fn register<M>(
     app: &mut App,
     kind: SessionEventKind,
     handler: impl IntoSystem<In<SessionEvent>, (), M> + 'static,
-    ahead: bool,
+    place: Place,
 ) -> &mut App {
     let name = std::any::type_name_of_val(&handler);
     let id = app.world_mut().register_system(handler);
     let mut handlers = app.world_mut().get_resource_or_init::<NetHandlers>();
-    handlers.push(kind, (id, name), ahead);
+    match place {
+        Place::Last => handlers.push(kind, (id, name), false),
+        Place::Ahead => handlers.push(kind, (id, name), true),
+        Place::In(slot) => handlers.fill(kind, slot, (id, name)),
+    }
     #[cfg(test)]
     handlers.registered.push((id, name));
     app
@@ -165,7 +351,11 @@ pub(crate) fn measure(world: &mut World) {
             let again = world.register_boxed_system(system);
             handlers.registered[i].0 = again;
             for list in handlers.by_kind.values_mut() {
-                for entry in list.iter_mut().filter(|(at, _)| *at == id) {
+                for entry in list
+                    .iter_mut()
+                    .flat_map(Entry::handlers_mut)
+                    .filter(|(at, _)| *at == id)
+                {
                     entry.0 = again;
                 }
             }
@@ -268,6 +458,100 @@ mod tests {
         assert_eq!(log, vec!["logged_out_too", "logged_out"]);
     }
 
+    fn on_worldport_core(In(ev): In<SessionEvent>, mut log: ResMut<Log>) {
+        assert!(matches!(ev, SessionEvent::Worldport { .. }));
+        log.0.push("core".into());
+    }
+
+    fn on_worldport_half(In(_): In<SessionEvent>, mut log: ResMut<Log>) {
+        log.0.push("half".into());
+    }
+
+    fn on_worldport_listener(In(_): In<SessionEvent>, mut log: ResMut<Log>) {
+        log.0.push("listener".into());
+    }
+
+    fn worldport() -> SessionEvent {
+        SessionEvent::Worldport {
+            map_id: 0,
+            position: [0.0; 3],
+            orientation: 0.0,
+            needs_ack: false,
+        }
+    }
+
+    /// A slot runs where the core reserved it, whether its feature's plugin was built before the
+    /// core's or after it, ahead of the listeners registered after the core.
+    #[test]
+    fn a_slot_runs_where_it_was_reserved_whenever_it_was_filled() {
+        use SessionEventKind as K;
+        for fill_first in [true, false] {
+            let mut app = app();
+            if fill_first {
+                app.net_handler_in(
+                    K::Worldport,
+                    HandlerSlot::WorldportRoster,
+                    on_worldport_half,
+                );
+            }
+            app.net_slot(K::Worldport, HandlerSlot::WorldportRoster)
+                .net_handler(K::Worldport, on_worldport_core);
+            app.net_handler(K::Worldport, on_worldport_listener);
+            if !fill_first {
+                app.net_handler_in(
+                    K::Worldport,
+                    HandlerSlot::WorldportRoster,
+                    on_worldport_half,
+                );
+            }
+            let log = run(&mut app, vec![worldport()]);
+            assert_eq!(
+                log,
+                vec!["half", "core", "listener"],
+                "filled first: {fill_first}"
+            );
+            let table = app.world().resource::<NetHandlers>();
+            assert!(table.unreserved().is_empty());
+            assert_eq!(table.census()[&K::Worldport].len(), 3);
+        }
+    }
+
+    /// An empty slot runs nothing, and the census does not list it.
+    #[test]
+    fn an_empty_slot_is_skipped() {
+        use SessionEventKind as K;
+        let mut app = app();
+        app.net_slot(K::Worldport, HandlerSlot::WorldportRoster)
+            .net_handler(K::Worldport, on_worldport_core);
+        assert_eq!(run(&mut app, vec![worldport()]), vec!["core"]);
+        assert_eq!(
+            app.world().resource::<NetHandlers>().census()[&K::Worldport].len(),
+            1
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "wrong kind")]
+    fn a_slot_filled_under_another_kind_is_refused() {
+        app().net_handler_in(
+            SessionEventKind::LoggedOut,
+            HandlerSlot::WorldportRoster,
+            on_logged_out,
+        );
+    }
+
+    /// Every slot a feature filled is one the core reserved; a fill of an unreserved slot would
+    /// never run.
+    #[test]
+    fn every_filled_slot_on_the_built_client_is_reserved() {
+        let app = crate::game_plugins::schedule_tests::headless_client_unrun();
+        let unreserved = app.world().resource::<NetHandlers>().unreserved();
+        assert!(
+            unreserved.is_empty(),
+            "filled, never reserved: {unreserved:?}"
+        );
+    }
+
     /// A kind with no handler is a decoded packet dropped in silence, as the reference does.
     #[test]
     fn every_session_event_kind_has_one_owner() {
@@ -339,12 +623,26 @@ mod tests {
             }
             let text = regex_lite_strip_comments(&std::fs::read_to_string(&path).expect("source"))
                 .replace("net_handler_ahead(", "net_handler(");
-            for call in text.split("net_handler(").skip(1) {
+            // A slot's fill names its kind, then the slot, then the handler.
+            let calls = text
+                .split("net_handler(")
+                .skip(1)
+                .map(|c| (c, false))
+                .chain(text.split("net_handler_in(").skip(1).map(|c| (c, true)));
+            for (call, slotted) in calls {
                 let Some((args, _)) = call.split_once(')') else {
                     continue;
                 };
                 let Some((kind, handler)) = args.split_once(',') else {
                     continue;
+                };
+                let handler = if slotted {
+                    match handler.split_once(',') {
+                        Some((_, handler)) => handler,
+                        None => continue,
+                    }
+                } else {
+                    handler
                 };
                 let kind = kind.trim().rsplit("::").next().unwrap_or_default();
                 // rustfmt breaks a long call one argument a line, with a trailing comma.

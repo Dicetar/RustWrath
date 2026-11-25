@@ -36,6 +36,14 @@ pub(crate) struct CastAtPlayer {
     pub(crate) seq: u64,
 }
 
+/// The session's end, past the bridge's teardown: `SMSG_INITIAL_SPELLS` resends every running
+/// cooldown at world entry and `seed_initial` appends, so the list must not outlive the session.
+fn on_session_end(In(ev): In<SessionEvent>, mut cooldowns: ResMut<Cooldowns>) {
+    if let SessionEvent::Disconnected { .. } = ev {
+        cooldowns.clear_session();
+    }
+}
+
 /// Register the spell's handlers; called from [`super::SpellPlugin`].
 pub(super) fn register(app: &mut App) {
     use SessionEventKind as K;
@@ -65,7 +73,12 @@ pub(super) fn register(app: &mut App) {
         .net_handler(K::ChannelStart, on_channel)
         .net_handler(K::ChannelUpdate, on_channel)
         .net_handler(K::AuraDuration, on_aura_duration)
-        .net_handler(K::SpellModifier, on_spell_modifier);
+        .net_handler(K::SpellModifier, on_spell_modifier)
+        .net_handler_in(
+            K::Disconnected,
+            crate::net::HandlerSlot::SessionCooldowns,
+            on_session_end,
+        );
 }
 
 /// The cast lifecycle's state and catalogs, which every handler here folds its packet into,

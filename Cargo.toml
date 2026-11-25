@@ -69,6 +69,15 @@ lto = "off"
 # on Windows full debuginfo made dx's fat link write a 2.5 GB PDB, 78 s of a 131 s restart build.
 debug = "line-tables-only"
 
+# Opt-level 0 for the crates nothing in play runs each frame, so their code generation is cheap:
+# the instruments (every per-frame system there returns at once until its panel, toggle or probe
+# run is on; a probe run's own systems are slower, the game's are not) and the boot assembler.
+[profile.dev.package.benilla-dev]
+opt-level = 0
+
+[profile.dev.package.benilla-client]
+opt-level = 0
+
 # The shipping build (`--profile ship`): fat LTO measures -1.0 cpu_ms (-5 %) against `release`,
 # which stays the measured profile because fat LTO's link time would tax every iteration.
 # `-Ctarget-cpu=native` is not set: it is not portable.

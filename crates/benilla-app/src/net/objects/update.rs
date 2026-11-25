@@ -23,6 +23,7 @@ use benilla_ui::script::UiScript;
 use bevy::prelude::*;
 
 use super::super::motion::{pose_transform, wire_yaw};
+use super::super::XpAwarded;
 use super::super::{
     write_fields, FieldChanged, Guid, NetEntity, NetHandlerApp, ObjectStore, UnitMoveModes,
     UnitSpeeds,
@@ -31,7 +32,6 @@ use super::{item_watch, object_create, object_move, CreateBlock, Landing, Scene}
 use crate::field_watch::{Notified, Sent};
 use crate::query_cache::Ask;
 use crate::transport::TransportRider;
-use crate::ui_chat::combat::watch::XpAwarded;
 use benilla_world::vis_chain::VisChainOnly;
 
 /// Registers the update packet's block handlers, its end, and `SMSG_DESTROY_OBJECT`.
@@ -40,7 +40,7 @@ pub(super) fn register(app: &mut App) {
     app.init_resource::<UpdatePass>()
         .init_resource::<Released>()
         .init_resource::<ObjectList>()
-        .add_message::<crate::target::DeselectGuid>()
+        .add_message::<super::super::DeselectGuid>()
         .net_handler(K::ObjectCreate, on_object_create)
         .net_handler(K::ItemCreate, on_item_create)
         .net_handler(K::ObjectValues, on_object_values)
@@ -1021,7 +1021,7 @@ fn notify(sc: &mut Scene, guid: u64, block: Notified, bridged: bool) {
                 .and_then(|&e| sc.stores.get(e).ok())
                 .is_some_and(|s| s.is_unit());
             if !held {
-                sc.deselect.write(crate::target::DeselectGuid(old));
+                sc.deselect.write(super::super::DeselectGuid(old));
             }
         }
     }
