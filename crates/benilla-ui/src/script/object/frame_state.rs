@@ -15,6 +15,28 @@ use super::{decode_id, draw_layer_from_str, frame_handle_of, frame_wrapper, stra
 
 /// Populate `m`'s visibility, hierarchy, strata, backdrop and input methods.
 pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
+    if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
+        // Stock `SecureTemplates.lua` calls this on every secure-header child. The host has no
+        // taint to allow, so the method only has to exist.
+        m.set(
+            "AllowAttributeChanges",
+            lua.create_function(|lua, this: Table| {
+                frame_handle_of(lua, &this)?;
+                Ok(())
+            })?,
+        )?;
+        // 3.3.5a's fixed-strata/level flags stop a stray SetFrameStrata; the host has no taint to
+        // protect, so the setters accept their flag and leave the current layout.
+        for name in ["SetFixedFrameStrata", "SetFixedFrameLevel"] {
+            m.set(
+                name,
+                lua.create_function(|lua, (this, _flag): (Table, Value)| {
+                    frame_handle_of(lua, &this)?;
+                    Ok(())
+                })?,
+            )?;
+        }
+    }
     // Show / Hide / visibility. SetShown is a Wrath installed-mod extension below;
     // no 1.12 method table registers it.
     m.set(

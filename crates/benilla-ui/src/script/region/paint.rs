@@ -157,6 +157,18 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
             )?;
         }
     }
+    if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
+        // 3.3.5a's SetColorTexture(r,g,b[,a]) is the colour form of SetTexture under a name the
+        // later API promoted.
+        m.set(
+            "SetColorTexture",
+            lua.create_function(
+                |lua, (this, r, g, b, a): (Table, Value, Value, Value, Value)| {
+                    set_texture(lua, this, r, g, b, a)
+                },
+            )?,
+        )?;
+    }
     m.set(
         "SetTexture",
         // The path form reads one argument (`0x770200`), the colour form (`0x770360`) up to four,

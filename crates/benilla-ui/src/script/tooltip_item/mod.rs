@@ -602,6 +602,22 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
         })?,
     )?;
 
+    // 3.3.5a socket probes. The guild-bank/socket item snapshots are not held by the VM, so the
+    // methods accept their arguments and leave the tooltip as it was; Pawn hooks
+    // `SetExistingSocketGem` and must not see a nil method. The donor surface does not grow.
+    if lua
+        .app_data_ref::<crate::script::Model>()
+        .expect("model")
+        .target
+        == crate::script::UiTarget::Wrath335
+    {
+        for name in ["SetSocketGem", "SetExistingSocketGem"] {
+            m.set(
+                name,
+                lua.create_function(|_, _args: mlua::MultiValue| Ok(()))?,
+            )?;
+        }
+    }
     // GameTooltip:SetInventoryItem(unit, slot [, nameOnly]) -> hasItem, hasCooldown, repairCost
     // (`0x532ee0`), three as `PaperDollFrame.lua:741` reads them; the arity is that consumer's,
     // not byte-read as `SetBagItem`'s two is (`0x534985`). Unit-keyed through `Model::inv_slot`:

@@ -1300,17 +1300,17 @@ fn seat_a_session(script: &mut UiScript) {
     // and no ammo.
     {
         let mut slots: benilla_ui::script::InventorySlots = Default::default();
-        slots[1] = Some(equip_slot(12640, "Lionheart Helm"));
-        slots[5] = Some(equip_slot(11726, "Bloodmail Hauberk"));
-        slots[16] = Some(equip_slot(871, "Flurry Axe"));
+        slots[1] = Some(equip_slot(script.target(), 12640, "Lionheart Helm"));
+        slots[5] = Some(equip_slot(script.target(), 11726, "Bloodmail Hauberk"));
+        slots[16] = Some(equip_slot(script.target(), 871, "Flurry Axe"));
         script.set_inventory_slots(slots);
     }
     // The backpack: bag 0 is 16 slots from level 1. Bags 1..4 are equipped bags, which a fresh
     // character does not have, so they are not seated.
     {
         let mut slots = std::collections::HashMap::new();
-        slots.insert(1, bag_slot(6948, "Hearthstone", 1));
-        slots.insert(5, bag_slot(2589, "Linen Cloth", 12));
+        slots.insert(1, bag_slot(script.target(), 6948, "Hearthstone", 1));
+        slots.insert(5, bag_slot(script.target(), 2589, "Linen Cloth", 12));
         script.set_container(
             0,
             Some(benilla_ui::script::ContainerState {
@@ -1351,7 +1351,7 @@ fn seat_a_session(script: &mut UiScript) {
     // had, and no corpus addon is `## Secure:`. The auction class tree (`ItemClass.dbc` in the
     // browse menu's order) is read at file scope, as by `Auctioneer`'s `AucCore.lua:105`.
     script.note_addon_info_reply(&[]);
-    script.set_auction_item_classes(auction_item_classes());
+    script.set_auction_item_classes(auction_item_classes(script.target()));
 
     // The talent tree (`Talent.dbc` x `TalentTab.dbc`), read by position at file scope
     // (`KTM_Data.lua:376`). Zero ranks and the full pool, a fresh 60 (51 points, `level - 9`), so a
@@ -1363,29 +1363,22 @@ fn seat_a_session(script: &mut UiScript) {
 
 /// The 1.12 auction browse tree, read once off the player's chain by the builder the live client
 /// uses (`ui_auction::categories`); empty with no install.
-fn auction_item_classes() -> Vec<benilla_ui::script::AuctionCategory> {
-    use std::sync::OnceLock;
-    static TREE: OnceLock<Vec<benilla_ui::script::AuctionCategory>> = OnceLock::new();
-    TREE.get_or_init(|| {
-        let Some(data) = benilla_formats::wow_data() else {
-            return Vec::new();
-        };
-        let Ok(mut chain) = benilla_formats::open_chain(&data) else {
-            return Vec::new();
-        };
-        let classes = benilla_formats::load_item_classes(&mut chain)
-            .ok()
-            .map(crate::ui_items::ItemClasses);
-        let subclasses = benilla_formats::load_item_sub_classes(&mut chain)
-            .ok()
-            .map(crate::ui_items::ItemSubClasses);
-        crate::ui_auction::categories(
-            benilla_ui::script::UiTarget::Vanilla112,
-            classes.as_ref(),
-            subclasses.as_ref(),
-        )
-    })
-    .clone()
+fn auction_item_classes(
+    target: benilla_ui::script::UiTarget,
+) -> Vec<benilla_ui::script::AuctionCategory> {
+    let Some(data) = benilla_formats::wow_data() else {
+        return Vec::new();
+    };
+    let Ok(mut chain) = benilla_formats::open_chain(&data) else {
+        return Vec::new();
+    };
+    let classes = benilla_formats::load_item_classes(&mut chain)
+        .ok()
+        .map(crate::ui_items::ItemClasses);
+    let subclasses = benilla_formats::load_item_sub_classes(&mut chain)
+        .ok()
+        .map(crate::ui_items::ItemSubClasses);
+    crate::ui_auction::categories(target, classes.as_ref(), subclasses.as_ref())
 }
 
 /// The seated character's talent pages, built by the live client's `build_pages`. The DBCs are read
@@ -1420,7 +1413,11 @@ fn talent_snapshot() -> Option<benilla_ui::script::TalentUiState> {
 }
 
 /// One seated equipment slot, at full durability.
-fn equip_slot(item_id: u32, name: &str) -> benilla_ui::script::InvSlotView {
+fn equip_slot(
+    target: benilla_ui::script::UiTarget,
+    item_id: u32,
+    name: &str,
+) -> benilla_ui::script::InvSlotView {
     benilla_ui::script::InvSlotView {
         item_id,
         icon: Some("Interface\\Icons\\INV_Misc_QuestionMark".into()),
@@ -1432,19 +1429,28 @@ fn equip_slot(item_id: u32, name: &str) -> benilla_ui::script::InvSlotView {
         // Full durability: the setter fires `UPDATE_INVENTORY_ALERTS`, and a worn item would light
         // DurabilityFrame.
         durability: Some((100, 100)),
-        link: Some(format!("|cff1eff00|Hitem:{item_id}:0:0:0|h[{name}]|h|r")),
+        link: Some(crate::ui_items::item_link_full_in_target(
+            target, item_id, 0, 0, 0, name, 2,
+        )),
         ..Default::default()
     }
 }
 
 /// One seated backpack slot.
-fn bag_slot(item_id: u32, name: &str, count: u32) -> benilla_ui::script::ContainerSlot {
+fn bag_slot(
+    target: benilla_ui::script::UiTarget,
+    item_id: u32,
+    name: &str,
+    count: u32,
+) -> benilla_ui::script::ContainerSlot {
     benilla_ui::script::ContainerSlot {
         texture: Some("Interface\\Icons\\INV_Misc_QuestionMark".into()),
         count,
         quality: Some(1),
         item_id,
-        link: Some(format!("|cffffffff|Hitem:{item_id}:0:0:0|h[{name}]|h|r")),
+        link: Some(crate::ui_items::item_link_full_in_target(
+            target, item_id, 0, 0, 0, name, 1,
+        )),
         ..Default::default()
     }
 }
@@ -1506,7 +1512,12 @@ fn load_addon_files(script: &UiScript, root: &Path, name: &str, toc: &Toc) -> Fi
         // The corpus is folder addons, never the chain: no `.sig` stands beside them.
         false,
     ));
+    // The 3.3.5a loader passes (addonName, private) to every top-level chunk; without the
+    // loading scope an addon reading `...` sees no arguments (Questie's Compat.lua:39,
+    // newlevelframe's localization, aux-addon's package all depend on it).
+    script.set_loading_addon(Some(name));
     let load = load_addon_files_in_context(script, root, name, toc);
+    script.set_loading_addon(None);
     script.swap_exec_context(outer);
     load
 }

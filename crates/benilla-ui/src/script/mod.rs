@@ -511,7 +511,8 @@ pub(crate) const REGION_LEAF_SHARED: [&str; 9] = [
 /// Texture-only, each in the client's Texture map (`0x87c128`): `GetVertexColor` though
 /// `SetVertexColor` is shared, and `SetGradientAlpha`, not FontString's `SetAlphaGradient`. 1.12
 /// has no Texture `SetSize` or `SetRotation` (PlayerModel's, `0x84f1fc`/`0x505f00`).
-pub(crate) const TEXTURE_ONLY_METHODS: [&str; 15] = [
+pub(crate) const TEXTURE_ONLY_METHODS: [&str; 16] = [
+    "SetColorTexture",
     "SetHorizTile",
     "SetVertTile",
     "SetGradient",
@@ -1939,6 +1940,13 @@ impl UiScript {
         self.lua
             .app_data_mut::<Model>()
             .expect("model app_data set")
+    }
+
+    /// Put the addon whose file is about to run under the loader's scope, so a 3.3.5a top-level
+    /// chunk receives its `(addonName, private)` arguments. The live walk does this in
+    /// `LoadScope`; a harness or embedding host calls this around its own file loop.
+    pub fn set_loading_addon(&self, name: Option<&str>) {
+        self.model_mut().loading_addon = name.map(str::to_owned);
     }
 
     fn push_error(&self, e: mlua::Error) {

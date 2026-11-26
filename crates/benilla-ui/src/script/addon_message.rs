@@ -152,34 +152,53 @@ fn install_wrath(lua: &Lua) -> mlua::Result<()> {
                         }
                         return Ok(());
                     }
-                    if text.len() > 255 {
-                        return Err(mlua::Error::runtime(
-                            "Addon prefix and message exceed the server's 255-byte limit",
-                        ));
-                    }
+                    // 12340 composes the message and lets the server drop a line over its
+                    // 255-byte cap; raising here would abort an addon the real client lets
+                    // continue. WM_FORGE3's chunking above is the one protocol that reassembles.
                     return super::calls::submit(
                         lua,
                         super::ScriptCall::AddonWhisper(AddonWhisper { text, target }),
                     );
                 }
-                // The installed AzerothCore ChatHandler rejects messages past 255 bytes. Refuse
-                // an oversized structured message rather than silently truncating its payload.
-                if text.len() > 255 {
-                    return Err(mlua::Error::runtime(
-                        "Addon prefix and message exceed the server's 255-byte limit",
-                    ));
-                }
+                // 12340 does not raise on an oversized line; the server drops it past 255
+                // bytes. Sending matches the reference and keeps a caller without pcall alive.
                 // CHANNEL is intentionally not admitted: the installed server's LANG_ADDON
                 // whitelist excludes it. WMBridge can then take its explicit WHISPER fallback.
                 let distribution = AddonDistribution::from_token(&distribution)
                     .ok_or_else(|| mlua::Error::runtime("Unknown addon chat type"))?;
+                // 12340 sends RAID as PARTY when no raid group is active; the server drops a
+                // RAID line from a non-raid group, so without this every addon broadcast in a
+                // five-man is silently lost.
+                let in_raid = {
+                    let model = lua.app_data_ref::<Model>().expect("model app_data");
+                    !model.party.raid.is_empty()
+                };
                 super::calls::submit(
                     lua,
-                    super::ScriptCall::AddonMessage(AddonSend { text, distribution }),
+                    super::ScriptCall::AddonMessage(AddonSend {
+                        text,
+                        distribution: distribution.effective(in_raid),
+                    }),
                 )
             },
         )?,
-    )
+    )?;
+    // 4.1 prefix registration shims: addons that feature-test the Cataclysm names take their
+    // modern send path only when they exist; the 12340 binding itself has none. Registering a
+    // prefix is accepted, and the client does not filter inbound addon messages by it.
+    lua.globals().set(
+        "RegisterAddonMessagePrefix",
+        lua.create_function(|_, _prefix: Value| Ok(true))?,
+    )?;
+    lua.globals().set(
+        "IsAddonMessagePrefixRegistered",
+        lua.create_function(|_, _prefix: Value| Ok(false))?,
+    )?;
+    lua.globals().set(
+        "GetRegisteredAddonMessagePrefixes",
+        lua.create_function(|_, ()| Ok(mlua::MultiValue::new()))?,
+    )?;
+    Ok(())
 }
 
 /// `_snprintf(dst, 0x800, …)` writes at most 2047 bytes plus its NUL (`0x64a861`-`0x64a868`).

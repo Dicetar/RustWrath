@@ -129,3 +129,52 @@ Remaining, all single-addon or out-of-era: the 10 load failures (3 `table index 
 five session-start first errors (invalid frame handle, one `hooksecurefunc` shape, one nil call,
 Ace `EmbedPlugin`, one `format`). The real `reference/lua_globals_30300.tsv` still needs the
 stock client's capture addon run.
+
+## Night pass, 2026-11-26: corpus to 45/49 load, 43/49 session
+
+The remaining corpus failures were mostly harness fidelity, not client gaps. The survey now reports:
+
+- loaded without a load error: **45/49** (strict 43: two packages name files they do not ship)
+- survived a session start: **43/49**
+- drew something: **11/49**; survived being used: **8/49**
+
+Harness fixes (the big jump):
+
+- every 3.3.5a top-level chunk now receives `(addonName, private)` through
+  `UiScript::set_loading_addon`; this fixed `!!!garbageprotector`, `aux-addon`,
+  `newlevelframe` and Questie's `Compat.lua:39`;
+- the seated auction tree now comes from `categories(script.target(), ...)` instead of the
+  hardcoded 1.12 ten-row list, so Bagnon's `select(12, GetAuctionItemClasses())` finds Quest;
+- seated equipment/bag links use `item_link_full_in_target` (the 3.3.5a nine-field payload),
+  fixing Bagnon_Forever's `ToShortLink`;
+- the Wrath layer adds `DialogBorderOpaqueTemplate`, `InsetFrameTemplate`,
+  `MainHelpPlateButton`, `ActionBarButtonSpellActivationAlert`, `MicroButtonAlertTemplate`,
+  `ScrollFrameTemplate` and `ModelWithControlsTemplate`.
+
+Client/VM fixes:
+
+- secure P0: `scrub`, `forceinsecure`, `securecallfunction`, `Frame:AllowAttributeChanges`,
+  `RegisterStateDriver`/`UnregisterStateDriver` tolerate nil/empty, `RegisterAttributeDriver`
+  aliases, `RegisterUnitWatch`/`UnregisterUnitWatch`/`UnitWatchRegistered` fallbacks, and the
+  `SecureFrameTemplate`/`SecureHandlerDoubleClickTemplate`/`SecureHandlerMouseWheelTemplate`
+  template names;
+- addon messages: the 3.3.5a LANG_ADDON scheme is native (there is no send-addon opcode; the
+  LANG_ADDON chat message is the reference). Wrath `SendAddonMessage` now applies the RAID→PARTY
+  downgrade outside a raid, sends an oversized line instead of raising (the server drops it), and
+  provides the 4.1 `RegisterAddonMessagePrefix` family as a shim;
+- natives: `GetCritChance`, `GetExpertise`/percent, `GetShieldBlock`,
+  `GetDodgeBlockParryChanceFromDefense`, `GetCoinTextureString`, `Lerp`, `CreateVector2D`,
+  `IsModifierKeyDown`, `UnitPosition`, `GetPlayerInfoByGUID`, `GetUnitPitch`, `GetQuestLink`;
+- widget methods: `Texture:SetHorizTile/SetVertTile/SetColorTexture`,
+  `FontString:SetWordWrap`, `ColorSelect:GetColorAlpha`, `EditBox:SetCursorPosition`,
+  `Slider:SetObeyStepOnDrag/SetStepsPerPage`, `GameTooltip:SetSocketGem/SetExistingSocketGem`;
+- `collectgarbage` accepts the 5.1 `step`/`setstepmul`/`incremental` controls;
+  `SetFixedFrameStrata`/`SetFixedFrameLevel` are accepted; `hooksecurefunc` tolerates a missing
+  target or a table+function value on a Wrath VM; `showQuestTrackingTooltips` is seated.
+
+Remaining: 4 load failures (three are the harness's missing Spell.dbc catalog — the production
+client installs it — and one nil value), and 2 session first errors: Bartender's
+`GetFrameHandle`/`IsFrameHandle` path (MoP-era addon) and Details' Ace `EmbedPlugin` (modern
+Details). GatherMate2 (Classic/MoP TOC), aux-addon (TBC) and zzzmopitemtooltips (MoP) are out of
+the Wrath target. The UI-probe column stays 0/49; it is the harness's probe bound, not a load
+result.

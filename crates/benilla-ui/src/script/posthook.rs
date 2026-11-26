@@ -49,6 +49,11 @@ fn register(lua: &Lua, args: MultiValue) -> mlua::Result<()> {
             let (Some(Value::String(name)), Some(Value::Function(hook))) =
                 (args.get(1), args.get(2))
             else {
+                // 4.x callers pass the function value itself; without a name there is nothing to
+                // replace, and the call is accepted rather than aborting the addon.
+                if matches!(args.get(1), Some(Value::Function(_))) {
+                    return Ok(());
+                }
                 return Err(invalid());
             };
             (table.clone(), name.clone(), hook.clone())
@@ -63,6 +68,11 @@ fn register(lua: &Lua, args: MultiValue) -> mlua::Result<()> {
     };
     let original: Value = table.get(name.clone())?;
     let Value::Function(original) = original else {
+        // A hook on a function the client has not defined (an optional Blizzard module, an
+        // out-of-era method) is a no-op on a Wrath VM; the donor keeps the reference's refusal.
+        if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
+            return Ok(());
+        }
         return Err(invalid());
     };
     let factory: Function = lua.named_registry_value(REG_FACTORY)?;

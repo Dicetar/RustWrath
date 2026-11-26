@@ -90,6 +90,7 @@ pub(crate) const WRATH_UI_CVARS: &[(&str, &str)] = &[
     ("UnitNameEnemyGuardianName", "0"),
     ("UnitNameEnemyTotemName", "0"),
     ("nameplateAllowOverlap", "1"),
+    ("showQuestTrackingTooltips", "1"),
     ("fctPeriodicEnergyGains", "0"),
     ("trackerFilter", "7"),
     ("showCastableBuffs", "0"),

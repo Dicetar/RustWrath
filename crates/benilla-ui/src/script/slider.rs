@@ -251,6 +251,27 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    if lua.app_data_ref::<Model>().expect("model app_data").target
+        == crate::script::UiTarget::Wrath335
+    {
+        // 3.3.5a Slider options: the step-on-drag flag and the page step. The thumb drag model
+        // does not step on the drag yet, so both accept their argument and keep the current
+        // behaviour.
+        m.set(
+            "SetObeyStepOnDrag",
+            lua.create_function(|lua, (this, _flag): (Table, Value)| {
+                with_slider(lua, &this, |_| ())?;
+                Ok(())
+            })?,
+        )?;
+        m.set(
+            "SetStepsPerPage",
+            lua.create_function(|lua, (this, _steps): (Table, Value)| {
+                with_slider(lua, &this, |_| ())?;
+                Ok(())
+            })?,
+        )?;
+    }
     lua.set_named_registry_value(REG_SLIDER_METHODS, m)?;
     Ok(())
 }

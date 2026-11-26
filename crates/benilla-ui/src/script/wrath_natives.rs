@@ -942,12 +942,168 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(combat_rating_pct(&model, 24).min(100.0))
         })?,
     )?;
+    // `GetCoinTextureString(copper)`: the stock money string with its three coin icons. The
+    // exact icon markup is the stock `MoneyFrame.lua` form; addons show it in tooltips.
+    lua.globals().set(
+        "GetCoinTextureString",
+        lua.create_function(|lua, copper: Value| {
+            let copper = lua.coerce_number(copper)?.unwrap_or(0.0).max(0.0) as i64;
+            let gold = copper / 10_000;
+            let silver = (copper % 10_000) / 100;
+            let copper = copper % 100;
+            let mut parts: Vec<String> = Vec::new();
+            if gold > 0 {
+                parts.push(format!(
+                    "{gold}|TInterface\\MoneyFrame\\UI-GoldIcon:0:0:2:0|t"
+                ));
+            }
+            if silver > 0 {
+                parts.push(format!(
+                    "{silver}|TInterface\\MoneyFrame\\UI-SilverIcon:0:0:2:0|t"
+                ));
+            }
+            if copper > 0 || parts.is_empty() {
+                parts.push(format!(
+                    "{copper}|TInterface\\MoneyFrame\\UI-CopperIcon:0:0:2:0|t"
+                ));
+            }
+            Ok(parts.join(" "))
+        })?,
+    )?;
+    // `Lerp(start, stop, alpha)`: 3.3.5a's linear interpolation helper.
+    lua.globals().set(
+        "Lerp",
+        lua.create_function(|lua, (start, stop, alpha): (Value, Value, Value)| {
+            let start = lua.coerce_number(start)?.unwrap_or(0.0);
+            let stop = lua.coerce_number(stop)?.unwrap_or(0.0);
+            let alpha = lua.coerce_number(alpha)?.unwrap_or(0.0);
+            Ok(start + (stop - start) * alpha)
+        })?,
+    )?;
+    // `CreateVector2D(x, y)`: the small vector object addons use for map offsets. The four
+    // accessors cover the common call sites; the trig helpers are not modelled.
+    lua.globals().set(
+        "CreateVector2D",
+        lua.create_function(|lua, (x, y): (Value, Value)| {
+            let x = lua.coerce_number(x)?.unwrap_or(0.0);
+            let y = lua.coerce_number(y)?.unwrap_or(0.0);
+            let v = lua.create_table()?;
+            v.set("x", x)?;
+            v.set("y", y)?;
+            v.set(
+                "GetXY",
+                lua.create_function(|_, this: mlua::Table| {
+                    Ok((this.get::<f64>("x")?, this.get::<f64>("y")?))
+                })?,
+            )?;
+            v.set(
+                "SetXY",
+                lua.create_function(|_, (this, x, y): (mlua::Table, f64, f64)| {
+                    this.set("x", x)?;
+                    this.set("y", y)?;
+                    Ok(())
+                })?,
+            )?;
+            v.set(
+                "GetX",
+                lua.create_function(|_, this: mlua::Table| this.get::<f64>("x"))?,
+            )?;
+            v.set(
+                "GetY",
+                lua.create_function(|_, this: mlua::Table| this.get::<f64>("y"))?,
+            )?;
+            v.set(
+                "IsZero",
+                lua.create_function(|_, this: mlua::Table| {
+                    Ok(this.get::<f64>("x")? == 0.0 && this.get::<f64>("y")? == 0.0)
+                })?,
+            )?;
+            Ok(v)
+        })?,
+    )?;
+    // `IsModifierKeyDown()`: any of Shift, Control or Alt, the 3.3.5a aggregate the stock
+    // keybind/click code reads.
+    lua.globals().set(
+        "IsModifierKeyDown",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let (shift, ctrl, alt) = model.modifiers;
+            Ok(super::binding_abi::flag(shift || ctrl || alt))
+        })?,
+    )?;
+    // `UnitPosition(unit)`: the unit's map UV and the displayed map id. Only the player and the
+    // party/raid lists the map state carries resolve; everything else is off the map at 0,0.
+    lua.globals().set(
+        "UnitPosition",
+        lua.create_function(|lua, unit: String| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let slot = |prefix: &str, list: &[Option<(f32, f32)>]| {
+                unit.strip_prefix(prefix)
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .filter(|n| *n >= 1)
+                    .and_then(|n| list.get(n - 1).copied().flatten())
+            };
+            let (x, y) = match unit.as_str() {
+                "player" => model.worldmap.player_uv,
+                u if u.starts_with("party") => slot("party", &model.worldmap.party_uv),
+                u if u.starts_with("raid") => slot("raid", &model.worldmap.raid_uv),
+                _ => None,
+            }
+            .unwrap_or((0.0, 0.0));
+            let map_id = lua
+                .globals()
+                .get::<mlua::Function>("GetCurrentMapAreaID")
+                .and_then(|f| f.call::<i64>(()))
+                .unwrap_or(0);
+            Ok((f64::from(x), f64::from(y), map_id))
+        })?,
+    )?;
+    // `GetPlayerInfoByGUID(guid)`: the seven class/race/sex/name/realm values for a player GUID
+    // the VM holds. The player's own GUID resolves from the character state; an unknown GUID
+    // answers nothing.
+    lua.globals().set(
+        "GetPlayerInfoByGUID",
+        lua.create_function(|lua, guid: String| -> mlua::Result<MultiValue> {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let parsed = guid
+                .strip_prefix("0x")
+                .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+                .or_else(|| guid.parse::<u64>().ok());
+            if parsed != Some(model.unit_guids.player) {
+                return Ok(MultiValue::new());
+            }
+            let Some(unit) = model.unit("player") else {
+                return Ok(MultiValue::new());
+            };
+            let text = |value: &Option<String>| -> mlua::Result<Value> {
+                match value {
+                    Some(s) => Ok(Value::String(lua.create_string(s)?)),
+                    None => Ok(Value::Nil),
+                }
+            };
+            Ok(MultiValue::from_vec(vec![
+                text(&unit.class)?,
+                text(&unit.class_file)?,
+                text(&unit.race)?,
+                text(&unit.race_file)?,
+                Value::Number(f64::from(unit.sex)),
+                text(&unit.name)?,
+                Value::String(lua.create_string(&model.realm_name)?),
+            ]))
+        })?,
+    )?;
     // `GetQuestLink(questID)`: 3.3.5a's quest hyperlink. The quest log projection does not
     // carry a built link yet, so the binding answers nil (an addon's link check sees "no link"
     // instead of a nil global).
     lua.globals().set(
         "GetQuestLink",
         lua.create_function(|_, _id: Value| Ok(Value::Nil))?,
+    )?;
+    // `GetUnitPitch(unit)`: the third-person camera pitch; the harness and private server have
+    // no camera feed, so the stock GatherHud session probe reads a level camera.
+    lua.globals().set(
+        "GetUnitPitch",
+        lua.create_function(|_, _unit: Value| Ok(0.0f64))?,
     )?;
     // `GetExpertise()`/`GetExpertisePercent()`: the main/offhand expertise pair the stock
     // paper doll reads (`PaperDollFrame.lua:1026`); the client has the rating tables, not a

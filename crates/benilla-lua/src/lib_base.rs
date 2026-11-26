@@ -651,10 +651,15 @@ fn collectgarbage_51(vm: &mut Vm, nargs: usize) -> R<usize> {
             }
             f64::from(vm.set_gc_pause(value as u32))
         }
-        b"step" | b"setstepmul" => {
-            return Err(
-                vm.rt_error("incremental collector controls are not implemented by this host")
-            )
+        // 5.1 addons tune the incremental collector; this host runs a full collector, so the
+        // controls are accepted and report a completed step.
+        b"step" => {
+            vm.full_gc();
+            1.0
+        }
+        b"setstepmul" | b"incremental" => {
+            let _ = vm.opt_int(nargs, 2, 0)?;
+            0.0
         }
         _ => return Err(vm.arg_error(1, "invalid option")),
     };

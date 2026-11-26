@@ -14,7 +14,7 @@
 //! handlers and a controller tick that evaluates the macro condition. None of those exist here,
 //! so callers must not treat the stored rows as enforcement.
 
-use mlua::{Lua, ObjectLike, Table, Value};
+use mlua::{Function, Lua, ObjectLike, Table, Value};
 
 use super::{Model, REG_FRAME_METHODS};
 use crate::widget::FrameHandle;
@@ -29,6 +29,9 @@ const SECURE_TEMPLATES: &[&str] = &[
     "SecureHandlerShowHideTemplate",
     "SecureHandlerMouseUpDownTemplate",
     "SecureHandlerDragTemplate",
+    "SecureHandlerDoubleClickTemplate",
+    "SecureHandlerMouseWheelTemplate",
+    "SecureFrameTemplate",
 ];
 
 /// Fallback button/header templates registered under a non-client context (`Some(...)`) so bare
@@ -140,17 +143,23 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "RegisterStateDriver",
         lua.create_function(|lua, (frame, state, condition): (Table, Value, Value)| {
             let owner = super::object::frame_handle_of(lua, &frame)?;
-            let state = text_arg(
-                lua,
-                &state,
-                "Usage: RegisterStateDriver(frame, state, condition)",
-            )?;
+            // 12340's SecureStateDriver.lua silently ignores a nil/empty state or condition;
+            // raising here would abort the secure-header setup an addon expects to tolerate.
+            let Some(state) = lua.coerce_string(state)? else {
+                return Ok(());
+            };
+            let state = state.to_string_lossy();
+            if state.is_empty() {
+                return Ok(());
+            }
             validate_state(&state).map_err(mlua::Error::runtime)?;
-            let condition = text_arg(
-                lua,
-                &condition,
-                "Usage: RegisterStateDriver(frame, state, condition)",
-            )?;
+            let Some(condition) = lua.coerce_string(condition)? else {
+                return Ok(());
+            };
+            let condition = condition.to_string_lossy();
+            if condition.is_empty() {
+                return Ok(());
+            }
             validate_condition(&condition).map_err(mlua::Error::runtime)?;
             {
                 let mut model = lua.app_data_mut::<Model>().expect("model app_data");
@@ -170,7 +179,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "UnregisterStateDriver",
         lua.create_function(|lua, (frame, state): (Table, Value)| {
             let owner = super::object::frame_handle_of(lua, &frame)?;
-            let state = text_arg(lua, &state, "Usage: UnregisterStateDriver(frame, state)")?;
+            let Some(state) = lua.coerce_string(state)? else {
+                return Ok(());
+            };
+            let state = state.to_string_lossy();
+            if state.is_empty() {
+                return Ok(());
+            }
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             if let Some(rows) = model.secure_drivers.get_mut(&key(owner)) {
                 rows.remove(&state);
@@ -180,6 +195,35 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             }
             Ok(())
         })?,
+    )?;
+    // Cataclysm's attribute-driver names are aliases of the state-driver store; a 4.x-style
+    // addon that calls them gets the same bounded behaviour instead of a nil global.
+    if let Ok(register) = lua.globals().get::<Function>("RegisterStateDriver") {
+        lua.globals().set("RegisterAttributeDriver", register)?;
+    }
+    if let Ok(unregister) = lua.globals().get::<Function>("UnregisterStateDriver") {
+        lua.globals().set("UnregisterAttributeDriver", unregister)?;
+    }
+    // 12340's SecureStateDriver.lua supplies the real unit watch; these fallbacks keep a bare
+    // harness VM from answering nil. The unit-existence projection is not wired here.
+    lua.globals().set(
+        "RegisterUnitWatch",
+        lua.create_function(|lua, (frame, as_state): (Table, Value)| {
+            super::object::frame_handle_of(lua, &frame)?;
+            let _ = as_state;
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set(
+        "UnregisterUnitWatch",
+        lua.create_function(|lua, frame: Table| {
+            super::object::frame_handle_of(lua, &frame)?;
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set(
+        "UnitWatchRegistered",
+        lua.create_function(|_, _frame: Table| Ok(false))?,
     )?;
     Ok(())
 }
