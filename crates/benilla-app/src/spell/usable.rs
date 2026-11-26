@@ -634,6 +634,138 @@ pub(crate) fn can_afford(
     avail as i32 >= power_cost(d, store, skills, mods, &mut Unrecorded)
 }
 
+/// The 10-second base rune recharge duration (`CGRuneInfo::ComputeRuneSpellCooldown` `0x005EE7E0`).
+const RUNE_COOLDOWN_SECS: f64 = 10.0;
+const RUNE_COOLDOWN_MS: u32 = 10_000;
+
+/// When `rune` finishes recharging on the `GetTime` clock (`ui_now` if already ready).
+fn rune_ready_at(rune: &crate::wrath::WrathRuneSlot, ui_now: f64) -> f64 {
+    if rune.cooldown == u8::MAX {
+        return ui_now;
+    }
+    let elapsed = (f64::from(rune.cooldown) / 255.0) * RUNE_COOLDOWN_SECS;
+    let start = (rune.received_at - elapsed).max(0.0);
+    let ready_at = start + RUNE_COOLDOWN_SECS;
+    if ready_at <= ui_now {
+        ui_now
+    } else {
+        ready_at
+    }
+}
+
+/// `CGRuneInfo::HasRunesForSpell` (`0x005EE5B0`): checks whether the player's ready Blood (0),
+/// Unholy (1), and Frost (2) runes — with ready Death runes (3) substituting for any deficit —
+/// cover `rune_cost` at `ui_now`. An empty `runes` slice (before rune initialization or on a
+/// non-Death-Knight session) does not refuse.
+pub(crate) fn has_runes_for_spell(
+    rune_cost: [u8; 3],
+    runes: &[crate::wrath::WrathRuneSlot],
+    ui_now: f64,
+) -> bool {
+    if rune_cost == [0, 0, 0] || runes.is_empty() {
+        return true;
+    }
+    let mut ready_typed = [0u8; 3];
+    let mut ready_death = 0u8;
+    for rune in runes {
+        if rune_ready_at(rune, ui_now) <= ui_now {
+            match rune.rune_type {
+                0..=2 => {
+                    let slot = &mut ready_typed[usize::from(rune.rune_type)];
+                    *slot = slot.saturating_add(1);
+                }
+                3 => ready_death = ready_death.saturating_add(1),
+                _ => {}
+            }
+        }
+    }
+    for t in 0..3 {
+        let deficit = rune_cost[t].saturating_sub(ready_typed[t]);
+        if ready_death < deficit {
+            return false;
+        }
+        ready_death -= deficit;
+    }
+    true
+}
+
+/// `CGRuneInfo::ComputeRuneSpellCooldown` (`0x005EE7E0`): when `rune_cost` is non-zero and not all
+/// required runes are ready at `ui_now`, computes the `(start_ms, duration_ms, enabled)` cooldown
+/// triple on the `GetTime` clock for the bottleneck rune requirement (with Death runes substituting
+/// for the latest-finishing required slots).
+pub(crate) fn compute_rune_spell_cooldown(
+    rune_cost: [u8; 3],
+    runes: &[crate::wrath::WrathRuneSlot],
+    ui_now: f64,
+) -> Option<(i64, u32, bool)> {
+    if rune_cost == [0, 0, 0] || runes.is_empty() || has_runes_for_spell(rune_cost, runes, ui_now) {
+        return None;
+    }
+    let mut typed_ready: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let mut death_ready: Vec<f64> = Vec::new();
+    for rune in runes {
+        let ready_at = rune_ready_at(rune, ui_now);
+        match rune.rune_type {
+            0..=2 => typed_ready[usize::from(rune.rune_type)].push(ready_at),
+            3 => death_ready.push(ready_at),
+            _ => {}
+        }
+    }
+    for list in &mut typed_ready {
+        list.sort_by(f64::total_cmp);
+    }
+    death_ready.sort_by(f64::total_cmp);
+
+    let mut required_ready: Vec<f64> = Vec::new();
+    for (t, &need) in rune_cost.iter().enumerate() {
+        for i in 0..usize::from(need) {
+            let ready = typed_ready[t].get(i).copied().unwrap_or(f64::INFINITY);
+            required_ready.push(ready);
+        }
+    }
+    // Sort descending so the earliest-ready Death runes substitute for the slowest typed deficits.
+    required_ready.sort_by(|a, b| b.total_cmp(a));
+    for (slot_ready, &death_at) in required_ready.iter_mut().zip(death_ready.iter()) {
+        if death_at < *slot_ready {
+            *slot_ready = death_at;
+        }
+    }
+    let bottleneck_ready = required_ready.into_iter().fold(ui_now, f64::max);
+    if !bottleneck_ready.is_finite() || bottleneck_ready <= ui_now {
+        return None;
+    }
+    let start_secs = (bottleneck_ready - RUNE_COOLDOWN_SECS).max(0.0);
+    #[allow(clippy::cast_possible_truncation)]
+    let start_ms = (start_secs * 1000.0).round() as i64;
+    Some((start_ms, RUNE_COOLDOWN_MS, true))
+}
+
+/// Folds [`compute_rune_spell_cooldown`] into a spell's normal cooldown triple, keeping whichever
+/// active sweep ends later on the `GetTime` clock.
+pub(crate) fn merge_rune_cooldown(
+    base: Option<(i64, u32, bool)>,
+    rune_cost: [u8; 3],
+    runes: &[crate::wrath::WrathRuneSlot],
+    ui_now: f64,
+) -> Option<(i64, u32, bool)> {
+    if matches!(base, Some((_, _, false))) {
+        return base;
+    }
+    let rune_cd = compute_rune_spell_cooldown(rune_cost, runes, ui_now);
+    match (base, rune_cd) {
+        (Some(b), Some(r)) => {
+            if r.0 + i64::from(r.1) > b.0 + i64::from(b.1) {
+                Some(r)
+            } else {
+                Some(b)
+            }
+        }
+        (Some(b), None) => Some(b),
+        (None, Some(r)) => Some(r),
+        (None, None) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1601,5 +1733,58 @@ mod tests {
         assert_eq!(usable(&c), (true, false));
         c.control_lost = true;
         assert_eq!(usable(&c), (false, false));
+    }
+
+    #[test]
+    fn rune_affordability_and_cooldown_cover_typed_and_death_runes() {
+        use crate::wrath::WrathRuneSlot;
+
+        let slot = |rune_type: u8, cooldown: u8, received_at: f64| WrathRuneSlot {
+            base_type: rune_type.min(2),
+            rune_type,
+            cooldown,
+            received_at,
+        };
+        // Standard 6-rune rack at t = 20.0:
+        // Blood 0 ready, Blood 1 recharging (started at 15.0, ready at 25.0)
+        // Unholy 0 recharging (started at 12.0, ready at 22.0), Unholy 1 recharging (started at 18.0, ready at 28.0)
+        // Frost 0 ready, Frost 1 converted to Death rune and ready.
+        let runes = vec![
+            slot(0, 255, 10.0),
+            slot(0, 0, 15.0),
+            slot(1, 0, 12.0),
+            slot(1, 0, 18.0),
+            slot(2, 255, 10.0),
+            slot(3, 255, 10.0),
+        ];
+
+        // 1 Blood (e.g. Blood Strike): Blood 0 is ready.
+        assert!(has_runes_for_spell([1, 0, 0], &runes, 20.0));
+        assert_eq!(compute_rune_spell_cooldown([1, 0, 0], &runes, 20.0), None);
+
+        // 1 Unholy + 1 Frost (e.g. Obliterate): Frost 0 is ready and Death rune (slot 5) substitutes for Unholy!
+        assert!(has_runes_for_spell([0, 1, 1], &runes, 20.0));
+        assert_eq!(compute_rune_spell_cooldown([0, 1, 1], &runes, 20.0), None);
+
+        // 2 Unholy: Death rune covers 1 Unholy immediately, second Unholy needs Unholy 0 (ready at 22.0, started at 12.0 = 12_000 ms).
+        assert!(!has_runes_for_spell([0, 2, 0], &runes, 20.0));
+        assert_eq!(
+            compute_rune_spell_cooldown([0, 2, 0], &runes, 20.0),
+            Some((12_000, 10_000, true))
+        );
+        // Once ui_now reaches 22.0, Unholy 0 finishes recharging so 2 Unholy becomes affordable.
+        assert!(has_runes_for_spell([0, 2, 0], &runes, 22.0));
+        assert_eq!(compute_rune_spell_cooldown([0, 2, 0], &runes, 22.0), None);
+
+        // Merge with a shorter GCD (started at 19_000 ms, duration 1_500 ms -> ends at 20_500 ms vs rune 22_000 ms).
+        assert_eq!(
+            merge_rune_cooldown(Some((19_000, 1_500, true)), [0, 2, 0], &runes, 20.0),
+            Some((12_000, 10_000, true))
+        );
+        // Merge with a longer spell cooldown (started at 19_000 ms, duration 30_000 ms -> ends at 49_000 ms).
+        assert_eq!(
+            merge_rune_cooldown(Some((19_000, 30_000, true)), [0, 2, 0], &runes, 20.0),
+            Some((19_000, 30_000, true))
+        );
     }
 }

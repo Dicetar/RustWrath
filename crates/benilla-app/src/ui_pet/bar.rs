@@ -359,6 +359,9 @@ pub(super) fn feed_pet_bar(
             if !resignalled {
                 fires.post("PET_BAR_UPDATE", vec![]);
             }
+            if script.possess_bar_active() {
+                fires.post("UPDATE_POSSESS_BAR", vec![]);
+            }
         }
     })
 }

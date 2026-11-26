@@ -144,6 +144,28 @@ impl MapCatalog {
         self.battleground.get(&map_id)
     }
 
+    /// Every `Map.dbc` row with `InstanceType == 3` (battleground) that carries a display name
+    /// and battleground metadata, ordered by `map_id`.
+    pub fn battleground_maps(&self) -> Vec<(u32, &str, &MapBattlegroundColumns)> {
+        let mut rows: Vec<_> = self
+            .instance_types
+            .iter()
+            .filter_map(|(&map_id, &ty)| {
+                if ty != 3 {
+                    return None;
+                }
+                let name = self.names.get(&map_id)?.as_str();
+                if name.is_empty() {
+                    return None;
+                }
+                let cols = self.battleground.get(&map_id)?;
+                Some((map_id, name, cols))
+            })
+            .collect();
+        rows.sort_unstable_by_key(|&(id, _, _)| id);
+        rows
+    }
+
     /// Field 19 (`+0x4c`) for `map_id`: the area the whole map answers when its WDT holds one
     /// global WMO (`0x6703a0` reads it at `0x6703d1`, and a 0 fails the query). `None` only for an
     /// id with no row; the ordinary maps carry 0.

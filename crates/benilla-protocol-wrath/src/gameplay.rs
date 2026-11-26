@@ -290,6 +290,11 @@ pub fn decoder_family(opcode: u16) -> DecoderFamily {
         | MSG_PVP_LOG_DATA_SERVER
         | SMSG_CALENDAR_SEND_CALENDAR
         | SMSG_CALENDAR_COMMAND_RESULT
+        | SMSG_UPDATE_COMBO_POINTS
+        | SMSG_TOTEM_CREATED
+        | SMSG_START_MIRROR_TIMER
+        | SMSG_PAUSE_MIRROR_TIMER
+        | SMSG_STOP_MIRROR_TIMER
         | SMSG_CONVERT_RUNE
         | SMSG_RESYNC_RUNES
         | SMSG_ADD_RUNE_POWER => DecoderFamily::WrathSystems,
@@ -2849,6 +2854,28 @@ pub enum ServerEvent {
     RuneState(wrath_systems::RuneState),
     /// `SMSG_ADD_RUNE_POWER`: the mask of runes that became usable.
     RunePower(wrath_systems::RunePower),
+    /// `SMSG_UPDATE_COMBO_POINTS` (`0x39D`): packed combo target and combo point count.
+    ComboPoints(wrath_systems::ComboPointsUpdate),
+    /// `SMSG_TOTEM_CREATED` (`0x3C4`): 0-based totem slot, summoned guid, duration in ms, spell id.
+    TotemCreated(wrath_systems::TotemCreated),
+    /// `SMSG_START_MIRROR_TIMER` (`0x1D9`): start or restate a breath, fatigue, or feign-death timer.
+    MirrorTimerStart {
+        kind: u32,
+        remaining_ms: u32,
+        duration_ms: u32,
+        scale: i32,
+        paused: bool,
+        spell_id: u32,
+    },
+    /// `SMSG_PAUSE_MIRROR_TIMER` (`0x1DA`): pause or resume a mirror timer.
+    MirrorTimerPause {
+        kind: u32,
+        paused: bool,
+    },
+    /// `SMSG_STOP_MIRROR_TIMER` (`0x1DB`): stop a mirror timer.
+    MirrorTimerStop {
+        kind: u32,
+    },
     /// `SMSG_LOAD_EQUIPMENT_SET`: every saved gear set.
     EquipmentSetList(Vec<equipment_set::EquipmentSet>),
     /// `SMSG_EQUIPMENT_SET_ID`: the guid the server gave a saved set, 0 for a refusal.
@@ -3374,6 +3401,15 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_CONVERT_RUNE => wrath_systems::read_convert_rune(body).map(ServerEvent::RuneConvert),
         SMSG_RESYNC_RUNES => wrath_systems::read_resync_runes(body).map(ServerEvent::RuneState),
         SMSG_ADD_RUNE_POWER => wrath_systems::read_add_rune_power(body).map(ServerEvent::RunePower),
+        SMSG_UPDATE_COMBO_POINTS => {
+            wrath_systems::read_update_combo_points(body).map(ServerEvent::ComboPoints)
+        }
+        SMSG_TOTEM_CREATED => {
+            wrath_systems::read_totem_created(body).map(ServerEvent::TotemCreated)
+        }
+        SMSG_START_MIRROR_TIMER => read_start_mirror_timer(body),
+        SMSG_PAUSE_MIRROR_TIMER => read_pause_mirror_timer(body),
+        SMSG_STOP_MIRROR_TIMER => read_stop_mirror_timer(body),
         // Single-row combat-log packets.
         SMSG_SPELL_INSTAKILL_LOG => read_spell_instakill(body),
         SMSG_ENCHANTMENTLOG => read_enchant_log(body),
@@ -3406,6 +3442,46 @@ fn u8_body(b: &[u8]) -> Result<u8> {
         return Err(DecodeError::trailing(r.remaining()).into());
     }
     Ok(value)
+}
+
+fn read_start_mirror_timer(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let kind = r.u32()?;
+    let remaining_ms = r.u32()?;
+    let duration_ms = r.u32()?;
+    let scale = r.i32()?;
+    let paused = r.u8()? != 0;
+    let spell_id = r.u32()?;
+    if r.remaining() != 0 {
+        return Err(DecodeError::trailing(r.remaining()).into());
+    }
+    Ok(ServerEvent::MirrorTimerStart {
+        kind,
+        remaining_ms,
+        duration_ms,
+        scale,
+        paused,
+        spell_id,
+    })
+}
+
+fn read_pause_mirror_timer(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let kind = r.u32()?;
+    let paused = r.u8()? != 0;
+    if r.remaining() != 0 {
+        return Err(DecodeError::trailing(r.remaining()).into());
+    }
+    Ok(ServerEvent::MirrorTimerPause { kind, paused })
+}
+
+fn read_stop_mirror_timer(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let kind = r.u32()?;
+    if r.remaining() != 0 {
+        return Err(DecodeError::trailing(r.remaining()).into());
+    }
+    Ok(ServerEvent::MirrorTimerStop { kind })
 }
 
 fn read_xp_gain(b: &[u8]) -> Result<ServerEvent> {

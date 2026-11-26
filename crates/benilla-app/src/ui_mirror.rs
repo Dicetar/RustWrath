@@ -112,31 +112,50 @@ fn feed_mirror_timers(
                     _ => {}
                 }
             }
-            let name = ScriptValue::Str(script_name(kind).into());
+            let timer_name = script_name(kind);
+            let name = ScriptValue::Str(timer_name.into());
             let (event, args): (&str, Vec<ScriptValue>) = match edge {
-                MirrorTimerEdge::Start(start) => (
-                    "MIRROR_TIMER_START",
-                    vec![
-                        name,
-                        ScriptValue::Int(i64::from(start.remaining_ms)),
-                        ScriptValue::Int(i64::from(start.duration_ms)),
-                        ScriptValue::Int(i64::from(start.scale)),
-                        ScriptValue::Int(i64::from(start.paused)),
-                        ScriptValue::Str(caption(
-                            kind,
-                            spell_name(start.spell_id).as_deref(),
-                            &|key| benilla_ui::strings::global(script.lua(), key),
-                        )),
-                    ],
-                ),
+                MirrorTimerEdge::Start(start) => {
+                    let label = caption(
+                        kind,
+                        spell_name(start.spell_id).as_deref(),
+                        &|key| benilla_ui::strings::global(script.lua(), key),
+                    );
+                    script.set_wrath_mirror_timer_start(
+                        kind.to_wire() as usize,
+                        timer_name,
+                        i64::from(start.remaining_ms),
+                        i64::from(start.duration_ms),
+                        i64::from(start.scale),
+                        start.paused,
+                        &label,
+                    );
+                    (
+                        "MIRROR_TIMER_START",
+                        vec![
+                            name,
+                            ScriptValue::Int(i64::from(start.remaining_ms)),
+                            ScriptValue::Int(i64::from(start.duration_ms)),
+                            ScriptValue::Int(i64::from(start.scale)),
+                            ScriptValue::Int(i64::from(start.paused)),
+                            ScriptValue::Str(label),
+                        ],
+                    )
+                }
                 // The stock handler raises on this: it matches `arg1` as the timer name, then tests
                 // `arg1 > 0` (`MirrorTimer.lua:84-88`), 1.12's own bug. vmangos never sends it
                 // (`Player::SendMirrorTimers`); a repair belongs over the stock body, not here.
-                MirrorTimerEdge::Pause { paused, .. } => (
-                    "MIRROR_TIMER_PAUSE",
-                    vec![name, ScriptValue::Int(i64::from(paused))],
-                ),
-                MirrorTimerEdge::Stop { .. } => ("MIRROR_TIMER_STOP", vec![name]),
+                MirrorTimerEdge::Pause { paused, .. } => {
+                    script.set_wrath_mirror_timer_pause(kind.to_wire() as usize, paused);
+                    (
+                        "MIRROR_TIMER_PAUSE",
+                        vec![name, ScriptValue::Int(i64::from(paused))],
+                    )
+                }
+                MirrorTimerEdge::Stop { .. } => {
+                    script.set_wrath_mirror_timer_stop(kind.to_wire() as usize);
+                    ("MIRROR_TIMER_STOP", vec![name])
+                }
             };
             // One log line per edge: the bars live inside the VM, so this is their only outside
             // trace.

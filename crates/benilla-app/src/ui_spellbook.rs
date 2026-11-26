@@ -358,6 +358,23 @@ fn feed_spellbook(
                 changed = book_changed;
             }
             if spell_list_changed {
+                let mut totem_flyout: [Vec<u32>; 4] = Default::default();
+                for s in &spell_list {
+                    let Some(mask) = spells
+                        .catalog
+                        .get(s.spell_id)
+                        .map(|d| d.totem_slot_mask)
+                        .filter(|&m| m != 0)
+                    else {
+                        continue;
+                    };
+                    for (idx, bucket) in totem_flyout.iter_mut().enumerate() {
+                        if mask & (1u8 << idx) != 0 {
+                            bucket.push(s.spell_id);
+                        }
+                    }
+                }
+                script.set_wrath_totem_flyout_spells(totem_flyout);
                 script.set_spell_list(spell_list.clone());
                 memory.pushed_spell_list = spell_list;
                 if spell_list_structural_changed {

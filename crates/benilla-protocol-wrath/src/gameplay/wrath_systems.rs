@@ -102,6 +102,10 @@ pub const MAX_CALENDAR_TEXTURE: usize = 63;
 /// (`CGRuneInfo::m_runes[8]`, `RuneInfo.cpp:14`), so six is the server's own bound.
 pub const MAX_RUNES: usize = 6;
 
+/// `MAX_TOTEM_SLOT` (`Totem.h:27`, `Player_C.cpp`): four totem slots (Fire, Earth, Water, Air;
+/// 0..=3 on wire, 1..=4 in Lua).
+pub const MAX_TOTEM_SLOTS: u8 = 4;
+
 /// `CGBattlefieldInfo::m_scores[80]` (`BattlefieldInfo.cpp:806-808`): 40 per side.
 pub const MAX_PVP_SCORES: usize = 80;
 
@@ -1267,6 +1271,69 @@ pub fn read_add_rune_power(body: &[u8]) -> Result<RunePower> {
     Ok(power)
 }
 
+/// `SMSG_UPDATE_COMBO_POINTS` (`0x39D`, `Player::SendComboPoints` / `Player::ClearComboPoints`
+/// in `Player.cpp`; client `Packet_SMSG_UPDATE_COMBO_POINTS` / `CGPlayer_C::OnUpdateComboPoints`):
+/// `PackedGuid target, u8 points`.
+///
+/// Build 12340 removed `PLAYER_FIELD_COMBO_TARGET` from `UpdateFields.h` and leaves
+/// `PLAYER_FIELD_BYTES` byte 1 at zero, delivering combo-point target and count exclusively
+/// through this packet (`[0x00, 0x00]` when cleared).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ComboPointsUpdate {
+    pub target: u64,
+    pub points: u8,
+}
+
+pub fn read_update_combo_points(body: &[u8]) -> Result<ComboPointsUpdate> {
+    let mut r = Reader::new(body);
+    let update = ComboPointsUpdate {
+        target: r.packed_guid()?,
+        points: r.u8()?,
+    };
+    finish(&r)?;
+    Ok(update)
+}
+
+/// `SMSG_TOTEM_CREATED` (`0x3C4`, `Totem::InitSummon` in `Totem.cpp`; client
+/// `CGPlayer_C::OnTotemCreated` in `Player_C.cpp`): `u8 slot, u64 guid, u32 duration_ms,
+/// u32 spell_id`.
+///
+/// `slot` is 0-based (`0..4` for Fire, Earth, Water, Air; Lua `PLAYER_TOTEM_UPDATE` and
+/// `GetTotemInfo` use 1-based `1..=4`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TotemCreated {
+    pub slot: u8,
+    pub guid: u64,
+    pub duration_ms: u32,
+    pub spell_id: u32,
+}
+
+pub fn read_totem_created(body: &[u8]) -> Result<TotemCreated> {
+    let mut r = Reader::new(body);
+    let slot = r.u8()?;
+    if slot >= MAX_TOTEM_SLOTS {
+        return Err(DecodeError::invalid_value("totem slot out of 0..4 range")
+            .with_value(u32::from(slot))
+            .into());
+    }
+    let guid = r.u64()?;
+    let duration_ms = r.u32()?;
+    let spell_id = r.u32()?;
+    finish(&r)?;
+    Ok(TotemCreated {
+        slot,
+        guid,
+        duration_ms,
+        spell_id,
+    })
+}
+
+/// `CMSG_TOTEM_DESTROYED` (`0x414`, `WorldSession::HandleTotemDestroyed` in `SpellHandler.cpp`;
+/// client `Script_DestroyTotem`): `u8 slot` (0-based `0..4`).
+pub fn encode_totem_destroyed(slot: u8) -> Vec<u8> {
+    vec![slot]
+}
+
 // ---------------------------------------------------------------------------------------------
 // Vehicles
 // ---------------------------------------------------------------------------------------------
@@ -2290,6 +2357,56 @@ mod tests {
         assert_eq!(read_add_rune_power(&body).unwrap(), RunePower { mask: 16 });
         assert_prefixes_rejected(|b| read_add_rune_power(b).map(|_| ()), &body);
         assert_trailing_rejected(|b| read_add_rune_power(b).map(|_| ()), &body);
+    }
+
+    #[test]
+    fn update_combo_points_reads_packed_target_and_count() {
+        let body = [0x03u8, 0x34, 0x12, 4];
+        assert_eq!(
+            read_update_combo_points(&body).unwrap(),
+            ComboPointsUpdate {
+                target: 0x1234,
+                points: 4,
+            }
+        );
+        assert_prefixes_rejected(|b| read_update_combo_points(b).map(|_| ()), &body);
+        assert_trailing_rejected(|b| read_update_combo_points(b).map(|_| ()), &body);
+
+        let cleared = [0x00u8, 0x00];
+        assert_eq!(
+            read_update_combo_points(&cleared).unwrap(),
+            ComboPointsUpdate {
+                target: 0,
+                points: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn totem_created_and_destroyed_round_trip_wire_layout() {
+        let mut body = vec![2u8]; // Water totem slot (0-based)
+        body.extend_from_slice(&0xF130_0017_0000_0042u64.to_le_bytes());
+        body.extend_from_slice(&120_000u32.to_le_bytes());
+        body.extend_from_slice(&5394u32.to_le_bytes()); // Healing Stream Totem
+        assert_eq!(
+            read_totem_created(&body).unwrap(),
+            TotemCreated {
+                slot: 2,
+                guid: 0xF130_0017_0000_0042,
+                duration_ms: 120_000,
+                spell_id: 5394,
+            }
+        );
+        assert_prefixes_rejected(|b| read_totem_created(b).map(|_| ()), &body);
+        assert_trailing_rejected(|b| read_totem_created(b).map(|_| ()), &body);
+
+        let mut bad_slot = body.clone();
+        bad_slot[0] = 4;
+        assert_eq!(
+            classify_decode_failure(&read_totem_created(&bad_slot).unwrap_err()),
+            DecodeFailure::InvalidValue
+        );
+        assert_eq!(encode_totem_destroyed(2), vec![2u8]);
     }
 
     // -- vehicles -----------------------------------------------------------------------------

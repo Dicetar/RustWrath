@@ -3,11 +3,12 @@
 //! `OpenCalendar()` into the shared command tap. Nothing here predicts a rune or invents a date.
 
 use benilla_protocol_wrath::session::Phase;
-use benilla_ui::script::{ScriptValue, UiTarget};
+use benilla_ui::script::{ScriptValue, UiTarget, WrathTotemSlot};
 use bevy::prelude::*;
 
 use crate::net::{ClientCommand, NetCommands};
 use crate::script_calls::VmWith;
+use crate::ui_action::Spells;
 use crate::ui_script::UiClock;
 use crate::wrath::{WrathVehicleSeats, WrathWorldView};
 
@@ -18,16 +19,17 @@ pub(crate) fn feed(
         Option<Res<'static, UiClock>>,
         Option<Res<'static, NetCommands>>,
         Option<Res<'static, WrathVehicleSeats>>,
+        Option<Res<'static, Spells>>,
     )>,
 ) {
-    vm.turn(|script, (world, clock, net, seats)| {
+    vm.turn(|script, (world, clock, net, seats, spells)| {
         let Some(script) = script else {
             return;
         };
         if script.target() != UiTarget::Wrath335 {
             script.clear_wrath_scoped_ui();
             return;
-        }
+        };
         let Some(world) = world.as_deref() else {
             script.clear_wrath_scoped_ui();
             return;
@@ -93,6 +95,42 @@ pub(crate) fn feed(
                 })
                 .collect();
             script.set_runes(&slots);
+        }
+
+        for (slot_idx, totem) in world.totems.iter().enumerate() {
+            let slot = slot_idx as u8;
+            let mapped = totem.map(|t| {
+                let (name, icon) = spells
+                    .as_deref()
+                    .and_then(|catalog| catalog.get(t.spell_id))
+                    .map(|spell| {
+                        (
+                            spell.name.clone(),
+                            spell.icon_path.clone().unwrap_or_default(),
+                        )
+                    })
+                    .unwrap_or_default();
+                let start_seconds = if t.received_at > 0.0 {
+                    t.received_at
+                } else {
+                    ui_now
+                };
+                WrathTotemSlot {
+                    guid: t.guid,
+                    spell_id: t.spell_id,
+                    name,
+                    icon,
+                    start_seconds,
+                    duration_seconds: f64::from(t.duration_ms) / 1000.0,
+                    revision: t.revision,
+                }
+            });
+            if script.set_wrath_totem(slot, mapped) {
+                script.fire_event(
+                    "PLAYER_TOTEM_UPDATE",
+                    vec![ScriptValue::Int(i64::from(slot + 1))],
+                );
+            }
         }
 
         match &world.calendar {
@@ -331,6 +369,19 @@ pub(crate) fn feed(
                     let _ = net.0.send(ClientCommand::VehicleSwitchSeat {
                         vehicle,
                         seat,
+                        session_epoch,
+                        world_generation,
+                    });
+                }
+                C::DestroyTotem {
+                    slot,
+                    session_epoch,
+                    world_generation,
+                } if session_epoch == world.session_epoch
+                    && world_generation == world.world_generation =>
+                {
+                    let _ = net.0.send(ClientCommand::DestroyTotem {
+                        slot,
                         session_epoch,
                         world_generation,
                     });

@@ -1966,6 +1966,7 @@ pub(super) fn writer_loop(
                         | ClientCommand::VehiclePrevSeat { .. }
                         | ClientCommand::VehicleNextSeat { .. }
                         | ClientCommand::VehicleSwitchSeat { .. }
+                        | ClientCommand::DestroyTotem { .. }
                         | ClientCommand::LearnPreviewTalents { .. } => Ok(()),
                     }
                 });

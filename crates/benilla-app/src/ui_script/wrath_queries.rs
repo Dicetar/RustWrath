@@ -75,12 +75,20 @@ impl SpellQueries<'_, '_> {
         } else {
             self.cooldowns.as_deref()?
         };
-        Some(
-            cooldowns
-                .info(id, 0, Some(definition), clock.anchor)
-                .ui_triple(clock.anchor, clock.ui_now)
-                .unwrap_or((0, 0, true)),
-        )
+        let base = cooldowns
+            .info(id, 0, Some(definition), clock.anchor)
+            .ui_triple(clock.anchor, clock.ui_now);
+        let merged = if !pet && definition.has_rune_cost() {
+            crate::spell::usable::merge_rune_cooldown(
+                base,
+                definition.rune_cost,
+                &world.runes,
+                clock.ui_now,
+            )
+        } else {
+            base
+        };
+        Some(merged.unwrap_or((0, 0, true)))
     }
 
     pub(crate) fn unit_auras(&self, guid: u64) -> Option<Vec<WrathAuraView>> {

@@ -134,8 +134,11 @@ fn honor_snapshot(
     let yesterday = f.player_yesterday_kills();
     let last_week = f.player_last_week_kills();
     let this_week = f.player_this_week_kills();
-    // Presence is tested on a private field: the public rank byte streams with the unit block.
-    session?;
+    // Presence is tested on a private field on 1.12; on Wrath, the raw player update window
+    // carries `PLAYER_FIELD_HONOR_CURRENCY` / `PLAYER_FIELD_ARENA_CURRENCY` even before kills.
+    if session.is_none() && raw.is_none() {
+        return None;
+    }
     // Today's honor contribution rides the Wrath player field window, not the 1.12 descriptor;
     // absent window or unsent field reads 0, the reference's unsent-field value.
     let session_honor = raw
@@ -216,8 +219,17 @@ pub(crate) fn feed_honor(
         if let Ok(store) = self_store.single() {
             if let Some(fresh) = honor_snapshot(store, raw) {
                 if memo.last.as_ref() != Some(&fresh) {
+                    let currency_changed = memo.last.is_some_and(|prev| {
+                        prev.honor_currency != fresh.honor_currency
+                            || prev.arena_currency != fresh.arena_currency
+                    });
                     script.set_honor(Some(fresh));
                     memo.last = Some(fresh);
+                    if currency_changed
+                        && script.target() == benilla_ui::script::UiTarget::Wrath335
+                    {
+                        script.fire_event("HONOR_CURRENCY_UPDATE", Vec::<ScriptValue>::new());
+                    }
                 }
             }
             // Melee crit chance from `PLAYER_CRIT_PERCENTAGE`; absent reads 0.
@@ -451,5 +463,75 @@ mod tests {
             .ask_reread();
         world.run_system_once(feed_name_line_strings).unwrap();
         assert_eq!(indexed(&world), 2 * first, "a rebuild's read asks it again");
+    }
+
+    #[test]
+    fn wrath_honor_and_arena_currency_flow_from_raw_fields_and_fire_update() {
+        use bevy::ecs::system::RunSystemOnce;
+        use benilla_protocol_wrath::fields;
+        use benilla_ui::script::UiTarget;
+
+        let mut app = App::new();
+        app.init_resource::<HonorFeedState>()
+            .init_resource::<InspectHonor>()
+            .init_resource::<crate::ui_inspect::InspectTarget>()
+            .init_resource::<crate::target::Selection>()
+            .init_resource::<crate::ui_party::GroupState>();
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        app.insert_resource(NetCommands(tx));
+
+        let script = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        script
+            .run(
+                r#"HONOR_EVENTS = 0
+                local f = CreateFrame("Frame")
+                f:RegisterEvent("HONOR_CURRENCY_UPDATE")
+                f:SetScript("OnEvent", function() HONOR_EVENTS = HONOR_EVENTS + 1 end)"#,
+            )
+            .unwrap();
+        app.insert_non_send_resource(script);
+
+        let me = app
+            .world_mut()
+            .spawn((
+                SelfPlayer,
+                ObjectStore(benilla_protocol::ObjectFields::default()),
+                crate::wrath::WrathPlayerRaw(benilla_protocol::ObjectFields::from_pairs(&[
+                    (fields::PLAYER_FIELD_HONOR_CURRENCY, 4200),
+                    (fields::PLAYER_FIELD_ARENA_CURRENCY, 950),
+                ])),
+            ))
+            .id();
+
+        app.world_mut().run_system_once(feed_honor).unwrap();
+        {
+            let s = app.world().non_send_resource::<UiScript>();
+            assert_eq!(
+                s.eval::<(i64, i64)>("return GetHonorCurrency()").unwrap(),
+                (4200, 75000)
+            );
+            assert_eq!(
+                s.eval::<(i64, i64)>("return GetArenaCurrency()").unwrap(),
+                (950, 10000)
+            );
+            assert_eq!(s.eval::<i64>("return HONOR_EVENTS").unwrap(), 0);
+        }
+
+        *app.world_mut()
+            .get_mut::<crate::wrath::WrathPlayerRaw>(me)
+            .unwrap() = crate::wrath::WrathPlayerRaw(benilla_protocol::ObjectFields::from_pairs(&[
+            (fields::PLAYER_FIELD_HONOR_CURRENCY, 5100),
+            (fields::PLAYER_FIELD_ARENA_CURRENCY, 950),
+        ]));
+        app.world_mut().run_system_once(feed_honor).unwrap();
+        {
+            let mut s = app.world_mut().non_send_resource_mut::<UiScript>();
+            s.resolve();
+            assert_eq!(
+                s.eval::<(i64, i64)>("return GetHonorCurrency()").unwrap(),
+                (5100, 75000)
+            );
+            assert_eq!(s.eval::<i64>("return HONOR_EVENTS").unwrap(), 1);
+        }
     }
 }

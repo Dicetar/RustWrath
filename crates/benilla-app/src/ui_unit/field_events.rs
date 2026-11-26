@@ -475,8 +475,21 @@ pub(crate) fn fire(
                 script.fire_event(global, vec![]);
             }
         }
-        // `0x5ddffa`.
-        FieldNotice::ComboPoints => script.fire_event("PLAYER_COMBO_POINTS", vec![]),
+        // `0x5ddffa`; 12340 `Packet_SMSG_UPDATE_COMBO_POINTS` / `CGPlayer_C::OnUpdateComboPoints`
+        // signals `UNIT_COMBO_POINTS` (`"player"`, and `"vehicle"` when vehicle-seated) alongside
+        // `PLAYER_COMBO_POINTS`.
+        FieldNotice::ComboPoints => {
+            if script.target() == benilla_ui::script::UiTarget::Wrath335 {
+                script.fire_event("UNIT_COMBO_POINTS", vec![super::player_token()]);
+                if script.vehicle_action_bar_active() {
+                    script.fire_event(
+                        "UNIT_COMBO_POINTS",
+                        vec![ScriptValue::Str("vehicle".to_owned())],
+                    );
+                }
+            }
+            script.fire_event("PLAYER_COMBO_POINTS", vec![]);
+        }
         FieldNotice::LevelUp(info) => level_up(script, &info),
         // Fired by [`NoticeFiring::fire`], which holds the slots, the banks, the names, the form
         // table, the aura cache and the skill lines.

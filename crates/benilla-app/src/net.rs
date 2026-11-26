@@ -1996,6 +1996,12 @@ pub enum ClientCommand {
         session_epoch: u64,
         world_generation: u64,
     },
+    /// `CMSG_TOTEM_DESTROYED` (`0x414`), 0-based slot `0..4`, scoped to the active Wrath world generation.
+    DestroyTotem {
+        slot: u8,
+        session_epoch: u64,
+        world_generation: u64,
+    },
     /// `CMSG_INSPECT`: the window paints from the streamed `PLAYER_VISIBLE_ITEM_*` fields; the
     /// send also sets our selection server-side (`MiscHandler.cpp:945`).
     Inspect {

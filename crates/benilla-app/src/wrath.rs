@@ -656,6 +656,23 @@ pub enum WrathFeedEvent {
         session_epoch: u64,
         world_generation: u64,
     },
+    /// `SMSG_UPDATE_COMBO_POINTS` (`0x39D`): packed combo-point target and count.
+    ComboPoints {
+        target: u64,
+        points: u8,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_TOTEM_CREATED` (`0x3C4`): 0-based totem slot (`0..4`), totem unit GUID, duration in
+    /// milliseconds, and summoning spell ID.
+    TotemCreated {
+        slot: u8,
+        guid: u64,
+        duration_ms: u32,
+        spell_id: u32,
+        session_epoch: u64,
+        world_generation: u64,
+    },
     /// `SMSG_ATTACKERSTATEUPDATE`: one melee swing's raw 12340 facts. Carries the scope so a
     /// delayed swing from a retired world never reaches the Wrath VM.
     AttackerState {
@@ -2347,6 +2364,17 @@ pub struct WrathRuneSlot {
     pub received_at: f64,
 }
 
+/// One active `SMSG_TOTEM_CREATED` (`0x3C4`) slot (`0..4`) with its `GetTime()` anchor and a
+/// monotonic revision so the UI feed emits `PLAYER_TOTEM_UPDATE` on every summon or replacement.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathTotemState {
+    pub guid: u64,
+    pub spell_id: u32,
+    pub duration_ms: u32,
+    pub received_at: f64,
+    pub revision: u64,
+}
+
 /// One decoded `SMSG_SPELLHEALLOG` (`0x150`, `Net/Types.h`) heal row with the world scope it
 /// belongs to, the UI clock at apply, and a monotonic sequence the UI feed uses to deliver each
 /// row exactly once. Body: packed target, packed caster, u32 spellId, u32 amount, u32 overheal,
@@ -2742,6 +2770,19 @@ pub struct WrathWorldView {
     /// The decoded Death Knight runes in wire order, empty until `SMSG_RESYNC_RUNES`. Each slot
     /// carries the 0..255 cooldown fraction and the `GetTime()` anchor it arrived on.
     pub runes: Vec<WrathRuneSlot>,
+    /// The last decoded `SMSG_UPDATE_COMBO_POINTS` (`0x39D`) `(points, target_guid)` pair in this
+    /// world scope (`(0, 0)` when cleared).
+    pub combo_points: (u8, u64),
+    /// Whether `combo_points` changed since the last `wrath_apply_world` pass so the local player's
+    /// synthesized `ObjectStore` fields (`714..716` and `1222` byte 1) and `FieldNotice::ComboPoints`
+    /// update even when no `SMSG_UPDATE_OBJECT` arrived in the same frame.
+    pub combo_points_dirty: bool,
+    /// Active player totem slots (`0..4`: Fire, Earth, Water, Air) populated by
+    /// `SMSG_TOTEM_CREATED` (`0x3C4`) and cleared when the summoned totem GUID leaves the world.
+    pub totems: [Option<WrathTotemState>; 4],
+    /// Monotonic revision bumped on every `SMSG_TOTEM_CREATED` so a re-summon in the same slot
+    /// triggers `PLAYER_TOTEM_UPDATE`.
+    pub totem_revision: u64,
     /// The last `SMSG_CALENDAR_SEND_CALENDAR` snapshot; `None` before the first reply.
     pub calendar: Option<WrathCalendar>,
     /// Whether a calendar reply has established the scoped snapshot.
@@ -2935,6 +2976,10 @@ impl Default for WrathWorldView {
             server_clock: None,
             played_time: None,
             runes: Vec::new(),
+            combo_points: (0, 0),
+            combo_points_dirty: false,
+            totems: [None; 4],
+            totem_revision: 0,
             calendar: None,
             calendar_fetched: false,
             calendar_revision: 0,
@@ -3147,6 +3192,58 @@ impl WrathWorldView {
             if index < 32 && mask & (1u32 << index) != 0 {
                 slot.cooldown = 255;
                 slot.received_at = received_at;
+            }
+        }
+    }
+
+    /// `SMSG_UPDATE_COMBO_POINTS` (`0x39D`): adopt the server's `(points, target)` pair and mark
+    /// the local player's projected descriptor dirty when it moves.
+    fn apply_combo_points(&mut self, points: u8, target: u64) {
+        let next = if points == 0 || target == 0 {
+            (0, 0)
+        } else {
+            (points, target)
+        };
+        if self.combo_points != next {
+            self.combo_points = next;
+            self.combo_points_dirty = true;
+        }
+    }
+
+    /// `SMSG_TOTEM_CREATED` (`0x3C4`): record or clear a 0-based totem slot (`0..4`).
+    fn apply_totem_created(
+        &mut self,
+        slot: u8,
+        guid: u64,
+        duration_ms: u32,
+        spell_id: u32,
+        received_at: f64,
+    ) {
+        let Some(entry) = self.totems.get_mut(usize::from(slot)) else {
+            return;
+        };
+        if guid == 0 || duration_ms == 0 || spell_id == 0 {
+            *entry = None;
+            return;
+        }
+        self.totem_revision = self.totem_revision.saturating_add(1);
+        *entry = Some(WrathTotemState {
+            guid,
+            spell_id,
+            duration_ms,
+            received_at,
+            revision: self.totem_revision,
+        });
+    }
+
+    /// Clear any totem slot whose summoned totem unit GUID was destroyed or left the world.
+    fn clear_totem_by_guid(&mut self, guid: u64) {
+        if guid == 0 {
+            return;
+        }
+        for slot in &mut self.totems {
+            if slot.is_some_and(|totem| totem.guid == guid) {
+                *slot = None;
             }
         }
     }
@@ -3700,6 +3797,9 @@ impl WrathWorldView {
     /// Clear every scoped rune/calendar/combat-log/LFG fact on a session end or world transfer.
     fn clear_rune_calendar(&mut self) {
         self.runes.clear();
+        self.combo_points = (0, 0);
+        self.combo_points_dirty = false;
+        self.totems = [None; 4];
         self.calendar = None;
         self.calendar_fetched = false;
         self.calendar_revision = 0;
@@ -6506,9 +6606,34 @@ fn translate_gameplay(
         | WrathGameplayEvent::RuneConvert(_)
         | WrathGameplayEvent::RuneState(_)
         | WrathGameplayEvent::RunePower(_)
+        | WrathGameplayEvent::ComboPoints(_)
+        | WrathGameplayEvent::TotemCreated(_)
         | WrathGameplayEvent::EquipmentSetList(_)
         | WrathGameplayEvent::EquipmentSetSaved(_)
         | WrathGameplayEvent::EquipmentSetUseResult(_) => Vec::new(),
+        WrathGameplayEvent::MirrorTimerStart {
+            kind,
+            remaining_ms,
+            duration_ms,
+            scale,
+            paused,
+            spell_id,
+        } => vec![SessionEvent::MirrorTimerStart(
+            benilla_protocol::messages::MirrorTimerStart {
+                kind,
+                remaining_ms,
+                duration_ms,
+                scale,
+                paused,
+                spell_id,
+            },
+        )],
+        WrathGameplayEvent::MirrorTimerPause { kind, paused } => {
+            vec![SessionEvent::MirrorTimerPause { kind, paused }]
+        }
+        WrathGameplayEvent::MirrorTimerStop { kind } => {
+            vec![SessionEvent::MirrorTimerStop { kind }]
+        }
         WrathGameplayEvent::XpGain {
             victim,
             total_xp,
@@ -8041,6 +8166,24 @@ fn wrath_tap_commands(
                     Some((
                         benilla_protocol_wrath::opcode::CMSG_REQUEST_VEHICLE_SWITCH_SEAT,
                         gameplay::wrath_systems::encode_request_vehicle_switch_seat(vehicle, seat),
+                    ))
+                }
+            }
+            ClientCommand::DestroyTotem {
+                slot,
+                session_epoch,
+                world_generation,
+            } => {
+                if !view.entered_world
+                    || view.session_epoch != session_epoch
+                    || view.world_generation != world_generation
+                    || usize::from(slot) >= gameplay::wrath_systems::MAX_TOTEM_SLOTS
+                {
+                    None
+                } else {
+                    Some((
+                        benilla_protocol_wrath::opcode::CMSG_TOTEM_DESTROYED,
+                        gameplay::wrath_systems::encode_totem_destroyed(slot),
                     ))
                 }
             }
@@ -10313,6 +10456,44 @@ fn wrath_net_drain(
                     view.apply_rune_power(mask, ui_now_seconds.unwrap_or(0.0));
                 }
             }
+            WrathFeedEvent::ComboPoints {
+                target,
+                points,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_combo_points(points, target);
+                }
+            }
+            WrathFeedEvent::TotemCreated {
+                slot,
+                guid,
+                duration_ms,
+                spell_id,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_totem_created(
+                        slot,
+                        guid,
+                        duration_ms,
+                        spell_id,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
+                }
+            }
             WrathFeedEvent::AttackerState {
                 hit,
                 session_epoch,
@@ -11336,6 +11517,7 @@ fn wrath_net_drain(
         .collect();
     for guid in stale {
         view.entities.remove(&guid);
+        view.clear_totem_by_guid(guid);
         changes.removed.push(guid);
     }
     view.last_changes = changes;
@@ -12494,7 +12676,16 @@ fn donor_unit_bytes_1(bytes_1: u32, bytes_2: u32) -> u32 {
 type FieldDiff = (u64, ObjectType, Vec<(u16, u32, u32)>);
 
 fn wrath_apply_world(world: &mut World) {
-    let (mut changes, entities, entered, phase, player_guid, map_id) = {
+    let (
+        mut changes,
+        entities,
+        entered,
+        phase,
+        player_guid,
+        map_id,
+        combo_points,
+        combo_points_dirty,
+    ) = {
         let mut view = world.resource_mut::<WrathWorldView>();
         (
             std::mem::take(&mut view.last_changes),
@@ -12503,8 +12694,18 @@ fn wrath_apply_world(world: &mut World) {
             view.phase,
             view.player_guid,
             view.map_id,
+            view.combo_points,
+            std::mem::take(&mut view.combo_points_dirty),
         )
     };
+    if combo_points_dirty
+        && player_guid != 0
+        && entities.contains_key(&player_guid)
+        && !changes.created.contains(&player_guid)
+        && !changes.updated.contains(&player_guid)
+    {
+        changes.updated.push(player_guid);
+    }
     // A reloaded field table re-projects every streamed object through the update path below.
     if world
         .get_resource_mut::<crate::wrath_field_map::WrathFieldMap>()
@@ -12941,9 +13142,25 @@ fn wrath_apply_world(world: &mut World) {
                     }
                 }
                 // `PLAYER_FIELD_BYTES` (combo points in byte 1), ammo, self-res, and PvP medals.
+                // In 3.3.5a (`12340`), `PLAYER_FIELD_COMBO_TARGET` is absent from `UpdateFields.h`
+                // and `PLAYER_FIELD_BYTES` byte 1 is always 0 on the descriptor wire; combo points
+                // arrive via `SMSG_UPDATE_COMBO_POINTS` (`0x39D`). Splice the active count and
+                // target into the local player's 1.12 slots (`1222` byte 1 and `714..716`) so
+                // finisher usability, cast validation, and `ComboFrame` see live combo points.
+                let base_player_field_bytes = raw.get(1197);
+                if *guid == player_guid {
+                    let merged = (base_player_field_bytes.unwrap_or(0) & !0x0000_ff00)
+                        | (u32::from(combo_points.0) << 8);
+                    pairs.push((1222, merged));
+                    if combo_points.1 != 0 {
+                        pairs.push((714, combo_points.1 as u32));
+                        pairs.push((715, (combo_points.1 >> 32) as u32));
+                    }
+                } else if let Some(v) = base_player_field_bytes {
+                    pairs.push((1222, v));
+                }
                 for (src, dst) in [
-                    (1197u16, 1222u16), // PLAYER_FIELD_BYTES -> FIELD_PLAYER_FIELD_BYTES
-                    (1198, 1223),       // PLAYER_AMMO_ID -> FIELD_PLAYER_AMMO_ID
+                    (1198u16, 1223u16), // PLAYER_AMMO_ID -> FIELD_PLAYER_AMMO_ID
                     (1199, 1224),       // PLAYER_SELF_RES_SPELL -> FIELD_PLAYER_SELF_RES_SPELL
                     (1200, 1225),       // PLAYER_FIELD_PVP_MEDALS -> FIELD_PLAYER_PVP_MEDALS
                 ] {
@@ -12960,6 +13177,12 @@ fn wrath_apply_world(world: &mut World) {
                     if let Some(v) = raw.get(1201 + i) {
                         pairs.push((1226 + i, v));
                     }
+                }
+            } else if *guid == player_guid {
+                pairs.push((1222, u32::from(combo_points.0) << 8));
+                if combo_points.1 != 0 {
+                    pairs.push((714, combo_points.1 as u32));
+                    pairs.push((715, (combo_points.1 >> 32) as u32));
                 }
             }
         }
@@ -13849,6 +14072,11 @@ fn wrath_apply_world(world: &mut World) {
                         || (1102..=1110).contains(&index)
                         || (1177..=1225).contains(&index)
                 });
+                let combo_changed = moved.iter().any(|&(index, old, new)| {
+                    index == 714
+                        || index == 715
+                        || (index == 1222 && ((old >> 8) & 0xff) != ((new >> 8) & 0xff))
+                });
                 if let Some(mut notices) =
                     world.get_resource_mut::<crate::field_watch::NoticeLane>()
                 {
@@ -13877,6 +14105,9 @@ fn wrath_apply_world(world: &mut World) {
                             guid: player_guid,
                             id: crate::field_watch::id::UNIT_LEVEL,
                         });
+                    }
+                    if combo_changed {
+                        notices.write(crate::field_watch::FieldNotice::ComboPoints);
                     }
                 }
                 let inv_changed = moved.iter().any(|&(idx, _, _)| {
@@ -15719,6 +15950,24 @@ fn run_recorded_session(
                                     push_session_event(&events_out, &session, event);
                                 }
                             }
+                        }
+                        Ok(WrathGameplayEvent::ComboPoints(combo)) => {
+                            feed.push_event(WrathFeedEvent::ComboPoints {
+                                target: combo.target,
+                                points: combo.points,
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                        }
+                        Ok(WrathGameplayEvent::TotemCreated(totem)) => {
+                            feed.push_event(WrathFeedEvent::TotemCreated {
+                                slot: totem.slot,
+                                guid: totem.guid,
+                                duration_ms: totem.duration_ms,
+                                spell_id: totem.spell_id,
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
                         }
                         Ok(event @ WrathGameplayEvent::SpellDamage {
                             target,
@@ -17785,6 +18034,32 @@ mod tests {
 
         view.clear_rune_calendar();
         assert!(view.runes.is_empty());
+    }
+
+    #[test]
+    fn combo_points_update_marks_dirty_and_clears_on_scope_reset() {
+        let mut view = WrathWorldView::default();
+        assert_eq!(view.combo_points, (0, 0));
+        assert!(!view.combo_points_dirty);
+
+        view.apply_combo_points(3, 0xF130_0000_0000_0042);
+        assert_eq!(view.combo_points, (3, 0xF130_0000_0000_0042));
+        assert!(view.combo_points_dirty);
+
+        view.combo_points_dirty = false;
+        // Duplicate update does not re-dirty.
+        view.apply_combo_points(3, 0xF130_0000_0000_0042);
+        assert!(!view.combo_points_dirty);
+
+        // Zero target or zero points normalizes to `(0, 0)`.
+        view.apply_combo_points(0, 0xF130_0000_0000_0042);
+        assert_eq!(view.combo_points, (0, 0));
+        assert!(view.combo_points_dirty);
+
+        view.apply_combo_points(5, 0xF130_0000_0000_0099);
+        view.clear_rune_calendar();
+        assert_eq!(view.combo_points, (0, 0));
+        assert!(!view.combo_points_dirty);
     }
 
     /// `SMSG_PARTYKILLLOG` is scoped presentation state: translate it onto the stock event,
@@ -20367,5 +20642,25 @@ mod field_audit_tests {
         );
         assert!(pairs.contains(&(129, 0.5f32.to_bits())));
         assert!(pairs.contains(&(173, 5)));
+    }
+
+    #[test]
+    fn totem_created_and_entity_destroy_update_world_view_slots() {
+        let mut view = super::WrathWorldView::default();
+        view.apply_totem_created(0, 0xF130_0001_0000_0042, 120_000, 3599, 10.5);
+        assert_eq!(
+            view.totems[0],
+            Some(super::WrathTotemState {
+                guid: 0xF130_0001_0000_0042,
+                spell_id: 3599,
+                duration_ms: 120_000,
+                received_at: 10.5,
+                revision: 1,
+            })
+        );
+        view.apply_totem_created(0, 0xF130_0001_0000_0043, 120_000, 3599, 14.0);
+        assert_eq!(view.totems[0].unwrap().revision, 2);
+        view.clear_totem_by_guid(0xF130_0001_0000_0043);
+        assert_eq!(view.totems[0], None);
     }
 }

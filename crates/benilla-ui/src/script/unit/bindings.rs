@@ -843,14 +843,87 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // GetComboPoints() (`0x51a190`): `PLAYER_FIELD_BYTES` byte 1, behind two gates stock
-    // `ComboFrame.lua` does not repeat: the class is rogue or druid (`0x51a1cc`), so a warrior's
-    // dodge point never shows, and `PLAYER_FIELD_COMBO_TARGET` equals the current target
-    // (`0x51a205`), so the points read per target. Both are plain equality, GUID 0 included.
+    // GetComboPoints() (`0x51a190`; 12340 `Script_GetComboPoints` `0x00611670` ->
+    // `CGGameUI::GetComboPoints` `0x00513920`):
+    // - 1.12 reads `PLAYER_FIELD_BYTES` byte 1 behind two gates stock `ComboFrame.lua` does not
+    //   repeat: the class is rogue or druid (`0x51a1cc`), so a warrior's dodge point never shows,
+    //   and `PLAYER_FIELD_COMBO_TARGET` equals the current target (`0x51a205`), plain equality,
+    //   GUID 0 included.
+    // - 12340 accepts optional `(unit, target)` tokens (stock 3.3.5a `ComboFrame.lua` calls
+    //   `GetComboPoints(this.unit, "target")` with `"player"` or `"vehicle"`), verifies `unit`
+    //   resolves to the active player or seated vehicle, and compares the resolved `target` GUID
+    //   against `m_comboTarget` (`SMSG_UPDATE_COMBO_POINTS`).
     g.set(
         "GetComboPoints",
-        lua.create_function(|lua, ()| {
+        lua.create_function(|lua, args: mlua::MultiValue| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
+            if model.is_wrath() {
+                let as_token = |v: Option<&Value>| -> Option<String> {
+                    match v {
+                        Some(Value::String(s)) => s.to_str().ok().map(|s| s.to_owned()),
+                        _ => None,
+                    }
+                };
+                let (unit, target) = match args.len() {
+                    0 => ("player".to_owned(), "target".to_owned()),
+                    1 => {
+                        let Some(first) = as_token(args.get(0)) else {
+                            return Ok(0_i64);
+                        };
+                        if first.eq_ignore_ascii_case("target") {
+                            ("player".to_owned(), "target".to_owned())
+                        } else {
+                            (first, "target".to_owned())
+                        }
+                    }
+                    _ => {
+                        let unit = match args.get(0) {
+                            None | Some(Value::Nil) => "player".to_owned(),
+                            other => {
+                                let Some(s) = as_token(other) else {
+                                    return Ok(0_i64);
+                                };
+                                s
+                            }
+                        };
+                        let target = match args.get(1) {
+                            None | Some(Value::Nil) => "target".to_owned(),
+                            other => {
+                                let Some(s) = as_token(other) else {
+                                    return Ok(0_i64);
+                                };
+                                s
+                            }
+                        };
+                        (unit, target)
+                    }
+                };
+                let is_combo_holder = unit.eq_ignore_ascii_case("player")
+                    || (unit.eq_ignore_ascii_case("vehicle")
+                        && (model.vehicle_guid.is_some()
+                            || model.unit("vehicle").is_some_and(|u| u.exists)))
+                    || model.unit(&unit).is_some_and(|u| {
+                        u.guid != 0
+                            && (u.guid == model.unit_guids.player
+                                || Some(u.guid) == model.vehicle_guid
+                                || model
+                                    .unit("player")
+                                    .is_some_and(|p| p.guid == u.guid))
+                    });
+                if !is_combo_holder {
+                    return Ok(0_i64);
+                }
+                let target_guid = model
+                    .unit(&target)
+                    .map(|u| u.guid)
+                    .filter(|&g| g != 0)
+                    .or_else(|| model.unit_guids.resolve(&target).ok().flatten())
+                    .unwrap_or(0);
+                if target_guid == 0 || model.combo_target != target_guid {
+                    return Ok(0_i64);
+                }
+                return Ok(i64::from(model.combo_points));
+            }
             let class = model.player_req.class_id;
             if class != CLASS_ROGUE && class != CLASS_DRUID {
                 return Ok(0_i64);

@@ -672,12 +672,20 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // GetMultiCastBarOffset(): the multi-cast bar's page offset. No multicast bar is installed,
-    // so 0 keeps the stock MultiCastActionButtons on the default page instead of paging on nil
-    // (`ActionButton.lua:146`).
+    // 12340 `Script_GetMultiCastBarOffset` (`0x005A8000` in `ActionBarFrame_Scripts.cpp`):
+    // returns `NUM_ACTIONBAR_PAGES` (`6`) on Wrath so `MultiCastActionBarFrame.xml` places the
+    // 12 multi-cast totem slots on page 12 (`(6 + 6 - 1) * 12 + 1 = 133`..`144`), and `0` on the
+    // donor 1.12 target where no multi-cast bar exists.
     g.set(
         "GetMultiCastBarOffset",
-        lua.create_function(|_, ()| Ok(0i64))?,
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(if model.target == super::UiTarget::Wrath335 {
+                6i64
+            } else {
+                0i64
+            })
+        })?,
     )?;
 
     // ChangeActionBarPage(): fires `ACTIONBAR_PAGE_CHANGED` synchronously and returns nothing

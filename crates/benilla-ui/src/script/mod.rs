@@ -386,8 +386,9 @@ pub use minimap::{
 pub(crate) use model::Model;
 pub use model::{
     FontProbe, MacroIconSource, TextureProbe, TextureSizeFn, TextureSizeProbe, WorldLocFn,
-    WorldLocProjector, WrathLfgProposalMemberState, WrathLfgProposalState,
-    WrathLfgQueueStatusState, WrathLfgState, WrathScopedCommand,
+    WorldLocProjector, WrathBattlegroundType, WrathLfgProposalMemberState, WrathLfgProposalState,
+    WrathLfgQueueStatusState, WrathLfgState, WrathMirrorTimerSlot, WrathScopedCommand,
+    WrathTotemSlot, WrathWorldPvpQueueSlot,
 };
 pub use model::{WrathCurrencyRow, WrathCurrencyState};
 pub use party::{

@@ -720,6 +720,9 @@ pub const CMSG_REQUEST_VEHICLE_EXIT: u32 = 0x476;
 pub const CMSG_REQUEST_VEHICLE_PREV_SEAT: u32 = 0x477;
 pub const CMSG_REQUEST_VEHICLE_NEXT_SEAT: u32 = 0x478;
 pub const CMSG_REQUEST_VEHICLE_SWITCH_SEAT: u32 = 0x479;
+pub const SMSG_UPDATE_COMBO_POINTS: u16 = 0x39D;
+pub const SMSG_TOTEM_CREATED: u16 = 0x3C4;
+pub const CMSG_TOTEM_DESTROYED: u32 = 0x414;
 pub const SMSG_CONVERT_RUNE: u16 = 0x486;
 pub const SMSG_RESYNC_RUNES: u16 = 0x487;
 pub const SMSG_ADD_RUNE_POWER: u16 = 0x488;
@@ -778,6 +781,9 @@ mod tests {
         assert_eq!(CMSG_MOVE_TIME_SKIPPED, 0x2CE); // Opcodes.h:748
         assert_eq!(CMSG_BATTLEFIELD_LIST, 0x23C); // Opcodes.h:602
         assert_eq!(MSG_RAID_READY_CHECK_CONFIRM_SERVER, 0x3AE); // Opcodes.h:972
+        assert_eq!(SMSG_UPDATE_COMBO_POINTS, 0x39D); // Opcodes.h:955
+        assert_eq!(SMSG_TOTEM_CREATED, 0x3C4); // Opcodes.h:994
+        assert_eq!(CMSG_TOTEM_DESTROYED, 0x414); // Opcodes.h:1084
 
         // The neighbours the block previously collided with.
         assert_ne!(SMSG_FORCE_SWIM_BACK_SPEED_CHANGE, MSG_CHANNEL_UPDATE);

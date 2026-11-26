@@ -191,3 +191,16 @@ reaches `GetFrameHandle` there is not a frame wrapper (it is a restricted-enviro
 the next step is a true handle object whose frame methods route through the environment and whose
 identity survives restricted execution. The rest of the corpus is unchanged at 45/49 load and
 43/49 session; Bartender is MoP-era and is not part of the Wrath target.
+
+### Follow-up (2026-11-26): true `newproxy` restricted frame-handle proxy
+
+`crates/benilla-ui/src/script/wrath_security.rs` and `crates/benilla-ui/src/script/secure.rs` now
+implement a true `newproxy`-backed userdata frame handle per live frame wrapper, cached in weak
+registry tables (`benilla_wrath_frame_to_handle` / `benilla_wrath_handle_to_frame`) with
+`__metatable = false`. `GetFrameHandle(x, create)` is idempotent on existing handles (fixing the
+`SecureHandlers.lua:108` handle-as-`self` path), `IsFrameHandle(h)` distinguishes handles from raw
+frame tables, `GetFrameHandleFrame(h)` / `GetManagedFrame(h)` unwrap handles, and handle methods
+(`GetAttribute`/`SetAttribute`, `GetParent`/`GetChildren`/`GetChildList`, `GetFrameRef`/`SetFrameRef`,
+visibility/geometry/anchors, `CallMethod`, `Run`/`RunAttribute`/`RunFor`/`ChildUpdate`, override
+binding & auto-hide helpers) plus `SecureHandler:Execute` route safely through the restricted
+handle environment. Source-observed only; Cargo compilation and corpus re-run have not yet run.

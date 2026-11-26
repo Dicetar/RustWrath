@@ -70,6 +70,13 @@ fn key(h: FrameHandle) -> u64 {
     h.fingerprint_bits()
 }
 
+/// Resolve a frame wrapper table or a restricted frame-handle userdata into its underlying
+/// FrameScript wrapper table.
+fn resolve_frame_table(lua: &Lua, value: Value, usage: &'static str) -> mlua::Result<Table> {
+    super::wrath_security::resolve_frame_wrapper(lua, &value)?
+        .ok_or_else(|| mlua::Error::runtime(usage))
+}
+
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
@@ -98,25 +105,44 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set(
         "SecureHandlerWrapScript",
         lua.create_function(
-            |lua, (frame, script, header, pre, post): (Table, Value, Table, Value, Option<Value>)| {
+            |lua, (frame, script, header, pre, post): (Value, Value, Value, Value, Option<Value>)| {
+                let header = resolve_frame_table(
+                    lua,
+                    header,
+                    "Usage: SecureHandlerWrapScript(frame, script, header, preBody [, postBody])",
+                )?;
                 wrap_script(lua, (header, frame, script, pre, post))
             },
         )?,
     )?;
     lua.globals().set(
         "SecureHandlerUnwrapScript",
-        lua.create_function(|lua, (frame, script): (Table, Value)| {
-            unwrap_script(lua, (frame.clone(), frame, script))
+        lua.create_function(|lua, (frame, script): (Value, Value)| {
+            let table = resolve_frame_table(
+                lua,
+                frame.clone(),
+                "Usage: SecureHandlerUnwrapScript(frame, script)",
+            )?;
+            unwrap_script(lua, (table, frame, script))
         })?,
     )?;
     lua.globals().set(
         "SecureHandlerExecute",
-        lua.create_function(|lua, (frame, body): (Table, Value)| execute_body(lua, (frame, body)))?,
+        lua.create_function(|lua, (frame, body): (Value, Value)| {
+            let table =
+                resolve_frame_table(lua, frame, "Usage: SecureHandlerExecute(frame, body)")?;
+            execute_body(lua, (table, body))
+        })?,
     )?;
     lua.globals().set(
         "SecureHandlerSetFrameRef",
-        lua.create_function(|lua, (frame, label, ref_frame): (Table, Value, Table)| {
-            set_frame_ref(lua, (frame, label, ref_frame))
+        lua.create_function(|lua, (frame, label, ref_frame): (Value, Value, Value)| {
+            let table = resolve_frame_table(
+                lua,
+                frame,
+                "Usage: SecureHandlerSetFrameRef(frame, label, refFrame)",
+            )?;
+            set_frame_ref(lua, (table, label, ref_frame))
         })?,
     )?;
     lua.globals().set(
@@ -141,7 +167,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
     lua.globals().set(
         "RegisterStateDriver",
-        lua.create_function(|lua, (frame, state, condition): (Table, Value, Value)| {
+        lua.create_function(|lua, (frame, state, condition): (Value, Value, Value)| {
+            let frame = resolve_frame_table(
+                lua,
+                frame,
+                "Usage: RegisterStateDriver(frame, state, values)",
+            )?;
             let owner = super::object::frame_handle_of(lua, &frame)?;
             // 12340's SecureStateDriver.lua silently ignores a nil/empty state or condition;
             // raising here would abort the secure-header setup an addon expects to tolerate.
@@ -177,7 +208,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
     lua.globals().set(
         "UnregisterStateDriver",
-        lua.create_function(|lua, (frame, state): (Table, Value)| {
+        lua.create_function(|lua, (frame, state): (Value, Value)| {
+            let frame =
+                resolve_frame_table(lua, frame, "Usage: UnregisterStateDriver(frame, state)")?;
             let owner = super::object::frame_handle_of(lua, &frame)?;
             let Some(state) = lua.coerce_string(state)? else {
                 return Ok(());
@@ -208,7 +241,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // harness VM from answering nil. The unit-existence projection is not wired here.
     lua.globals().set(
         "RegisterUnitWatch",
-        lua.create_function(|lua, (frame, as_state): (Table, Value)| {
+        lua.create_function(|lua, (frame, as_state): (Value, Value)| {
+            let frame =
+                resolve_frame_table(lua, frame, "Usage: RegisterUnitWatch(frame [, asState])")?;
             super::object::frame_handle_of(lua, &frame)?;
             let _ = as_state;
             Ok(())
@@ -216,14 +251,15 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
     lua.globals().set(
         "UnregisterUnitWatch",
-        lua.create_function(|lua, frame: Table| {
+        lua.create_function(|lua, frame: Value| {
+            let frame = resolve_frame_table(lua, frame, "Usage: UnregisterUnitWatch(frame)")?;
             super::object::frame_handle_of(lua, &frame)?;
             Ok(())
         })?,
     )?;
     lua.globals().set(
         "UnitWatchRegistered",
-        lua.create_function(|_, _frame: Table| Ok(false))?,
+        lua.create_function(|_, _frame: Value| Ok(false))?,
     )?;
     Ok(())
 }
@@ -449,9 +485,14 @@ pub(super) fn mark_frame(model: &mut Model, h: FrameHandle) {
     model.secure_frames.insert(key(h));
 }
 
-fn unwrap_script(lua: &Lua, (this, target, script): (Table, Table, Value)) -> mlua::Result<()> {
+fn unwrap_script(lua: &Lua, (this, target, script): (Table, Value, Value)) -> mlua::Result<()> {
     let owner = super::object::frame_handle_of(lua, &this)?;
-    let target = super::object::frame_handle_of(lua, &target)?;
+    let target_table = resolve_frame_table(
+        lua,
+        target,
+        "Usage: SecureHandler:UnwrapScript(frame, scriptName)",
+    )?;
+    let target = super::object::frame_handle_of(lua, &target_table)?;
     let script = text_arg(
         lua,
         &script,
@@ -483,18 +524,19 @@ fn execute_body(lua: &Lua, (this, body): (Table, Value)) -> mlua::Result<()> {
     if body.contains('\0') {
         return Err(mlua::Error::runtime("Execute: body contains a NUL"));
     }
-    let model = lua.app_data_ref::<Model>().expect("model app_data");
-    if !model.secure_frames.contains(&key(owner)) {
-        return Err(mlua::Error::runtime(
-            "Execute: frame is not a secure handler in this host",
-        ));
+    {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        if !model.secure_frames.contains(&key(owner)) {
+            return Err(mlua::Error::runtime(
+                "Execute: frame is not a secure handler in this host",
+            ));
+        }
     }
-    Ok(())
+    super::wrath_security::run_restricted_body(lua, &this, &body)
 }
 
-fn set_frame_ref(lua: &Lua, (this, label, ref_frame): (Table, Value, Table)) -> mlua::Result<()> {
+fn set_frame_ref(lua: &Lua, (this, label, ref_frame): (Table, Value, Value)) -> mlua::Result<()> {
     let _owner = super::object::frame_handle_of(lua, &this)?;
-    let _ref_h = super::object::frame_handle_of(lua, &ref_frame)?;
     let label = text_arg(
         lua,
         &label,
@@ -502,7 +544,16 @@ fn set_frame_ref(lua: &Lua, (this, label, ref_frame): (Table, Value, Table)) -> 
     )?;
     validate_state(&label).map_err(mlua::Error::runtime)?;
     let attr_key = format!("_frameref-{}", label.to_ascii_lowercase());
-    this.call_method::<()>("SetAttribute", (attr_key, ref_frame))
+    if matches!(ref_frame, Value::Nil) {
+        return this.call_method::<()>("SetAttribute", (attr_key, Value::Nil));
+    }
+    let ref_table = resolve_frame_table(
+        lua,
+        ref_frame,
+        "Usage: SecureHandler:SetFrameRef(label, frame)",
+    )?;
+    let _ref_h = super::object::frame_handle_of(lua, &ref_table)?;
+    this.call_method::<()>("SetAttribute", (attr_key, ref_table))
 }
 
 fn get_frame_ref(lua: &Lua, (this, label): (Table, Value)) -> mlua::Result<Value> {
@@ -513,15 +564,16 @@ fn get_frame_ref(lua: &Lua, (this, label): (Table, Value)) -> mlua::Result<Value
 }
 
 /// `SecureHandler:WrapScript(frame, script, preBody [, postBody])`. The reference runs `preBody`
-/// before and `postBody` after the wrapped script inside its secure context. This host has no
-/// secure context, so the bodies are stored and never evaluated.
+/// before and `postBody` after the wrapped script inside its secure context. Storing a wrap
+/// validates and records the bounded bodies without executing them at registration time.
 fn wrap_script(
     lua: &Lua,
-    (this, target, script, before, after): (Table, Table, Value, Value, Option<Value>),
+    (this, target, script, before, after): (Table, Value, Value, Value, Option<Value>),
 ) -> mlua::Result<()> {
     const USAGE: &str = "Usage: SecureHandler:WrapScript(frame, scriptName, preBody [, postBody])";
     let owner = super::object::frame_handle_of(lua, &this)?;
-    let target = super::object::frame_handle_of(lua, &target)?;
+    let target_table = resolve_frame_table(lua, target, USAGE)?;
+    let target = super::object::frame_handle_of(lua, &target_table)?;
     let script = text_arg(lua, &script, USAGE)?;
     validate_script_name(&script).map_err(mlua::Error::runtime)?;
     let before = text_arg(lua, &before, USAGE)?;

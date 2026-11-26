@@ -308,6 +308,7 @@ fn feed_death(
             // The possess bar is the temporary action page: entering or leaving it re-pages the
             // bar and closes it on the leave leg (UpdateBonusBar 0x5A83C0's wasTemp branch).
             script.fire_event("UPDATE_BONUS_ACTIONBAR", Vec::new());
+            script.fire_event("UPDATE_POSSESS_BAR", Vec::new());
             if had_possess {
                 script.fire_event("ACTIONBAR_PAGE_CHANGED", Vec::new());
             }

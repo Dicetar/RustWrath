@@ -5,9 +5,10 @@
 //! bag and bank kits do.
 
 use benilla_ui::script::{
-    AuctionCategory, AuctionItemRow, AuctionListState, AuctionState, AuctionSubCategory,
-    MailInboxAttachment, MailInboxRow, MailState, TradeCall, TradeSideState, TradeSlotItem,
-    TradeState, UiScript, UnitState, LIST,
+    AuctionCall, AuctionCategory, AuctionHighBidder, AuctionItemRow, AuctionListState,
+    AuctionState, AuctionSubCategory, ContainerSlot, ContainerState, MailCall,
+    MailInboxAttachment, MailInboxRow, MailRowVerb, MailState, StationeryView, TradeCall,
+    TradeSideState, TradeSlotItem, TradeState, UiScript, UiTarget, UnitState, BIDDER, LIST, OWNER,
 };
 
 use super::test_ui::{load_ui as load_xml, production_order, MERCHANT_UI};
@@ -325,4 +326,341 @@ fn shipped_auction_browse_frame_paints_and_selects_rows() {
         "row 2's 25s opening price is the required bid"
     );
     assert!(s.errors().is_empty(), "browse select: {:?}", s.errors());
+}
+
+/// The stock mail Send tab: switching to tab 2 opens `SendMailFrame`, clicking the attachment slot
+/// locks and seats the picked-up bag item, and sending queues `MailCall::Send` with recipient,
+/// subject, body, money, and attachment guid.
+#[test]
+fn shipped_mail_send_tab_attaches_and_sends_through_the_frame() {
+    benilla_formats::wow_data_or_skip!();
+    let mut s = UiScript::new().unwrap();
+    s.keep_calls();
+    s.set_screen_size(1024.0, 768.0);
+    s.set_text_measurer(Box::new(super::FixedWidthFont(6.0)));
+    load(&s, MAIL_FILES);
+    seat_player(&mut s);
+    s.set_money(10_000);
+    s.set_mail_stationeries(vec![StationeryView {
+        id: 41,
+        name: "Default Stationery".into(),
+        icon: "Interface\\Icons\\INV_Misc_Note_01".into(),
+        cost: Some(0),
+        texture: "StationeryTest".into(),
+    }]);
+    s.set_container(
+        0,
+        Some(ContainerState {
+            name: None,
+            num_slots: 16,
+            slots: [(
+                1,
+                ContainerSlot {
+                    item_id: 2589,
+                    guid: 0x5501,
+                    count: 5,
+                    quality: Some(1),
+                    texture: Some("Interface\\Icons\\INV_Fabric_Linen_01".into()),
+                    link: Some("|cffffffff|Hitem:2589|h[Linen Cloth]|h|r".into()),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+        }),
+    );
+    s.set_mail(Some(MailState {
+        inbox: vec![],
+        open: true,
+    }));
+    s.fire_event("MAIL_SHOW", vec![]);
+    s.mail_request_resolved();
+    let _ = s.take_mail_calls();
+
+    s.run(
+        r#"
+        MailFrameTab2:Click()
+        PickupContainerItem(0, 1)
+        ClickSendMailItemButton()
+        SelectStationery(1)
+        SendMailNameEditBox:SetText("Thrall")
+        SendMailSubjectEditBox:SetText("Supplies")
+        SendMailBodyEditBox:SetText("Five linen bolts.")
+        SetSendMailMoney(350)
+        SendMail("Thrall", "Supplies", "Five linen bolts.")
+        "#,
+    )
+    .unwrap();
+    assert!(s.errors().is_empty(), "mail send: {:?}", s.errors());
+    assert!(
+        s.eval::<bool>("return SendMailFrame:IsShown()").unwrap(),
+        "tab 2 shows SendMailFrame"
+    );
+    let calls = s.take_mail_calls();
+    assert!(
+        calls.iter().any(|c| matches!(
+            c,
+            MailCall::Send(req)
+                if req.target == "Thrall"
+                    && req.subject == "Supplies"
+                    && req.body == "Five linen bolts."
+                    && req.money == 350
+                    && req.item_guid == 0x5501
+                    && req.stationery == 41
+        )),
+        "expected MailCall::Send with attached guid 0x5501, got: {calls:?}"
+    );
+}
+
+/// The stock auction Bids and Auctions tabs: switching to tab 2 and tab 3 paints the fed `BIDDER`
+/// and `OWNER` rows into `BidButton1` and `AuctionsButton1` with zero Lua errors.
+#[test]
+fn shipped_auction_bidder_and_owner_tabs_paint_their_lists() {
+    benilla_formats::wow_data_or_skip!();
+    let mut s = UiScript::new().unwrap();
+    s.keep_calls();
+    s.set_screen_size(1024.0, 768.0);
+    s.set_text_measurer(Box::new(super::FixedWidthFont(6.0)));
+    s.set_auction_item_classes(vec![AuctionCategory {
+        class_id: 4,
+        name: "Armor".into(),
+        has_subclass_filter: true,
+        subclasses: vec![AuctionSubCategory {
+            sub_id: 1,
+            name: "Cloth".into(),
+            has_inv_types: true,
+        }],
+    }]);
+    load(&s, AUCTION_FILES);
+    seat_player(&mut s);
+    s.set_money(500_000);
+
+    let mut lists: [AuctionListState; 3] = Default::default();
+    let mut bid_row = auction_row(11, "Runecloth", 40, 4000, 9000, "VendorAlt");
+    bid_row.bid_amount = 4200;
+    bid_row.high_bidder = AuctionHighBidder::Player;
+    bid_row.bidder_rank = 2;
+    lists[BIDDER] = AuctionListState {
+        rows: vec![bid_row],
+        total: 1,
+        ..Default::default()
+    };
+    let mut own_row = auction_row(12, "Mageweave Cloth", 30, 3000, 7500, "Firna");
+    own_row.bid_amount = 3200;
+    own_row.high_bidder = AuctionHighBidder::Name("Buyer".into());
+    lists[OWNER] = AuctionListState {
+        rows: vec![own_row],
+        total: 1,
+        ..Default::default()
+    };
+    s.set_auction(AuctionState {
+        lists,
+        deposit_percent: 5,
+    });
+
+    s.fire_event("AUCTION_HOUSE_SHOW", vec![]);
+    s.run("AuctionFrameTab2:Click()").unwrap();
+    s.fire_event("AUCTION_BIDDER_LIST_UPDATE", vec![]);
+    assert!(s.errors().is_empty(), "bidder tab: {:?}", s.errors());
+    assert_eq!(
+        s.eval::<String>(
+            "return tostring(not not AuctionFrameBid:IsShown())..'|'..BidButton1Name:GetText()"
+        )
+        .unwrap(),
+        "true|Runecloth"
+    );
+
+    s.run("AuctionFrameTab3:Click()").unwrap();
+    s.fire_event("AUCTION_OWNED_LIST_UPDATE", vec![]);
+    assert!(s.errors().is_empty(), "owner tab: {:?}", s.errors());
+    assert_eq!(
+        s.eval::<String>(
+            "return tostring(not not AuctionFrameAuctions:IsShown())..'|'..AuctionsButton1Name:GetText()"
+        )
+        .unwrap(),
+        "true|Mageweave Cloth"
+    );
+}
+
+/// MPQ-free Wrath app-level `ui_script` coverage for Trade, Mail (12 attachments + inline body +
+/// send), and Auction (`list`/`bidder`/`owner` + bid/cancel calls).
+#[test]
+fn wrath_trade_mail_and_auction_ui_contracts_run_without_mpq() {
+    let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+    s.keep_calls();
+    seat_player(&mut s);
+    s.set_money(100_000);
+
+    // --- 1. Trade: offers, slot 7 enchant, money, accept/cancel/close calls ---
+    let mut trade = trade_state();
+    trade.target.slots[6] = Some(TradeSlotItem {
+        item_id: 2589,
+        name: Some("Enchanted Bracer".into()),
+        texture: Some("Interface\\Icons\\INV_Bracer_03".into()),
+        count: 1,
+        quality: Some(2),
+        enchantment: Some("Enchant Bracer - Minor Health".into()),
+        ..Default::default()
+    });
+    s.open_trade_window();
+    s.set_trade(Some(trade));
+    let (p_name, t_name, t_ench, p_gold, t_gold): (String, String, String, i64, i64) = s
+        .eval(
+            "local pn = GetTradePlayerItemInfo(1)
+             local tn = GetTradeTargetItemInfo(1)
+             local _, _, _, _, _, ench = GetTradeTargetItemInfo(7)
+             return pn, tn, ench, GetPlayerTradeMoney(), GetTargetTradeMoney()",
+        )
+        .unwrap();
+    assert_eq!(p_name, "Linen Cloth");
+    assert_eq!(t_name, "Silk Cloth");
+    assert_eq!(t_ench, "Enchant Bracer - Minor Health");
+    assert_eq!(p_gold, 12_345);
+    assert_eq!(t_gold, 500);
+    s.run("SetTradeMoney(2500) AcceptTrade() CancelTradeAccept() CloseTrade()")
+        .unwrap();
+    let trade_calls = s.take_trade_calls();
+    assert!(trade_calls.contains(&TradeCall::Gold(2500)));
+    assert!(trade_calls.contains(&TradeCall::Accept(true)));
+    assert!(trade_calls.contains(&TradeCall::Accept(false)));
+    assert!(trade_calls.contains(&TradeCall::Close));
+
+    // --- 2. Mail: Wrath 12-attachment inbox row + inline body + take/send calls ---
+    let attachments: Vec<MailInboxAttachment> = (0u8..12)
+        .map(|idx| MailInboxAttachment {
+            index: idx,
+            guid_low: 0x9000 + u32::from(idx),
+            entry: 2589 + u32::from(idx),
+            count: u32::from(idx) + 1,
+            name: Some(format!("Parcel {}", idx + 1)),
+            texture: Some("Interface\\Icons\\INV_Misc_Bag_08".into()),
+            quality: Some(2),
+            ..Default::default()
+        })
+        .collect();
+    s.set_mail_stationeries(vec![StationeryView {
+        id: 41,
+        name: "Default".into(),
+        icon: "Interface\\Icons\\INV_Misc_Note_01".into(),
+        cost: Some(0),
+        texture: "StationeryTest".into(),
+    }]);
+    s.set_mail(Some(MailState {
+        inbox: vec![MailInboxRow {
+            mail_id: 77,
+            attachments,
+            stationery: 41,
+            sender: Some("Sylvanas".into()),
+            subject: "Twelve attachments".into(),
+            money: 1500,
+            days_left: 28.0,
+            can_reply: true,
+            body: Some("Inline Wrath body.".into()),
+            inline_body: true,
+            ..Default::default()
+        }],
+        open: true,
+    }));
+    let (num_items, item12_name, item12_count): (i64, String, i64) = s
+        .eval(
+            "local n = GetInboxNumItems()
+             local name, _, count = GetInboxItem(1, 12)
+             return n, name, count",
+        )
+        .unwrap();
+    assert_eq!((num_items, item12_name.as_str(), item12_count), (1, "Parcel 12", 12));
+    s.run("TakeInboxItem(1, 12)").unwrap();
+    s.mail_request_resolved();
+    s.run("TakeInboxMoney(1)").unwrap();
+    s.mail_request_resolved();
+    s.run(
+        r#"
+        SelectStationery(1)
+        SetSendMailMoney(400)
+        SendMail("Thrall", "Reply", "Received all twelve.")
+        "#,
+    )
+    .unwrap();
+    let mail_calls = s.take_mail_calls();
+    assert!(mail_calls.contains(&MailCall::Row {
+        verb: MailRowVerb::TakeItem,
+        mail_id: 77,
+        template_id: 0,
+        item_guid_low: 0x9000 + 11,
+    }));
+    assert!(mail_calls.contains(&MailCall::Row {
+        verb: MailRowVerb::TakeMoney,
+        mail_id: 77,
+        template_id: 0,
+        item_guid_low: 0,
+    }));
+    assert!(mail_calls.iter().any(|c| matches!(
+        c,
+        MailCall::Send(req)
+            if req.target == "Thrall"
+                && req.subject == "Reply"
+                && req.body == "Received all twelve."
+                && req.money == 400
+    )));
+
+    // --- 3. Auction: list/bidder/owner getters + bid & cancel calls ---
+    let mut lists: [AuctionListState; 3] = Default::default();
+    lists[LIST] = AuctionListState {
+        rows: vec![auction_row(101, "Frostweave Cloth", 70, 2000, 6000, "Seller")],
+        total: 1,
+        ..Default::default()
+    };
+    lists[BIDDER] = AuctionListState {
+        rows: vec![auction_row(102, "Eternal Fire", 80, 15000, 25000, "Alchemist")],
+        total: 1,
+        ..Default::default()
+    };
+    lists[OWNER] = AuctionListState {
+        rows: vec![auction_row(103, "Titansteel Bar", 80, 40000, 55000, "Firna")],
+        total: 1,
+        ..Default::default()
+    };
+    s.set_auction(AuctionState {
+        lists,
+        deposit_percent: 5,
+    });
+    let (n_list, n_bid, n_own, list_name, bid_name, own_name): (
+        i64,
+        i64,
+        i64,
+        String,
+        String,
+        String,
+    ) = s
+        .eval(
+            "return (GetNumAuctionItems('list')), (GetNumAuctionItems('bidder')),
+                    (GetNumAuctionItems('owner')), (GetAuctionItemInfo('list', 1)),
+                    (GetAuctionItemInfo('bidder', 1)), (GetAuctionItemInfo('owner', 1))",
+        )
+        .unwrap();
+    assert_eq!(
+        (
+            n_list,
+            n_bid,
+            n_own,
+            list_name.as_str(),
+            bid_name.as_str(),
+            own_name.as_str()
+        ),
+        (1, 1, 1, "Frostweave Cloth", "Eternal Fire", "Titansteel Bar")
+    );
+    s.run(
+        "SetSelectedAuctionItem('list', 1)
+         PlaceAuctionBid('list', 1, 6000)
+         CancelAuction(1)",
+    )
+    .unwrap();
+    let ah_calls = s.take_auction_calls();
+    assert!(ah_calls
+        .iter()
+        .any(|c| matches!(c, AuctionCall::Bid(b) if b.auction_id == 101 && b.amount == 6000)));
+    assert!(ah_calls
+        .iter()
+        .any(|c| matches!(c, AuctionCall::Cancel { auction_id: 103, .. })));
+    assert!(s.errors().is_empty(), "wrath economy: {:?}", s.errors());
 }

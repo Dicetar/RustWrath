@@ -640,13 +640,50 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(Value::Table(table))
         })?,
     )?;
-    // The queue/arena/battleground list queries are empty until their subsystems populate them;
-    // these are the reference's own empty shapes, not fabricated success.
-    lua.globals()
-        .set("GetNumArenaOpponents", lua.create_function(|_, ()| Ok(0))?)?;
+    // `GetNumArenaOpponents()` (`ArenaTeam_Scripts.cpp`): counts active `arena1`..`arena5` unit
+    // slots in the model; 0 outside an arena match.
+    lua.globals().set(
+        "GetNumArenaOpponents",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let count = (1..=5)
+                .filter(|i| model.unit(&format!("arena{i}")).is_some_and(|u| u.exists))
+                .count() as u32;
+            Ok(count)
+        })?,
+    )?;
+    // `GetNumBattlegroundTypes()` / `GetBattlegroundInfo(index)` (`PVPFrame.lua:495`,
+    // `BattlefieldInfo.cpp:1734`): read the app-projected battleground types list.
     lua.globals().set(
         "GetNumBattlegroundTypes",
-        lua.create_function(|_, ()| Ok(0))?,
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(model.wrath_battleground_types.len() as u32)
+        })?,
+    )?;
+    lua.globals().set(
+        "GetBattlegroundInfo",
+        lua.create_function(|lua, index: Value| -> mlua::Result<MultiValue> {
+            let idx = crate::script::binding_abi::number_arg(
+                lua,
+                index,
+                "Usage: GetBattlegroundInfo(index)",
+            )?;
+            let Some(pos) = usize::try_from(idx).ok().and_then(|n| n.checked_sub(1)) else {
+                return Ok(MultiValue::new());
+            };
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let Some(row) = model.wrath_battleground_types.get(pos) else {
+                return Ok(MultiValue::new());
+            };
+            Ok(MultiValue::from_vec(vec![
+                Value::String(lua.create_string(&row.name)?),
+                Value::Boolean(row.can_enter),
+                Value::Boolean(row.is_holiday),
+                Value::Boolean(row.is_random),
+                Value::Integer(i64::from(row.id)),
+            ]))
+        })?,
     )?;
     lua.globals().set(
         "GetArenaTeam",
@@ -670,10 +707,22 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "IsPlayerResolutionAvailable",
         lua.create_function(|_, _: Option<mlua::Value>| Ok(false))?,
     )?;
-    // `IsActiveBattlefieldArena()` (`BattlefieldFrame.lua:365`): no arena here.
+    // `IsActiveBattlefieldArena()` (`BattlefieldFrame.lua:365`, `BattlefieldInfo.cpp:1788`):
+    // returns `(isArena, isRegistered)` from the active arena slot in `battlefield_slots`.
     lua.globals().set(
         "IsActiveBattlefieldArena",
-        lua.create_function(|_, ()| Ok(false))?,
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            if let Some(slot) = model
+                .battlefield_slots
+                .iter()
+                .find(|s| s.status == 3 && s.team_size > 0)
+            {
+                Ok((true, slot.rated))
+            } else {
+                Ok((false, false))
+            }
+        })?,
     )?;
     // `GetTrackedAchievements()` (`AchievementInfo_Scripts.cpp:147`) pushes one id per tracked
     // achievement and returns that count. `WatchFrame_DisplayTrackedAchievements` passes the
@@ -1092,12 +1141,39 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             ]))
         })?,
     )?;
-    // `GetQuestLink(questID)`: 3.3.5a's quest hyperlink. The quest log projection does not
-    // carry a built link yet, so the binding answers nil (an addon's link check sees "no link"
-    // instead of a nil global).
+    // `GetQuestLink(indexOrQuestID)` (`0x005E7C10` in `QuestLog_Scripts.cpp`): 3.3.5a's quest
+    // hyperlink `|cffffff00|Hquest:<questID>:<level>|h[<title>]|h|r`. Stock `QuestLogFrame.lua`
+    // and `WatchFrame.lua` pass a 1-based quest-log display index; quest addons may also pass a
+    // quest ID directly.
     lua.globals().set(
         "GetQuestLink",
-        lua.create_function(|_, _id: Value| Ok(Value::Nil))?,
+        lua.create_function(|lua, id: Value| -> mlua::Result<Value> {
+            let Some(arg) = (match id {
+                Value::Integer(n) => Some(n),
+                Value::Number(n) if n.is_finite() => Some(n as i64),
+                Value::String(s) => s.to_str().ok().and_then(|t| t.trim().parse::<i64>().ok()),
+                _ => None,
+            })
+            .filter(|&n| n > 0) else {
+                return Ok(Value::Nil);
+            };
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let from_row = usize::try_from(arg - 1)
+                .ok()
+                .and_then(|idx| model.quest_log.entries.get(idx))
+                .filter(|row| !row.is_header && row.quest_id != 0)
+                .map(|row| row.quest_id);
+            let quest_id = from_row.or_else(|| u32::try_from(arg).ok());
+            let Some((qid, record)) = quest_id
+                .and_then(|qid| model.quest_store.records.get(&qid).map(|r| (qid, r)))
+                .filter(|(_, r)| !r.title.is_empty())
+            else {
+                return Ok(Value::Nil);
+            };
+            let level = record.level as i32;
+            let link = format!("|cffffff00|Hquest:{qid}:{level}|h[{}]|h|r", record.title);
+            Ok(Value::String(lua.create_string(&link)?))
+        })?,
     )?;
     // `GetUnitPitch(unit)`: the third-person camera pitch; the harness and private server have
     // no camera feed, so the stock GatherHud session probe reads a level camera.
@@ -1445,18 +1521,43 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // the tracking spells, then the class's town-service rows.
     super::minimap_tracking::install(lua)?;
 
-    // `GetWorldPVPQueueStatus(index)` (`BattlefieldFrame.lua:696`): the world-PvP queue's state per
-    // slot, `"none"`/`"queued"`/`"confirm"`. benilla has no world-PvP queue, so every slot answers
-    // the status the stock client shows for an empty queue.
+    // `GetWorldPVPQueueStatus(index)` (`BattlefieldFrame.lua:696`): returns `(status, mapName,
+    // queueID)` for 1-based world-PvP queue slot `1..=2`, defaulting to `("none", nil, nil)` when
+    // empty or out of range.
     lua.globals().set(
         "GetWorldPVPQueueStatus",
-        lua.create_function(|lua, _: mlua::MultiValue| {
-            let status = lua.create_string("none")?;
-            Ok(mlua::MultiValue::from_vec(vec![
-                mlua::Value::String(status),
-                mlua::Value::Nil,
-                mlua::Value::Nil,
-            ]))
+        lua.create_function(|lua, index: Option<Value>| -> mlua::Result<MultiValue> {
+            let slot_idx = match index {
+                Some(v) => match lua.coerce_integer(v)? {
+                    Some(n) if (1..=2).contains(&n) => Some((n - 1) as usize),
+                    _ => None,
+                },
+                None => None,
+            };
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            if let Some(slot) = slot_idx.and_then(|i| model.wrath_world_pvp_queues[i].as_ref()) {
+                let status = lua.create_string(&slot.status)?;
+                let map_name = match slot.map_name.as_deref() {
+                    Some(name) => Value::String(lua.create_string(name)?),
+                    None => Value::Nil,
+                };
+                let queue_id = match slot.queue_id {
+                    Some(id) => Value::Integer(i64::from(id)),
+                    None => Value::Nil,
+                };
+                Ok(MultiValue::from_vec(vec![
+                    Value::String(status),
+                    map_name,
+                    queue_id,
+                ]))
+            } else {
+                let status = lua.create_string("none")?;
+                Ok(MultiValue::from_vec(vec![
+                    Value::String(status),
+                    Value::Nil,
+                    Value::Nil,
+                ]))
+            }
         })?,
     )?;
 
@@ -1758,10 +1859,63 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // `GetMirrorTimerInfo` (`MirrorTimer.lua:82`): breath/fatigue mirror timer info.
+    // `GetMirrorTimerInfo(index)` (`0x00516600` in `ScriptEvents_Scripts.cpp`, `MirrorTimer.lua:51,82`):
+    // returns `(timer, value, maxvalue, scale, paused, label)` for 1-based slot `1..=3`
+    // (`1 = EXHAUSTION`, `2 = BREATH`, `3 = FEIGNDEATH`), or `("UNKNOWN", 0, 0, 0, 0, "")` when
+    // the slot is inactive.
     lua.globals().set(
         "GetMirrorTimerInfo",
-        lua.create_function(|_, _: mlua::MultiValue| Ok(("UNKNOWN", 0i64, 0i64, 0i64, 0i64, "")))?,
+        lua.create_function(|lua, index: Value| {
+            let slot = match index {
+                Value::Integer(n) => Some(n),
+                Value::Number(n) if n.is_finite() => Some(n as i64),
+                Value::String(s) => s.to_str().ok().and_then(|t| t.trim().parse::<i64>().ok()),
+                _ => None,
+            };
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            if let Some(t) = slot
+                .filter(|&s| (1..=3).contains(&s))
+                .and_then(|s| model.wrath_mirror_timers.get((s - 1) as usize))
+                .and_then(Option::as_ref)
+            {
+                let progress = t.progress_ms(model.now);
+                return Ok((
+                    t.name.clone(),
+                    progress,
+                    t.max_value_ms,
+                    t.scale,
+                    i64::from(t.paused),
+                    t.label.clone(),
+                ));
+            }
+            Ok(("UNKNOWN".to_string(), 0i64, 0i64, 0i64, 0i64, String::new()))
+        })?,
+    )?;
+    // `GetMirrorTimerProgress(timer)` (`0x00516720` in `ScriptEvents_Scripts.cpp`,
+    // `MirrorTimer.lua:113`): current timer value in milliseconds for `"EXHAUSTION"`, `"BREATH"`,
+    // or `"FEIGNDEATH"`, or `0` when inactive.
+    lua.globals().set(
+        "GetMirrorTimerProgress",
+        lua.create_function(|lua, timer: Value| -> mlua::Result<f64> {
+            let name = match timer {
+                Value::String(s) => s.to_str().ok().map(|t| t.to_string()),
+                _ => None,
+            };
+            let idx = match name.as_deref() {
+                Some(s) if s.eq_ignore_ascii_case("EXHAUSTION") => Some(0usize),
+                Some(s) if s.eq_ignore_ascii_case("BREATH") => Some(1usize),
+                Some(s) if s.eq_ignore_ascii_case("FEIGNDEATH") => Some(2usize),
+                _ => None,
+            };
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let Some(t) = idx
+                .and_then(|i| model.wrath_mirror_timers.get(i))
+                .and_then(Option::as_ref)
+            else {
+                return Ok(0.0);
+            };
+            Ok(t.progress_ms(model.now) as f64)
+        })?,
     )?;
 
     // `CalendarGetNumPendingInvites` (`GameTime.lua:157`): pending calendar invites count.
@@ -1849,10 +2003,154 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // `GetTotemInfo` (`TotemFrame.lua:34`, `MultiCastActionBarFrame.lua:313`): haveTotem, name, startTime, duration, icon.
+    // `GetTotemInfo(slot)` (`0x0060FA40` in `ScriptEvents_Scripts.cpp`, `TotemFrame.lua:34`,
+    // `MultiCastActionBarFrame.lua:313`): `(haveTotem, name, startTime, duration, icon)` for
+    // 1-based `slot` in `1..=4`. An inactive or expired slot answers `(false, "", 0, 0, "")`.
     lua.globals().set(
         "GetTotemInfo",
-        lua.create_function(|_, _: mlua::MultiValue| Ok((false, "", 0i64, 0i64, "")))?,
+        lua.create_function(|lua, slot: Value| {
+            let slot =
+                crate::script::binding_abi::number_arg(lua, slot, "Usage: GetTotemInfo(slot)")?;
+            if !(1..=4).contains(&slot) {
+                return Ok((false, String::new(), 0.0, 0.0, String::new()));
+            }
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let active = model
+                .wrath_totems
+                .get((slot - 1) as usize)
+                .and_then(Option::as_ref)
+                .filter(|t| t.have_totem && t.start_time + t.duration > model.now);
+            Ok(match active {
+                Some(t) => (true, t.name.clone(), t.start_time, t.duration, t.icon.clone()),
+                None => (false, String::new(), 0.0, 0.0, String::new()),
+            })
+        })?,
+    )?;
+    // `GetTotemTimeLeft(slot)` (`0x0060FA00` in `ScriptEvents_Scripts.cpp`, `TotemFrame.lua:80`):
+    // whole remaining seconds for 1-based `slot` in `1..=4`, or 0 when inactive/expired.
+    lua.globals().set(
+        "GetTotemTimeLeft",
+        lua.create_function(|lua, slot: Value| {
+            let slot =
+                crate::script::binding_abi::number_arg(lua, slot, "Usage: GetTotemTimeLeft(slot)")?;
+            if !(1..=4).contains(&slot) {
+                return Ok(0i64);
+            }
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let remaining = model
+                .wrath_totems
+                .get((slot - 1) as usize)
+                .and_then(Option::as_ref)
+                .filter(|t| t.have_totem && t.start_time + t.duration > model.now)
+                .map_or(0, |t| ((t.start_time + t.duration) - model.now).ceil().max(0.0) as i64);
+            Ok(remaining)
+        })?,
+    )?;
+    // `DestroyTotem(slot)` (`0x0060FB90` in `ScriptEvents_Scripts.cpp`, `TotemFrame.lua:129`):
+    // enqueues `CMSG_TOTEM_DESTROYED` (`0x414`) with the 0-based totem slot (`0..=3`).
+    lua.globals().set(
+        "DestroyTotem",
+        lua.create_function(|lua, slot: Value| {
+            let slot =
+                crate::script::binding_abi::number_arg(lua, slot, "Usage: DestroyTotem(slot)")?;
+            if !(1..=4).contains(&slot) {
+                return Ok(());
+            }
+            let idx = (slot - 1) as usize;
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            model.wrath_totems[idx] = None;
+            if let Some((session_epoch, world_generation)) = model.wrath_scope {
+                if model.wrath_scoped_commands.len() < 16 {
+                    model.wrath_scoped_commands.push_back(
+                        super::model::WrathScopedCommand::DestroyTotem {
+                            slot: idx as u8,
+                            session_epoch,
+                            world_generation,
+                        },
+                    );
+                }
+            }
+            Ok(())
+        })?,
+    )?;
+    // `SetMultiCastSpell(actionID, spellID)` (`0x005ABE90` in `ActionBarFrame_Scripts.cpp`,
+    // `MultiCastActionBarFrame.lua:349`): writes or clears one of the 12 multi-cast totem action
+    // slots (`133..=144`), emits `CMSG_SET_ACTION_BUTTON` (`ActionBarCall::Set`), and signals
+    // `ACTIONBAR_SLOT_CHANGED(actionID)`.
+    lua.globals().set(
+        "SetMultiCastSpell",
+        lua.create_function(|lua, (action_id, spell_id): (Value, Option<Value>)| {
+            let action_id = crate::script::binding_abi::index_arg32(
+                lua,
+                action_id,
+                "Usage: SetMultiCastSpell(actionID, spellID)",
+            )?;
+            if !(133..=144).contains(&action_id) {
+                return Err(mlua::Error::runtime("Invalid slot"));
+            }
+            let spell_id = match spell_id {
+                None | Some(Value::Nil) => 0u32,
+                Some(v) => lua
+                    .coerce_integer(v)?
+                    .map(|n| u32::try_from(n).unwrap_or(0))
+                    .unwrap_or(0),
+            };
+            super::tick::verb(lua, |model| {
+                let packed = spell_id & 0x00ff_ffff;
+                if packed == 0 {
+                    model.actions.remove(&action_id);
+                    model.action_states.remove(&action_id);
+                } else {
+                    let texture = model
+                        .spell_list
+                        .iter()
+                        .chain(model.spellbook.slots.iter())
+                        .find(|s| s.spell_id == packed)
+                        .and_then(|s| s.texture.clone());
+                    model.actions.insert(
+                        action_id,
+                        super::ActionSlot {
+                            texture,
+                            kind: super::action::ACTION_KIND_SPELL,
+                            action: packed,
+                            ..Default::default()
+                        },
+                    );
+                    model.action_states.remove(&action_id);
+                }
+                model.call_in_verb(super::ScriptCall::ActionBar(super::ActionBarCall::Set {
+                    id: action_id,
+                    packed,
+                }));
+                model.raise(
+                    "ACTIONBAR_SLOT_CHANGED",
+                    vec![super::ScriptValue::Int(i64::from(action_id))],
+                );
+            });
+            Ok(())
+        })?,
+    )?;
+    // `GetMultiCastTotemSpells(slot)` (`0x006EA480` in `SpellBookFrame_Scripts.cpp`,
+    // `MultiCastActionBarFrame.lua:432`): validates `slot` (`1..=4`) and returns the known totem
+    // spell IDs for that totem element, or no values when none are projected.
+    lua.globals().set(
+        "GetMultiCastTotemSpells",
+        lua.create_function(|lua, slot: Value| -> mlua::Result<MultiValue> {
+            let slot = crate::script::binding_abi::number_arg(
+                lua,
+                slot,
+                "Usage: GetMultiCastTotemSpells(slot)",
+            )?;
+            if !(1..=4).contains(&slot) {
+                return Ok(MultiValue::new());
+            }
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let values: Vec<Value> = model.wrath_totem_flyout_spells[(slot - 1) as usize]
+                .iter()
+                .map(|&spell_id| Value::Number(f64::from(spell_id)))
+                .collect();
+            Ok(MultiValue::from_vec(values))
+        })?,
     )?;
 
     // `GetRuneType` (`ScriptEvents_Scripts.cpp:3035-3052`): the decoded 0-based `RuneType` plus
@@ -1880,6 +2178,31 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(MultiValue::from_vec(vec![Value::Number(
                 f64::from(rune.rune_type) + 1.0,
             )]))
+        })?,
+    )?;
+    // `GetRuneCount(slot)` (`0x0060EB40` in `ScriptEvents_Scripts.cpp:3054-3095`): 1 when the
+    // 1-based rune slot (`1..=8`) has finished its ten-second recharge window, 0 while recharging,
+    // and no values when no rune state is present or the slot is out of range.
+    lua.globals().set(
+        "GetRuneCount",
+        lua.create_function(|lua, slot: Value| -> mlua::Result<MultiValue> {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let Some(runes) = model.runes.as_deref() else {
+                return Ok(MultiValue::new());
+            };
+            let slot =
+                crate::script::binding_abi::number_arg(lua, slot, "Usage: GetRuneCount(slot)")?;
+            let index = slot - 1;
+            if !(0..=7).contains(&index) {
+                return Ok(MultiValue::new());
+            }
+            let Some(rune) = runes.get(index as usize) else {
+                return Ok(MultiValue::new());
+            };
+            let progress = f64::from(rune.cooldown) / 255.0;
+            let start = rune.received_at - progress * RUNE_RECHARGE_SECONDS;
+            let count = i64::from(start + RUNE_RECHARGE_SECONDS <= model.now);
+            Ok(MultiValue::from_vec(vec![Value::Integer(count)]))
         })?,
     )?;
     // `GetRuneCooldown` (`ScriptEvents_Scripts.cpp:3097-3122`): start, duration and ready, all on
@@ -2334,8 +2657,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, _: mlua::MultiValue| Ok(mlua::Value::Nil))?,
     )?;
 
-    // Possess bar: benilla has no possessed unit, so `GetPossessInfo` answers three nils, the
-    // stock BonusActionBarFrame's empty bar.
+    // `GetPossessInfo(index)` (`0x005DD4E0` in `PetInfo_Scripts.cpp`, `PossessBarFrame.lua:51,83`):
+    // returns `(texture, name, enabled)` for 1-based slot `1..=10` while the possess bar is active
+    // (`model.vehicle_guid.is_none() && model.death.possess_bar`), reading the possessed unit's
+    // action bar slots (`model.pet_bar`), or three nils otherwise.
     lua.globals().set(
         "GetPossessInfo",
         lua.create_function(|lua, index: mlua::Value| {
@@ -2345,6 +2670,26 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 crate::script::binding_abi::float_arg(lua, index, "Usage: GetPossessInfo(index)")?;
             if n == 0.0 {
                 return Err(mlua::Error::runtime("Usage: GetPossessInfo(index)"));
+            }
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            if model.vehicle_guid.is_none() && model.death.possess_bar {
+                let slot_idx = (n as i64) - 1;
+                if (0..10).contains(&slot_idx) {
+                    if let Some(slot) = model.pet_bar.slots.get(slot_idx as usize) {
+                        let texture = match slot.view.texture.as_deref() {
+                            Some(t) => mlua::Value::String(lua.create_string(t)?),
+                            None => mlua::Value::Nil,
+                        };
+                        let name = match slot.view.name.as_deref() {
+                            Some(s) => mlua::Value::String(lua.create_string(s)?),
+                            None => mlua::Value::Nil,
+                        };
+                        let enabled = crate::script::binding_abi::flag(
+                            model.pet_bar.actions_usable && slot.view.name.is_some(),
+                        );
+                        return Ok((texture, name, enabled));
+                    }
+                }
             }
             Ok((mlua::Value::Nil, mlua::Value::Nil, mlua::Value::Nil))
         })?,
@@ -2668,8 +3013,110 @@ impl super::UiScript {
             model.wrath_scope = scope;
             model.calendar_fetches.clear();
             model.wrath_scoped_commands.clear();
+            model.wrath_totems = Default::default();
+            model.wrath_totem_flyout_spells = Default::default();
+            model.wrath_mirror_timers = Default::default();
+            model.wrath_world_pvp_queues = Default::default();
             model.vehicle_guid = None;
             model.vehicle_seat_flags = None;
+        }
+    }
+
+    /// Update one 0-based totem slot (`0..=3`) from `SMSG_TOTEM_CREATED` (`0x3C4`) or clear it on
+    /// destroy. Returns `true` when the slot's revision or presence changed so the feed can fire
+    /// `PLAYER_TOTEM_UPDATE(slot + 1)`.
+    pub fn set_wrath_totem(
+        &mut self,
+        slot: u8,
+        totem: Option<super::model::WrathTotemSlot>,
+    ) -> bool {
+        let idx = usize::from(slot);
+        if idx >= 4 {
+            return false;
+        }
+        let mut model = self.model_mut();
+        let prev_rev = model.wrath_totems[idx].as_ref().map(|t| t.revision);
+        let next_rev = totem.as_ref().map(|t| t.revision);
+        model.wrath_totems[idx] = totem;
+        prev_rev != next_rev
+    }
+
+    /// Replace the known Shaman totem flyout spell IDs per 1-based totem element slot (`1..=4`:
+    /// Fire, Earth, Water, Air), projected in spell-list display order for
+    /// `GetMultiCastTotemSpells(slot)`.
+    pub fn set_wrath_totem_flyout_spells(&mut self, spells: [Vec<u32>; 4]) {
+        self.model_mut().wrath_totem_flyout_spells = spells;
+    }
+
+    /// Seat or restate one 0-based mirror timer slot (`0 = EXHAUSTION`, `1 = BREATH`,
+    /// `2 = FEIGNDEATH`) from `SMSG_START_MIRROR_TIMER` (`0x1D9`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_wrath_mirror_timer_start(
+        &mut self,
+        slot: usize,
+        name: &str,
+        value_ms: i64,
+        max_value_ms: i64,
+        scale: i64,
+        paused: bool,
+        label: &str,
+    ) {
+        if slot >= 3 {
+            return;
+        }
+        let mut model = self.model_mut();
+        let now = model.now;
+        model.wrath_mirror_timers[slot] = Some(super::model::WrathMirrorTimerSlot {
+            name: name.to_string(),
+            value_ms,
+            max_value_ms,
+            scale,
+            paused,
+            label: label.to_string(),
+            updated_at: now,
+        });
+    }
+
+    /// Pause or unpause a 0-based mirror timer slot (`0..3`) from `SMSG_PAUSE_MIRROR_TIMER`
+    /// (`0x1DA`), snapshotting its interpolated value at the current `GetTime()` clock.
+    pub fn set_wrath_mirror_timer_pause(&mut self, slot: usize, paused: bool) {
+        if slot >= 3 {
+            return;
+        }
+        let mut model = self.model_mut();
+        let now = model.now;
+        if let Some(t) = model.wrath_mirror_timers[slot].as_mut() {
+            t.value_ms = t.progress_ms(now);
+            t.updated_at = now;
+            t.paused = paused;
+        }
+    }
+
+    /// Clear a 0-based mirror timer slot (`0..3`) from `SMSG_STOP_MIRROR_TIMER` (`0x1DB`).
+    pub fn set_wrath_mirror_timer_stop(&mut self, slot: usize) {
+        if slot < 3 {
+            self.model_mut().wrath_mirror_timers[slot] = None;
+        }
+    }
+
+    /// Push the projected battleground types for `GetNumBattlegroundTypes()` and
+    /// `GetBattlegroundInfo(index)`.
+    pub fn set_wrath_battleground_types(
+        &mut self,
+        types: Vec<super::model::WrathBattlegroundType>,
+    ) {
+        self.model_mut().wrath_battleground_types = types;
+    }
+
+    /// Update one 0-based world-PvP queue slot (`0..2`, 1-based `1..=2` in Lua) for
+    /// `GetWorldPVPQueueStatus(index)`.
+    pub fn set_wrath_world_pvp_queue(
+        &mut self,
+        slot: usize,
+        queue: Option<super::model::WrathWorldPvpQueueSlot>,
+    ) {
+        if slot < 2 {
+            self.model_mut().wrath_world_pvp_queues[slot] = queue;
         }
     }
 
@@ -2749,7 +3196,7 @@ impl super::UiScript {
         self.model_mut().calendar = None;
     }
 
-    /// Clear every scoped rune/calendar/LFG/vehicle fact, including the scope `OpenCalendar()` tags with.
+    /// Clear every scoped rune/calendar/LFG/vehicle/totem fact, including the scope `OpenCalendar()` tags with.
     pub fn clear_wrath_scoped_ui(&mut self) {
         let mut model = self.model_mut();
         model.runes = None;
@@ -2758,6 +3205,10 @@ impl super::UiScript {
         model.calendar_fetches.clear();
         model.wrath_lfg = super::model::WrathLfgState::default();
         model.wrath_scoped_commands.clear();
+        model.wrath_totems = Default::default();
+        model.wrath_totem_flyout_spells = Default::default();
+        model.wrath_mirror_timers = Default::default();
+        model.wrath_world_pvp_queues = Default::default();
         model.vehicle_guid = None;
         model.vehicle_seat_flags = None;
     }
@@ -4124,10 +4575,91 @@ mod tests {
         assert!((start - 100.0).abs() < 1e-9);
         assert_eq!(duration, 10.0);
         assert!(ready);
+        assert_eq!(s.eval::<i64>("return GetRuneCount(1)").unwrap(), 1);
+        assert_eq!(s.eval::<i64>("return GetRuneCount(3)").unwrap(), 1);
+        assert_eq!(s.eval::<i64>("return GetRuneCount(4)").unwrap(), 1);
 
-        // The reference's invalid slot raises; an out-of-range type read is empty, not a guess.
+        // The reference's invalid slot raises; an out-of-range type/count read is empty, not a guess.
         assert!(s.run("GetRuneCooldown(9)").is_err());
         assert_eq!(s.arity("GetRuneType(9)").unwrap(), 0);
+        assert_eq!(s.arity("GetRuneCount(9)").unwrap(), 0);
+    }
+
+    #[test]
+    fn wrath_totem_and_multicast_natives_project_created_totems_and_destroy_requests() {
+        use crate::script::model::{WrathScopedCommand, WrathTotemSlot};
+
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.keep_calls();
+        s.set_wrath_scope(5, 8);
+        s.set_now(100.0);
+
+        assert_eq!(
+            s.eval::<i64>("return GetMultiCastBarOffset()").unwrap(),
+            6,
+            "Wrath multi-cast totem bar lives at page offset 6 (slots 133..144)"
+        );
+        assert_eq!(
+            s.eval::<(bool, String, f64, f64, String)>("return GetTotemInfo(1)")
+                .unwrap(),
+            (false, String::new(), 0.0, 0.0, String::new())
+        );
+        assert_eq!(s.eval::<i64>("return GetTotemTimeLeft(1)").unwrap(), 0);
+
+        assert!(s.set_wrath_totem(
+            0,
+            Some(WrathTotemSlot {
+                have_totem: true,
+                name: "Searing Totem".into(),
+                start_time: 100.0,
+                duration: 60.0,
+                icon: "Interface\\Icons\\Spell_Fire_SearingTotem".into(),
+                revision: 1,
+            })
+        ));
+        assert!(
+            !s.set_wrath_totem(
+                0,
+                Some(WrathTotemSlot {
+                    have_totem: true,
+                    name: "Searing Totem".into(),
+                    start_time: 100.0,
+                    duration: 60.0,
+                    icon: "Interface\\Icons\\Spell_Fire_SearingTotem".into(),
+                    revision: 1,
+                })
+            ),
+            "unchanged revision must not re-fire PLAYER_TOTEM_UPDATE"
+        );
+
+        s.set_now(115.0);
+        assert_eq!(
+            s.eval::<(bool, String, f64, f64, String)>("return GetTotemInfo(1)")
+                .unwrap(),
+            (
+                true,
+                "Searing Totem".into(),
+                100.0,
+                60.0,
+                "Interface\\Icons\\Spell_Fire_SearingTotem".into()
+            )
+        );
+        assert_eq!(s.eval::<i64>("return GetTotemTimeLeft(1)").unwrap(), 45);
+
+        s.run("SetMultiCastSpell(133, 3599)").unwrap();
+        assert_eq!(s.take_action_sets(), vec![(133, 3599)]);
+        assert!(s.run("SetMultiCastSpell(12, 3599)").is_err());
+
+        s.run("DestroyTotem(1)").unwrap();
+        assert_eq!(s.eval::<i64>("return GetTotemTimeLeft(1)").unwrap(), 0);
+        assert_eq!(
+            s.take_wrath_scoped_commands(),
+            vec![WrathScopedCommand::DestroyTotem {
+                slot: 0,
+                session_epoch: 5,
+                world_generation: 8,
+            }]
+        );
     }
 
     /// Calendar date and pending-invite count come from the decoded reply and stay zero/empty
@@ -5213,5 +5745,289 @@ mod focus_tests {
         assert_eq!(s.eval::<String>("return HEALTH").unwrap(), "focus");
         let vanilla = UnitGuids { wrath: false, ..g };
         assert!(!vanilla.has_field_watchers(OTHER), "1.12 has no focus");
+    }
+
+    /// 12340 `Script_GetComboPoints` (`0x00611670`) / `CGGameUI::GetComboPoints` (`0x00513920`)
+    /// accepts `(unit, target)` tokens (`ComboFrame.lua` passes `(this.unit, "target")` for
+    /// `"player"` or `"vehicle"`) as well as legacy 0/1-arg forms.
+    #[test]
+    fn wrath_get_combo_points_accepts_unit_and_target_tokens() {
+        let mut s = wrath_vm();
+        s.set_combo_points(4, MOB);
+        assert_eq!(
+            s.eval::<i64>(r#"return GetComboPoints("player", "target")"#)
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            s.eval::<i64>(r#"return GetComboPoints("player")"#).unwrap(),
+            4
+        );
+        assert_eq!(s.eval::<i64>(r#"return GetComboPoints()"#).unwrap(), 4);
+        assert_eq!(
+            s.eval::<i64>(r#"return GetComboPoints("party1", "target")"#)
+                .unwrap(),
+            0,
+            "another unit token does not own the local combo points"
+        );
+        assert_eq!(
+            s.eval::<i64>(r#"return GetComboPoints("player", "party1")"#)
+                .unwrap(),
+            0,
+            "mismatched target guid returns 0"
+        );
+        // Vehicle-seated combo points (`GetComboPoints("vehicle", "target")`).
+        s.set_wrath_vehicle_guid(Some(0xF150_0000_0000_0077));
+        assert_eq!(
+            s.eval::<i64>(r#"return GetComboPoints("vehicle", "target")"#)
+                .unwrap(),
+            4
+        );
+        // Focus target matching combo_target.
+        s.run(r#"FocusUnit("target")"#).unwrap();
+        assert_eq!(
+            s.eval::<i64>(r#"return GetComboPoints("player", "focus")"#)
+                .unwrap(),
+            4
+        );
+    }
+
+    #[test]
+    fn wrath_multicast_totem_flyout_and_possess_and_mirror_and_quest_link() {
+        use crate::script::{DeathUiState, PetActionView, QuestRecordView};
+        let mut s = wrath_vm();
+
+        // 1. GetMultiCastTotemSpells(slot) returns the projected totem spell IDs per element slot.
+        s.set_wrath_totem_flyout_spells([
+            vec![3599, 8227], // Fire
+            vec![2484, 8071], // Earth
+            vec![5394],       // Water
+            vec![8512],       // Air
+        ]);
+        let fire: (i64, i64) = s.eval("return GetMultiCastTotemSpells(1)").unwrap();
+        assert_eq!(fire, (3599, 8227));
+        let earth: (i64, i64) = s.eval("return GetMultiCastTotemSpells(2)").unwrap();
+        assert_eq!(earth, (2484, 8071));
+        let water: (i64, Option<i64>) = s.eval("return GetMultiCastTotemSpells(3)").unwrap();
+        assert_eq!(water, (5394, None));
+        let out_of_range: Option<i64> = s.eval("return GetMultiCastTotemSpells(5)").unwrap();
+        assert_eq!(out_of_range, None);
+
+        // 2. GetPossessInfo(index) and IsPossessBarVisible() follow possess_bar and pet_bar slots.
+        assert_eq!(
+            s.eval::<Option<i64>>("return IsPossessBarVisible()")
+                .unwrap(),
+            None
+        );
+        s.set_death(DeathUiState {
+            possess_bar: true,
+            ..Default::default()
+        });
+        s.set_pet_actions(
+            true,
+            true,
+            false,
+            vec![PetActionView {
+                name: Some("Mind Blast".into()),
+                texture: Some("Interface\\Icons\\Spell_Shadow_UnholyFrenzy".into()),
+                is_token: false,
+                active: false,
+                auto_cast_allowed: false,
+                auto_cast_enabled: false,
+                cooldown: None,
+                packed: (7 << 24) | 8092,
+            }],
+        );
+        assert_eq!(
+            s.eval::<Option<i64>>("return IsPossessBarVisible()")
+                .unwrap(),
+            Some(1)
+        );
+        let (tex, name, enabled): (Option<String>, Option<String>, Option<i64>) =
+            s.eval("return GetPossessInfo(1)").unwrap();
+        assert_eq!(
+            tex.as_deref(),
+            Some("Interface\\Icons\\Spell_Shadow_UnholyFrenzy")
+        );
+        assert_eq!(name.as_deref(), Some("Mind Blast"));
+        assert_eq!(enabled, Some(1));
+        let empty_slot: (Option<String>, Option<String>, Option<i64>) =
+            s.eval("return GetPossessInfo(2)").unwrap();
+        assert_eq!(empty_slot, (None, None, None));
+
+        // 3. GetMirrorTimerInfo(index) and GetMirrorTimerProgress(timer) interpolate active timers.
+        s.set_clock(10.0);
+        s.set_wrath_mirror_timer_start(1, "BREATH", 60_000, 60_000, -1, false, "Breath");
+        s.set_clock(15.0);
+        let info: (String, i64, i64, i64, i64, String) =
+            s.eval("return GetMirrorTimerInfo(2)").unwrap();
+        assert_eq!(
+            info,
+            ("BREATH".into(), 55_000, 60_000, -1, 0, "Breath".into())
+        );
+        let progress: f64 = s.eval(r#"return GetMirrorTimerProgress("BREATH")"#).unwrap();
+        assert!((progress - 55_000.0).abs() < 1e-6);
+        s.set_wrath_mirror_timer_pause(1, true);
+        s.set_clock(25.0);
+        let paused_progress: f64 = s.eval(r#"return GetMirrorTimerProgress("BREATH")"#).unwrap();
+        assert!((paused_progress - 55_000.0).abs() < 1e-6);
+        s.set_wrath_mirror_timer_stop(1);
+        let stopped: (String, i64, i64, i64, i64, String) =
+            s.eval("return GetMirrorTimerInfo(2)").unwrap();
+        assert_eq!(stopped.0, "UNKNOWN");
+
+        // 4. GetQuestLink(questID) formats 3.3.5a quest hyperlinks from quest_store.
+        s.set_quest_record(
+            783,
+            QuestRecordView {
+                title: "A Threat Within".into(),
+                level: 1,
+                ..Default::default()
+            },
+        );
+        let link: Option<String> = s.eval("return GetQuestLink(783)").unwrap();
+        assert_eq!(
+            link.as_deref(),
+            Some("|cffffff00|Hquest:783:1|h[A Threat Within]|h|r")
+        );
+        let missing: Option<String> = s.eval("return GetQuestLink(99999)").unwrap();
+        assert_eq!(missing, None);
+    }
+
+    #[test]
+    fn wrath_pvp_currency_battleground_types_world_pvp_and_arena_getters_read_real_state() {
+        use crate::script::{
+            BattlefieldQueueSlot, HonorState, UiScript, UiTarget, UnitState,
+            WrathBattlegroundType, WrathWorldPvpQueueSlot,
+        };
+
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+
+        // 1. Honor & Arena currency getters read pushed HonorState with 12340 caps.
+        assert_eq!(
+            s.eval::<(i64, i64)>("return GetHonorCurrency()").unwrap(),
+            (0, 75000)
+        );
+        assert_eq!(
+            s.eval::<(i64, i64)>("return GetArenaCurrency()").unwrap(),
+            (0, 10000)
+        );
+        s.set_honor(Some(HonorState {
+            honor_currency: 12_345,
+            arena_currency: 1_850,
+            ..Default::default()
+        }));
+        assert_eq!(
+            s.eval::<(i64, i64)>("return GetHonorCurrency()").unwrap(),
+            (12_345, 75000)
+        );
+        assert_eq!(
+            s.eval::<(i64, i64)>("return GetArenaCurrency()").unwrap(),
+            (1_850, 10000)
+        );
+
+        // 2. GetNumBattlegroundTypes and GetBattlegroundInfo read projected battleground rows.
+        assert_eq!(
+            s.eval::<u32>("return GetNumBattlegroundTypes()").unwrap(),
+            0
+        );
+        s.set_wrath_battleground_types(vec![
+            WrathBattlegroundType {
+                id: 489,
+                name: "Warsong Gulch".into(),
+                can_enter: true,
+                is_holiday: false,
+                is_random: false,
+            },
+            WrathBattlegroundType {
+                id: 529,
+                name: "Arathi Basin".into(),
+                can_enter: false,
+                is_holiday: true,
+                is_random: false,
+            },
+        ]);
+        assert_eq!(
+            s.eval::<u32>("return GetNumBattlegroundTypes()").unwrap(),
+            2
+        );
+        let row1: (String, bool, bool, bool, i64) =
+            s.eval("return GetBattlegroundInfo(1)").unwrap();
+        assert_eq!(row1, ("Warsong Gulch".into(), true, false, false, 489));
+        let row2: (String, bool, bool, bool, i64) =
+            s.eval("return GetBattlegroundInfo(2)").unwrap();
+        assert_eq!(row2, ("Arathi Basin".into(), false, true, false, 529));
+        assert_eq!(
+            s.eval::<i64>("return select('#', GetBattlegroundInfo(3))")
+                .unwrap(),
+            0
+        );
+
+        // 3. GetWorldPVPQueueStatus reads 1..=2 world-PvP slots and defaults to ("none", nil, nil).
+        let empty_wpvp: (String, Option<String>, Option<i64>) =
+            s.eval("return GetWorldPVPQueueStatus(1)").unwrap();
+        assert_eq!(empty_wpvp, ("none".into(), None, None));
+        s.set_wrath_world_pvp_queue(
+            0,
+            Some(WrathWorldPvpQueueSlot {
+                status: "queued".into(),
+                map_name: Some("Wintergrasp".into()),
+                queue_id: Some(1),
+            }),
+        );
+        let queued_wpvp: (String, Option<String>, Option<i64>) =
+            s.eval("return GetWorldPVPQueueStatus(1)").unwrap();
+        assert_eq!(
+            queued_wpvp,
+            ("queued".into(), Some("Wintergrasp".into()), Some(1))
+        );
+        let slot2_wpvp: (String, Option<String>, Option<i64>) =
+            s.eval("return GetWorldPVPQueueStatus(2)").unwrap();
+        assert_eq!(slot2_wpvp, ("none".into(), None, None));
+
+        // 4. GetNumArenaOpponents and IsActiveBattlefieldArena read arena units and active slots.
+        assert_eq!(s.eval::<u32>("return GetNumArenaOpponents()").unwrap(), 0);
+        assert_eq!(
+            s.eval::<(bool, bool)>("return IsActiveBattlefieldArena()")
+                .unwrap(),
+            (false, false)
+        );
+        s.set_unit(
+            "arena1",
+            Some(UnitState {
+                exists: true,
+                name: Some("GladiatorOne".into()),
+                ..Default::default()
+            }),
+        );
+        s.set_unit(
+            "arena2",
+            Some(UnitState {
+                exists: true,
+                name: Some("GladiatorTwo".into()),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(s.eval::<u32>("return GetNumArenaOpponents()").unwrap(), 2);
+        s.set_battlefield_queue(
+            [
+                BattlefieldQueueSlot {
+                    map_id: 559,
+                    map_name: Some("Nagrand Arena".into()),
+                    status: 3,
+                    team_size: 2,
+                    rated: true,
+                    ..Default::default()
+                },
+                Default::default(),
+                Default::default(),
+            ],
+            0,
+        );
+        assert_eq!(
+            s.eval::<(bool, bool)>("return IsActiveBattlefieldArena()")
+                .unwrap(),
+            (true, true)
+        );
     }
 }

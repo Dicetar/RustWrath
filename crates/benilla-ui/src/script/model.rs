@@ -205,7 +205,70 @@ pub struct WrathCurrencyState {
     pub backpack: Vec<WrathCurrencyRow>,
 }
 
-/// Outbound 12340 LFG and vehicle commands queued from Lua and drained by `wrath_rune_calendar_feed`.
+/// One active Shaman/Gargoyle totem slot (`1..=4` in Lua, `0..4` on the wire) projected from
+/// `SMSG_TOTEM_CREATED` (`0x3C4`). `start_time` and `duration` are in `GetTime()` seconds.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WrathTotemSlot {
+    pub have_totem: bool,
+    pub name: String,
+    pub start_time: f64,
+    pub duration: f64,
+    pub icon: String,
+    pub revision: u64,
+}
+
+/// One active breath, fatigue, or feign-death mirror timer slot (`0 = EXHAUSTION`, `1 = BREATH`,
+/// `2 = FEIGNDEATH`) projected from `SMSG_START_MIRROR_TIMER` (`0x1D9`), `SMSG_PAUSE_MIRROR_TIMER`
+/// (`0x1DA`), and `SMSG_STOP_MIRROR_TIMER` (`0x1DB`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WrathMirrorTimerSlot {
+    pub name: String,
+    pub value_ms: i64,
+    pub max_value_ms: i64,
+    pub scale: i64,
+    pub paused: bool,
+    pub label: String,
+    pub updated_at: f64,
+}
+
+impl WrathMirrorTimerSlot {
+    /// Current interpolated timer value in milliseconds at `now` (`GetTime()` seconds).
+    pub fn progress_ms(&self, now: f64) -> i64 {
+        let raw = if !self.paused && now > self.updated_at {
+            (self.value_ms as f64 + (self.scale as f64) * (now - self.updated_at) * 1000.0).round()
+                as i64
+        } else {
+            self.value_ms
+        };
+        if self.max_value_ms > 0 {
+            raw.clamp(0, self.max_value_ms)
+        } else {
+            raw.max(0)
+        }
+    }
+}
+
+/// One battleground type row projected for 3.3.5a `GetNumBattlegroundTypes()` and
+/// `GetBattlegroundInfo(index)` (`PVPFrame.lua:495`, `BattlefieldInfo.cpp:1734`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WrathBattlegroundType {
+    pub id: u32,
+    pub name: String,
+    pub can_enter: bool,
+    pub is_holiday: bool,
+    pub is_random: bool,
+}
+
+/// One world-PvP queue slot (`1..=2`, e.g. Wintergrasp) projected for 3.3.5a
+/// `GetWorldPVPQueueStatus(index)` (`BattlefieldFrame.lua:696`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WrathWorldPvpQueueSlot {
+    pub status: String,
+    pub map_name: Option<String>,
+    pub queue_id: Option<u32>,
+}
+
+/// Outbound 12340 LFG, vehicle, and totem commands queued from Lua and drained by `wrath_rune_calendar_feed`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WrathScopedCommand {
     LfgJoin {
@@ -253,6 +316,11 @@ pub enum WrathScopedCommand {
     VehicleSwitchSeat {
         vehicle: u64,
         seat: i8,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    DestroyTotem {
+        slot: u8,
         session_epoch: u64,
         world_generation: u64,
     },
@@ -760,6 +828,17 @@ pub(crate) struct Model {
     pub(crate) wrath_currency: WrathCurrencyState,
     pub(crate) wrath_currency_expanded: HashMap<u32, bool>,
     pub(crate) wrath_scoped_commands: std::collections::VecDeque<WrathScopedCommand>,
+    /// Decoded `SMSG_TOTEM_CREATED` slots (`0..4`, 1-based `1..=4` in Lua).
+    pub(crate) wrath_totems: [Option<WrathTotemSlot>; 4],
+    /// Known totem spell IDs per 1-based totem element slot (`1..=4`: Fire, Earth, Water, Air),
+    /// projected in spell-list display order for `GetMultiCastTotemSpells(slot)`.
+    pub(crate) wrath_totem_flyout_spells: [Vec<u32>; 4],
+    /// Decoded `SMSG_START/PAUSE/STOP_MIRROR_TIMER` slots (`0..3`, 1-based `1..=3` in Lua).
+    pub(crate) wrath_mirror_timers: [Option<WrathMirrorTimerSlot>; 3],
+    /// Projected battleground types for `GetNumBattlegroundTypes()` / `GetBattlegroundInfo(index)`.
+    pub(crate) wrath_battleground_types: Vec<WrathBattlegroundType>,
+    /// Projected world-PvP queue slots (`0..2`, 1-based `1..=2` in Lua) for `GetWorldPVPQueueStatus`.
+    pub(crate) wrath_world_pvp_queues: [Option<WrathWorldPvpQueueSlot>; 2],
     /// Replicated vehicle transport GUID for the local player when riding a vehicle.
     pub(crate) vehicle_guid: Option<u64>,
     pub(crate) vehicle_seat_flags: Option<u32>,
@@ -1897,6 +1976,11 @@ impl Model {
             wrath_currency: WrathCurrencyState::default(),
             wrath_currency_expanded: HashMap::new(),
             wrath_scoped_commands: std::collections::VecDeque::new(),
+            wrath_totems: Default::default(),
+            wrath_totem_flyout_spells: Default::default(),
+            wrath_mirror_timers: Default::default(),
+            wrath_battleground_types: Vec::new(),
+            wrath_world_pvp_queues: Default::default(),
             vehicle_guid: None,
             vehicle_seat_flags: None,
             secure_frames: HashSet::new(),

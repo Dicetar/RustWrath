@@ -220,6 +220,18 @@ pub struct SpellDisplay {
     /// `EffectRealPointsPerLevel[3]` (columns 73-75): the float per-level term (`0x6e3889`); 5.0
     /// on Pick Lock, Mining and Herb Gathering, so the skill they provide tracks the player's.
     pub effect_real_points_per_level: [f32; 3],
+    /// `SpellRuneCost.dbc` `RuneCost[3]` (Blood, Unholy, Frost) resolved via Wrath `Spell.dbc`
+    /// column 226 (`runeCostID`). `[0, 0, 0]` when the spell costs no runes.
+    pub rune_cost: [u8; 3],
+    /// `SpellRuneCost.dbc` `RunePowerGain` (tenths of runic power, e.g. 100 = 10 runic power)
+    /// resolved via Wrath `Spell.dbc` column 226 (`runeCostID`).
+    pub rune_power_gain: u32,
+    /// `RequiredTotemCategoryID[2]` (Wrath `Spell.dbc` columns 222-223). `[0, 0]` when none.
+    pub required_totem_categories: [u32; 2],
+    /// 4-bit Shaman totem element mask (`1 << (slot - 1)` for 1-based slots `1..=4`:
+    /// Fire = `0x01`, Earth = `0x02`, Water = `0x04`, Air = `0x08`) resolved from
+    /// `RequiredTotemCategoryID` through `TotemCategory.dbc`.
+    pub totem_slot_mask: u8,
 }
 
 /// Written out so `equipped_item_class` defaults to -1, no requirement: 0 is a real class.
@@ -316,6 +328,10 @@ impl Default for SpellDisplay {
             effect_trigger_spell: [0; 3],
             effect_item_type: [0; 3],
             effect_misc_value: [0; 3],
+            rune_cost: [0; 3],
+            rune_power_gain: 0,
+            required_totem_categories: [0; 2],
+            totem_slot_mask: 0,
         }
     }
 }
@@ -550,6 +566,11 @@ impl SpellDisplay {
     /// A finisher (`AttributesEx` bit 20 or 22): unusable with no combo points (`0x6e3e7a`).
     pub fn needs_combo_points(&self) -> bool {
         self.attributes_ex & ATTR_EX_FINISHING_MOVE != 0
+    }
+
+    /// Whether the spell has a non-zero Blood, Unholy, or Frost rune cost in `SpellRuneCost.dbc`.
+    pub fn has_rune_cost(&self) -> bool {
+        self.rune_cost != [0, 0, 0]
     }
 
     /// `Attributes & 0x404`: queued on the server's melee slot for the next swing, not cast.

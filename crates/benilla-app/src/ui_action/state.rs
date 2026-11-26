@@ -344,6 +344,7 @@ pub(crate) struct ActionStates<'w, 's> {
         // A profession opener's line (`0x6de040`), which the checked test reads, and the skill
         // lines the walk's cost finds its level through.
         Option<Res<'w, crate::ui_spellbook::SkillLines>>,
+        Option<Res<'w, crate::wrath::WrathWorldView>>,
     ),
     self_q: Query<'w, 's, (&'static ObjectStore, &'static Transform), With<SelfPlayer>>,
     // The guid index and the item store.
@@ -589,7 +590,7 @@ impl ActionStates<'_, '_> {
             ..
         } = &mut **memory;
         let memory = vm.get_leaving_reset(script);
-        let (bound, spell_mods, own_control, skill_lines) = &*cast_state;
+        let (bound, spell_mods, own_control, skill_lines, wrath_view) = &*cast_state;
         let skill_catalog = skill_lines.as_deref().map(|s| &s.catalog);
         let sub_classes = sub_classes.as_deref().map(|s| &s.0);
         let me = self_q.iter().next();
@@ -723,7 +724,13 @@ impl ActionStates<'_, '_> {
                     let range = range_answers(d, spells.as_deref(), &range_leg);
                     (st.has_range, st.in_range) = range;
                     let info = cooldowns.info(button.action, 0, Some(d), now);
-                    st.cooldown = info.ui_triple(anchor, ui_now);
+                    let base_cd = info.ui_triple(anchor, ui_now);
+                    st.cooldown = match wrath_view.as_deref() {
+                        Some(wv) if d.has_rune_cost() => {
+                            usable::merge_rune_cooldown(base_cd, d.rune_cost, &wv.runes, ui_now)
+                        }
+                        _ => base_cd,
+                    };
                     if st.cooldown.is_some() && trace_cd {
                         // The store's clock against the widget's; the sink stamps wall time.
                         benilla_assets::trace::line(

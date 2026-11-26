@@ -15,6 +15,7 @@ use benilla_formats::MapCatalog;
 use benilla_protocol::messages::{BattlefieldList, BattlefieldStatus};
 use benilla_ui::script::{
     BattlefieldCall, BattlefieldListView, BattlefieldMapInfo, BattlefieldQueueSlot, UiScript,
+    UiTarget, WrathBattlegroundType,
 };
 
 use crate::names::NameCache;
@@ -49,6 +50,8 @@ pub struct Battlefield {
     /// How many of `players`, from the front, a feed has looked up: the rest arrived since, each
     /// in a packet whose handler looks the name up with a callback (`0x4aae50`).
     players_asked: usize,
+    /// `(vm_session, player_level)` for which `set_wrath_battleground_types` was last pushed.
+    bg_types_seeded: Option<(u64, u32)>,
 }
 
 impl Battlefield {
@@ -76,6 +79,7 @@ impl Battlefield {
         self.verdicts.clear();
         self.players.clear();
         self.players_asked = 0;
+        self.bg_types_seeded = None;
     }
 
     /// The last list's battlemaster. A character under the bracket floor gets no list at all
@@ -225,6 +229,32 @@ fn feed_battlefield(
             .each_ref()
             .map(|s| slot_view(s.as_ref(), catalog, now));
         script.set_battlefield_queue(slots, queue.instance_expiration_ms(now));
+
+        if script.target() == UiTarget::Wrath335 {
+            if let Some(catalog) = catalog {
+                let level = script
+                    .eval::<i64>(r#"return UnitLevel("player") or 0"#)
+                    .unwrap_or(0)
+                    .max(0) as u32;
+                let key = (script.session(), level);
+                if state.bg_types_seeded != Some(key) {
+                    let rows = catalog
+                        .battleground_maps()
+                        .into_iter()
+                        .map(|(id, name, cols)| WrathBattlegroundType {
+                            id,
+                            name: name.to_string(),
+                            can_enter: level >= cols.min_level
+                                && (cols.max_level == 0 || level <= cols.max_level),
+                            is_holiday: false,
+                            is_random: false,
+                        })
+                        .collect();
+                    script.set_wrath_battleground_types(rows);
+                    state.bg_types_seeded = Some(key);
+                }
+            }
+        }
 
         if std::mem::take(&mut state.show) {
             script.fire_event("BATTLEFIELDS_SHOW", vec![]);

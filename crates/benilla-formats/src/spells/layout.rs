@@ -140,4 +140,21 @@ impl SpellLayout {
             Self::Wrath => dbc::u32_at(record, 11).unwrap_or(0),
         }
     }
+
+    pub(super) fn rune_cost_id(self, record: &Record) -> u32 {
+        match self {
+            Self::Vanilla => 0,
+            Self::Wrath => dbc::u32_at(record, 226).unwrap_or(0),
+        }
+    }
+
+    pub(super) fn required_totem_categories(self, record: &Record) -> [u32; 2] {
+        match self {
+            Self::Vanilla => [0, 0],
+            Self::Wrath => [
+                dbc::u32_at(record, 222).unwrap_or(0),
+                dbc::u32_at(record, 223).unwrap_or(0),
+            ],
+        }
+    }
 }

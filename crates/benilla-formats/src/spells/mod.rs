@@ -541,6 +541,81 @@ pub fn load_spell_catalog(chain: &mut Chain) -> Result<SpellCatalog> {
 
     let spell_bytes = chain.read_file(SPELL).context("reading Spell.dbc")?;
     let (spells_set, layout) = layout::parse_spells(&spell_bytes)?;
+    let rune_costs: HashMap<u32, ([u8; 3], u32)> = if matches!(layout, layout::SpellLayout::Wrath) {
+        if let Ok(bytes) = chain.read_file("DBFilesClient\\SpellRuneCost.dbc") {
+            let mut s = Schema::new("SpellRuneCost");
+            for name in ["ID", "Blood", "Unholy", "Frost", "RunePowerGain"] {
+                s.add_field(SchemaField::new(name, FieldType::UInt32));
+            }
+            if let Ok(rs) = parse(&bytes, s, "SpellRuneCost.dbc") {
+                rs.records()
+                    .iter()
+                    .filter_map(|r| {
+                        let id = crate::dbc::u32_at(r, 0)?;
+                        let blood = crate::dbc::u32_at(r, 1).unwrap_or(0).min(u32::from(u8::MAX)) as u8;
+                        let unholy = crate::dbc::u32_at(r, 2).unwrap_or(0).min(u32::from(u8::MAX)) as u8;
+                        let frost = crate::dbc::u32_at(r, 3).unwrap_or(0).min(u32::from(u8::MAX)) as u8;
+                        let gain = crate::dbc::u32_at(r, 4).unwrap_or(0);
+                        Some((id, ([blood, unholy, frost], gain)))
+                    })
+                    .collect()
+            } else {
+                HashMap::new()
+            }
+        } else {
+            HashMap::new()
+        }
+    } else {
+        HashMap::new()
+    };
+    let totem_category_masks: HashMap<u32, u8> = if matches!(layout, layout::SpellLayout::Wrath) {
+        if let Ok(bytes) = chain.read_file("DBFilesClient\\TotemCategory.dbc") {
+            let mut s = Schema::new("TotemCategory");
+            s.add_field(SchemaField::new("ID", FieldType::UInt32));
+            for i in 0..16 {
+                s.add_field(SchemaField::new(format!("Name{i}"), FieldType::String));
+            }
+            s.add_field(SchemaField::new("NameFlags", FieldType::UInt32));
+            s.add_field(SchemaField::new("CategoryType", FieldType::UInt32));
+            s.add_field(SchemaField::new("CategoryMask", FieldType::UInt32));
+            if let Ok(rs) = parse(&bytes, s, "TotemCategory.dbc") {
+                rs.records()
+                    .iter()
+                    .filter_map(|r| {
+                        let id = crate::dbc::u32_at(r, 0)?;
+                        let cat_type = crate::dbc::u32_at(r, 18).unwrap_or(0);
+                        let mask = crate::dbc::u32_at(r, 19).unwrap_or(0);
+                        // CategoryType 2 is Shaman elemental totem tools (mask bits 0..4: Fire, Earth, Water, Air).
+                        (cat_type == 2 && (mask & 0x0F) != 0).then_some((id, (mask & 0x0F) as u8))
+                    })
+                    .collect()
+            } else {
+                HashMap::new()
+            }
+        } else {
+            HashMap::new()
+        }
+    } else {
+        HashMap::new()
+    };
+    let resolve_totem_slot_mask = |cats: [u32; 2]| -> u8 {
+        let mut mask = 0u8;
+        for cat in cats {
+            if cat == 0 {
+                continue;
+            }
+            let bits = totem_category_masks.get(&cat).copied().unwrap_or(match cat {
+                4 => 0x01,                       // Fire Totem
+                2 => 0x02,                       // Earth Totem
+                5 => 0x04,                       // Water Totem
+                3 => 0x08,                       // Air Totem
+                162 | 163 | 164 | 190 => 0x0F,   // Master Totem
+                _ => 0,
+            });
+            mask |= bits;
+        }
+        mask
+    };
     let u32_at = |record: &benilla_dbc::Record, column: usize| layout.uint(record, column);
     let i32_at = |record: &benilla_dbc::Record, column: usize| layout.int(record, column);
     let f32_at = |record: &benilla_dbc::Record, column: usize| layout.float(record, column);
@@ -629,6 +704,8 @@ pub fn load_spell_catalog(chain: &mut Chain) -> Result<SpellCatalog> {
             std::array::from_fn(|i| u32_at(r, COL_EFFECT_APPLY_AURA_1 + i).unwrap_or(0));
         let effect_trigger_spell: [u32; 3] =
             std::array::from_fn(|i| u32_at(r, COL_EFFECT_TRIGGER_1 + i).unwrap_or(0));
+        let required_totem_categories = layout.required_totem_categories(r);
+        let totem_slot_mask = resolve_totem_slot_mask(required_totem_categories);
         spells.insert(
             id,
             SpellDisplay {
@@ -777,6 +854,14 @@ pub fn load_spell_catalog(chain: &mut Chain) -> Result<SpellCatalog> {
                 effect_misc_value: std::array::from_fn(|i| {
                     i32_at(r, COL_EFFECT_MISC_1 + i).unwrap_or(0)
                 }),
+                rune_cost: rune_costs
+                    .get(&layout.rune_cost_id(r))
+                    .map_or([0; 3], |&(cost, _)| cost),
+                rune_power_gain: rune_costs
+                    .get(&layout.rune_cost_id(r))
+                    .map_or(0, |&(_, gain)| gain),
+                required_totem_categories,
+                totem_slot_mask,
             },
         );
     }
