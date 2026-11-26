@@ -178,3 +178,16 @@ client installs it — and one nil value), and 2 session first errors: Bartender
 Details). GatherMate2 (Classic/MoP TOC), aux-addon (TBC) and zzzmopitemtooltips (MoP) are out of
 the Wrath target. The UI-probe column stays 0/49; it is the harness's probe bound, not a load
 result.
+
+## Frame-handle binding (partial)
+
+`GetFrameHandle(frame, create)` and `IsFrameHandle(value)` are now bound for a Wrath VM. A frame
+wrapper's `[0]` lightuserdata is the identity, and the wrapper table itself is the handle the
+stock `SecureHandlers.lua`/`RestrictedExecution.lua` receive. The binding is tested on a live
+frame and rejects a plain table.
+
+The Bartender 4.4 secure-state path still stops at `SecureHandlers.lua:108`: the `self` that
+reaches `GetFrameHandle` there is not a frame wrapper (it is a restricted-environment value), so
+the next step is a true handle object whose frame methods route through the environment and whose
+identity survives restricted execution. The rest of the corpus is unchanged at 45/49 load and
+43/49 session; Bartender is MoP-era and is not part of the Wrath target.

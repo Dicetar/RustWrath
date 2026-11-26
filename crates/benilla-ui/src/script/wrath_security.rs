@@ -7,7 +7,7 @@
 //! (see [`super::taint`]). This is not a complete Wrath secure-execution implementation.
 //! The 1.12 host VM must never see these globals, so the Wrath block alone sets them.
 
-use mlua::{Function, Lua, MultiValue};
+use mlua::{Function, Lua, MultiValue, Value};
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `scrub(...)` returns its arguments unchanged in the 12340 restricted-execution bootstrap;
@@ -15,6 +15,40 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set(
         "scrub",
         lua.create_function(|_, args: MultiValue| Ok(args))?,
+    )?;
+    // `GetFrameHandle(frame, create)`/`IsFrameHandle(value)`: the stock `SecureHandlers.lua`
+    // and `RestrictedExecution.lua` use the handle as the restricted closure's `self`. Frames
+    // here are Lua tables, so the table itself is the handle; `IsFrameHandle` accepts exactly a
+    // live frame wrapper.
+    lua.globals().set(
+        "GetFrameHandle",
+        lua.create_function(|_lua, (frame, _create): (Value, Value)| {
+            let Value::Table(table) = frame else {
+                return Ok(Value::Nil);
+            };
+            // A frame wrapper carries its identity in `rawget(table, 0)` (a lightuserdata).
+            // Accepting the wrapper itself is the handle the stock restricted-execution Lua
+            // expects; a plain table is not a frame handle.
+            let marked = table
+                .raw_get::<Value>(0)
+                .is_ok_and(|v| matches!(v, Value::LightUserData(_)));
+            Ok(if marked {
+                Value::Table(table)
+            } else {
+                Value::Nil
+            })
+        })?,
+    )?;
+    lua.globals().set(
+        "IsFrameHandle",
+        lua.create_function(|_lua, value: Value| {
+            let Value::Table(table) = value else {
+                return Ok(false);
+            };
+            Ok(table
+                .raw_get::<Value>(0)
+                .is_ok_and(|v| matches!(v, Value::LightUserData(_))))
+        })?,
     )?;
     // `forceinsecure()`: the host never enforces taint, so the call is a no-op.
     lua.globals()
@@ -46,4 +80,24 @@ end
     .set_name("benilla:wrath-secure-natives")
     .exec()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::script::{UiScript, UiTarget};
+
+    /// The stock `SecureHandlers.lua` uses the frame wrapper as the restricted closure's
+    /// `self`; the handle binding must accept exactly a live frame table.
+    #[test]
+    fn get_frame_handle_accepts_a_wrath_frame_and_rejects_a_plain_table() {
+        let s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        let result: (bool, bool, bool) = s
+            .eval(
+                "local f = CreateFrame('Frame')
+                 local h = GetFrameHandle(f)
+                 return h ~= nil, IsFrameHandle(h), IsFrameHandle({})",
+            )
+            .unwrap();
+        assert_eq!(result, (true, true, false));
+    }
 }
