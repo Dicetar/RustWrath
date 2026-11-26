@@ -895,42 +895,6 @@ impl TimeWriter<'_> {
     }
 }
 
-/// `luaO_chunkid` (`0x6f5c40`), for `debugstack`'s `short_src`. An `@` name longer than
-/// [`CHUNKID_KEEP`] keeps only its tail behind `"..."`, so a long addon path loses the `\AddOns\`
-/// that corpus libraries search for.
-fn chunk_id(source: &str) -> String {
-    if let Some(rest) = source.strip_prefix('=') {
-        // A `=name` chunk is taken verbatim, clipped to the buffer from the front.
-        return rest.chars().take(LUA_IDSIZE - 1).collect();
-    }
-    if let Some(rest) = source.strip_prefix('@') {
-        let n = rest.chars().count();
-        if n <= CHUNKID_KEEP {
-            return rest.to_string();
-        }
-        let tail: String = rest.chars().skip(n - CHUNKID_KEEP).collect();
-        return format!("...{tail}");
-    }
-    // A string chunk: `[string "<first line, clipped>"]`.
-    let first = source.split('\n').next().unwrap_or_default();
-    let budget = LUA_IDSIZE - STRING_CHUNK_OVERHEAD;
-    if first.chars().count() > budget || first.len() < source.len() {
-        let clipped: String = first.chars().take(budget).collect();
-        format!("[string \"{clipped}...\"]")
-    } else {
-        format!("[string \"{first}\"]")
-    }
-}
-
-/// `LUA_IDSIZE`: the `short_src` buffer, 60 bytes with the terminator.
-const LUA_IDSIZE: usize = 60;
-
-/// Characters an `@` name keeps, tail-first, behind `"..."` (`0x6f5c40`).
-const CHUNKID_KEEP: usize = 52;
-
-/// What `[string "…"]` costs the budget in the third `luaO_chunkid` arm.
-const STRING_CHUNK_OVERHEAD: usize = 17;
-
 /// One `debugstack` frame, `short_src ":" [currentline ":"] DESC`, the caller pushing its `\n`.
 /// DESC (`0x7038fa`) is `` in function `%s' `` for a named frame (`0x872c98`), else by `what`:
 /// `" in main chunk"` (`0x872c88`), `" ?"` for C or a tail call (`0x872c6c`), or
@@ -939,10 +903,10 @@ fn traceback_frame(d: &mlua::Debug) -> String {
     let src = d.source();
     let names = d.names();
     let short = src
-        .source
+        .short_src
         .as_deref()
-        .map(chunk_id)
-        .or_else(|| src.short_src.as_deref().map(str::to_owned))
+        .map(str::to_owned)
+        .or_else(|| src.source.as_deref().map(str::to_owned))
         .unwrap_or_else(|| "?".to_string());
     let mut line = String::with_capacity(short.len() + 32);
     line.push_str(&short);
