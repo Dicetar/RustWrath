@@ -1740,7 +1740,6 @@ mod tests {
         use crate::wrath::WrathRuneSlot;
 
         let slot = |rune_type: u8, cooldown: u8, received_at: f64| WrathRuneSlot {
-            base_type: rune_type.min(2),
             rune_type,
             cooldown,
             received_at,

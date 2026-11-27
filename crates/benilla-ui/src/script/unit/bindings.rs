@@ -867,7 +867,7 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                 let (unit, target) = match args.len() {
                     0 => ("player".to_owned(), "target".to_owned()),
                     1 => {
-                        let Some(first) = as_token(args.get(0)) else {
+                        let Some(first) = as_token(args.front()) else {
                             return Ok(0_i64);
                         };
                         if first.eq_ignore_ascii_case("target") {
@@ -877,7 +877,7 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                         }
                     }
                     _ => {
-                        let unit = match args.get(0) {
+                        let unit = match args.front() {
                             None | Some(Value::Nil) => "player".to_owned(),
                             other => {
                                 let Some(s) = as_token(other) else {
@@ -906,9 +906,7 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                         u.guid != 0
                             && (u.guid == model.unit_guids.player
                                 || Some(u.guid) == model.vehicle_guid
-                                || model
-                                    .unit("player")
-                                    .is_some_and(|p| p.guid == u.guid))
+                                || model.unit("player").is_some_and(|p| p.guid == u.guid))
                     });
                 if !is_combo_holder {
                     return Ok(0_i64);

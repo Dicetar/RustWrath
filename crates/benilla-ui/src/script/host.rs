@@ -62,13 +62,6 @@ pub trait CallHost {
         None
     }
 
-    /// App-supplied inputs for encoding a profession opener spell's `|Htrade:` link in
-    /// `Script_GetSpellLink` (`0x005408E0` -> `CGTradeSkillInfo::GetTradeSkillListLink`
-    /// `0x005DB060`).
-    fn trade_skill_link_source(&mut self, _id: u32) -> Option<super::TradeSkillLinkSource> {
-        None
-    }
-
     fn spell_known(&mut self, _id: u32, _pet: bool) -> Option<bool> {
         None
     }

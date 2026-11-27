@@ -560,13 +560,6 @@ impl CallHost for ScriptCallHost<'_, '_> {
         self.appliers.spell_queries().known(id, pet)
     }
 
-    fn trade_skill_link_source(
-        &mut self,
-        id: u32,
-    ) -> Option<benilla_ui::script::TradeSkillLinkSource> {
-        self.appliers.spell_queries().trade_skill_link_source(id)
-    }
-
     fn spell_cooldown(&mut self, id: u32, pet: bool) -> Option<(i64, u32, bool)> {
         self.appliers.spell_queries().cooldown(id, pet)
     }

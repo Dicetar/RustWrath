@@ -1101,7 +1101,9 @@ fn send_spell_cast(
                 if let Some(wv) = wrath_view.filter(|wv| !wv.runes.is_empty()) {
                     let ui_now = known.ui_clock.as_ref().map_or(0.0, |c| c.ui_now);
                     if !super::usable::has_runes_for_spell(d.rune_cost, &wv.runes, ui_now) {
-                        debug!("ui_action: cast {spell_id} refused locally — not enough runes (0x4d)");
+                        debug!(
+                            "ui_action: cast {spell_id} refused locally — not enough runes (0x4d)"
+                        );
                         refuse!(CastFail::local(spell_id, 0x4d));
                     }
                 }

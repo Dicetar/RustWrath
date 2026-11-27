@@ -225,8 +225,7 @@ pub(crate) fn feed_honor(
                     });
                     script.set_honor(Some(fresh));
                     memo.last = Some(fresh);
-                    if currency_changed
-                        && script.target() == benilla_ui::script::UiTarget::Wrath335
+                    if currency_changed && script.target() == benilla_ui::script::UiTarget::Wrath335
                     {
                         script.fire_event("HONOR_CURRENCY_UPDATE", Vec::<ScriptValue>::new());
                     }
@@ -467,9 +466,9 @@ mod tests {
 
     #[test]
     fn wrath_honor_and_arena_currency_flow_from_raw_fields_and_fire_update() {
-        use bevy::ecs::system::RunSystemOnce;
         use benilla_protocol_wrath::fields;
         use benilla_ui::script::UiTarget;
+        use bevy::ecs::system::RunSystemOnce;
 
         let mut app = App::new();
         app.init_resource::<HonorFeedState>()
@@ -491,15 +490,26 @@ mod tests {
             .unwrap();
         app.insert_non_send_resource(script);
 
+        fn raw(fields: &[(u16, u32)]) -> crate::wrath::WrathPlayerRaw {
+            let end = fields.iter().map(|(field, _)| *field).max().unwrap_or(0) + 1;
+            let mut values = vec![0u32; usize::from(end)];
+            for (field, value) in fields {
+                values[usize::from(*field)] = *value;
+            }
+            crate::wrath::WrathPlayerRaw(crate::wrath_inventory::WrathFieldWindow::from_dense(
+                values,
+            ))
+        }
+
         let me = app
             .world_mut()
             .spawn((
                 SelfPlayer,
                 ObjectStore(benilla_protocol::ObjectFields::default()),
-                crate::wrath::WrathPlayerRaw(benilla_protocol::ObjectFields::from_pairs(&[
+                raw(&[
                     (fields::PLAYER_FIELD_HONOR_CURRENCY, 4200),
                     (fields::PLAYER_FIELD_ARENA_CURRENCY, 950),
-                ])),
+                ]),
             ))
             .id();
 
@@ -519,10 +529,10 @@ mod tests {
 
         *app.world_mut()
             .get_mut::<crate::wrath::WrathPlayerRaw>(me)
-            .unwrap() = crate::wrath::WrathPlayerRaw(benilla_protocol::ObjectFields::from_pairs(&[
+            .unwrap() = raw(&[
             (fields::PLAYER_FIELD_HONOR_CURRENCY, 5100),
             (fields::PLAYER_FIELD_ARENA_CURRENCY, 950),
-        ]));
+        ]);
         app.world_mut().run_system_once(feed_honor).unwrap();
         {
             let mut s = app.world_mut().non_send_resource_mut::<UiScript>();
