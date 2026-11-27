@@ -154,6 +154,9 @@ fn stock_vm(root: &Path, registry: &[benilla_ui::script::AddOnInfo]) -> Result<U
         // A fork clones the model's `Arc`, so the catalog is projected once per survey process.
         script.set_spell_info(spells);
     }
+    if let Some(scalers) = combat_rating_scalers() {
+        script.set_combat_rating_scalers(scalers);
+    }
     let _ = crate::ui_script::load_default_ui(&script);
     Ok(script)
 }
@@ -1388,6 +1391,21 @@ fn auction_item_classes(
         .ok()
         .map(crate::ui_items::ItemSubClasses);
     crate::ui_auction::categories(target, classes.as_ref(), subclasses.as_ref())
+}
+
+/// `gtCombatRatings.dbc`'s scalers, in row order (`rating_idx * 100 + level - 1`), as the live
+/// app's `load_combat_ratings` seats them. Without them `GetCombatRatingBonus` reports an
+/// unsupported native and answers 0. `None` with no install.
+fn combat_rating_scalers() -> Option<Vec<f32>> {
+    use std::sync::OnceLock;
+    static SCALERS: OnceLock<Option<Vec<f32>>> = OnceLock::new();
+    SCALERS
+        .get_or_init(|| {
+            let data = benilla_formats::wow_data()?;
+            let mut chain = benilla_formats::open_chain(&data).ok()?;
+            benilla_formats::load_gt_combat_ratings(&mut chain).ok()
+        })
+        .clone()
 }
 
 /// The client's `Spell.dbc` projected to the `GetSpellInfo` slots, keyed by spell id. The harness

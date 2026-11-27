@@ -296,4 +296,6 @@ are re-checked on the merged tree below.
 this branch: load **48/49** (strict **46/49**), session **47/49**, drew **19/49**, survived use
 **17/49**. The two failures remain GatherMate2 (TOC `11508,20505,50503`) and Bartender4
 (`4.4.2`, MoP secure handle). Log: `F:/AI/tmp/opencode/wrath-corpus-survey-26.txt`, roster
-`wrath-corpus-status-26.txt`.
+`wrath-corpus-status-26.txt`. The harness also seats `gtCombatRatings.dbc` now, so
+`GetCombatRatingBonus` answers instead of reporting its unsupported-native warning; the only
+49-addon warnings left are the two arena-season states the server would have to project.
