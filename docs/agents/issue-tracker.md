@@ -24,5 +24,5 @@ that claims a ticket cites its file.
 
 ## Wayfinding operations
 
-Not in use for this repo (Project B was charted through planning rounds; see
-`D:/Projects/wow/server/PROJECT_B_ASTRA_PLAN_DRAFT.md` rev 3 and `D:/Projects/wow/server/PROJECT_B_GLM_RESPONSE_02.md`).
+Not in use for this repo. Project B was charted through planning rounds whose adopted
+outcomes live in [owner decisions](../baseline/owner-decisions.md) and the ADRs.

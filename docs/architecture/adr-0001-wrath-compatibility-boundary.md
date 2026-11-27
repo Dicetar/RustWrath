@@ -157,9 +157,9 @@ No check is executed or test file authorized by this ADR. A matching test file d
 
 ## Related Decisions
 
-- [Architecture source review](architecture-review-2026-10-26.md), completed before this ADR was drafted.
+- [Architecture source review](https://github.com/Dicetar/RustWrath/blob/838b03f89a5d32271ef6bec5cb9674773595c767/docs/architecture/architecture-review-2026-10-26.md), completed before this ADR was drafted (retired from the tree; permalink).
 - [Traceability baseline](architecture-traceability.md), with formal gaps and pending independent review.
-- Approved plan: `D:/Projects/wow/server/PROJECT_B_COMPLETION_PLAN.md`.
+- Approved plan: `PROJECT_B_COMPLETION_PLAN.md`, a local planning file outside the repository (retired 2026-11-27).
 - Existing ownership/contracts: `docs/baseline/owner-decisions.md`, `docs/baseline/seam-maps.md`, native bridge source and latest OC checkpoints.
 - [Procgen boundary](../procgen/design.md).
 

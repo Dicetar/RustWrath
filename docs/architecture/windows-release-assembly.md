@@ -1,6 +1,6 @@
 # Windows release assembly: W1 source handoff
 
-This implements the first delivery slice in the [release backlog](release-backlog-2026-11-05.md):
+This implements the first delivery slice in the [release backlog](https://github.com/Dicetar/RustWrath/blob/838b03f89a5d32271ef6bec5cb9674773595c767/docs/architecture/release-backlog-2026-11-05.md):
 assemble a version-specific directory from an existing binary and run it with a state directory
 independent of that version. It is **source work, not a validated installer or a release gate pass**.
 No game archives, addon files, credentials, server data or player settings are included.

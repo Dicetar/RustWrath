@@ -9,8 +9,8 @@ follows from builds, implemented APIs or the web preview.
 Start with [AGENTS.md](AGENTS.md), [the workflow](docs/agents/workflow.md) and
 [active ownership](docs/agents/active-ownership.md). Current continuation work is recorded
 in .scratch/project-b/handoffs; dated baselines there require revalidation.
-Earlier planning in D:/Projects/wow/server/PROJECT_B_ASTRA_PLAN_DRAFT.md and PROJECT_B_GLM_RESPONSE_02.md
-is historical input; adopted decisions and ADRs in this repository guide current work.
+Adopted decisions and ADRs in this repository guide current work; the October planning
+drafts that preceded them were retired on 2026-11-27.
 
 ## Domain language
 

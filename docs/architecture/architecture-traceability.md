@@ -2,7 +2,7 @@
 
 Last updated: 2026-10-26, Europe/Moscow. Review anchor: `df8c7527`. Engine pin: Bevy 0.18.1. Baseline authorized by the owner: approved completion plan, existing contracts/issues and current source, in place of missing GDD/studio scaffolding.
 
-This is a first traceability baseline, not an exhaustive stock-client feature inventory. It covers 17 queue requirements, 17 mandatory release families and three experimental platform families from `D:/Projects/wow/server/PROJECT_B_COMPLETION_PLAN.md`. These 37 anchors overlap intentionally: a vertical proof can exercise several release families. They must not be summed into a product-completion percentage.
+This is a first traceability baseline, not an exhaustive stock-client feature inventory. It covers 17 queue requirements, 17 mandatory release families and three experimental platform families from `PROJECT_B_COMPLETION_PLAN.md` (a local planning file, retired 2026-11-27). These 37 anchors overlap intentionally: a vertical proof can exercise several release families. They must not be summed into a product-completion percentage.
 
 At review start there were zero formal GDDs, zero ADRs and no TR registry in the expected directories. Formal existing-ADR coverage is GAP for all 37 anchors. Existing prose contracts and actual code still provide architectural evidence; “no ADR” does not mean “no implementation.” ADR-0001 was authored afterward as Proposed and is not counted as accepted or independently reviewed coverage. No registry was created or altered.
 
@@ -121,4 +121,4 @@ There is no accepted ADR graph to topologically sort yet. This list is a recomme
 
 This matrix has not enumerated every opcode, API/global/event/argument, format variant, installed addon build, class/spec, instance mechanic or operational workload. Exact addon builds and live character/database state remain unresolved. These are open inventory inputs, not exclusions from release. No full-chain-complete or project-completion percentage is supplied.
 
-See [the source review](architecture-review-2026-10-26.md) for prioritized findings and evidence limits, and [the Proposed ADR](adr-0001-wrath-compatibility-boundary.md) for the recommended boundary.
+See [the source review](https://github.com/Dicetar/RustWrath/blob/838b03f89a5d32271ef6bec5cb9674773595c767/docs/architecture/architecture-review-2026-10-26.md) (retired from the tree; permalink) for prioritized findings and evidence limits, and [the Proposed ADR](adr-0001-wrath-compatibility-boundary.md) for the recommended boundary.
