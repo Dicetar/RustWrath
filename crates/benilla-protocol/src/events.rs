@@ -1165,6 +1165,25 @@ pub enum SessionEvent {
     UpdateLastInstance { map: u32 },
     /// Whether we hold any permanent bind (`SMSG_UPDATE_INSTANCE_OWNERSHIP`).
     UpdateInstanceOwnership { owns: bool },
+    /// The current instance's difficulty and the group's dynamic difficulty, both 0-based
+    /// (`SMSG_INSTANCE_DIFFICULTY`, 3.3.5 only).
+    InstanceDifficulty { difficulty: u32, dynamic: u32 },
+    /// A dungeon difficulty (0-based) for the player's own setting, the group's, or both (the
+    /// server's `MSG_SET_DUNGEON_DIFFICULTY`, 3.3.5 only).
+    DungeonDifficultySet {
+        difficulty: u32,
+        player: bool,
+        in_group: bool,
+    },
+    /// The raid counterpart (`MSG_SET_RAID_DIFFICULTY`, 3.3.5 only).
+    RaidDifficultySet {
+        difficulty: u32,
+        player: bool,
+        in_group: bool,
+    },
+    /// `SMSG_GROUP_LIST`'s 3.3.5 difficulty bytes `(dungeon, raid, dynamic)`, emitted after the
+    /// list itself; `None` for the empty list that leaves a group.
+    GroupDifficulty { listed: Option<(u8, u8, u8)> },
     /// A duel challenge (`SMSG_DUEL_REQUESTED`), sent to both sides; `arbiter` is the flag object
     /// echoed on accept or cancel, and `challenger` is us when we asked.
     DuelRequested { arbiter: u64, challenger: u64 },

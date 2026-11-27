@@ -354,7 +354,7 @@ pub use equipment::{
 };
 pub(crate) use font_block::{face_loads, own_font_lua, SAME_FONT_HEIGHT};
 pub use inspect::{InspectCall, UnitReach};
-pub use instance::{InstanceCall, InstanceInfo};
+pub use instance::{Difficulty, InstanceCall, InstanceInfo};
 pub use item_stats::{
     item_usable, ItemRecipe, ItemSetView, ItemSpellLine, ItemTemplateView, PlayerReqState,
     TaughtSpell,

@@ -6525,6 +6525,20 @@ fn translate_gameplay(
         }
         WrathGameplayEvent::GroupDestroyed => vec![SessionEvent::GroupDestroyed],
         WrathGameplayEvent::GroupList(list) => wrath_group_list_events(*list),
+        WrathGameplayEvent::InstanceDifficulty(update) => vec![SessionEvent::InstanceDifficulty {
+            difficulty: update.difficulty,
+            dynamic: update.dynamic,
+        }],
+        WrathGameplayEvent::DungeonDifficultySet(set) => vec![SessionEvent::DungeonDifficultySet {
+            difficulty: set.difficulty,
+            player: set.player,
+            in_group: set.in_group,
+        }],
+        WrathGameplayEvent::RaidDifficultySet(set) => vec![SessionEvent::RaidDifficultySet {
+            difficulty: set.difficulty,
+            player: set.player,
+            in_group: set.in_group,
+        }],
         WrathGameplayEvent::PartyCommandResult {
             operation,
             member,
@@ -6934,8 +6948,17 @@ pub(crate) fn wrath_group_list_events(list: gameplay::social::GroupList) -> Vec<
             }),
         })
         .collect();
-    let mut out = Vec::with_capacity(1 + role_deltas.len());
+    // The difficulty bytes follow the list, so their handler reads the roster it built.
+    let listed = list.loot.as_ref().map(|loot| {
+        (
+            loot.dungeon_difficulty,
+            loot.raid_difficulty,
+            loot.dynamic_difficulty,
+        )
+    });
+    let mut out = Vec::with_capacity(2 + role_deltas.len());
     out.push(wrath_group_list(list));
+    out.push(SessionEvent::GroupDifficulty { listed });
     out.extend(role_deltas);
     out
 }

@@ -1294,6 +1294,49 @@ pub fn read_update_combo_points(body: &[u8]) -> Result<ComboPointsUpdate> {
     Ok(update)
 }
 
+/// `SMSG_INSTANCE_DIFFICULTY` (`0x33B`, `Player::SendInitialPacketsAfterAddToMap` in
+/// `Player.cpp:11685`; client `CGGameUI::MessageHandler`, `GameUI.cpp:6682`): `u32 difficulty,
+/// u32 dynamic`. The client stores the first as `m_instanceDifficulty` and the second as the
+/// group's `m_dynamicDifficulty`; AzerothCore sends 1 there only on a heroic dynamic map.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InstanceDifficulty {
+    pub difficulty: u32,
+    pub dynamic: u32,
+}
+
+pub fn read_instance_difficulty(body: &[u8]) -> Result<InstanceDifficulty> {
+    let mut r = Reader::new(body);
+    let update = InstanceDifficulty {
+        difficulty: r.u32()?,
+        dynamic: r.u32()?,
+    };
+    finish(&r)?;
+    Ok(update)
+}
+
+/// The server's `MSG_SET_DUNGEON_DIFFICULTY` (`0x329`) and `MSG_SET_RAID_DIFFICULTY` (`0x4EB`)
+/// (`WorldPackets::Instance::SetDungeonDifficulty::Write` / `SetRaidDifficulty::Write`,
+/// `InstancePackets.cpp:35`, `:56`; client `GameUI.cpp:6671`, `:6796`): `u32 difficulty,
+/// u32 player, u32 in_group`. `player` (AzerothCore's `Unk`, always 1) writes the player's own
+/// cell and `in_group` the group's (`CGGameUI::SetDungeonDifficulty` `0x525530`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DifficultySet {
+    pub difficulty: u32,
+    pub player: bool,
+    pub in_group: bool,
+}
+
+pub fn read_difficulty_set(body: &[u8]) -> Result<DifficultySet> {
+    let mut r = Reader::new(body);
+    let set = DifficultySet {
+        difficulty: r.u32()?,
+        player: r.u32()? != 0,
+        in_group: r.u32()? != 0,
+    };
+    finish(&r)?;
+    Ok(set)
+}
+
 /// `SMSG_TOTEM_CREATED` (`0x3C4`, `Totem::InitSummon` in `Totem.cpp`; client
 /// `CGPlayer_C::OnTotemCreated` in `Player_C.cpp`): `u8 slot, u64 guid, u32 duration_ms,
 /// u32 spell_id`.

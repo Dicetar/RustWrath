@@ -731,6 +731,8 @@ pub(crate) struct Model {
     /// The current map's `Map.dbc` name and player cap, the `GetInstanceInfo` slots the type row
     /// alone does not carry. `None` before a world entry.
     pub(crate) instance_info: Option<super::instance::InstanceInfo>,
+    /// The 3.3.5a instance, dungeon and raid difficulty cells, player's and group's.
+    pub(crate) difficulty: super::instance::Difficulty,
     /// `GetOptOutOfLoot`/`SetOptOutOfLoot`: the player's own loot-roll preference, false on a
     /// fresh client. The reference also sends it to the server, a producer that does not exist
     /// here yet.
@@ -1958,6 +1960,7 @@ impl Model {
             player_faction_masks: None,
             instance_type: None,
             instance_info: None,
+            difficulty: super::instance::Difficulty::default(),
             opt_out_of_loot: false,
             animation_frame_offsets: HashMap::new(),
             animation_region_offsets: HashMap::new(),

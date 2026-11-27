@@ -1,8 +1,9 @@
 //! The 3.3.5a world and unit-popup queries whose facts already have owners here: the current
 //! map's `Map.dbc` `InstanceType` ([`Model::instance_type`], pushed by the app's instance feed),
-//! the frame-script CVar table, and the player's own loot-roll preference. A fact with no
-//! producer answers the API's unavailable value (nil) instead of a fabricated default; the
-//! missing producer is named where it stands.
+//! the difficulty cells ([`super::instance::Difficulty`], fed by `SMSG_INSTANCE_DIFFICULTY`, the
+//! `MSG_SET_*_DIFFICULTY` echoes and `SMSG_GROUP_LIST`), and the player's own loot-roll
+//! preference. A fact with no producer answers the API's unavailable value (nil) instead of a
+//! fabricated default; the missing producer is named where it stands.
 
 use mlua::{Lua, Value};
 
@@ -14,11 +15,14 @@ use super::Model;
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();
 
-    // `GetInstanceInfo()` (`UnitPopup.lua:245`, `Minimap.lua:486`): `(name, instanceType,
-    // difficultyID, difficultyName, maxPlayers, playerDifficultyID, isDynamicDifficulty,
-    // instanceID)`. The pushed `Map.dbc` row supplies the type, name and player cap (a party
-    // instance's five); no difficulty producer exists, so those slots stay nil. Outside an
-    // instance the name is nil, the open world's answer, even though its map row has a name.
+    // `GetInstanceInfo()` (`0x51A8C0`; `UnitPopup.lua:245`, `Minimap.lua:486`): `(name,
+    // instanceType, difficulty, difficultyName, maxPlayers, dynamicDifficulty, isDynamic)`. The
+    // pushed `Map.dbc` row supplies the type, name and player cap (a party instance's five);
+    // `SMSG_INSTANCE_DIFFICULTY` the difficulty (plus one) and the dynamic difficulty. The
+    // difficulty name is the `MapDifficulty.dbc` row's, which no catalog here loads, so it is the
+    // reference's no-row answer `""`; `isDynamic` is `Map.dbc` flag `0x100`, also unloaded, so
+    // false. Outside an instance the name is nil, the open world's answer, even though its map row
+    // has a name.
     g.set(
         "GetInstanceInfo",
         lua.create_function(|lua, ()| {
@@ -35,15 +39,15 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let max_players = info
                 .filter(|_| instance_type != 0)
                 .map_or(0, |i| i.max_players);
+            let difficulty = model.difficulty;
             Ok(mlua::MultiValue::from_vec(vec![
                 name,
                 Value::String(lua.create_string(instance_type_name(instance_type))?),
-                Value::Nil,
-                Value::Nil,
+                Value::Integer(i64::from(difficulty.instance) + 1),
+                Value::String(lua.create_string("")?),
                 Value::Integer(i64::from(max_players)),
-                Value::Nil,
+                Value::Integer(i64::from(difficulty.dynamic)),
                 Value::Boolean(false),
-                Value::Integer(0),
             ]))
         })?,
     )?;
@@ -61,47 +65,54 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // `GetInstanceDifficulty()` (`0x515750`): `m_instanceDifficulty + 1`. The field is 0 until
-    // `SMSG_INSTANCE_DIFFICULTY`, which this host does not parse, so the open world's 1 is the
-    // answer; the missing producer is the packet, not a fabricated instance tier.
+    // `GetInstanceDifficulty()` (`0x515750`): `m_instanceDifficulty + 1`, 1 until the first
+    // `SMSG_INSTANCE_DIFFICULTY`.
     g.set(
         "GetInstanceDifficulty",
-        lua.create_function(|_, ()| Ok(1.0))?,
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(i64::from(model.difficulty.instance) + 1)
+        })?,
     )?;
-    // `GetDungeonDifficulty()` / `GetRaidDifficulty()` (`UnitPopup.lua:700`, `:703`): the setting
-    // lives in the `dungeonDifficulty` / `playerDifficulty` CVar rows. A host that never
-    // registered them answers nil, never a fabricated "normal" tier; the server's
-    // `MSG_SET_DUNGEON_DIFFICULTY` echo is a producer that does not exist yet.
+    // `GetDungeonDifficulty()` (`0x515790`; `UnitPopup.lua:700`): the effective difficulty (the
+    // group's in a party, else the player's) and the player's own, each plus one.
     g.set(
         "GetDungeonDifficulty",
-        lua.create_function(|lua, ()| cvar_int(lua, "dungeondifficulty"))?,
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let d = model.difficulty;
+            Ok((
+                i64::from(d.current_dungeon(&model.party)) + 1,
+                i64::from(d.dungeon) + 1,
+            ))
+        })?,
     )?;
+    // `GetRaidDifficulty()` (`0x515810`; `UnitPopup.lua:703`): the group's in a raid, else the
+    // player's, then the player's own, each plus one.
     g.set(
         "GetRaidDifficulty",
-        lua.create_function(|lua, ()| cvar_int(lua, "playerdifficulty"))?,
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let d = model.difficulty;
+            Ok((
+                i64::from(d.current_raid(&model.party)) + 1,
+                i64::from(d.raid) + 1,
+            ))
+        })?,
     )?;
-    // The setters are a request, not a local write: the mode goes out as
-    // `MSG_SET_DUNGEON_DIFFICULTY` / `MSG_SET_RAID_DIFFICULTY` (one u32), and the getters keep
-    // the last confirmed value until the server's echo of the same opcode lands. That echo is a
-    // producer this host does not parse yet, so a selection shows only after it is wired.
+    // The setters take the 1-based difficulty the menus pass, write it locally at once as the
+    // reference does, and send it 0-based (`MSG_SET_DUNGEON_DIFFICULTY` /
+    // `MSG_SET_RAID_DIFFICULTY`); the server's echo of the same opcode then confirms or corrects.
     g.set(
         "SetDungeonDifficulty",
         lua.create_function(|lua, value: Value| {
-            let mode = super::binding_abi::coerced_number(lua, Some(value)) as u32;
-            super::calls::submit(
-                lua,
-                super::ScriptCall::Instance(super::InstanceCall::SetDungeonDifficulty(mode)),
-            )
+            super::instance::set_dungeon_difficulty_verb(lua, value)
         })?,
     )?;
     g.set(
         "SetRaidDifficulty",
         lua.create_function(|lua, value: Value| {
-            let mode = super::binding_abi::coerced_number(lua, Some(value)) as u32;
-            super::calls::submit(
-                lua,
-                super::ScriptCall::Instance(super::InstanceCall::SetRaidDifficulty(mode)),
-            )
+            super::instance::set_raid_difficulty_verb(lua, value)
         })?,
     )?;
 
@@ -138,15 +149,4 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     Ok(())
-}
-
-/// A CVar row as the integer the API returns; nil when the host never registered it or the text
-/// is not a number.
-fn cvar_int(lua: &Lua, name: &str) -> mlua::Result<Value> {
-    let model = lua.app_data_ref::<Model>().expect("model app_data");
-    Ok(model
-        .cvars
-        .get(name)
-        .and_then(|slot| slot.value.trim().parse::<i64>().ok())
-        .map_or(Value::Nil, Value::Integer))
 }

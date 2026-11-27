@@ -22,7 +22,7 @@ pub(crate) mod net;
 mod pets;
 mod records;
 pub(crate) use calls::PartyCalls;
-#[cfg(test)]
+// Also the instance feed's ordering anchor (`crate::ui_instance`).
 pub(crate) use feed::feed_party;
 pub(crate) use feed::{
     drain_party, fold_dying_vm_ready_check, raid_row_guid, raid_row_guids, seed_reloaded_vm,
