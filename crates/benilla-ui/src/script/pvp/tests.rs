@@ -668,9 +668,13 @@ fn get_pvp_rank_info_takes_a_second_argument_three_different_ways() {
         .eval::<bool>(r#"return GetPVPRankInfo(9, "target") == nil"#)
         .unwrap());
 
-    assert!(s
-        .eval::<Option<String>>(r#"return (GetPVPRankInfo(9, "wombat"))"#)
-        .is_err());
+    // 3.3.5's GetUnitFromName returns null for an unknown name, so the faction stays 0 as for a
+    // token naming nobody; the string does not raise.
+    assert_eq!(
+        s.eval::<String>(r#"return (GetPVPRankInfo(9, "wombat"))"#)
+            .unwrap(),
+        "Senior Sergeant"
+    );
 }
 
 /// `0x51a930` tests `lua_isnumber` and raises: not a `(nil, 0)` edge.

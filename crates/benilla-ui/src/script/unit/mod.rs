@@ -593,7 +593,12 @@ pub(crate) fn check_unit_token_in(lua: &Lua, token: &Option<String>) -> mlua::Re
     let wrath = lua
         .app_data_ref::<Model>()
         .is_some_and(|model| model.is_wrath());
-    check_unit_token_for(token, wrath)
+    if wrath {
+        // 3.3.5 resolves names and a miss is false/nil, not a raise; the caller's name/state
+        // resolution answers nobody.
+        return Ok(());
+    }
+    check_unit_token_for(token, false)
 }
 
 /// [`check_unit_token`] for a VM that may be the Wrath client, whose resolver also recognises
@@ -616,11 +621,40 @@ fn with_unit<T>(
     f: impl FnOnce(&UnitState) -> T,
 ) -> mlua::Result<T> {
     let model = lua.app_data_ref::<Model>().expect("model app_data");
-    check_unit_token_for(token, model.is_wrath())?;
-    Ok(match token.as_ref().and_then(|t| model.unit(t)) {
+    let found = token
+        .as_ref()
+        .and_then(|t| model.unit(t).or_else(|| model.unit_named(t)));
+    // 3.3.5's Script_GetGUIDFromToken resolves a name and returns false for a miss; it raises no
+    // Unknown unit name for a string, so a Wrath getter answers nil. The 1.12 fixture keeps the
+    // token resolver's line.
+    if found.is_none() && !model.is_wrath() {
+        check_unit_token_for(token, false)?;
+    }
+    Ok(match found {
         Some(u) => f(u),
         None => default,
     })
+}
+
+/// A getter whose reference resolves through `Script_GetGUIDFromToken` (`0x60abf0`) rather than
+/// the token resolver: a name no pushed unit carries answers `default`, as the reference returns
+/// false from its lookup, instead of raising `Unknown unit name`.
+fn with_unit_named<T>(
+    lua: &Lua,
+    token: &Option<String>,
+    default: T,
+    f: impl FnOnce(&UnitState) -> T,
+) -> mlua::Result<T> {
+    let model = lua.app_data_ref::<Model>().expect("model app_data");
+    Ok(
+        match token
+            .as_ref()
+            .and_then(|t| model.unit(t).or_else(|| model.unit_named(t)))
+        {
+            Some(u) => f(u),
+            None => default,
+        },
+    )
 }
 
 /// A unit predicate's body: the number 1 or nil through [`super::binding_abi::flag`], never a Lua
@@ -633,6 +667,18 @@ fn unit_predicate(
     f: impl FnOnce(&UnitState) -> bool,
 ) -> mlua::Result<mlua::Value> {
     Ok(super::binding_abi::flag(with_unit(lua, token, false, f)?))
+}
+
+/// `unit_predicate` for a getter the reference resolves with `Script_GetGUIDFromToken`: an
+/// unrecognised name is nobody, not an error.
+fn unit_predicate_named(
+    lua: &Lua,
+    token: &Option<String>,
+    f: impl FnOnce(&UnitState) -> bool,
+) -> mlua::Result<mlua::Value> {
+    Ok(super::binding_abi::flag(with_unit_named(
+        lua, token, false, f,
+    )?))
 }
 
 /// The `Unit*` and `GetQuestGreenRange` registrations.

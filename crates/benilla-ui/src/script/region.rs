@@ -736,6 +736,18 @@ fn install_region_methods(lua: &Lua) -> mlua::Result<()> {
                 leaf.set("SetFormattedText", m.get::<Value>("SetFormattedText")?)?;
                 leaf.set("GetStringHeight", m.get::<Value>("GetStringHeight")?)?;
             }
+            // A 3.3.5 region owns animation groups as a frame does (`Details` fades a texture's
+            // alert glow this way); the owner arm of the animation tick already writes the region's
+            // alpha. Both leaves share the constructor.
+            if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
+                leaf.set(
+                    "CreateAnimationGroup",
+                    lua.create_function(|lua, (this, name): (Table, Value)| {
+                        let name = super::binding_abi::optional_string(lua, &name);
+                        super::animation::create_group(lua, &this, name.as_deref())
+                    })?,
+                )?;
+            }
         }
         lua.set_named_registry_value(key, leaf)?;
     }

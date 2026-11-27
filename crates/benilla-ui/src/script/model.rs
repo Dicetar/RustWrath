@@ -950,6 +950,9 @@ pub(crate) struct Model {
     pub(crate) companions: [Vec<super::companions::CompanionView>; 2],
     /// The pet's spellbook, a second array as in the reference (`0xb700f0`, `0xb6f098`).
     pub(crate) pet_book: spellbook::PetBookState,
+    /// The client catalog's `GetSpellInfo` projection, seated only by a harness with no app call
+    /// host to lend. Empty in the live client: its lent host answers from the one catalog owner.
+    pub(crate) spell_info: Option<std::sync::Arc<HashMap<u32, super::SpellInfoView>>>,
     /// The player's macros, owned here as 1.12 macros have no server side; the app persists them.
     pub(crate) macros: macros::MacroState,
     /// A script changed the macros: the save's cue.
@@ -1740,6 +1743,35 @@ impl Model {
         self.pushed_unit(token).or_else(|| self.chained_unit(token))
     }
 
+    /// A pushed unit whose `UnitName` is `name`, in any ASCII case, optionally with this realm's
+    /// suffix (`Name-Realm`). `Script_GetGUIDFromToken` (`0x60abf0`) falls back to
+    /// `Script_GetGUIDFromString` when no token compare matches, so the unit getters accept the
+    /// names addons read off the roster; the token resolver alone would raise for them. The local
+    /// player's snapshot wins a shared name, then the first in token order.
+    pub(crate) fn unit_named(&self, name: &str) -> Option<&UnitState> {
+        let (name, realm) = match name.rsplit_once('-') {
+            Some((name, realm)) => (name, Some(realm)),
+            None => (name, None),
+        };
+        if realm.is_some_and(|realm| !realm.eq_ignore_ascii_case(&self.realm_name)) {
+            return None;
+        }
+        let mut found = None;
+        for unit in self.units_by_lower.values() {
+            let same = unit
+                .name
+                .as_deref()
+                .is_some_and(|unit_name| unit_name.eq_ignore_ascii_case(name));
+            if same {
+                if unit.guid == self.unit_guids.player {
+                    return Some(unit);
+                }
+                found.get_or_insert(unit);
+            }
+        }
+        found
+    }
+
     /// The snapshot pushed under `token` itself, folded as 1.12's resolver `0x515970` folds
     /// (`_strnicmp`: `A`..`Z` only, never a byte of 0x80 or more), so `to_ascii_lowercase`, never
     /// `to_lowercase`.
@@ -2023,6 +2055,7 @@ impl Model {
             spell_list: Vec::new(),
             companions: [Vec::new(), Vec::new()],
             pet_book: spellbook::PetBookState::default(),
+            spell_info: None,
             macros: macros::MacroState::default(),
             macros_dirty: false,
             macros_generation: 0,

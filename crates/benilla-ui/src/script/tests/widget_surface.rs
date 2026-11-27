@@ -55,18 +55,7 @@ const FRAME_CHAIN: &[&str] = &[FRAME, REGION];
 /// list only shrinks; a name with live callers belongs implemented.
 const NOT_YET_ANSWERED: &[(&str, &str, &str)] = &[
     // ── The MovieFrame trio ──
-    // The stock glue `MovieFrame.lua` calls all three; benilla plays no movie yet.
-    (
-        "StartMovie",
-        "MovieFrame",
-        "the intro-movie screen's own verb; benilla plays no movie yet",
-    ),
-    ("StopMovie", "MovieFrame", "the same, on the skip path"),
-    (
-        "EnableSubtitles",
-        "MovieFrame",
-        "the same — `MovieFrame.lua:35` passes `GetMovieSubtitles()`",
-    ),
+    // They are answered now (a movie still does not play), so the list is empty.
 ];
 
 /// Methods answered here that 1.12 does not register on that class, each with why it stays.

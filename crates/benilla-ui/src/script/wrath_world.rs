@@ -61,6 +61,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // `GetInstanceDifficulty()` (`0x515750`): `m_instanceDifficulty + 1`. The field is 0 until
+    // `SMSG_INSTANCE_DIFFICULTY`, which this host does not parse, so the open world's 1 is the
+    // answer; the missing producer is the packet, not a fabricated instance tier.
+    g.set(
+        "GetInstanceDifficulty",
+        lua.create_function(|_, ()| Ok(1.0))?,
+    )?;
     // `GetDungeonDifficulty()` / `GetRaidDifficulty()` (`UnitPopup.lua:700`, `:703`): the setting
     // lives in the `dungeonDifficulty` / `playerDifficulty` CVar rows. A host that never
     // registered them answers nil, never a fabricated "normal" tier; the server's

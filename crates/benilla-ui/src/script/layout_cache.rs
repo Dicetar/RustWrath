@@ -85,7 +85,7 @@ impl super::UiScript {
             .model_ref()
             .arena
             .iter_frames()
-            .filter(|(_, f)| f.user_placed && (f.movable || f.resizable))
+            .filter(|(_, f)| f.user_placed && !f.dont_save_position && (f.movable || f.resizable))
             .filter_map(|(h, f)| {
                 let name = f.name.clone().filter(|n| !n.is_empty())?;
                 Some((f.created(), h, name))
