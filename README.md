@@ -29,14 +29,12 @@ Source changes require a rebuild or a specifically supported and verified reload
 | Location | Purpose |
 |---|---|
 | crates/, Cargo.toml | Native Rust/Bevy client workspace |
-| src/, public/, package.json, vite.config.ts | Separate React/Vite web preview |
 | docs/profiles/ | Asset patch-chain manifests |
 | benilla-config/ | Ignored local settings, logs and runtime state |
 | .scratch/project-b/ | Local tickets, handoffs and verification evidence |
 | reference/, third_party/ | Donor reference tables and vendored dependencies |
 
-The web preview's npm commands build that applet. They do not build or verify the native
-client. The generated [native module map](docs/MAP.md) helps navigate the Rust workspace.
+The generated [native module map](docs/MAP.md) helps navigate the Rust workspace.
 
 ## Development
 

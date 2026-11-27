@@ -31,9 +31,8 @@ Testing an existing local binary needs no Git operation. A commit does not compi
 or activate a hotpatch, and a push does not update the local executable. Use the
 [launch guide](../launching.md) and [coordination workflow](workflow.md).
 
-Keep the native Cargo workspace and React/Vite web preview distinct during reviews and
-staging. A web build cannot validate the native client. Inspect untracked root files such
-as FETCH_HEAD before staging; a loose command artifact is not Git metadata.
+Inspect untracked root files such as FETCH_HEAD or `*.bundle` before staging; a loose
+command artifact is not Git metadata and does not belong in a commit.
 
 Published history does not prove that a dirty working tree builds or that playable alpha
 is accepted. Integrate another agent's work only after reviewing its diffs and evidence.

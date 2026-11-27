@@ -47,11 +47,8 @@ __pycache__/
 # Previously tracked Markdown evidence remains tracked.
 /.scratch/project-b/verification/
 
-# Web preview and tooling artifacts
+# Tooling artifacts
 /node_modules/
 /dist/
-/.vite/
 /.aistudio/
-public/*.bundle
-public/*.patch
-public/assets/aistudio/*.png
+/*.bundle

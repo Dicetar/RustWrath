@@ -4,7 +4,7 @@ A benilla-derived Rust/Bevy World of Warcraft 3.3.5a build-12340 client for the 
 existing AzerothCore server. First delivery is a private Windows alpha: working login,
 realm and character workflow, then Firna's Northshire quest/combat/loot route. Souls-style
 combat, building and generated spaces follow as modules. No complete playable-alpha claim
-follows from builds, implemented APIs or the web preview.
+follows from builds or implemented APIs.
 
 Start with [AGENTS.md](AGENTS.md), [the workflow](docs/agents/workflow.md) and
 [active ownership](docs/agents/active-ownership.md). Current continuation work is recorded
@@ -27,7 +27,6 @@ drafts that preceded them were retired on 2026-11-27.
 - **Live change** — behavior relation change on a running server, no rebuild, no restart (owner requirement).
 - **Seam maps** — one-page owner/hook/gap tables for movement, building, generated spaces.
 - **Native client** — the Cargo workspace under crates/, launched as benilla.exe.
-- **Web preview** — the separate React/Vite applet at the root; its build is not native-client evidence.
 - **Coordinator** — the ticket's accountable agent, managing delegation and the shared Cargo/client slots.
 
 ## Standing rules
