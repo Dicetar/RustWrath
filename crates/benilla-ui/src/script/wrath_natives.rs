@@ -1878,10 +1878,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .and_then(|s| model.wrath_mirror_timers.get((s - 1) as usize))
                 .and_then(Option::as_ref)
             {
-                let progress = t.progress_ms(model.now);
                 return Ok((
                     t.name.clone(),
-                    progress,
+                    t.value_ms,
                     t.max_value_ms,
                     t.scale,
                     i64::from(t.paused),
@@ -5855,7 +5854,8 @@ mod focus_tests {
             s.eval("return GetPossessInfo(2)").unwrap();
         assert_eq!(empty_slot, (None, None, None));
 
-        // 3. GetMirrorTimerInfo(index) and GetMirrorTimerProgress(timer) interpolate active timers.
+        // 3. GetMirrorTimerInfo(index) returns the last server value; only
+        // GetMirrorTimerProgress(timer) interpolates between packets.
         s.set_clock(10.0);
         s.set_wrath_mirror_timer_start(1, "BREATH", 60_000, 60_000, -1, false, "Breath");
         s.set_clock(15.0);
@@ -5863,7 +5863,7 @@ mod focus_tests {
             s.eval("return GetMirrorTimerInfo(2)").unwrap();
         assert_eq!(
             info,
-            ("BREATH".into(), 55_000, 60_000, -1, 0, "Breath".into())
+            ("BREATH".into(), 60_000, 60_000, -1, 0, "Breath".into())
         );
         let progress: f64 = s.eval(r#"return GetMirrorTimerProgress("BREATH")"#).unwrap();
         assert!((progress - 55_000.0).abs() < 1e-6);
