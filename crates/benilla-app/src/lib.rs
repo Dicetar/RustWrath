@@ -842,7 +842,7 @@ mod social {
             };
 
             let events = crate::wrath::wrath_group_list_events(list);
-            assert_eq!(events.len(), 3);
+            assert_eq!(events.len(), 4);
             let SessionEvent::GroupList {
                 group_type,
                 own_flags,
@@ -860,9 +860,16 @@ mod social {
             assert_eq!(members[1].flags, 4);
             assert_eq!(*leader, 0x10);
             assert_eq!(loot.map(|l| (l.method, l.threshold)), Some((2, 4)));
+            // The 3.3.5 difficulty bytes follow the list as their own event.
+            assert!(matches!(
+                events[1],
+                SessionEvent::GroupDifficulty {
+                    listed: Some((1, 2, 0))
+                }
+            ));
 
             let mut group = crate::ui_party::GroupState::default();
-            for ev in events.into_iter().skip(1) {
+            for ev in events.into_iter().skip(2) {
                 let SessionEvent::PartyMemberStats { guid, full, info } = ev else {
                     panic!("expected PartyMemberStats role delta");
                 };

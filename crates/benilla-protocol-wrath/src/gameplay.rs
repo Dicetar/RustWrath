@@ -291,6 +291,9 @@ pub fn decoder_family(opcode: u16) -> DecoderFamily {
         | SMSG_CALENDAR_SEND_CALENDAR
         | SMSG_CALENDAR_COMMAND_RESULT
         | SMSG_UPDATE_COMBO_POINTS
+        | SMSG_INSTANCE_DIFFICULTY
+        | MSG_SET_DUNGEON_DIFFICULTY_SERVER
+        | MSG_SET_RAID_DIFFICULTY_SERVER
         | SMSG_TOTEM_CREATED
         | SMSG_START_MIRROR_TIMER
         | SMSG_PAUSE_MIRROR_TIMER
@@ -2856,6 +2859,12 @@ pub enum ServerEvent {
     RunePower(wrath_systems::RunePower),
     /// `SMSG_UPDATE_COMBO_POINTS` (`0x39D`): packed combo target and combo point count.
     ComboPoints(wrath_systems::ComboPointsUpdate),
+    /// `SMSG_INSTANCE_DIFFICULTY` (`0x33B`): the instance's difficulty and the dynamic one.
+    InstanceDifficulty(wrath_systems::InstanceDifficulty),
+    /// The server's `MSG_SET_DUNGEON_DIFFICULTY` (`0x329`): a dungeon difficulty and which cells.
+    DungeonDifficultySet(wrath_systems::DifficultySet),
+    /// The server's `MSG_SET_RAID_DIFFICULTY` (`0x4EB`), shaped as the dungeon one.
+    RaidDifficultySet(wrath_systems::DifficultySet),
     /// `SMSG_TOTEM_CREATED` (`0x3C4`): 0-based totem slot, summoned guid, duration in ms, spell id.
     TotemCreated(wrath_systems::TotemCreated),
     /// `SMSG_START_MIRROR_TIMER` (`0x1D9`): start or restate a breath, fatigue, or feign-death timer.
@@ -3403,6 +3412,15 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_ADD_RUNE_POWER => wrath_systems::read_add_rune_power(body).map(ServerEvent::RunePower),
         SMSG_UPDATE_COMBO_POINTS => {
             wrath_systems::read_update_combo_points(body).map(ServerEvent::ComboPoints)
+        }
+        SMSG_INSTANCE_DIFFICULTY => {
+            wrath_systems::read_instance_difficulty(body).map(ServerEvent::InstanceDifficulty)
+        }
+        MSG_SET_DUNGEON_DIFFICULTY_SERVER => {
+            wrath_systems::read_difficulty_set(body).map(ServerEvent::DungeonDifficultySet)
+        }
+        MSG_SET_RAID_DIFFICULTY_SERVER => {
+            wrath_systems::read_difficulty_set(body).map(ServerEvent::RaidDifficultySet)
         }
         SMSG_TOTEM_CREATED => {
             wrath_systems::read_totem_created(body).map(ServerEvent::TotemCreated)

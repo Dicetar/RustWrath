@@ -2255,8 +2255,8 @@ pub enum ClientCommand {
     RequestRaidInfo,
     /// `CMSG_RESET_INSTANCES`; answered per instance, `SMSG_INSTANCE_RESET` or `_FAILED`.
     ResetInstances,
-    /// `MSG_SET_DUNGEON_DIFFICULTY` (3.3.5 only): the dungeon difficulty selection, one u32 mode.
-    /// The server echoes the same opcode; the CVar write waits for that echo.
+    /// `MSG_SET_DUNGEON_DIFFICULTY` (3.3.5 only): the dungeon difficulty selection, one u32,
+    /// 0-based. The server echoes the same opcode with the accepted one (`ui_instance`).
     SetDungeonDifficulty {
         mode: u32,
     },

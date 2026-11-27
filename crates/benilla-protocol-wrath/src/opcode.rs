@@ -239,6 +239,15 @@ pub const CMSG_OPT_OUT_OF_LOOT: u32 = 0x409;
 pub const MSG_SET_DUNGEON_DIFFICULTY: u32 = 0x329;
 /// The raid selection: one u32 mode (`MSG_SET_RAID_DIFFICULTY`), echoed the same way.
 pub const MSG_SET_RAID_DIFFICULTY: u32 = 0x4EB;
+/// The server's form of [`MSG_SET_DUNGEON_DIFFICULTY`]: `u32 difficulty, u32 player, u32
+/// in_group` (`InstancePackets.cpp:35`; client `GameUI.cpp:6671`).
+pub const MSG_SET_DUNGEON_DIFFICULTY_SERVER: u16 = 0x329;
+/// The server's form of [`MSG_SET_RAID_DIFFICULTY`], the same three words
+/// (`InstancePackets.cpp:56`; client `GameUI.cpp:6796`).
+pub const MSG_SET_RAID_DIFFICULTY_SERVER: u16 = 0x4EB;
+/// The instance's difficulty after every map add: `u32 difficulty, u32 dynamic`
+/// (`Player.cpp:11685`; client `GameUI.cpp:6682`).
+pub const SMSG_INSTANCE_DIFFICULTY: u16 = 0x33B;
 pub const SMSG_LOOT_RESPONSE: u16 = 0x160;
 pub const SMSG_LOOT_RELEASE_RESPONSE: u16 = 0x161;
 pub const SMSG_LOOT_REMOVED: u16 = 0x162;

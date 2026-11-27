@@ -45,7 +45,38 @@ pub(crate) struct InstanceState {
     /// Lines for [`feed_instance`] to resolve against the VM's `GlobalStrings.lua`; the wire drain
     /// cannot reach the VM.
     lines: Vec<LockoutLine>,
+    /// The 3.3.5a difficulty packets in arrival order, for [`feed_instance`] to hand the VM, whose
+    /// model owns the cells and the change lines.
+    difficulty: Vec<DifficultyPacket>,
+    /// The cells as the last fed VM left them, with that VM's session: a `/reload`'s fresh VM is
+    /// seated from them, as the reference's cells are engine statics the reload keeps.
+    difficulty_mirror: Option<(u64, benilla_ui::script::Difficulty)>,
 }
+
+/// One difficulty packet as queued for the VM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DifficultyPacket {
+    /// `SMSG_INSTANCE_DIFFICULTY`.
+    Instance { difficulty: u32, dynamic: u32 },
+    /// The server's `MSG_SET_DUNGEON_DIFFICULTY`.
+    Dungeon {
+        difficulty: u32,
+        player: bool,
+        in_group: bool,
+    },
+    /// The server's `MSG_SET_RAID_DIFFICULTY`.
+    Raid {
+        difficulty: u32,
+        player: bool,
+        in_group: bool,
+    },
+    /// `SMSG_GROUP_LIST`'s difficulty bytes.
+    Group { listed: Option<(u8, u8, u8)> },
+}
+
+/// Most difficulty packets kept while no VM is seated: a login sends three or four, so this only
+/// bounds an engine-only run that never seats one.
+const DIFFICULTY_QUEUE_CAP: usize = 16;
 
 /// One lockout line as the reference holds it between `GetText` and `SStrPrintf`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,6 +189,14 @@ impl InstanceState {
     fn take_pending_last_instance(&mut self) -> Vec<u32> {
         std::mem::take(&mut self.pending_last_instance)
     }
+
+    /// Queue a difficulty packet for the VM.
+    pub(crate) fn push_difficulty(&mut self, packet: DifficultyPacket) {
+        if self.difficulty.len() >= DIFFICULTY_QUEUE_CAP {
+            self.difficulty.remove(0);
+        }
+        self.difficulty.push(packet);
+    }
 }
 
 /// One queued line's text: `GetText`, the `%s` and `%d` fills, then the debug wrapper; `None` for
@@ -250,7 +289,11 @@ pub(crate) mod net {
             .net_handler(K::InstanceReset, on_packet)
             .net_handler(K::InstanceResetFailed, on_packet)
             .net_handler(K::UpdateLastInstance, on_packet)
-            .net_handler(K::UpdateInstanceOwnership, on_packet);
+            .net_handler(K::UpdateInstanceOwnership, on_packet)
+            .net_handler(K::InstanceDifficulty, on_packet)
+            .net_handler(K::DungeonDifficultySet, on_packet)
+            .net_handler(K::RaidDifficultySet, on_packet)
+            .net_handler(K::GroupDifficulty, on_packet);
     }
 
     fn on_packet(In(ev): In<SessionEvent>, mut state: ResMut<InstanceState>) {
@@ -266,6 +309,34 @@ pub(crate) mod net {
             SessionEvent::UpdateLastInstance { map } => update_last_instance(&mut state, map),
             SessionEvent::UpdateInstanceOwnership { owns } => {
                 update_instance_ownership(&mut state, owns)
+            }
+            SessionEvent::InstanceDifficulty {
+                difficulty,
+                dynamic,
+            } => state.push_difficulty(DifficultyPacket::Instance {
+                difficulty,
+                dynamic,
+            }),
+            SessionEvent::DungeonDifficultySet {
+                difficulty,
+                player,
+                in_group,
+            } => state.push_difficulty(DifficultyPacket::Dungeon {
+                difficulty,
+                player,
+                in_group,
+            }),
+            SessionEvent::RaidDifficultySet {
+                difficulty,
+                player,
+                in_group,
+            } => state.push_difficulty(DifficultyPacket::Raid {
+                difficulty,
+                player,
+                in_group,
+            }),
+            SessionEvent::GroupDifficulty { listed } => {
+                state.push_difficulty(DifficultyPacket::Group { listed })
             }
             _ => {}
         }
@@ -382,6 +453,37 @@ fn track_instance_state(
     }
 }
 
+/// Hand the VM the difficulty packets in arrival order, after seating a `/reload`'s fresh VM with
+/// the cells its predecessor left, then mirror what the VM now holds (its own
+/// `SetDungeonDifficulty`/`SetRaidDifficulty` writes included).
+fn feed_difficulty(state: &mut InstanceState, script: &mut benilla_ui::script::UiScript) {
+    if let Some((session, cells)) = state.difficulty_mirror {
+        if session != script.session() {
+            script.restore_difficulty(cells);
+        }
+    }
+    for packet in std::mem::take(&mut state.difficulty) {
+        match packet {
+            DifficultyPacket::Instance {
+                difficulty,
+                dynamic,
+            } => script.set_instance_difficulty(difficulty, dynamic),
+            DifficultyPacket::Dungeon {
+                difficulty,
+                player,
+                in_group,
+            } => script.apply_dungeon_difficulty(difficulty, player, in_group),
+            DifficultyPacket::Raid {
+                difficulty,
+                player,
+                in_group,
+            } => script.apply_raid_difficulty(difficulty, player, in_group),
+            DifficultyPacket::Group { listed } => script.apply_group_difficulty(listed),
+        }
+    }
+    state.difficulty_mirror = Some((script.session(), script.difficulty()));
+}
+
 /// Show every queued line as `CHAT_MSG_SYSTEM`, then publish `IsInInstance` and
 /// `CanShowResetInstances` every frame, as both move with the map and the clock (the setters diff).
 fn feed_instance(
@@ -404,6 +506,8 @@ fn feed_instance(
         };
         let here = current_map.as_ref().map(|m| m.0);
         let now = time.elapsed().as_secs();
+
+        feed_difficulty(&mut state, script);
 
         for line in state.take_lines() {
             let name = line.map.map(|m| map_name(m, maps.as_deref()));
@@ -451,8 +555,9 @@ impl InstanceSteps<'_> {
         let _ = self.net.0.send(ClientCommand::ResetInstances);
     }
 
-    /// `SetDungeonDifficulty(mode)`: `MSG_SET_DUNGEON_DIFFICULTY` (`0x329`), one u32; the
-    /// server's echo of the same opcode is the confirmation, not parsed here yet.
+    /// `SetDungeonDifficulty(n)`: `MSG_SET_DUNGEON_DIFFICULTY` (`0x329`), one u32, the 0-based
+    /// difficulty the verb already wrote locally; the server's echo of the same opcode lands
+    /// through [`DifficultyPacket::Dungeon`].
     pub(crate) fn set_dungeon_difficulty(&self, mode: u32) {
         let _ = self
             .net
@@ -460,7 +565,7 @@ impl InstanceSteps<'_> {
             .send(ClientCommand::SetDungeonDifficulty { mode });
     }
 
-    /// `SetRaidDifficulty(mode)`: `MSG_SET_RAID_DIFFICULTY` (`0x4EB`), one u32.
+    /// `SetRaidDifficulty(n)`: `MSG_SET_RAID_DIFFICULTY` (`0x4EB`), one u32, 0-based.
     pub(crate) fn set_raid_difficulty(&self, mode: u32) {
         let _ = self.net.0.send(ClientCommand::SetRaidDifficulty { mode });
     }
@@ -489,7 +594,11 @@ impl Plugin for UiInstancePlugin {
                 // The latch before the feed, so a map change and its answer share a frame.
                 clear_witness_on_logout.before(track_instance_state),
                 track_instance_state.before(feed_instance),
-                feed_instance.in_set(UiFeed),
+                // After the party feed: `SMSG_GROUP_LIST`'s difficulty bytes read the roster the
+                // same list built.
+                feed_instance
+                    .after(crate::ui_party::feed_party)
+                    .in_set(UiFeed),
             ),
         );
     }
