@@ -144,11 +144,19 @@ pub fn widget_method_census(script: &UiScript) -> mlua::Result<Vec<(String, Stri
             rows.push(((*class).to_string(), "!NOT-INSTANTIABLE".to_string()));
             continue;
         }
+        // A frame's `__index` is the one per-kind table addon code can extend (the client's is
+        // too); its keys are candidates, or a method poked in there would not be probed at all.
         let found: Vec<String> = script.eval(&format!(
             "local o = DW_{class} \
+             local check = {{}} \
+             for i = 1, table.getn(DW_NAMES) do check[DW_NAMES[i]] = true end \
+             local meta = getmetatable(o) \
+             local index = meta and meta.__index \
+             if type(index) == 'table' then \
+               for n in pairs(index) do check[n] = true end \
+             end \
              local out = {{}} \
-             for i = 1, table.getn(DW_NAMES) do \
-               local n = DW_NAMES[i] \
+             for n in pairs(check) do \
                if type(o[n]) == 'function' then table.insert(out, n) end \
              end \
              return out"

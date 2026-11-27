@@ -8,7 +8,11 @@ use crate::script::{FrameLayout, UiScript};
 /// A 200×100 frame CENTER-anchored in a full-screen holder on an 800×600 screen: its rect is
 /// left 300, right 500, bottom 250, top 350.
 fn centred_box() -> UiScript {
-    let mut s = script();
+    centred_box_on(script())
+}
+
+/// [`centred_box`] on an explicit VM, for a method only the Wrath target registers.
+fn centred_box_on(mut s: UiScript) -> UiScript {
     s.set_screen_size(800.0, 600.0);
     s.run(
         r#"
@@ -52,6 +56,29 @@ fn pinned_at(x: f32, y: f32) -> (i64, String, bool, String, f32, f32) {
     (1, "TOPLEFT".into(), true, "TOPLEFT".into(), x, y)
 }
 
+/// `SetDontSavePosition` is the 3.3.5 flag that keeps a user-placed frame's rect out of the
+/// layout cache; `GetDontSavePosition` answers 1 or nil, as the flag getters do.
+#[test]
+fn dont_save_position_keeps_the_rect_out_of_the_layout_cache() {
+    let mut s =
+        centred_box_on(UiScript::with_target(crate::script::UiTarget::Wrath335).expect("Wrath VM"));
+    s.run("Box:SetUserPlaced(true)").unwrap();
+    assert_eq!(s.user_placed_layouts().len(), 1);
+    assert!(s
+        .eval::<bool>("return Box:GetDontSavePosition() == nil")
+        .unwrap());
+    s.run("Box:SetDontSavePosition(true)").unwrap();
+    assert_eq!(
+        s.eval::<i64>("return Box:GetDontSavePosition()").unwrap(),
+        1
+    );
+    assert!(s.user_placed_layouts().is_empty());
+    s.run("Box:SetDontSavePosition(false)").unwrap();
+    assert!(s
+        .eval::<bool>("return Box:GetDontSavePosition() == nil")
+        .unwrap());
+    assert_eq!(s.user_placed_layouts().len(), 1);
+}
 #[test]
 fn a_move_pins_one_topleft_anchor_against_the_screen() {
     let mut s = centred_box();

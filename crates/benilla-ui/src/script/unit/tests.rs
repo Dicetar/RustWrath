@@ -740,6 +740,50 @@ fn party_frame_predicates_report_1_or_nil() {
 }
 
 #[test]
+fn a_name_resolves_like_script_get_guid_from_token() {
+    let mut s = UiScript::new().unwrap();
+    s.set_realm_name("Whitemane");
+    s.set_unit(
+        "player",
+        Some(UnitState {
+            is_connected: true,
+            guid: 7,
+            ..player()
+        }),
+    );
+    s.set_unit_guids(&UnitGuids {
+        player: 7,
+        ..Default::default()
+    });
+    for name in [
+        "Benilla",
+        "benilla",
+        "Benilla-Whitemane",
+        "benilla-whitemane",
+    ] {
+        assert_eq!(
+            s.eval::<i64>(&format!("return UnitIsConnected({name:?})"))
+                .unwrap(),
+            1,
+            "{name}"
+        );
+    }
+    // A name with another realm is nobody, and `Script_GetGUIDFromToken`'s miss is nil, not a
+    // raise; a token the resolver does not know still raises at the strict call sites.
+    for name in ["Benilla-OtherRealm", "Nobody"] {
+        assert!(
+            s.eval::<bool>(&format!("return UnitIsConnected({name:?}) == nil"))
+                .unwrap(),
+            "{name}"
+        );
+    }
+    assert!(s
+        .eval::<bool>(r#"return UnitIsPVP("Benilla") == nil"#)
+        .unwrap());
+    let err = s.run(r#"UnitIsPVP("Nobody")"#).unwrap_err().to_string();
+    assert!(err.contains("Unknown unit name: Nobody"), "{err}");
+}
+#[test]
 fn unit_race_class_sex_report_the_snapshot_or_the_absent_shape() {
     let mut s = UiScript::new().unwrap();
     s.set_unit("player", Some(player()));

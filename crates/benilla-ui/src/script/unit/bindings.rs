@@ -11,7 +11,7 @@ use super::super::protected::select_may_cast;
 use super::super::Model;
 use super::{
     check_unit_token_in, classification_word, grey_band, level_is_hidden, unit_is_grey,
-    unit_predicate, unknownobject, with_unit, PlayerRecord, SelectionRequest,
+    unit_predicate, unit_predicate_named, unknownobject, with_unit, PlayerRecord, SelectionRequest,
 };
 
 /// The `"player"` fast path of `UnitName`, `UnitRace`, `UnitClass` and `UnitSex`, never
@@ -549,7 +549,7 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                 token,
                 r#"Usage: UnitIsConnected("unit")"#,
             )?);
-            unit_predicate(lua, &token, |u| u.is_connected)
+            unit_predicate_named(lua, &token, |u| u.is_connected)
         })?,
     )?;
     g.set(

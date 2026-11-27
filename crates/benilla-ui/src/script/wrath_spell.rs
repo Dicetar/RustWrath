@@ -81,9 +81,27 @@ fn query(lua: &Lua, args: &MultiValue) -> mlua::Result<Option<(u32, SpellInfoVie
     let Some((id, _)) = spell_reference(lua, args)? else {
         return Ok(None);
     };
-    Ok(host::with_host(lua, |host| host.spell_info(id))
-        .flatten()
-        .map(|view| (id, view)))
+    let host_view = host::with_host(lua, |host| host.spell_info(id)).flatten();
+    let view = host_view.or_else(|| {
+        lua.app_data_ref::<Model>()
+            .expect("model")
+            .spell_info
+            .as_ref()
+            .and_then(|spells| spells.get(&id).cloned())
+    });
+    Ok(view.map(|view| (id, view)))
+}
+
+impl super::UiScript {
+    /// Seat the client catalog's `GetSpellInfo` projection, keyed by spell id, for a harness with
+    /// no app call host to lend. The live client leaves it unset: its lent host answers from the
+    /// one catalog owner, so this is never a second catalog in the scripting engine.
+    pub fn set_spell_info(
+        &mut self,
+        spells: std::sync::Arc<std::collections::HashMap<u32, SpellInfoView>>,
+    ) {
+        self.model_mut().spell_info = Some(spells);
+    }
 }
 
 fn string(lua: &Lua, value: Option<&str>) -> mlua::Result<Value> {
@@ -560,5 +578,59 @@ mod tests {
             let err = s.run(call).unwrap_err().to_string();
             assert!(err.contains("Invalid spell slot"), "{call}: {err}");
         }
+    }
+
+    /// A harness with no app call host seats the client catalog's projection: the three spell
+    /// queries read it, an id it does not hold stays nil, and a fork shares it. A lent host still
+    /// answers first, as the live client's does.
+    #[test]
+    fn a_seated_catalog_answers_the_spell_queries_without_a_host() {
+        let mut s = wrath();
+        s.set_spell_info(std::sync::Arc::new(std::collections::HashMap::from([(
+            78,
+            SpellInfoView {
+                name: "Heroic Strike".into(),
+                rank: Some("Rank 1".into()),
+                icon: Some("Interface\\Icons\\Ability_Rogue_Eviscerate".into()),
+                cost: None,
+                channeled: false,
+                power_type: 0,
+                cast_time_ms: 0,
+                min_range: None,
+                max_range: Some(5.0),
+            },
+        )])));
+        assert_eq!(
+            s.eval::<String>("return (GetSpellInfo(78))").unwrap(),
+            "Heroic Strike"
+        );
+        assert_eq!(
+            s.eval::<String>("return GetSpellTexture(78)").unwrap(),
+            "Interface\\Icons\\Ability_Rogue_Eviscerate"
+        );
+        assert!(s
+            .eval::<String>("return (GetSpellLink(78))")
+            .unwrap()
+            .contains("[Heroic Strike]"));
+        assert!(s.eval::<bool>("return GetSpellInfo(79) == nil").unwrap());
+        // The fork a survey makes per addon shares the seat.
+        let fork = s.fork();
+        assert_eq!(
+            fork.eval::<String>("return (GetSpellInfo(78))").unwrap(),
+            "Heroic Strike"
+        );
+        // The lent host's catalog wins over the seat, as the live app's does.
+        let mut host = SpellHost {
+            known: vec![78],
+            cooldowns: Vec::new(),
+            asked: Vec::new(),
+        };
+        host::lend(s.lua(), &mut host, || {
+            assert_eq!(
+                s.eval::<String>("return (GetSpellInfo(78))").unwrap(),
+                "Spell 78"
+            );
+        });
+        assert_eq!(host.asked, vec![78]);
     }
 }

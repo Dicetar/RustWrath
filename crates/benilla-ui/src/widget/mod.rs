@@ -243,6 +243,9 @@ pub struct Frame {
     /// stamps it (`0x7652e5`), so the cache also requires `movable` or `resizable`, at write and
     /// at apply.
     pub user_placed: bool,
+    /// `SetDontSavePosition`: the 3.3.5 flag that keeps the layout cache from writing this frame's
+    /// rect even when it is user-placed.
+    pub dont_save_position: bool,
     /// `SetToplevel` (`0x775440`): bit `0x1` of the flag word `[frame+0xb4]` (`movable` `0x100`,
     /// `resizable` `0x200`, all set by `0x76a3c0`). It raises nothing; `CSimpleTop::Raise`
     /// (`0x7650f0`) raises the nearest toplevel self-or-ancestor of a clicked or shown frame.
@@ -612,6 +615,7 @@ impl WidgetArena {
                 crate::layout::Len::Script(0.0),
             ),
             user_placed: false,
+            dont_save_position: false,
             toplevel: false,
             scroll_member,
             scroll_root: false,

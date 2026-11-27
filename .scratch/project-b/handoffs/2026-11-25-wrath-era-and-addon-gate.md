@@ -191,3 +191,87 @@ reaches `GetFrameHandle` there is not a frame wrapper (it is a restricted-enviro
 the next step is a true handle object whose frame methods route through the environment and whose
 identity survives restricted execution. The rest of the corpus is unchanged at 45/49 load and
 43/49 session; Bartender is MoP-era and is not part of the Wrath target.
+
+## Nightly 2026-11-27: 47/49 load, 47/49 session, 17/49 survive use
+
+Branch `wrath/night-2026-11-27`, from `main` `e3c8e14d9`. Corpus: the install's
+`Interface\AddOns` (49 manifests). Baseline log: `F:/AI/tmp/opencode/wrath-corpus-survey-25.txt`,
+roster `F:/AI/tmp/opencode/wrath-corpus-status-25.txt`.
+
+- loaded without a load error: **48/49** (strict **46/49**; Bagnon_Config and fizzle list files
+  their own packages do not contain)
+- survived a session start: **47/49**
+- drew something: **19/49** (was 11); survived hover/click/drag: **17/49** (was 8), the rest
+  had nothing a pointer can reach
+- no use-probe errors remain; the two failures are out of era: GatherMate2 (TOC
+  `11508,20505,50503`) and bartender4 (`X-Curse-Packaged-Version: 4.4.2`, MoP secure handle)
+
+### What the run forced
+
+- **The harness seats `Spell.dbc`.** A new public `UiScript::set_spell_info` (Model
+  `spell_info`, keyed by spell id) carries name, rank, icon, power type, cast time and range
+  from `Spell`, `SpellRange` and `SpellCastTimes`; `wrath_spell::query` reads the lent host
+  first and falls back to the seat. Production does not seat it: the app host answers from the
+  catalog owner. GatherMate, Quartz and the Details plugin chain now load; cost stays nil in the
+  harness because it needs the seated player's stats.
+- **3.3.5 unit names resolve.** `Model::unit_named` matches a pushed snapshot's `UnitName`,
+  optional `Name-Realm` suffix and ASCII case only. `Script_GetGUIDFromToken` (`0x60abf0`)
+  falls back to a name and returns false for a miss, so a Wrath getter is non-raising: `with_unit`
+  and `check_unit_token_in` no longer raise `Unknown unit name`, and `UnitGUID`, `UnitPower`,
+  `UnitPowerType` and the relation resolver read the name's snapshot. The 1.12 fixture keeps the
+  strict token line. The harness player now seats `has_object`, `is_connected` and `guid`, so
+  roster code sees a live player.
+- **A frame's per-kind `__index` enumerates inherited methods.** The client publishes one method
+  table per kind and addon code copies the API by `pairs` over it (Details' DF
+  `Libs/DF/button.lua:1052`). The flat view is built nearest-class-last, with the linked chain as
+  its fallback, and is rebuilt for the plain Frame after `guard_receivers` wraps every method;
+  without that rebuild the view held the unguarded functions. The widget-method census reads the
+  flat view too, so a method poked into `getmetatable(f).__index` is probed like the client's; it
+  found the three MovieFrame verbs already answered.
+- **Animation and region verbs.** `Animation:SetScale(x[, y])` and `SetOrigin(point, x, y)`
+  record their parameters; a Wrath Texture/FontString owns `CreateAnimationGroup` as a frame
+  does. Details' alert glow builds one on a texture.
+- **`SetDontSavePosition` / `GetDontSavePosition`** are the 3.3.5 Frame flags (Wrath only): the
+  layout cache skips a user-placed frame's rect while set; the getter answers 1 or nil.
+- **`GetInstanceDifficulty()`** answers `m_instanceDifficulty + 1` (`0x515750`). The field is 0
+  until `SMSG_INSTANCE_DIFFICULTY`, which this host does not parse; the open world's 1 is the
+  exact no-packet answer, not a fabricated tier.
+
+### Verification
+
+- `cargo test -p benilla-ui --lib`: 3,564 passed (6 ignored).
+- `cargo test -p benilla-app --lib addons`: 76 passed.
+- `cargo test -p benilla-app --lib ui_script::layer_tests`: 16 passed.
+- `cargo check -p benilla-client`: passes.
+- `cargo clippy -p benilla-ui -p benilla-app --lib -- -D warnings`: clean.
+- `WOW_WRATH=1 cargo run -q -p benilla-app --example addon_harness -- "<install>/Interface/AddOns" --status <file> --deep 2`: the 47/49 run above.
+
+### Remaining / next
+
+1. The 3.3.5a `_G`/event capture still needs the owner's stock-client run of
+   `tools/wrath-globals-capture`, then `tools/import-globals-capture.ps1`.
+2. Bartender 4.4's restricted-execution handle remains the only in-root session failure; it is
+   MoP-era code, and the true handle object (frame methods routed through the environment,
+   identity preserved across `CallRestrictedClosure`) is not part of the Wrath target.
+3. Animation `Scale`/`Color`/`TextureCoord` verbs record but do not tick yet; `SetScale` and
+   `SetOrigin` are the two Details needs. `SpellInfoView::cost` stays unavailable in the
+   harness until the seat also projects player stats.
+
+### Integration note: origin/main is uncompilable WIP
+
+While this task ran, `origin/main` advanced from `e3c8e14d9` to `18b106d3e` (a runes/totems/
+frame-handle-proxy WIP whose own note says `Cargo compilation and corpus re-run have not yet
+run`). The required one end-of-task merge was attempted as `6655d2f56` and reverted: that commit
+does not compile on its own, before any of this branch's code is considered.
+
+- `crates/benilla-ui/src/script/wrath_security.rs`: `FRAME_HANDLE_LUA` opens with `r#"` but its
+  Lua contains `select("#", ...)`, so the raw string ends at the first `"#`. Use `r##"..."##`.
+- `crates/benilla-ui/src/script/host.rs`: `trade_skill_link_source` is defined twice (lines 68
+  and 80); one must go.
+- `crates/benilla-ui/src/script/wrath_natives.rs`: tests use `PetActionView::auto_cast_allowed`,
+  `auto_cast_enabled`, `UiScript::set_clock` and `UiScript::set_quest_record`, none of which
+  `18b106d3e` adds.
+
+This branch therefore stays on `e3c8e14d9` plus its own commit. The owner (or the WIP's author)
+should fix `18b106d3e` before integrating; the survey numbers above were taken on this branch,
+not on main.

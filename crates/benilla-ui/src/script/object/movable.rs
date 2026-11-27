@@ -157,6 +157,22 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
         "IsUserPlaced",
         lua.create_function(|lua, this: Table| get_flag(lua, &this, Flag::UserPlaced))?,
     )?;
+    // SetDontSavePosition / GetDontSavePosition (3.3.5 Frame API): the layout cache skips the
+    // frame's rect while this is set, even when it is user-placed; the value defaults to 1. 1.12's
+    // method table has neither, and the surface check holds us to it.
+    if lua.app_data_ref::<Model>().expect("model").is_wrath() {
+        m.set(
+            "SetDontSavePosition",
+            lua.create_function(|lua, (this, args): (Table, MultiValue)| {
+                let flag = bool_or_default(args.front(), true);
+                set_flag(lua, &this, Flag::DontSavePosition, flag)
+            })?,
+        )?;
+        m.set(
+            "GetDontSavePosition",
+            lua.create_function(|lua, this: Table| get_flag(lua, &this, Flag::DontSavePosition))?,
+        )?;
+    }
     m.set(
         "StartMoving",
         lua.create_function(|lua, this: Table| {
@@ -214,17 +230,28 @@ enum Flag {
     Resizable,
     /// `0x1000`.
     UserPlaced,
+    /// `SetDontSavePosition`: not a bit of the flag word we track, but the cache gate it reads.
+    DontSavePosition,
 }
 
 fn set_flag(lua: &Lua, this: &Table, which: Flag, value: bool) -> mlua::Result<()> {
     let h = frame_handle_of(lua, this)?;
     let mut model = lua.app_data_mut::<Model>().expect("model");
+    let mut cached = false;
     if let Some(f) = model.arena.frame_mut(h) {
         match which {
             Flag::Movable => f.movable = value,
             Flag::Resizable => f.resizable = value,
             Flag::UserPlaced => f.user_placed = value,
+            Flag::DontSavePosition => {
+                // Taking a saved frame out of the cache (or putting it back) rewrites its row.
+                cached = f.dont_save_position != value && f.user_placed;
+                f.dont_save_position = value;
+            }
         }
+    }
+    if cached {
+        model.user_placed_changed = true;
     }
     Ok(())
 }
@@ -238,6 +265,7 @@ fn get_flag(lua: &Lua, this: &Table, which: Flag) -> mlua::Result<Value> {
             Flag::Movable => f.movable,
             Flag::Resizable => f.resizable,
             Flag::UserPlaced => f.user_placed,
+            Flag::DontSavePosition => f.dont_save_position,
         }),
     ))
 }
@@ -424,7 +452,11 @@ fn pin_top_left(
 
 /// A drag moved the frame: if it is user-placed, the layout cache owes its file a rewrite.
 fn mark_user_placed_change(model: &mut Model, h: FrameHandle) {
-    if model.arena.frame(h).is_some_and(|f| f.user_placed) {
+    if model
+        .arena
+        .frame(h)
+        .is_some_and(|f| f.user_placed && !f.dont_save_position)
+    {
         model.user_placed_changed = true;
     }
 }

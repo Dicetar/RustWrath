@@ -58,11 +58,17 @@ impl super::super::UiScript {
     }
 }
 
-/// `GetGUIDFromName 0x515970` on one token: the guid of the unit it names, 0 for nobody. An
-/// unknown token raises `Unknown unit name` (`0x515c14`).
+/// `GetGUIDFromName 0x515970` on one token: the guid of the unit it names, 0 for nobody. A name
+/// no token compare matches resolves through `Script_GetGUIDFromString`; an unrecognised token
+/// then raises `Unknown unit name` (`0x515c14`).
 fn guid_of(model: &Model, token: &str) -> mlua::Result<u64> {
-    check_unit_token_for(&Some(token.to_string()), model.is_wrath())?;
-    Ok(model.unit(token).map_or(0, |u| u.guid))
+    if let Some(unit) = model.unit(token).or_else(|| model.unit_named(token)) {
+        return Ok(unit.guid);
+    }
+    if !model.is_wrath() {
+        check_unit_token_for(&Some(token.to_string()), false)?;
+    }
+    Ok(0)
 }
 
 /// The guid when the host holds it as a unit: `None` is the null object a verb answers nil for.
@@ -173,7 +179,10 @@ pub(super) fn unit_is_pvp(lua: &Lua, token: &str) -> mlua::Result<Value> {
             .as_deref()
             .and_then(|rel| rel.is_pvp(guid))
             .unwrap_or(false),
-        None => model.unit(token).is_some_and(|u| u.pvp),
+        None => model
+            .unit(token)
+            .or_else(|| model.unit_named(token))
+            .is_some_and(|u| u.pvp),
     };
     Ok(flag(answer))
 }

@@ -17,10 +17,10 @@
 //! cargo run -q -p benilla-app --example addon_harness -- <folder of addons>
 //! ```
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use benilla_ui::script::UiScript;
+use benilla_ui::script::{SpellInfoView, UiScript};
 use benilla_ui::toc::Toc;
 
 /// Why a global is nil: one addon loaded as the survey loads it, then Lua evaluated against the VM.
@@ -150,6 +150,10 @@ fn stock_vm(root: &Path, registry: &[benilla_ui::script::AddOnInfo]) -> Result<U
     // AddOns root is passed, so `LoadAddOn("<folder addon>")` does not answer `MISSING`.
     script.register_addons(registry.to_vec(), Some(root.to_path_buf()), None, None);
     seat_a_session(&mut script);
+    if let Some(spells) = spell_info_catalog() {
+        // A fork clones the model's `Arc`, so the catalog is projected once per survey process.
+        script.set_spell_info(spells);
+    }
     let _ = crate::ui_script::load_default_ui(&script);
     Ok(script)
 }
@@ -1177,6 +1181,11 @@ fn seat_a_session(script: &mut UiScript) {
         "player",
         Some(benilla_ui::script::UnitState {
             exists: true,
+            // The player object is held from world entry, so `UnitIsVisible` and `UnitIsConnected`
+            // answer for the token and for the name roster code passes back (`0x60abf0`).
+            has_object: true,
+            is_connected: true,
+            guid: 1,
             name: Some("Harness".into()),
             health: 100,
             max_health: 100,
@@ -1379,6 +1388,54 @@ fn auction_item_classes(
         .ok()
         .map(crate::ui_items::ItemSubClasses);
     crate::ui_auction::categories(target, classes.as_ref(), subclasses.as_ref())
+}
+
+/// The client's `Spell.dbc` projected to the `GetSpellInfo` slots, keyed by spell id. The harness
+/// has no app call host to lend, so it seats this read-only map in the VM; the live app's lent host
+/// answers from the catalog owner instead. Name, rank, icon, power type, cast time and range come
+/// straight from the DBCs; cost needs the seated player's stats, which the harness does not own, so
+/// it stays unavailable. `None` with no install.
+fn spell_info_catalog() -> Option<std::sync::Arc<HashMap<u32, SpellInfoView>>> {
+    use std::sync::OnceLock;
+    static CATALOG: OnceLock<Option<std::sync::Arc<HashMap<u32, SpellInfoView>>>> = OnceLock::new();
+    CATALOG
+        .get_or_init(|| {
+            let data = benilla_formats::wow_data()?;
+            let mut chain = benilla_formats::open_chain(&data).ok()?;
+            let spells = benilla_formats::load_spell_catalog(&mut chain).ok()?;
+            let ranges = benilla_formats::load_spell_ranges(&mut chain).ok()?;
+            let cast_times = benilla_formats::load_spell_cast_times(&mut chain).ok()?;
+            // The seated character's level (`seat_a_session`): a level-scaled cast-time row
+            // resolves as `GetCastTime` does for the player.
+            const LEVEL: u32 = 60;
+            Some(std::sync::Arc::new(
+                spells
+                    .iter()
+                    .map(|(id, definition)| {
+                        let range = ranges.get(definition.range_index);
+                        let cast_time_ms = cast_times
+                            .get(definition.casting_time_index)
+                            .map(|row| row.resolved_ms(LEVEL, definition.base_level).max(0) as u32)
+                            .unwrap_or(0);
+                        (
+                            id,
+                            SpellInfoView {
+                                name: definition.name.clone(),
+                                rank: definition.rank.clone(),
+                                icon: definition.icon.clone(),
+                                cost: None,
+                                channeled: definition.tooltip_channeled(),
+                                power_type: definition.power_type as i32,
+                                cast_time_ms,
+                                min_range: range.map(|range| range.min),
+                                max_range: range.map(|range| range.max),
+                            },
+                        )
+                    })
+                    .collect(),
+            ))
+        })
+        .clone()
 }
 
 /// The seated character's talent pages, built by the live client's `build_pages`. The DBCs are read

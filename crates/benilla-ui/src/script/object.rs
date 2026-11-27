@@ -199,6 +199,20 @@ pub(super) fn guard_receivers(lua: &Lua) -> mlua::Result<()> {
             }
         }
     }
+    // The flat `__index` view built during install copied the unguarded functions. Rebuild the
+    // plain Frame's now; a kind's metatable is built at its first frame, after this pass, and
+    // copies the guarded functions already.
+    refresh_plain_frame_meta(lua)?;
+    Ok(())
+}
+
+/// Rebuild the plain Frame metatable from the guarded method tables ([`guard_receivers`]).
+fn refresh_plain_frame_meta(lua: &Lua) -> mlua::Result<()> {
+    let metas: Table = lua.named_registry_value(REG_KIND_METAS)?;
+    metas.raw_set("", Value::Nil)?;
+    let frame_meta = frame_meta_for(lua, None)?;
+    lua.set_named_registry_value(REG_FRAME_META, frame_meta.clone())?;
+    lua.globals().set("__framescript_meta", frame_meta)?;
     Ok(())
 }
 
@@ -721,9 +735,9 @@ pub(super) fn install_in_game(lua: &Lua) -> mlua::Result<()> {
 const REG_KIND_METAS: &str = "__benilla_frame_meta_by_kind";
 
 /// The metatable a frame of `kind` wears, built once per kind and cached in [`REG_KIND_METAS`].
-/// Its `__index` is a table, so a method lookup never leaves `luaV_gettable` for Rust. The kind's
-/// method tables are linked, not merged, in the reference's probe order, each class's lookup
-/// tail-calling its base's (`CheckButton`, `Button`, `Frame`): a later write to a table shows
+/// Its `__index` is a flat table, so a method lookup never leaves `luaV_gettable` for Rust and
+/// `pairs` enumerates every inherited method, as the client's per-kind method table does. The
+/// kind's tables are linked underneath, not merged into: a later write to a base table shows
 /// through, and a plain Frame never reaches `StatusBar`'s methods, so `frame.SetValue` stays nil.
 fn frame_meta_for(lua: &Lua, kind: Option<FrameKind>) -> mlua::Result<Table> {
     let chain = kind_method_registries(kind);
@@ -735,15 +749,33 @@ fn frame_meta_for(lua: &Lua, kind: Option<FrameKind>) -> mlua::Result<Table> {
     // Link `own -> base -> ... -> Frame`; relinking a base several kinds share is idempotent.
     let frame_methods: Table = lua.named_registry_value(REG_FRAME_METHODS)?;
     let mut below = frame_methods.clone();
+    let mut tables = vec![frame_methods.clone()];
     for reg in chain.iter().rev() {
         let own: Table = lua.named_registry_value(reg)?;
         let link = lua.create_table()?;
         link.set("__index", below)?;
         own.set_metatable(Some(link))?;
+        tables.push(own.clone());
         below = own;
     }
+    // Lua 5.1's `pairs` does not follow `__index`, and the client's frame `__index` is one table
+    // per kind with every inherited method in it: addon code enumerates it to forward the API
+    // (Details' DF does, at `button.lua:1052`). Publish that flat view, nearest class last so it
+    // wins, with the linked chain as its fallback so a method a base gains later still resolves.
+    let flat = lua.create_table()?;
+    for table in &tables {
+        for pair in table.pairs::<Value, Value>() {
+            let (member, value) = pair?;
+            if !matches!(&member, Value::String(s) if s.as_bytes() == b"__index") {
+                flat.raw_set(member, value)?;
+            }
+        }
+    }
+    let fallback = lua.create_table()?;
+    fallback.set("__index", below)?;
+    flat.set_metatable(Some(fallback))?;
     let meta = lua.create_table()?;
-    meta.set("__index", below)?;
+    meta.set("__index", flat)?;
     metas.raw_set(key, meta.clone())?;
     Ok(meta)
 }

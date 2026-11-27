@@ -16,10 +16,9 @@ fn power(
         token,
         "Usage: UnitPower(unit [, powerType [, unmodified]])",
     )?;
-    unit::check_unit_token_for(&Some(token.clone()), true)?;
     let guid = {
         let model = lua.app_data_ref::<Model>().expect("model");
-        let Some(unit) = model.unit(&token) else {
+        let Some(unit) = model.unit(&token).or_else(|| model.unit_named(&token)) else {
             return Ok(0);
         };
         unit.guid
@@ -62,16 +61,20 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "UnitGUID",
         lua.create_function(|lua, token: Value| {
             let token = super::binding_abi::string_arg(lua, token, "Usage: UnitGUID(unit)")?;
-            unit::check_unit_token_for(&Some(token.clone()), true)?;
-            // The resolver's identity, not a pushed snapshot: `UnitGUID` must answer a known
-            // token even before any `UnitState` for it has arrived.
+            // A token resolves through the client state; a name the unit feed carries resolves
+            // through its snapshot, as Script_GetGUIDFromToken (0x60abf0) does. A miss is nil.
             let guid = {
                 let model = lua.app_data_ref::<Model>().expect("model");
+                // A token keeps the resolver's identity, the one `UnitGUID` answers even before a
+                // snapshot arrives; text that matches no token falls back to a unit's name.
                 match unit::parse_unit_token_for(&token, true) {
                     unit::UnitTokenParse::Unit { base, hops } => {
                         model.unit_guids.resolve_unit(base, hops).unwrap_or(0)
                     }
-                    _ => 0,
+                    _ => model
+                        .unit(&token)
+                        .or_else(|| model.unit_named(&token))
+                        .map_or(0, |unit| unit.guid),
                 }
             };
             if guid == 0 {
@@ -97,12 +100,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "UnitPowerType",
         lua.create_function(|lua, token: Value| {
             let token = super::binding_abi::string_arg(lua, token, "Usage: UnitPowerType(unit)")?;
-            unit::check_unit_token_for(&Some(token.clone()), true)?;
-            let guid = lua
-                .app_data_ref::<Model>()
-                .expect("model")
-                .unit(&token)
-                .map_or(0, |unit| unit.guid);
+            let guid = {
+                let model = lua.app_data_ref::<Model>().expect("model");
+                model
+                    .unit(&token)
+                    .or_else(|| model.unit_named(&token))
+                    .map_or(0, |unit| unit.guid)
+            };
             let kind = host::with_host(lua, |host| host.unit_power_type(guid))
                 .flatten()
                 .unwrap_or(0);

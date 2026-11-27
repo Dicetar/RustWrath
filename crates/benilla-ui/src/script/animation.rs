@@ -138,6 +138,32 @@ pub(crate) fn build(
             set_param(lua, &this, "degrees", value)
         })?,
     )?;
+    // Scale animations (Details' DF builds one for its switch pop-up): both axes, the second
+    // defaulting to the first as the reference's two-argument form does. Recorded for the tick.
+    object.set(
+        "SetScale",
+        lua.create_function(|lua, (this, x, y): (Table, Value, Value)| {
+            let y = if matches!(y, Value::Nil) {
+                x.clone()
+            } else {
+                y
+            };
+            set_param(lua, &this, "scaleX", x)?;
+            set_param(lua, &this, "scaleY", y)
+        })?,
+    )?;
+    // Animation:SetOrigin(point, x, y), shared by Scale, Translation and Rotation animations.
+    object.set(
+        "SetOrigin",
+        lua.create_function(|lua, (this, point, x, y): (Table, Value, Value, Value)| {
+            if let Value::String(point) = point {
+                let params: Table = this.get(ANIMATION_PARAMS)?;
+                params.set("origin", point.to_string_lossy().to_string())?;
+            }
+            set_param(lua, &this, "originX", x)?;
+            set_param(lua, &this, "originY", y)
+        })?,
+    )?;
     // `group:SetLooping("REPEAT"|"BOUNCE"|"NONE")`: the group's XML `looping` attribute, set
     // after construction. `REPEAT` restarts the schedule; `BOUNCE` alternates the leg direction.
     object.set(
@@ -737,6 +763,46 @@ mod tests {
             .unwrap()
     }
 
+    /// Details' DF builds a Scale animation and sets both axes and an origin before the group
+    /// ever plays; the verbs record the XML parameters rather than raising.
+    /// A 3.3.5 region (Texture/FontString) owns animation groups as a frame does; Details fades a
+    /// texture's alert glow with one.
+    #[test]
+    fn a_region_owns_an_animation_group() {
+        let s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.run(
+            r#"
+        f = CreateFrame("Frame")
+        t = f:CreateTexture()
+        g = t:CreateAnimationGroup()
+        a = g:CreateAnimation("Alpha")
+        a:SetChange(-1)
+        a:SetDuration(0)
+        assert(type(g.Play) == "function" and type(a.SetChange) == "function")
+    "#,
+        )
+        .unwrap();
+    }
+    #[test]
+    fn scale_animation_verbs_record_the_parameters() {
+        let s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.run(
+            r#"
+        f = CreateFrame("Frame")
+        g = f:CreateAnimationGroup()
+        a = g:CreateAnimation("Scale")
+        a:SetScale(1.5, 0.5)
+        a:SetOrigin("BOTTOM", 1, -2)
+        a:SetDuration(0.04)
+        a:SetOrder(1)
+    "#,
+        )
+        .unwrap();
+        let params: Table = s.eval("return a.__benilla_animation_params").unwrap();
+        assert_eq!(params.get::<String>("scaleX").unwrap(), "1.5");
+        assert_eq!(params.get::<String>("scaleY").unwrap(), "0.5");
+        assert_eq!(params.get::<String>("origin").unwrap(), "BOTTOM");
+    }
     #[test]
     fn alpha_groups_sequence_and_fire_finished_once() {
         let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
