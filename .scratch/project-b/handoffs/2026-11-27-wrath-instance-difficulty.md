@@ -1,6 +1,6 @@
 # Wrath instance, dungeon and raid difficulty from the server
 
-Status: ready to merge
+Status: landed on main (`4e7dc5466`)
 Owner: Claude Code / Opus 5.5 (nightly 2026-11-27)
 Branch: wrath/instance-difficulty
 Issue: none
@@ -67,4 +67,6 @@ dungeon (`MiscHandler.cpp:1268`, `>= MAX_DUNGEON_DIFFICULTY`), so choosing Heroi
 - `rustfmt --edition 2021 --check` on every touched file: clean.
 - One regression test, `script::instance::tests::heroic_goes_out_zero_based_and_the_server_packets_land`;
   the group-list test in `benilla-app/src/lib.rs` now also checks the `GroupDifficulty` event.
-- Not compiled locally (owner rule), not run, no client. CI: not run yet.
+- Not compiled locally (owner rule), not run, no client. CI run `46060499413` on `4e7dc5466`:
+  green (windows 21m24s, gates 23m1s; 6867 tests passed, including the new test,
+  `every_session_event_kind_has_one_owner` and the group-list test).
