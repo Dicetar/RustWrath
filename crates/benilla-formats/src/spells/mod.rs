@@ -552,9 +552,15 @@ pub fn load_spell_catalog(chain: &mut Chain) -> Result<SpellCatalog> {
                     .iter()
                     .filter_map(|r| {
                         let id = crate::dbc::u32_at(r, 0)?;
-                        let blood = crate::dbc::u32_at(r, 1).unwrap_or(0).min(u32::from(u8::MAX)) as u8;
-                        let unholy = crate::dbc::u32_at(r, 2).unwrap_or(0).min(u32::from(u8::MAX)) as u8;
-                        let frost = crate::dbc::u32_at(r, 3).unwrap_or(0).min(u32::from(u8::MAX)) as u8;
+                        let blood = crate::dbc::u32_at(r, 1)
+                            .unwrap_or(0)
+                            .min(u32::from(u8::MAX)) as u8;
+                        let unholy = crate::dbc::u32_at(r, 2)
+                            .unwrap_or(0)
+                            .min(u32::from(u8::MAX)) as u8;
+                        let frost = crate::dbc::u32_at(r, 3)
+                            .unwrap_or(0)
+                            .min(u32::from(u8::MAX)) as u8;
                         let gain = crate::dbc::u32_at(r, 4).unwrap_or(0);
                         Some((id, ([blood, unholy, frost], gain)))
                     })
@@ -604,14 +610,17 @@ pub fn load_spell_catalog(chain: &mut Chain) -> Result<SpellCatalog> {
             if cat == 0 {
                 continue;
             }
-            let bits = totem_category_masks.get(&cat).copied().unwrap_or(match cat {
-                4 => 0x01,                       // Fire Totem
-                2 => 0x02,                       // Earth Totem
-                5 => 0x04,                       // Water Totem
-                3 => 0x08,                       // Air Totem
-                162 | 163 | 164 | 190 => 0x0F,   // Master Totem
-                _ => 0,
-            });
+            let bits = totem_category_masks
+                .get(&cat)
+                .copied()
+                .unwrap_or(match cat {
+                    4 => 0x01,                     // Fire Totem
+                    2 => 0x02,                     // Earth Totem
+                    5 => 0x04,                     // Water Totem
+                    3 => 0x08,                     // Air Totem
+                    162 | 163 | 164 | 190 => 0x0F, // Master Totem
+                    _ => 0,
+                });
             mask |= bits;
         }
         mask

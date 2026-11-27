@@ -116,11 +116,9 @@ fn feed_mirror_timers(
             let name = ScriptValue::Str(timer_name.into());
             let (event, args): (&str, Vec<ScriptValue>) = match edge {
                 MirrorTimerEdge::Start(start) => {
-                    let label = caption(
-                        kind,
-                        spell_name(start.spell_id).as_deref(),
-                        &|key| benilla_ui::strings::global(script.lua(), key),
-                    );
+                    let label = caption(kind, spell_name(start.spell_id).as_deref(), &|key| {
+                        benilla_ui::strings::global(script.lua(), key)
+                    });
                     script.set_wrath_mirror_timer_start(
                         kind.to_wire() as usize,
                         timer_name,

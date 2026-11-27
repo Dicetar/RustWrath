@@ -102,13 +102,8 @@ pub(crate) fn feed(
             let mapped = totem.map(|t| {
                 let (name, icon) = spells
                     .as_deref()
-                    .and_then(|catalog| catalog.get(t.spell_id))
-                    .map(|spell| {
-                        (
-                            spell.name.clone(),
-                            spell.icon_path.clone().unwrap_or_default(),
-                        )
-                    })
+                    .and_then(|catalog| catalog.catalog.get(t.spell_id))
+                    .map(|spell| (spell.name.clone(), spell.icon.clone().unwrap_or_default()))
                     .unwrap_or_default();
                 let start_seconds = if t.received_at > 0.0 {
                     t.received_at
@@ -116,12 +111,11 @@ pub(crate) fn feed(
                     ui_now
                 };
                 WrathTotemSlot {
-                    guid: t.guid,
-                    spell_id: t.spell_id,
+                    have_totem: true,
                     name,
                     icon,
-                    start_seconds,
-                    duration_seconds: f64::from(t.duration_ms) / 1000.0,
+                    start_time: start_seconds,
+                    duration: f64::from(t.duration_ms) / 1000.0,
                     revision: t.revision,
                 }
             });

@@ -1878,10 +1878,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .and_then(|s| model.wrath_mirror_timers.get((s - 1) as usize))
                 .and_then(Option::as_ref)
             {
-                let progress = t.progress_ms(model.now);
                 return Ok((
                     t.name.clone(),
-                    progress,
+                    t.value_ms,
                     t.max_value_ms,
                     t.scale,
                     i64::from(t.paused),
@@ -1942,7 +1941,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "IsPossessBarVisible",
         lua.create_function(|lua, ()| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.vehicle_guid.is_none() && model.death.possess_bar)
+            Ok(super::binding_abi::flag(
+                model.vehicle_guid.is_none() && model.death.possess_bar,
+            ))
         })?,
     )?;
 
@@ -2021,7 +2022,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .and_then(Option::as_ref)
                 .filter(|t| t.have_totem && t.start_time + t.duration > model.now);
             Ok(match active {
-                Some(t) => (true, t.name.clone(), t.start_time, t.duration, t.icon.clone()),
+                Some(t) => (
+                    true,
+                    t.name.clone(),
+                    t.start_time,
+                    t.duration,
+                    t.icon.clone(),
+                ),
                 None => (false, String::new(), 0.0, 0.0, String::new()),
             })
         })?,
@@ -2042,7 +2049,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .get((slot - 1) as usize)
                 .and_then(Option::as_ref)
                 .filter(|t| t.have_totem && t.start_time + t.duration > model.now)
-                .map_or(0, |t| ((t.start_time + t.duration) - model.now).ceil().max(0.0) as i64);
+                .map_or(0, |t| {
+                    ((t.start_time + t.duration) - model.now).ceil().max(0.0) as i64
+                });
             Ok(remaining)
         })?,
     )?;
@@ -5832,10 +5841,11 @@ mod focus_tests {
                 texture: Some("Interface\\Icons\\Spell_Shadow_UnholyFrenzy".into()),
                 is_token: false,
                 active: false,
-                auto_cast_allowed: false,
-                auto_cast_enabled: false,
+                autocast_allowed: false,
+                autocast_enabled: false,
                 cooldown: None,
                 packed: (7 << 24) | 8092,
+                ..Default::default()
             }],
         );
         assert_eq!(
@@ -5855,21 +5865,26 @@ mod focus_tests {
             s.eval("return GetPossessInfo(2)").unwrap();
         assert_eq!(empty_slot, (None, None, None));
 
-        // 3. GetMirrorTimerInfo(index) and GetMirrorTimerProgress(timer) interpolate active timers.
-        s.set_clock(10.0);
+        // 3. GetMirrorTimerInfo(index) returns the last server value; only
+        // GetMirrorTimerProgress(timer) interpolates between packets.
+        s.set_now(10.0);
         s.set_wrath_mirror_timer_start(1, "BREATH", 60_000, 60_000, -1, false, "Breath");
-        s.set_clock(15.0);
+        s.set_now(15.0);
         let info: (String, i64, i64, i64, i64, String) =
             s.eval("return GetMirrorTimerInfo(2)").unwrap();
         assert_eq!(
             info,
-            ("BREATH".into(), 55_000, 60_000, -1, 0, "Breath".into())
+            ("BREATH".into(), 60_000, 60_000, -1, 0, "Breath".into())
         );
-        let progress: f64 = s.eval(r#"return GetMirrorTimerProgress("BREATH")"#).unwrap();
+        let progress: f64 = s
+            .eval(r#"return GetMirrorTimerProgress("BREATH")"#)
+            .unwrap();
         assert!((progress - 55_000.0).abs() < 1e-6);
         s.set_wrath_mirror_timer_pause(1, true);
-        s.set_clock(25.0);
-        let paused_progress: f64 = s.eval(r#"return GetMirrorTimerProgress("BREATH")"#).unwrap();
+        s.set_now(25.0);
+        let paused_progress: f64 = s
+            .eval(r#"return GetMirrorTimerProgress("BREATH")"#)
+            .unwrap();
         assert!((paused_progress - 55_000.0).abs() < 1e-6);
         s.set_wrath_mirror_timer_stop(1);
         let stopped: (String, i64, i64, i64, i64, String) =
@@ -5877,7 +5892,7 @@ mod focus_tests {
         assert_eq!(stopped.0, "UNKNOWN");
 
         // 4. GetQuestLink(questID) formats 3.3.5a quest hyperlinks from quest_store.
-        s.set_quest_record(
+        s.seed_quest_record(
             783,
             QuestRecordView {
                 title: "A Threat Within".into(),
@@ -5897,8 +5912,8 @@ mod focus_tests {
     #[test]
     fn wrath_pvp_currency_battleground_types_world_pvp_and_arena_getters_read_real_state() {
         use crate::script::{
-            BattlefieldQueueSlot, HonorState, UiScript, UiTarget, UnitState,
-            WrathBattlegroundType, WrathWorldPvpQueueSlot,
+            BattlefieldQueueSlot, HonorState, UiScript, UiTarget, UnitState, WrathBattlegroundType,
+            WrathWorldPvpQueueSlot,
         };
 
         let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();

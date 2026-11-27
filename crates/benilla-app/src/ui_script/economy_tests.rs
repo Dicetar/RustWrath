@@ -6,9 +6,9 @@
 
 use benilla_ui::script::{
     AuctionCall, AuctionCategory, AuctionHighBidder, AuctionItemRow, AuctionListState,
-    AuctionState, AuctionSubCategory, ContainerSlot, ContainerState, MailCall,
-    MailInboxAttachment, MailInboxRow, MailRowVerb, MailState, StationeryView, TradeCall,
-    TradeSideState, TradeSlotItem, TradeState, UiScript, UiTarget, UnitState, BIDDER, LIST, OWNER,
+    AuctionState, AuctionSubCategory, ContainerSlot, ContainerState, MailCall, MailInboxAttachment,
+    MailInboxRow, MailRowVerb, MailState, StationeryView, TradeCall, TradeSideState, TradeSlotItem,
+    TradeState, UiScript, UiTarget, UnitState, BIDDER, LIST, OWNER,
 };
 
 use super::test_ui::{load_ui as load_xml, production_order, MERCHANT_UI};
@@ -568,7 +568,10 @@ fn wrath_trade_mail_and_auction_ui_contracts_run_without_mpq() {
              return n, name, count",
         )
         .unwrap();
-    assert_eq!((num_items, item12_name.as_str(), item12_count), (1, "Parcel 12", 12));
+    assert_eq!(
+        (num_items, item12_name.as_str(), item12_count),
+        (1, "Parcel 12", 12)
+    );
     s.run("TakeInboxItem(1, 12)").unwrap();
     s.mail_request_resolved();
     s.run("TakeInboxMoney(1)").unwrap();
@@ -606,17 +609,38 @@ fn wrath_trade_mail_and_auction_ui_contracts_run_without_mpq() {
     // --- 3. Auction: list/bidder/owner getters + bid & cancel calls ---
     let mut lists: [AuctionListState; 3] = Default::default();
     lists[LIST] = AuctionListState {
-        rows: vec![auction_row(101, "Frostweave Cloth", 70, 2000, 6000, "Seller")],
+        rows: vec![auction_row(
+            101,
+            "Frostweave Cloth",
+            70,
+            2000,
+            6000,
+            "Seller",
+        )],
         total: 1,
         ..Default::default()
     };
     lists[BIDDER] = AuctionListState {
-        rows: vec![auction_row(102, "Eternal Fire", 80, 15000, 25000, "Alchemist")],
+        rows: vec![auction_row(
+            102,
+            "Eternal Fire",
+            80,
+            15000,
+            25000,
+            "Alchemist",
+        )],
         total: 1,
         ..Default::default()
     };
     lists[OWNER] = AuctionListState {
-        rows: vec![auction_row(103, "Titansteel Bar", 80, 40000, 55000, "Firna")],
+        rows: vec![auction_row(
+            103,
+            "Titansteel Bar",
+            80,
+            40000,
+            55000,
+            "Firna",
+        )],
         total: 1,
         ..Default::default()
     };
@@ -647,7 +671,14 @@ fn wrath_trade_mail_and_auction_ui_contracts_run_without_mpq() {
             bid_name.as_str(),
             own_name.as_str()
         ),
-        (1, 1, 1, "Frostweave Cloth", "Eternal Fire", "Titansteel Bar")
+        (
+            1,
+            1,
+            1,
+            "Frostweave Cloth",
+            "Eternal Fire",
+            "Titansteel Bar"
+        )
     );
     s.run(
         "SetSelectedAuctionItem('list', 1)
@@ -659,8 +690,12 @@ fn wrath_trade_mail_and_auction_ui_contracts_run_without_mpq() {
     assert!(ah_calls
         .iter()
         .any(|c| matches!(c, AuctionCall::Bid(b) if b.auction_id == 101 && b.amount == 6000)));
-    assert!(ah_calls
-        .iter()
-        .any(|c| matches!(c, AuctionCall::Cancel { auction_id: 103, .. })));
+    assert!(ah_calls.iter().any(|c| matches!(
+        c,
+        AuctionCall::Cancel {
+            auction_id: 103,
+            ..
+        }
+    )));
     assert!(s.errors().is_empty(), "wrath economy: {:?}", s.errors());
 }

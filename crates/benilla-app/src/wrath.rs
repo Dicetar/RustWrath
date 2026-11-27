@@ -8177,7 +8177,7 @@ fn wrath_tap_commands(
                 if !view.entered_world
                     || view.session_epoch != session_epoch
                     || view.world_generation != world_generation
-                    || usize::from(slot) >= gameplay::wrath_systems::MAX_TOTEM_SLOTS
+                    || usize::from(slot) >= usize::from(gameplay::wrath_systems::MAX_TOTEM_SLOTS)
                 {
                     None
                 } else {

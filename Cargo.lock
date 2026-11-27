@@ -482,8 +482,8 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 name = "benilla"
 version = "0.2.0"
 dependencies = [
- "benilla-app",
  "benilla-buildstamp",
+ "benilla-client",
 ]
 
 [[package]]
@@ -581,6 +581,20 @@ name = "benilla-bytes"
 version = "0.2.0"
 
 [[package]]
+name = "benilla-client"
+version = "0.2.0"
+dependencies = [
+ "benilla-app",
+ "benilla-assets",
+ "benilla-dev",
+ "benilla-formats",
+ "benilla-souls",
+ "benilla-world",
+ "bevy",
+ "toml",
+]
+
+[[package]]
 name = "benilla-combat-core"
 version = "0.2.0"
 
@@ -589,6 +603,23 @@ name = "benilla-dbc"
 version = "0.2.0"
 dependencies = [
  "benilla-bytes",
+]
+
+[[package]]
+name = "benilla-dev"
+version = "0.2.0"
+dependencies = [
+ "avian3d",
+ "benilla-app",
+ "benilla-assets",
+ "benilla-formats",
+ "benilla-protocol",
+ "benilla-ui",
+ "benilla-world",
+ "bevy",
+ "bevy_egui",
+ "bytemuck",
+ "image",
 ]
 
 [[package]]
@@ -716,6 +747,19 @@ dependencies = [
  "serde",
  "sha1",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "benilla-souls"
+version = "0.2.0"
+dependencies = [
+ "benilla-app",
+ "benilla-assets",
+ "benilla-combat-core",
+ "benilla-formats",
+ "benilla-protocol",
+ "benilla-world",
+ "bevy",
 ]
 
 [[package]]
