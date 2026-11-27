@@ -674,6 +674,24 @@ mod tests {
         assert_eq!(result, (true, true, false));
     }
 
+    /// Bartender re-metatables its bar (`setmetatable(bar, { __index = prototype })`); the
+    /// wrapper's `[0]` identity must survive so the secure state driver can take the bar itself.
+    #[test]
+    fn a_frame_whose_metatable_was_replaced_is_still_a_wrapper() {
+        let s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        let ok: bool = s
+            .eval(
+                r#"
+                local bar = CreateFrame("Frame", "HandleReMetatabledBar", UIParent, "SecureHandlerStateTemplate")
+                local prototype = CreateFrame("Button")
+                setmetatable(bar, { __index = prototype })
+                local handle = GetFrameHandle(bar)
+                return handle ~= nil and IsFrameHandle(handle) and GetFrameHandleFrame(handle) == bar
+            "#,
+            )
+            .unwrap();
+        assert!(ok);
+    }
     #[test]
     fn frame_handle_proxy_identity_caching_and_unwrapping() {
         let s = UiScript::with_target(UiTarget::Wrath335).unwrap();

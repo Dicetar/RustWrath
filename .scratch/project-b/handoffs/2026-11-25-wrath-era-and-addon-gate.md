@@ -297,5 +297,26 @@ this branch: load **48/49** (strict **46/49**), session **47/49**, drew **19/49*
 **17/49**. The two failures remain GatherMate2 (TOC `11508,20505,50503`) and Bartender4
 (`4.4.2`, MoP secure handle). Log: `F:/AI/tmp/opencode/wrath-corpus-survey-26.txt`, roster
 `wrath-corpus-status-26.txt`. The harness also seats `gtCombatRatings.dbc` now, so
-`GetCombatRatingBonus` answers instead of reporting its unsupported-native warning; the only
-49-addon warnings left are the two arena-season states the server would have to project.
+`GetCombatRatingBonus` answers instead of reporting its unsupported-native warning. The two
+arena-season warnings were addressed below.
+
+### World-state projection and arena seasons (2026-11-27)
+
+`WorldStates` already carried the server's `SMSG_INIT_WORLD_STATES`/`SMSG_UPDATE_WORLD_STATE`
+pairs, and the `WorldStateUI.dbc` readout already fed the resolved rows. The raw table was not
+in the VM, so `GetCurrentArenaSeason`/`GetPreviousArenaSeason` (`0x5A2A40`/`0x5A2A70`) reported
+unsupported and answered 0 on every addon. Added:
+
+- `UiScript::set_world_state_values(pairs)`, stored in `WorldStateUiState::values`.
+- `feed_world_state_ui` now pushes the raw pairs on each world-state generation, even when
+  `WorldStateUI.dbc` has no catalog, so the arena getters do not depend on the readout.
+- the two getters read world states 3191 and 3901; a miss is the reference's `GetWorldState` 0,
+  not an unsupported-native warning.
+- a focused regression test for a frame whose addon replaced its metatable (`Bar_MT`-style):
+  the wrapper's `[0]` identity still reaches `GetFrameHandle`.
+
+The 49-addon warning pair is gone from the corpus report; the remaining 49-addon warning is the
+deliberately disabled voice-chat subsystem (`VoiceChat_Animate`). Verified: `benilla-ui --lib`
+3,572 passed; `cargo check -p benilla-client --all-targets`; clippy clean; corpus still 47/49.
+The local `benilla-app` `world_state` suite's 9 failures are the pre-existing test-UI/donor-data
+ones (`AUTOCOMPLETE_LIST`, the real shipped table), not this change.

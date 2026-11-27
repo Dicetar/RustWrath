@@ -1263,16 +1263,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(())
         })?,
     )?;
+    // `GetPreviousArenaSeason` (`0x5A2A70`): `GetWorldState(3901)`, a miss 0.
     lua.globals().set(
         "GetPreviousArenaSeason",
         lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .record_unsupported_native_once(
-                    "GetPreviousArenaSeason",
-                    "world state 3901 is not projected from the server session",
-                );
-            Ok(0)
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(i64::from(
+                model.worldstate.values.get(&3901).copied().unwrap_or(0),
+            ))
         })?,
     )?;
     lua.globals().set(
@@ -1389,16 +1387,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(false)
         })?,
     )?;
+    // `GetCurrentArenaSeason` (`0x5A2A40`): `GetWorldState(3191)`, a miss 0.
     lua.globals().set(
         "GetCurrentArenaSeason",
         lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .record_unsupported_native_once(
-                    "GetCurrentArenaSeason",
-                    "no arena season state is projected from the server session",
-                );
-            Ok(0)
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(i64::from(
+                model.worldstate.values.get(&3191).copied().unwrap_or(0),
+            ))
         })?,
     )?;
     lua.globals().set(
@@ -5515,7 +5511,17 @@ mod tests {
             1
         );
         assert!(warns.iter().any(|w| w.contains("CanShowAchievementUI")));
-        assert!(warns.iter().any(|w| w.contains("GetCurrentArenaSeason")));
+    }
+
+    /// The arena-season getters are the runtime's world states 3191/3901; a miss is 0.
+    #[test]
+    fn arena_seasons_read_world_states() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_world_state_values(vec![(3191, 8), (3901, 7)]);
+        assert_eq!(s.eval::<i64>("return GetCurrentArenaSeason()").unwrap(), 8);
+        assert_eq!(s.eval::<i64>("return GetPreviousArenaSeason()").unwrap(), 7);
+        s.set_world_state_values(Vec::new());
+        assert_eq!(s.eval::<i64>("return GetCurrentArenaSeason()").unwrap(), 0);
     }
 
     #[test]

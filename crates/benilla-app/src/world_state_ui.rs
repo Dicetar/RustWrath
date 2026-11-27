@@ -148,7 +148,7 @@ fn feed_world_state_ui(
 ) {
     let defense_channel = vm.own().defense_channel;
     vm.run(|script| {
-        let (Some(script), Some(catalog)) = (script, catalog) else {
+        let Some(script) = script else {
             return;
         };
         let key = (states.generation(), defense_channel);
@@ -156,7 +156,12 @@ fn feed_world_state_ui(
             return;
         }
         *last.get(script) = Some(key);
-        script.set_world_state_ui(build(&catalog.0, &states, defense_channel));
+        // The arena-season getters read the raw table; they must update even when the
+        // `WorldStateUI.dbc` readout has no catalog.
+        script.set_world_state_values(states.pairs().collect());
+        if let Some(catalog) = catalog {
+            script.set_world_state_ui(build(&catalog.0, &states, defense_channel));
+        }
     })
 }
 

@@ -33,6 +33,9 @@ pub struct WorldStateUiView {
 #[derive(Clone, Default)]
 pub(crate) struct WorldStateUiState {
     pub(crate) rows: Vec<WorldStateUiView>,
+    /// The raw `SMSG_INIT_WORLD_STATES`/`SMSG_UPDATE_WORLD_STATE` table, keyed and valued by the
+    /// wire dwords; the arena-season getters read keys 3191 and 3901, and a miss is 0.
+    pub(crate) values: std::collections::HashMap<u32, i32>,
 }
 
 impl super::UiScript {
@@ -47,6 +50,16 @@ impl super::UiScript {
             model
                 .pending_events
                 .push(("UPDATE_WORLD_STATES".to_string(), Vec::new()));
+        }
+    }
+
+    /// Replace the raw world-state table the arena-season getters and `$<n>w` tokens read. The
+    /// UI readout rows are separate; the same feed updates both.
+    pub fn set_world_state_values(&mut self, pairs: Vec<(u32, i32)>) {
+        let mut model = self.model_mut();
+        let values: std::collections::HashMap<u32, i32> = pairs.into_iter().collect();
+        if model.worldstate.values != values {
+            model.worldstate.values = values;
         }
     }
 }
