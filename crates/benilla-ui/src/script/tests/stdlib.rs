@@ -297,6 +297,24 @@ fn debugstack_frames_end_in_newline_and_count1_does_not_clamp() {
     assert_eq!(lines[1], "...", "the marker is its own complete line");
 }
 
+#[test]
+fn debugstack_clips_long_utf8_chunk_names_by_bytes() {
+    let name = format!("@{}", "é".repeat(30));
+    let s = script();
+    s.run_chunk_named(
+        b"function BenillaProbeUtf8() return debugstack(1, 1, 0) end",
+        &name,
+    )
+    .unwrap();
+    let trace: String = s.eval("return BenillaProbeUtf8()").unwrap();
+    assert!(trace.starts_with("..."), "long names are elided: {trace:?}");
+    assert_eq!(
+        trace.matches('é').count(),
+        26,
+        "the 52-byte tail is kept: {trace:?}"
+    );
+}
+
 /// An addon chunk is named as the reference names it, `@Interface\AddOns\<folder>\<file>`:
 /// `FuBarPlugin-2.0.lua:752` finds its folder with a greedy `"\\AddOns\\(.*)\\"`, which captures
 /// up to the last backslash, so the file must be in the name. The test bounds the capture at the

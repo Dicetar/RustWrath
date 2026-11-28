@@ -27,6 +27,37 @@ use bevy::tasks::IoTaskPool;
 
 use crate::ui_script::UiFeed;
 
+/// Reserves a unique path before encoding, so concurrent writers cannot overwrite a shot.
+fn reserve_screenshot_path(
+    preferred: &std::path::Path,
+) -> std::io::Result<(std::path::PathBuf, std::fs::File)> {
+    let stem = preferred
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| std::io::Error::other("screenshot path has no UTF-8 stem"))?;
+    let extension = preferred
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("png");
+    let mut suffix = 1u32;
+    loop {
+        let path = if suffix == 1 {
+            preferred.to_path_buf()
+        } else {
+            preferred.with_file_name(format!("{stem}_{suffix}.{}", extension))
+        };
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => suffix += 1,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// The reference's file stem.
 const STEM: &str = "WoWScrnShot";
 
@@ -126,7 +157,7 @@ fn write_capture(captured: On<ScreenshotCaptured>, mut state: ResMut<ScreenshotS
         ));
         return;
     };
-    let path = dir.join(state.next_name(benilla_ui::civil::unix_seconds()));
+    let preferred = dir.join(state.next_name(benilla_ui::civil::unix_seconds()));
 
     // Drop alpha: on an HDR target it carries brightness, not opacity.
     let dynamic = match captured.image.clone().try_into_dynamic() {
@@ -143,13 +174,17 @@ fn write_capture(captured: On<ScreenshotCaptured>, mut state: ResMut<ScreenshotS
     IoTaskPool::get()
         .spawn(async move {
             let outcome = std::fs::create_dir_all(&dir)
-                .and_then(|()| {
-                    dynamic
-                        .save_with_format(&path, image::ImageFormat::Png)
-                        .map_err(std::io::Error::other)
+                .and_then(|()| reserve_screenshot_path(&preferred))
+                .and_then(|(path, mut file)| {
+                    match dynamic.write_to(&mut file, image::ImageFormat::Png) {
+                        Ok(()) => Ok(Outcome::Saved(path)),
+                        Err(error) => {
+                            let _ = std::fs::remove_file(path);
+                            Err(std::io::Error::other(error))
+                        }
+                    }
                 })
-                .map(|()| Outcome::Saved(path.clone()))
-                .unwrap_or_else(|e| Outcome::Failed(format!("{}: {e}", path.display())));
+                .unwrap_or_else(|e| Outcome::Failed(format!("{}: {e}", preferred.display())));
             let _ = tx.send(outcome);
         })
         .detach();
@@ -201,6 +236,25 @@ mod tests {
     use super::*;
     use crate::local_state::test_env::{EnvGuard, ENV_LOCK};
     use benilla_ui::script::UiScript;
+
+    // `tempfile` is optional, behind `dev`; the player-tests job builds without it.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_taken_screenshot_name_gets_the_next_free_suffix() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let preferred = dir.path().join("WoWScrnShot_082126_134507.png");
+        std::fs::write(&preferred, b"original").unwrap();
+
+        let (path, mut file) = reserve_screenshot_path(&preferred).unwrap();
+        file.write_all(b"replacement").unwrap();
+        drop(file);
+
+        assert_eq!(path, dir.path().join("WoWScrnShot_082126_134507_2.png"));
+        assert_eq!(std::fs::read(&preferred).unwrap(), b"original");
+        assert_eq!(std::fs::read(path).unwrap(), b"replacement");
+    }
 
     #[test]
     fn names_follow_the_reference_and_never_collide() {
