@@ -20,12 +20,27 @@ param(
     [switch]$StockUi,
     # Whole-client live code (ADR-0002): dx builds the dev client with `live_code` and patches
     # every saved source edit into it. Runs in this window; close the game or Ctrl+C to stop.
-    [switch]$LiveCode
+    [switch]$LiveCode,
+    # Asset patch chain: wm-hd (the owner's live profile) or base (stock 3.3.5a enUS archives).
+    # Last so existing positional callers keep their parameter order.
+    [string]$AssetProfile = 'wm-hd'
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $userRoot = if ([string]::IsNullOrWhiteSpace($ConfigRoot)) { $repo } else { [IO.Path]::GetFullPath($ConfigRoot) }
 $releaseContext = $null
+$packageVersion = 'unpackaged'
+$packageManifestSha256 = 'none'
+
+if ($AssetProfile -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') {
+    throw "Invalid asset profile name '$AssetProfile'. Use a profile from docs\profiles, for example base or wm-hd."
+}
+$assetManifestPath = Join-Path $repo ('docs\profiles\' + $AssetProfile + '.mpqlist')
+if (!(Test-Path -LiteralPath $assetManifestPath -PathType Leaf)) {
+    throw "Asset profile '$AssetProfile' has no manifest at $assetManifestPath. The candidate must ship docs\profiles\$AssetProfile.mpqlist."
+}
+$assetManifestPath = (Resolve-Path -LiteralPath $assetManifestPath).Path
+$assetManifestSha256 = (Get-FileHash -LiteralPath $assetManifestPath -Algorithm SHA256).Hash
 
 # The developer path is the default. A versioned release set is opt-in and additive.
 $releaseRequested = $UseReleaseSet.IsPresent -or ![string]::IsNullOrWhiteSpace($ReleaseRoot)
@@ -92,6 +107,11 @@ if ($releaseRequested) {
 
 $isRelease = Test-Path -LiteralPath (Join-Path $repo 'release-manifest.json') -PathType Leaf
 if ($isRelease -and $releaseRequested) { throw 'Choose an assembled release or a release set, not both' }
+if (!$isRelease -and
+    !(Test-Path -LiteralPath (Join-Path $repo 'Cargo.toml') -PathType Leaf) -and
+    (Test-Path -LiteralPath (Join-Path $repo 'tools\launch-client.ps1') -PathType Leaf)) {
+    throw 'Incomplete release candidate: release-manifest.json is missing. Re-copy the candidate; do not launch this directory.'
+}
 if ($isRelease) { $binary = Join-Path $repo 'bin\benilla.exe' }
 if ($LiveCode -and ($isRelease -or $releaseRequested)) {
     throw 'Live code patches a source build; it cannot run an assembled release or a release set.'
@@ -131,6 +151,70 @@ function Test-OwnBuildOrClient([string]$Root) {
         }
     }
     return $false
+}
+
+# The Rust profile loader refuses to boot when any archive named by the selected manifest is
+# absent or owner-disabled. Check the selected game data before starting the client, so a second
+# machine reports the exact archive name instead of a generic no-install failure.
+function Assert-DataProfile([string]$DataRoot, [string]$ManifestPath, [string]$Profile) {
+    if (!(Test-Path -LiteralPath $DataRoot -PathType Container)) {
+        throw "Game data folder missing: $DataRoot"
+    }
+    $missing = New-Object System.Collections.Generic.List[string]
+    $disabled = New-Object System.Collections.Generic.List[string]
+    $count = 0
+    $lineNumber = 0
+    foreach ($raw in Get-Content -LiteralPath $ManifestPath) {
+        $lineNumber++
+        $line = $raw.Trim()
+        if (!$line -or $line.StartsWith('#')) { continue }
+        if ($line -notmatch '^(stock|wm)\s+(.+)$') {
+            throw "Asset manifest $ManifestPath line $lineNumber is not 'stock <name.mpq>' or 'wm <name.mpq>'."
+        }
+        $name = $Matches[2].Trim()
+        if (!$name.ToLowerInvariant().EndsWith('.mpq')) {
+            throw "Asset manifest $ManifestPath line $lineNumber names a non-.mpq archive: $name"
+        }
+        $count++
+        $archive = Join-Path $DataRoot ($name -replace '/', '\')
+        if (!(Test-Path -LiteralPath $archive -PathType Leaf)) {
+            if (Test-Path -LiteralPath ($archive + '.disabled') -PathType Leaf) {
+                [void]$disabled.Add($name)
+            } else {
+                [void]$missing.Add($name)
+            }
+        }
+    }
+    if ($count -eq 0) { throw "Asset manifest $ManifestPath lists no archives." }
+    if ($missing.Count -gt 0 -or $disabled.Count -gt 0) {
+        $lines = New-Object System.Collections.Generic.List[string]
+        [void]$lines.Add("The selected game data does not match asset profile '$Profile'.")
+        [void]$lines.Add("Manifest: $ManifestPath")
+        [void]$lines.Add("Data: $DataRoot")
+        if ($missing.Count -gt 0) {
+            $shown = @($missing | Select-Object -First 12)
+            $suffix = ''
+            if ($missing.Count -gt $shown.Count) { $suffix = " (+$($missing.Count - $shown.Count) more)" }
+            [void]$lines.Add('Missing: ' + ($shown -join ', ') + $suffix)
+        }
+        if ($disabled.Count -gt 0) {
+            $shown = @($disabled | Select-Object -First 12)
+            $suffix = ''
+            if ($disabled.Count -gt $shown.Count) { $suffix = " (+$($disabled.Count - $shown.Count) more)" }
+            [void]$lines.Add('Disabled on disk as *.mpq.disabled: ' + ($shown -join ', ') + $suffix)
+        }
+        if (Test-Path -LiteralPath (Join-Path $DataRoot 'Data\common.mpq') -PathType Leaf) {
+            [void]$lines.Add("The selected folder contains a Data subfolder; pass that folder instead: $(Join-Path $DataRoot 'Data')")
+        }
+        if ($Profile -ne 'base') {
+            [void]$lines.Add('Use the Data folder that contains these archives, or select -AssetProfile base for a stock 3.3.5a enUS install.')
+        } else {
+            [void]$lines.Add('Use a complete stock 3.3.5a enUS Data folder; owner-disabled archives stay disabled and are not renamed.')
+        }
+        Write-Host ($lines -join [Environment]::NewLine) -ForegroundColor Red
+        throw "Game data does not match asset profile '$Profile'. See the missing archive list above."
+    }
+    return $count
 }
 if ($BuildLatest -and !$LiveCode -and !$isRelease -and !$releaseRequested) {
     if (Test-OwnBuildOrClient $repo) {
@@ -218,17 +302,20 @@ if (Test-OwnBuildOrClient $repo) {
 }
 if ($isRelease -and !$PSBoundParameters.ContainsKey('DataPath')) {
     # Release users choose their own existing game data; never assume the developer's path.
-    $DataPath = Read-Host 'Path to your existing WoW 3.3.5a Data folder'
+    $DataPath = Read-Host 'Path to your existing WoW 3.3.5a Data folder (the folder containing common.mpq)'
 }
+if ([string]::IsNullOrWhiteSpace($DataPath)) { throw 'No game data folder was supplied.' }
+$DataPath = $DataPath.Trim().Trim([char[]]@('"', "'"))
 if (!(Test-Path -LiteralPath $DataPath -PathType Container)) { throw "Game data folder missing: $DataPath" }
 $DataPath = (Resolve-Path -LiteralPath $DataPath).Path
 
 if ($isRelease) {
-    $manifest = Get-Content -LiteralPath (Join-Path $repo 'release-manifest.json') -Raw | ConvertFrom-Json
+    $packageManifestPath = Join-Path $repo 'release-manifest.json'
+    $manifest = Get-Content -LiteralPath $packageManifestPath -Raw | ConvertFrom-Json
     if ($manifest.format -ne 1 -or !$manifest.files) { throw 'Unsupported or empty release manifest' }
     foreach ($entry in $manifest.files) {
         # Assembly records a fixed list. Reject traversal and alternate data streams before reading.
-        if ($entry.path -notin @('bin/benilla.exe', 'tools/launch-client.ps1', 'tools/collect-diagnostics.ps1', 'docs/profiles/wm-hd.mpqlist', 'Launch RustWrath.cmd')) {
+        if ($entry.path -notin @('bin/benilla.exe', 'tools/launch-client.ps1', 'tools/collect-diagnostics.ps1', 'docs/profiles/base.mpqlist', 'docs/profiles/wm-hd.mpqlist', 'Launch RustWrath.cmd')) {
             throw "Unexpected release file: $($entry.path)"
         }
         $file = Join-Path $repo $entry.path
@@ -237,9 +324,14 @@ if ($isRelease) {
             throw "Release file missing or changed: $($entry.path)"
         }
     }
-    if (@($manifest.files).Count -ne 5 -or @($manifest.files.path | Select-Object -Unique).Count -ne 5) {
+    if (@($manifest.files).Count -ne 6 -or @($manifest.files.path | Select-Object -Unique).Count -ne 6) {
         throw 'Release manifest does not enumerate the required files exactly once'
     }
+    if ([string]::IsNullOrWhiteSpace([string]$manifest.version)) {
+        throw 'Release manifest has no version label'
+    }
+    $packageVersion = [string]$manifest.version
+    $packageManifestSha256 = (Get-FileHash -LiteralPath $packageManifestPath -Algorithm SHA256).Hash
     if (!$StateHome) {
         if (!$env:LOCALAPPDATA) { throw 'LOCALAPPDATA is unavailable; pass -StateHome explicitly' }
         $StateHome = Join-Path $env:LOCALAPPDATA 'RustWrath\benilla-config'
@@ -289,38 +381,56 @@ $env:WOW_DATA = $DataPath
 if ($StockUi) { $env:WOW_STOCK_UI = '1' }
 $env:WOW_GM = 'off'
 $env:WOW_HOTPATCH_MOVEMENT = if ($WithMovementHotpatch) { '1' } else { '0' }
-$env:WM_ASSET_MANIFEST = Join-Path $repo 'docs\profiles\wm-hd.mpqlist'
-$env:WM_ASSET_PROFILE = 'wm-hd'
+$env:WM_ASSET_MANIFEST = $assetManifestPath
+$env:WM_ASSET_PROFILE = $AssetProfile
 if ($WithMulticlass) {
     $env:WOW_WRATH_MULTICLASS = '1'
     $env:WOW_MULTICLASS_GLUE = (Resolve-Path -LiteralPath $MulticlassGluePath).Path
 }
 
-# Set addons path if present in game install
+# Addon mode is explicit in the launch record. An explicit WOW_ADDONS_PATH is authoritative in
+# the client; without it, Wrath discovery still looks at the install and local state.
+$addonMode = 'unknown'
+$addonsPath = ''
 if ($WithAddons) {
     $gameRoot = Split-Path -Parent $DataPath
     $addonsFolder = Join-Path $gameRoot 'Interface\AddOns'
-    if (Test-Path -LiteralPath $addonsFolder) {
-        $env:WOW_ADDONS_PATH = $addonsFolder
+    if (Test-Path -LiteralPath $addonsFolder -PathType Container) {
+        $addonsPath = (Resolve-Path -LiteralPath $addonsFolder).Path
+        $env:WOW_ADDONS_PATH = $addonsPath
+        $addonMode = 'installed-explicit'
+    } else {
+        $addonMode = 'discovery-install-addons-missing'
+        Write-Warning "No AddOns folder at $addonsFolder; WOW_ADDONS_PATH is not set and the client will use its own addon discovery."
     }
 }
 
 # This workstation's read-only shadow hides loose third-party addons. It shares installed
 # archives through links; it is not a second copy of the game. Explicit addon launches use data.
 $shadow = Join-Path $repo '.scratch\project-b\verification\2026-10-28-oc-alpha\shadow-data'
-if (!$WithAddons -and (Test-Path -LiteralPath $shadow)) { $env:WOW_DATA = $shadow }
+if (!$WithAddons) {
+    if (Test-Path -LiteralPath $shadow -PathType Container) {
+        $env:WOW_DATA = (Resolve-Path -LiteralPath $shadow).Path
+        $addonMode = 'shadow-data'
+    } else {
+        $addonMode = 'discovery-no-explicit-path'
+        Write-Warning "No shadow data root at $shadow; the launch uses $DataPath without an explicit WOW_ADDONS_PATH. The client may still discover addons from the install or local state."
+    }
+}
+$effectiveData = $env:WOW_DATA
+$manifestArchiveCount = Assert-DataProfile -DataRoot $effectiveData -ManifestPath $assetManifestPath -Profile $AssetProfile
 
-# Data, configuration and addons always come from user-owned locations. A release version
-# directory is immutable and is never used as a working directory or data root.
+# Data, configuration and addons always come from user-owned locations. An assembled release
+# version directory is immutable: run the client from the state root, never from the package.
 $logBase = if ($releaseContext) { $userRoot } else { $repo }
-$workingDirectory = if ($releaseContext) { $userRoot } else { $repo }
+$stateRoot = if ($env:BENILLA_HOME) { $env:BENILLA_HOME } else { Join-Path $repo 'benilla-config' }
+$workingDirectory = if ($releaseContext) { $userRoot } elseif ($isRelease) { $stateRoot } else { $repo }
+$logs = Join-Path $logBase 'benilla-config\Logs\Launcher'
+if ($env:BENILLA_HOME) { $logs = Join-Path $stateRoot 'Logs\Launcher' }
+New-Item -ItemType Directory -Path $logs -Force | Out-Null
 if (!(Test-Path -LiteralPath $workingDirectory -PathType Container)) {
     throw "User configuration root is missing: $workingDirectory"
 }
-$logs = Join-Path $logBase 'benilla-config\Logs\Launcher'
-$stateRoot = if ($env:BENILLA_HOME) { $env:BENILLA_HOME } else { Join-Path $repo 'benilla-config' }
-if ($env:BENILLA_HOME) { $logs = Join-Path $stateRoot 'Logs\Launcher' }
-New-Item -ItemType Directory -Path $logs -Force | Out-Null
 # Retain three launch generations, including the one about to start.
 $previousRuns = @(Get-ChildItem -LiteralPath $logs -Directory | Sort-Object Name -Descending)
 foreach ($old in @($previousRuns | Select-Object -Skip 2)) {
@@ -395,9 +505,41 @@ if ($LiveCode) {
 $client = Start-Process -FilePath $binary -WorkingDirectory $workingDirectory -PassThru `
     -RedirectStandardOutput (Join-Path $run 'stdout.log') `
     -RedirectStandardError (Join-Path $run 'stderr.log')
+if ($releaseContext) {
+    $packageVersion = $releaseContext.VersionId
+    $packageManifestSha256 = $releaseContext.ManifestSha256
+}
+$launchMode = if ($releaseContext) { 'release-set' } elseif ($isRelease) { 'assembled-release' } else { 'checkout' }
+$uiMode = if ($StockUi) { 'stock' } else { 'rustwrath-layer' }
+$worldRecord = if ($WorldServer) { $WorldServer } else { 'realm-advertised' }
+$worldOverride = if ($WorldServer) { '1' } else { '0' }
+$addonsRecord = if ($addonsPath) { $addonsPath } else { 'none' }
 $launchLines = @(
+    "mode=$launchMode",
+    "started_utc=$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))",
     "pid=$($client.Id)",
-    "binary_sha256=$((Get-FileHash -LiteralPath $binary).Hash)"
+    "candidate_dir=$repo",
+    "binary=$binary",
+    "binary_sha256=$((Get-FileHash -LiteralPath $binary).Hash)",
+    "package_version=$packageVersion",
+    "package_manifest_sha256=$packageManifestSha256",
+    "asset_profile=$AssetProfile",
+    "asset_manifest=$assetManifestPath",
+    "asset_manifest_sha256=$assetManifestSha256",
+    "data_input=$DataPath",
+    "data_effective=$effectiveData",
+    "manifest_archives=$manifestArchiveCount",
+    "addon_mode=$addonMode",
+    "addons_path=$addonsRecord",
+    "ui_mode=$uiMode",
+    "movement_hotpatch=$(if ($WithMovementHotpatch) { '1' } else { '0' })",
+    "multiclass=$(if ($WithMulticlass) { '1' } else { '0' })",
+    "auth_server=$AuthServer",
+    "world_server=$worldRecord",
+    "world_override=$worldOverride",
+    "state_home=$stateRoot",
+    "logs=$logs",
+    "run_dir=$run"
 )
 if ($releaseContext) {
     $launchLines += @(
