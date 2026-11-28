@@ -1,10 +1,10 @@
 # P0 Windows private-alpha packaging and first launch
 
-Status: in progress
+Status: ready to merge
 Owner: OpenCode / DeepSeek V4.1 Flash
 Branch: fix/windows-alpha-launch
 Issue: none
-Next: commit and push the final source once; read the one CI run and record it here
+Next: read the final CI run; second-machine launch remains owner/tester work
 
 Field: P0 Windows packaging and first launch (F17 / W1), manual distribution only.
 Scope: `Launch RustWrath.cmd`, `tools/launch-client.ps1`,
@@ -71,6 +71,7 @@ Release-set launches retain their existing release/selector/health fields.
 - Read-only check of this workstation's HD Data folder: `base` missing=0, `wm-hd` missing=0;
   the sibling `Interface\AddOns` exists with 73 addon directories.
 - No Cargo build, client launch, test suite, server action or second-machine access.
+- CI: not run yet. The branch's single code push is the final push for this task.
 
 ## Not established
 
