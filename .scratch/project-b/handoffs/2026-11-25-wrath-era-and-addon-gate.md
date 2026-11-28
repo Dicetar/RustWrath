@@ -320,3 +320,73 @@ deliberately disabled voice-chat subsystem (`VoiceChat_Animate`). Verified: `ben
 3,572 passed; `cargo check -p benilla-client --all-targets`; clippy clean; corpus still 47/49.
 The local `benilla-app` `world_state` suite's 9 failures are the pre-existing test-UI/donor-data
 ones (`AUTOCOMPLETE_LIST`, the real shipped table), not this change.
+
+## Nightly 2026-11-28: the achievement DBCs and the read-only getters
+
+Branch `wrath/achievements-2026-11-28`, from `main` `bc8caec7c`. The 3.3.5a achievement
+subsystem's client half starts here: the three tables the client owns, and every Lua getter
+`AchievementInfo_Scripts.cpp` registers. The server-owned half (what a character earned, its
+criteria counters, the tracker and the comparison target) is state with setters and no packet
+feed yet.
+
+- **benilla-formats loads the tables.** `load_achievement_catalog` parses
+  `Achievement_Category.dbc` (20 columns), `Achievement.dbc` (62) and
+  `Achievement_Criteria.dbc` (31), the 12340 layouts, including the sixteen-locale string
+  blocks and their flags dwords. Icons resolve through `SpellIcon.dbc`; a malformed table is an
+  error, never a partial catalog. `AchievementCatalog` keeps file order and indexes by id and
+  by achievement for the criteria.
+- **benilla-ui answers the getters.** `script::achievements` holds the catalog and the
+  session state (earned dates and order, criteria counters, recent criteria, tracker, completed
+  quests, inspected sets) and installs:
+  - the category tree: `GetCategoryList`, `GetStatisticsCategoryList`, `GetCategoryInfo`,
+    `GetCategoryNumAchievements` (statistics rows excluded, hidden rows skipped, `0x800` only
+    once earned, supersedes chains collapsed, `-1`/`-2` aggregate with `includeAll`);
+  - the table reads: `GetAchievementInfo` both as `(id)` and `(category, index)` (earned
+    list first, then the tables, as the reference enumerates), `GetAchievementCategory`,
+    `GetAchievementNumRewards`, `GetAchievementReward`, `GetAchievementNumCriteria`,
+    `GetAchievementCriteriaInfo` (both forms), `GetAchievementInfoFromCriteria`,
+    `GetPreviousAchievement`, `GetNextAchievement`, `GetAchievementLink`;
+  - the totals: `GetNumAchievements`, `GetNumCompletedAchievements`,
+    `GetTotalAchievementPoints`, `HasCompletedAnyAchievement`, `CanShowAchievementUI`;
+  - statistics: `GetStatistic`/`GetComparisonStatistic`, `GetLatestCompletedAchievements`,
+    `GetLatestUpdatedStats`, `QueryQuestsCompleted`, `GetQuestsCompleted`;
+  - the tracker: `GetTrackedAchievements`, `GetNumTrackedAchievements`,
+    `IsTrackedAchievement`, `AddTrackedAchievement` (unknown id raises, as the reference),
+    `RemoveTrackedAchievement`;
+  - the comparison surface: `SetAchievementComparisonUnit`, `ClearAchievementComparisonUnit`,
+    `GetAchievementComparisonInfo`, `GetComparisonCategoryNumAchievements`,
+    `GetNumComparisonCompletedAchievements`, `GetComparisonAchievementPoints`,
+    `GetLatestCompletedComparisonAchievements`, `GetLatestUpdatedComparisonStats`; the
+    inspected sets are state, so a target without a reply is honestly empty.
+  The three unsupported-native stubs these replace (`CanShowAchievementUI`,
+  `HasCompletedAnyAchievement`, the tracked pair) are gone from `wrath_natives.rs`.
+- **The app seats the catalog.** `crates/benilla-app/src/achievements.rs` projects the DBC rows
+  into the script views once at startup and pushes the `Arc` into each new VM; the harness does
+  the same per survey process, so the corpus VMs answer the getters.
+- **Known approximations**, all named in the code: `GetAchievementLink`'s four criteria
+  bitfields are zero until the criteria packets; `GetStatistic`'s date, money and per-day
+  renderings are the decimal form; the reference's synthetic first criteria on `0xB0`
+  achievements is not synthesized (the count adds the one); faction filtering waits for the
+  player's PvP faction; comparison totals are computed from the inspected sets the feed will
+  fill.
+
+### Verification
+
+- `benilla-formats --lib achievements`: 2 passed (the real tables load; the indexes).
+- `benilla-ui --lib`: 3,577 passed, 6 ignored (4 new achievement tests).
+- `benilla-app --lib achievements`: the projection keeps the getter fields.
+- Corpus re-check with the catalog seated, `WOW_WRATH=1`, digest `a8adc59c`:
+  load **48/49** (strict **46/49**), session **47/49**, drew **19/49**, survived use **17/49**,
+  identical to the 2026-11-27 baseline (log
+  `F:/AI/tmp/opencode/wrath-corpus-survey-31.txt`). None of the 49 addons touches the
+  achievement API at load, so this slice's receiver-side proof is the stock UI and the unit
+  tests, not the corpus.
+- No client or server was launched.
+
+### Still open on this subsystem
+
+- `SMSG_ACHIEVEMENT_EARNED`, the criteria-update family and the inspect replies into the
+  state setters; then the criteria bitfields in `GetAchievementLink` and the comparison tab
+  become visible.
+- `Blizzard_AchievementUI` is MPQ-only in the stock install (loose folder holds only `.pub`),
+  so the harness cannot register it; visible frame verification needs the owner's client.

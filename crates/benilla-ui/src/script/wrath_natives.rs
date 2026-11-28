@@ -5477,7 +5477,9 @@ mod tests {
                 .count(),
             1
         );
-        assert!(warns.iter().any(|w| w.contains("CanShowAchievementUI")));
+        // The achievement getters are answered from the DBC catalog now, so a VM without
+        // one is the honest false, not an unsupported-native warning.
+        assert!(!warns.iter().any(|w| w.contains("CanShowAchievementUI")));
     }
 
     /// The arena-season getters are the runtime's world states 3191/3901; a miss is 0.

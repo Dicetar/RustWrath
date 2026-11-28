@@ -35,6 +35,15 @@ fn push_catalog(s: &mut UiScript) {
                 ui_order: 1,
             },
         ),
+        (
+            7,
+            AchievementCategoryView {
+                id: 7,
+                parent: 1,
+                name: "Combat".into(),
+                ui_order: 2,
+            },
+        ),
     ];
     let achievements = vec![
         (
@@ -278,5 +287,134 @@ fn criteria_answer_the_tuple_and_the_sharing_achievement() {
         )
         .unwrap(),
         (6, "Level 10".into(), 10, "Reach level 10.".into())
+    );
+}
+#[test]
+fn statistics_tracker_quests_and_comparison_answer_the_registered_surface() {
+    let mut s = wrath_script();
+    push_catalog(&mut s);
+
+    assert_eq!(
+        s.eval::<(i64, i64)>("local t = GetStatisticsCategoryList() return t[1], t[2] or 0")
+            .unwrap(),
+        (7, 0),
+        "the statistics list is the category-1 subtree, never the top-level General"
+    );
+    assert_eq!(
+        s.eval::<String>("return GetStatistic(6)").unwrap(),
+        "0",
+        "no counter and no completion reads as the zero form"
+    );
+    s.set_achievement_criteria(100, 4);
+    assert_eq!(s.eval::<String>("return GetStatistic(6)").unwrap(), "4");
+
+    assert!(
+        s.eval::<bool>("return GetLatestCompletedAchievements() == nil")
+            .unwrap(),
+        "the first value of an empty vararg list is nil"
+    );
+    s.set_achievement_completed(6, Some((0, 0, 2010)));
+    assert_eq!(
+        s.eval::<String>("return GetStatistic(6)").unwrap(),
+        "4",
+        "a completed row still shows its counter while one is set"
+    );
+    s.set_achievement_completed(9, Some((0, 0, 2010)));
+    assert_eq!(
+        s.eval::<(i64, i64)>("local a, b = GetLatestCompletedAchievements() return a, b")
+            .unwrap(),
+        (6, 9)
+    );
+    s.set_achievement_recent_criteria(vec![100]);
+    assert_eq!(
+        s.eval::<i64>("return (GetLatestUpdatedStats())").unwrap(),
+        100
+    );
+
+    s.eval::<()>("AddTrackedAchievement(6)").unwrap();
+    assert!(s.eval::<bool>("return IsTrackedAchievement(6)").unwrap());
+    assert_eq!(
+        s.eval::<(i64, i64)>("return GetNumTrackedAchievements(), (GetTrackedAchievements())")
+            .unwrap(),
+        (1, 6)
+    );
+    s.eval::<()>("RemoveTrackedAchievement(6)").unwrap();
+    assert!(!s.eval::<bool>("return IsTrackedAchievement(6)").unwrap());
+    assert!(
+        s.eval::<()>("AddTrackedAchievement(999)").is_err(),
+        "an unknown achievement is a usage error, as the reference raises"
+    );
+
+    s.set_completed_quests(vec![1234]);
+    assert!(
+        s.eval::<bool>("return GetQuestsCompleted()[1234] == true")
+            .unwrap(),
+        "the completed-quest set fills the table"
+    );
+    s.eval::<()>("QueryQuestsCompleted()").unwrap();
+
+    // No comparison target: every comparison getter answers the empty state.
+    assert!(s
+        .eval::<bool>("return GetAchievementComparisonInfo(6) == nil")
+        .unwrap());
+    assert_eq!(
+        s.eval::<i64>("return GetComparisonAchievementPoints()")
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        s.eval::<(i64, i64)>("return GetNumComparisonCompletedAchievements()")
+            .unwrap(),
+        (2, 0),
+        "the total is every real achievement, as the reference counts it; none is inspected"
+    );
+    assert!(s
+        .eval::<bool>("return GetComparisonStatistic(6) == nil")
+        .unwrap());
+    assert_eq!(
+        s.eval::<i64>("return GetComparisonCategoryNumAchievements(92)")
+            .unwrap(),
+        0
+    );
+
+    // With a target and its inspected rows the comparison answers from them.
+    s.set_achievement_inspection_unit(Some(0x42));
+    s.set_achievement_inspection_completed(6, Some((1, 2, 2011)));
+    s.set_achievement_inspection_recent(vec![100]);
+    assert_eq!(
+        s.eval::<(bool, i64, i64, i64, i64)>("return GetAchievementComparisonInfo(6)")
+            .unwrap(),
+        (true, 2, 3, 2011, 0)
+    );
+    assert_eq!(
+        s.eval::<(i64, i64)>("return GetNumComparisonCompletedAchievements()")
+            .unwrap(),
+        (2, 1)
+    );
+    assert_eq!(
+        s.eval::<i64>("return GetComparisonAchievementPoints()")
+            .unwrap(),
+        10
+    );
+    assert_eq!(
+        s.eval::<String>("return GetComparisonStatistic(6)")
+            .unwrap(),
+        "10",
+        "an inspected completion shows the criteria quantity"
+    );
+    assert_eq!(
+        s.eval::<i64>("return GetComparisonCategoryNumAchievements(92)")
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        s.eval::<i64>("return (GetLatestCompletedComparisonAchievements())")
+            .unwrap(),
+        6
+    );
+    assert_eq!(
+        s.eval::<i64>("return (GetLatestUpdatedComparisonStats())")
+            .unwrap(),
+        100
     );
 }
