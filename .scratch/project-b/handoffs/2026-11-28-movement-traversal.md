@@ -65,6 +65,14 @@ Focused cases (4): `updates::tests::a_transport_create_keeps_its_path_clock`,
 `wrath::command_tap_tests::a_teleport_ack_keeps_its_place_among_the_moves`,
 `wrath::command_tap_tests::a_wrath_transport_create_arms_the_shared_tick`.
 
+## CI
+
+- 46152653040 (`60fb1db42`): failed to compile; a `world_generation` tag landed in a nested
+  receipt literal. Fixed by `f5303ff5f`.
+- 46153378662 (`f5303ff5f`): `windows` passed (6873 `benilla-app` tests, both new tap cases);
+  `gates` failed `player-clippy` on one `type_complexity` (the lift tuple). Fixed by a type
+  alias in the commit after it; the run on that commit is the task's result.
+
 ## Coverage
 
 | Area | Production path | Disposition | Play it affects |

@@ -14327,8 +14327,12 @@ fn wrath_apply_world(world: &mut World) {
 /// (`StaticTransport::BuildUpdate` sends fields only, a `MotionTransport` none at all).
 struct WrathTransportSeed {
     progress_ms: u32,
-    lift: Option<(u32, [f32; 3], f32, Option<[f32; 4]>)>,
+    lift: Option<WrathLiftSeed>,
 }
+
+/// A lift's path key and placement: template entry, stationary base (WoW axes), facing and the
+/// path rotation quaternion.
+type WrathLiftSeed = (u32, [f32; 3], f32, Option<[f32; 4]>);
 
 /// The seed of one GameObject create, or `None` for an object that is no transport or whose
 /// create carried no clock. The lift's offsets rotate through `GAMEOBJECT_PARENTROTATION`, which
