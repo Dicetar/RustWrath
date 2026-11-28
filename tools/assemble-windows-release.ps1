@@ -55,6 +55,7 @@ $sources = @(
     @{ path = 'bin/benilla.exe'; source = $binaryPath },
     @{ path = 'tools/launch-client.ps1'; source = (Join-Path $sourceRoot 'tools\launch-client.ps1') },
     @{ path = 'tools/collect-diagnostics.ps1'; source = (Join-Path $sourceRoot 'tools\collect-diagnostics.ps1') },
+    @{ path = 'docs/profiles/base.mpqlist'; source = (Join-Path $sourceRoot 'docs\profiles\base.mpqlist') },
     @{ path = 'docs/profiles/wm-hd.mpqlist'; source = (Join-Path $sourceRoot 'docs\profiles\wm-hd.mpqlist') },
     @{ path = 'Launch RustWrath.cmd'; source = (Join-Path $sourceRoot 'Launch RustWrath.cmd') }
 )
