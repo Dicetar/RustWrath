@@ -4,7 +4,7 @@ Status: ready to merge
 Owner: OpenCode / DeepSeek V4.1 Flash
 Branch: fix/windows-alpha-launch
 Issue: none
-Next: read the final CI run; second-machine launch remains owner/tester work
+Next: CI 46134760484 passed; the integrator can land; a second-machine launch remains owner/tester work
 
 Field: P0 Windows packaging and first launch (F17 / W1), manual distribution only.
 Scope: `Launch RustWrath.cmd`, `tools/launch-client.ps1`,
@@ -71,7 +71,11 @@ Release-set launches retain their existing release/selector/health fields.
 - Read-only check of this workstation's HD Data folder: `base` missing=0, `wm-hd` missing=0;
   the sibling `Interface\AddOns` exists with 73 addon directories.
 - No Cargo build, client launch, test suite, server action or second-machine access.
-- CI: not run yet. The branch's single code push is the final push for this task.
+- CI 46134760484 (push `705bef490`): `gates` 33m1s and `windows` 19m56s both passed.
+  `fmt`, `clippy`, the changed-crate `test-build`/`test`, `doc-links`, `message-catalog`,
+  `reference`, `pass-span-lint`, `player-clippy`, `player-tests` and `live-code-check`
+  all succeeded. The merge brought `benilla-app`/`benilla-ui` changes, whose tests ran. CI does
+  not execute the PowerShell scripts; the static PowerShell 5.1 parse above is their only check.
 
 ## Not established
 
@@ -120,7 +124,7 @@ Every gameplay evidence item should carry these candidate identity fields, copie
 | `mode`, `package_version`, `candidate_dir` | `launch.txt` | Names the exact candidate folder and package label |
 | `binary_sha256` | `launch.txt` | Exact executable; a rebuild changes it |
 | first `benilla build ...` line | `stdout.log` | Version, short commit, date, profile, extended flag |
-| `package_manifest_sha256` | `launch.txt` | Exact file inventory; changes if any packaged file changes |
+| `package_manifest_sha256` | `launch.txt` | Identifies the manifest version/file list; each listed file has its own hash check |
 | `asset_profile`, `asset_manifest_sha256` | `launch.txt` | Archive precedence actually loaded |
 | `data_effective`, `data_input` | `launch.txt` | Which data root was used (redact local paths when sharing) |
 | `addon_mode`, `addons_path` | `launch.txt` | Explicit corpus versus client discovery |
@@ -139,6 +143,6 @@ screenshot.
 
 ## Next step
 
-Commit the changed source, docs and this note, merge `origin/main` once if it moved, push once,
-and read the single CI run. This is a source-only handoff until a second machine runs the
-procedure.
+The branch is pushed (`705bef490`) and CI 46134760484 is green. The integrator can land it.
+The owner then assembles a candidate, distributes it manually, and a second machine runs the
+procedure above. This is a source-only handoff until that launch happens.

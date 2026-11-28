@@ -154,8 +154,8 @@ window; do not put them on the command line.
 
 The launcher records the candidate identity in `launch.txt` in the newest run directory under
 `%LOCALAPPDATA%\RustWrath\benilla-config\Logs\Launcher`. A normal close waits for
-`latest-diagnostics.md` and `latest-tickets.md` in that state root. Copy the run directory and
-both reports before launching again: only three launch generations are retained. If the reports
+`latest-diagnostics.md` and `latest-tickets.md` in that Launcher folder. Copy the run
+directory and both reports before launching again: only three launch generations are retained. If the reports
 are missing, run the collector against the same state root:
 
 ```powershell
