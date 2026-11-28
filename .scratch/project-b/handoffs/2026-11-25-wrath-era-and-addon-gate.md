@@ -382,6 +382,7 @@ feed yet.
   achievement API at load, so this slice's receiver-side proof is the stock UI and the unit
   tests, not the corpus.
 - No client or server was launched.
+- CI `46092937884` green (`windows` and `gates`) on `4c084b5e7`.
 
 ### Still open on this subsystem
 
