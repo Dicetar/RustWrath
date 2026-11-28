@@ -182,20 +182,64 @@ try {
     $activeAfterMissing = Get-ActiveReleaseSet -ReleaseRoot $releaseRoot
     Assert-Equal 'v3' $activeAfterMissing.VersionId 'old selector survives a missing-file activation'
 
+    # Recovery refuses a selector that changed since the caller launched.
+    $wrongVersionMessage = Assert-Throws -Action {
+        Recover-ReleaseSet -ReleaseRoot $releaseRoot -ExpectedVersionId 'v2'
+    } -Name 'recovery refuses a selector version changed since launch'
+    Assert-True ($wrongVersionMessage -match 'changed since launch') 'selector-version refusal names the cause' $wrongVersionMessage
+    $activeAfterWrongVersion = Get-ActiveReleaseSet -ReleaseRoot $releaseRoot
+    Assert-Equal 'v3' $activeAfterWrongVersion.VersionId 'selector-version refusal leaves the selector unchanged'
+
+    $wrongHashMessage = Assert-Throws -Action {
+        Recover-ReleaseSet -ReleaseRoot $releaseRoot -ExpectedManifestSha256 ('0' * 64)
+    } -Name 'recovery refuses a selector manifest changed since launch'
+    Assert-True ($wrongHashMessage -match 'changed since launch') 'selector-manifest refusal names the cause' $wrongHashMessage
+    $activeAfterWrongHash = Get-ActiveReleaseSet -ReleaseRoot $releaseRoot
+    Assert-Equal 'v3' $activeAfterWrongHash.VersionId 'selector-manifest refusal leaves the selector unchanged'
+
     # Recovery to the previous known-good set, then idempotency.
     New-TestBinaryFile -Path (Join-Path $releaseRoot 'versions\v3\benilla.exe') -Bytes ([byte[]](7, 7, 7))
     $brokenActive = Test-ReleaseSet -ReleaseRoot $releaseRoot -VersionId 'v3'
     Assert-True (!$brokenActive.IsValid) 'broken active set fails validation'
-    $recovery = Recover-ReleaseSet -ReleaseRoot $releaseRoot -Reason 'test-startup-failure' -CreatedAtUtc $fixedStamp
+    $recovery = Recover-ReleaseSet -ReleaseRoot $releaseRoot -Reason 'test-startup-failure' -CreatedAtUtc $fixedStamp `
+        -ExpectedVersionId 'v3' -ExpectedManifestSha256 $active3.SelectedManifestSha256
     Assert-True $recovery.Recovered 'recovery restores the previous set'
     Assert-Equal 'v3' $recovery.FromVersionId 'recovery reports the failed version'
     Assert-Equal 'v1' $recovery.ToVersionId 'recovery reports the restored version'
     $activeAfterRecovery = Get-ActiveReleaseSet -ReleaseRoot $releaseRoot
     Assert-Equal 'v1' $activeAfterRecovery.VersionId 'selector now points at v1 after recovery'
     Assert-Equal 'v3' $activeAfterRecovery.RecoveredFromVersionId 'recovered selector records the failed version'
-    $recoveryAgain = Recover-ReleaseSet -ReleaseRoot $releaseRoot -Reason 'test-startup-failure' -CreatedAtUtc $fixedStamp
-    Assert-True $recoveryAgain.AlreadyRecovered 'recovery is idempotent'
+    $recoveryAgain = Recover-ReleaseSet -ReleaseRoot $releaseRoot -Reason 'test-startup-failure' -CreatedAtUtc $fixedStamp `
+        -ExpectedVersionId 'v3' -ExpectedManifestSha256 $active3.SelectedManifestSha256
+    Assert-True $recoveryAgain.AlreadyRecovered 'recovery is idempotent with the launched identity'
     Assert-Equal 'v1' $recoveryAgain.ToVersionId 'idempotent recovery stays on the known-good version'
+
+    # A different earlier recovery is not this launch's rollback.
+    $otherRecoverySelector = [pscustomobject][ordered]@{
+        schemaVersion = 1
+        versionId = 'v1'
+        manifestSha256 = $activeAfterRecovery.SelectedManifestSha256
+        activatedAtUtc = $fixedStamp
+        previousVersionId = $null
+        previousManifestSha256 = $null
+        activationReason = 'recovery'
+        lastRecovery = [pscustomobject][ordered]@{
+            recoveredFromVersionId = 'v2'
+            recoveredFromManifestSha256 = ('1' * 64)
+            recoveredToVersionId = 'v1'
+            recoveredAtUtc = $fixedStamp
+            reason = 'other'
+        }
+    }
+    $otherSelectorPath = Join-Path $releaseRoot 'active-release.json'
+    Write-RwJsonAtomic -Path $otherSelectorPath -Value $otherRecoverySelector
+    $otherHashBefore = (Get-FileHash -LiteralPath $otherSelectorPath -Algorithm SHA256).Hash
+    $otherMessage = Assert-Throws -Action {
+        Recover-ReleaseSet -ReleaseRoot $releaseRoot -ExpectedVersionId 'v3' -ExpectedManifestSha256 $active3.SelectedManifestSha256
+    } -Name 'a different earlier recovery is refused for the launched identity'
+    Assert-True ($otherMessage -match 'changed since launch') 'different-recovery refusal names the cause' $otherMessage
+    $otherHashAfter = (Get-FileHash -LiteralPath $otherSelectorPath -Algorithm SHA256).Hash
+    Assert-Equal $otherHashBefore $otherHashAfter 'different-recovery refusal leaves the selector untouched'
 
     # Missing previous set is an explicit failure and leaves the selector untouched.
     $missingRoot = Join-Path $testRoot 'missing-previous'

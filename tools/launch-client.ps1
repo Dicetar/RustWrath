@@ -623,7 +623,9 @@ if ($releaseContext) {
             }
 
             try {
-                $recovery = Recover-ReleaseSet -ReleaseRoot $releaseContext.Root -Reason "startup-health:$healthStatus"
+                $recovery = Recover-ReleaseSet -ReleaseRoot $releaseContext.Root -Reason "startup-health:$healthStatus" `
+                    -ExpectedVersionId $releaseContext.VersionId `
+                    -ExpectedManifestSha256 $releaseContext.ManifestSha256
                 Add-Content -LiteralPath $launchLog -Value @(
                     'recovery_status=ok',
                     "recovery_already_applied=$($recovery.AlreadyRecovered)",

@@ -1,10 +1,10 @@
 # Nightly: release-set recovery selector guard
 
-Status: in progress
+Status: ready to merge
 Owner: OpenCode / DeepSeek V4.1 Flash
 Branch: fix/release-recovery-selector-guard
 Issue: none
-Next: add expected selector identity to Recover-ReleaseSet and cover it with the self-contained PowerShell test
+Next: read the single CI run; no Cargo, client, server or game data was run
 
 Base: `origin/main` `47e5e28b0` (the 2026-11-28 Windows package integration).
 Basis: the owner's 2026-11-28 private-alpha assessment names manual package recovery and the
@@ -25,15 +25,27 @@ only "process stayed alive", not login or world success; the launcher already re
 ## Change
 
 - `Recover-ReleaseSet` accepts `-ExpectedVersionId` and `-ExpectedManifestSha256`.
-- After the existing idempotent-recovery check, a mismatch refuses with a
-  "selector changed since launch" error and leaves the selector untouched.
+- The idempotent-recovery result is returned only when its recovered-from identity matches the
+  caller's expected identity. Any other mismatch refuses with a "selector changed since launch"
+  error and leaves the selector untouched.
 - `launch-client.ps1` passes the captured `$releaseContext` identity.
 - The self-contained `tools/release-set.tests.ps1` covers a wrong version, a wrong manifest
   hash, an unchanged selector after refusal, matching expected recovery, and idempotent retry.
 
+## Verification
+
+- Static parser: `release-set.ps1`, `launch-client.ps1` and `release-set.tests.ps1` all
+  parse with 0 errors.
+- `tools/release-set.tests.ps1`: **68 passed, 0 failed**. The new cases cover a wrong expected
+  version, a wrong expected manifest, an unchanged selector after each refusal, matching
+  expected recovery, idempotent retry with the launched identity, and a different earlier
+  recovery that must not be reported as this launch's rollback.
+- No Cargo, client, server, game data or second-machine run. The test harness writes only under
+  `F:\AI\tmp\opencode`.
+- CI: not run yet. The branch's single code push is the final push for this task.
+
 ## Boundaries
 
-No Cargo, client, server or game data. Only the existing PowerShell test harness (writes under
-`F:\AI\tmp\opencode`) and a static parser check. The old worktree and branch
-`fix/release-recovery-guardrails` are left untouched. Automatic updates, crash recovery
-redesign and package assembly remain out of scope.
+The old worktree and branch `fix/release-recovery-guardrails` are left untouched. Automatic
+updates, crash recovery redesign and package assembly remain out of scope. CI does not execute
+the PowerShell tests; the focused local run above is the test evidence.

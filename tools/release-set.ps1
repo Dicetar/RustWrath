@@ -1073,7 +1073,11 @@ function Recover-ReleaseSet {
     param(
         [Parameter(Mandatory)][string]$ReleaseRoot,
         [string]$Reason = 'startup-failure',
-        [string]$CreatedAtUtc = ''
+        [string]$CreatedAtUtc = '',
+        # The selector identity the caller launched. When supplied, recovery refuses if another
+        # activation changed the active release before this call.
+        [string]$ExpectedVersionId = '',
+        [string]$ExpectedManifestSha256 = ''
     )
 
     $rootFull = [IO.Path]::GetFullPath($ReleaseRoot).TrimEnd([char[]]@('\', '/'))
@@ -1087,20 +1091,48 @@ function Recover-ReleaseSet {
         throw 'Cannot recover release set: no active selector exists. Selector left unchanged.'
     }
 
+    $expectedVersion = ([string]$ExpectedVersionId).Trim()
+    $expectedHash = ([string]$ExpectedManifestSha256).Trim().ToUpperInvariant()
+
     $lastRecovery = $current.LastRecovery
     if ($null -ne $lastRecovery -and
         [string]$lastRecovery.recoveredToVersionId -eq $current.VersionId -and
         [string]$lastRecovery.recoveredFromVersionId -ne $current.VersionId) {
-        return [pscustomobject][ordered]@{
-            Status = 'AlreadyRecovered'
-            Recovered = $false
-            AlreadyRecovered = $true
-            FromVersionId = [string]$lastRecovery.recoveredFromVersionId
-            ToVersionId = $current.VersionId
-            ManifestSha256 = $current.ManifestSha256
-            SelectorPath = $current.SelectorPath
-            Message = "Release set already recovered to '$($current.VersionId)'."
-        } | ForEach-Object { $_.PSObject.TypeNames.Insert(0, 'RustWrath.ReleaseSetRecoveryResult'); $_ }
+        # Idempotency is allowed only for the recovery of the identity this caller launched.
+        # A different earlier recovery must not be reported as this launch's successful rollback.
+        $recoveryMatchesExpected = $true
+        if (![string]::IsNullOrWhiteSpace($expectedVersion)) {
+            $recoveryMatchesExpected = ([string]$lastRecovery.recoveredFromVersionId -eq $expectedVersion)
+        }
+        if ($recoveryMatchesExpected -and ![string]::IsNullOrWhiteSpace($expectedHash)) {
+            $recoveryMatchesExpected = (([string]$lastRecovery.recoveredFromManifestSha256).ToUpperInvariant() -eq $expectedHash)
+        }
+        if ($recoveryMatchesExpected) {
+            return [pscustomobject][ordered]@{
+                Status = 'AlreadyRecovered'
+                Recovered = $false
+                AlreadyRecovered = $true
+                FromVersionId = [string]$lastRecovery.recoveredFromVersionId
+                ToVersionId = $current.VersionId
+                ManifestSha256 = $current.ManifestSha256
+                SelectorPath = $current.SelectorPath
+                Message = "Release set already recovered to '$($current.VersionId)'."
+            } | ForEach-Object { $_.PSObject.TypeNames.Insert(0, 'RustWrath.ReleaseSetRecoveryResult'); $_ }
+        }
+    }
+
+    # A caller that retries after its own successful recovery gets AlreadyRecovered above; a
+    # selector changed to some other release is refused instead of rolling back a release this
+    # launch never selected.
+    if (![string]::IsNullOrWhiteSpace($expectedVersion) -or ![string]::IsNullOrWhiteSpace($expectedHash)) {
+        $versionMatches = [string]::IsNullOrWhiteSpace($expectedVersion) -or ($current.VersionId -eq $expectedVersion)
+        $hashMatches = [string]::IsNullOrWhiteSpace($expectedHash) -or (([string]$current.SelectedManifestSha256).ToUpperInvariant() -eq $expectedHash)
+        if (!$versionMatches -or !$hashMatches) {
+            $expected = @()
+            if (![string]::IsNullOrWhiteSpace($expectedVersion)) { $expected += "version '$expectedVersion'" }
+            if (![string]::IsNullOrWhiteSpace($expectedHash)) { $expected += "manifest '$expectedHash'" }
+            throw "Cannot recover release set: active selector changed since launch (expected $($expected -join ' and '); found version '$($current.VersionId)' manifest '$($current.SelectedManifestSha256)'). Selector left unchanged."
+        }
     }
 
     if ([string]::IsNullOrWhiteSpace($current.PreviousVersionId)) {
