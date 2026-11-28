@@ -236,10 +236,13 @@ mod tests {
     use super::*;
     use crate::local_state::test_env::{EnvGuard, ENV_LOCK};
     use benilla_ui::script::UiScript;
-    use std::io::Write;
 
+    // `tempfile` is optional, behind `dev`; the player-tests job builds without it.
+    #[cfg(feature = "dev")]
     #[test]
     fn a_taken_screenshot_name_gets_the_next_free_suffix() {
+        use std::io::Write;
+
         let dir = tempfile::tempdir().unwrap();
         let preferred = dir.path().join("WoWScrnShot_082126_134507.png");
         std::fs::write(&preferred, b"original").unwrap();
