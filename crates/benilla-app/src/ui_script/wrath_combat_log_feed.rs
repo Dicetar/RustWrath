@@ -62,6 +62,8 @@ pub(crate) struct CombatLogMemo {
     spell_execute_log_unresolved: u64,
     spell_dispel_log_dropped: u64,
     spell_dispel_log_unresolved: u64,
+    spell_dispel_failed_dropped: u64,
+    spell_dispel_failed_unresolved: u64,
     instakill_dropped: u64,
     instakill_unresolved: u64,
     enchant_dropped: u64,
@@ -70,6 +72,25 @@ pub(crate) struct CombatLogMemo {
     environmental_damage_unresolved: u64,
     damage_shield_dropped: u64,
     damage_shield_unresolved: u64,
+}
+
+/// Snapshot the failed-dispel counters so queue loss and terminal name fallback are observable
+/// once per scope, like the other combat-log families.
+fn update_failed_dispel_memo(world: &WrathWorldView, memo: &mut CombatLogMemo) {
+    if world.spell_dispel_failed_dropped > memo.spell_dispel_failed_dropped {
+        debug!(
+            dropped = world.spell_dispel_failed_dropped,
+            "wrath: combat-log queue capacity lost failed-dispel rows"
+        );
+    }
+    memo.spell_dispel_failed_dropped = world.spell_dispel_failed_dropped;
+    if world.spell_dispel_failed_unresolved > memo.spell_dispel_failed_unresolved {
+        debug!(
+            unresolved = world.spell_dispel_failed_unresolved,
+            "wrath: failed-dispel rows delivered with an unknown endpoint after name resolution timed out"
+        );
+    }
+    memo.spell_dispel_failed_unresolved = world.spell_dispel_failed_unresolved;
 }
 
 /// The visible marker for an endpoint whose name never resolved inside the retry window. It is
@@ -327,6 +348,7 @@ pub(crate) fn feed(
             );
         }
         memo.spell_dispel_log_unresolved = world.spell_dispel_log_unresolved;
+        update_failed_dispel_memo(world, &mut memo);
 
         // Update memo counters for new events.
         if world.instakill_dropped > memo.instakill_dropped {
@@ -2714,6 +2736,25 @@ mod tests {
             None,
             "an unknown endpoint stays unresolved instead of borrowing a name"
         );
+    }
+
+    #[test]
+    fn failed_dispel_diagnostics_snapshot_queue_loss_and_name_fallback() {
+        let mut world = WrathWorldView::default();
+        let mut memo = CombatLogMemo::default();
+
+        world.spell_dispel_failed_dropped = 3;
+        world.spell_dispel_failed_unresolved = 2;
+        update_failed_dispel_memo(&world, &mut memo);
+
+        assert_eq!(memo.spell_dispel_failed_dropped, 3);
+        assert_eq!(memo.spell_dispel_failed_unresolved, 2);
+
+        world.spell_dispel_failed_dropped = 4;
+        world.spell_dispel_failed_unresolved = 5;
+        update_failed_dispel_memo(&world, &mut memo);
+        assert_eq!(memo.spell_dispel_failed_dropped, 4);
+        assert_eq!(memo.spell_dispel_failed_unresolved, 5);
     }
 
     #[test]
