@@ -4,7 +4,7 @@ Status: ready to merge
 Owner: OpenCode / DeepSeek V4.1 Flash
 Branch: fix/release-recovery-selector-guard
 Issue: none
-Next: read the single CI run; no Cargo, client, server or game data was run
+Next: the integrator can land; no Cargo, client, server or game data was run
 
 Base: `origin/main` `47e5e28b0` (the 2026-11-28 Windows package integration).
 Basis: the owner's 2026-11-28 private-alpha assessment names manual package recovery and the
@@ -42,7 +42,10 @@ only "process stayed alive", not login or world success; the launcher already re
   recovery that must not be reported as this launch's rollback.
 - No Cargo, client, server, game data or second-machine run. The test harness writes only under
   `F:\AI\tmp\opencode`.
-- CI: not run yet. The branch's single code push is the final push for this task.
+- CI 46151553655 (push `3a4a4d743`): **success**, `gates` 9m31s and `windows` 3m58s.
+  The push changed only PowerShell scripts and the task note, so `changed` reported `none`;
+  the Rust test steps were skipped. CI compiles the workspace but does not execute the
+  PowerShell tests; the 68-case local run above is the test evidence.
 
 ## Boundaries
 
