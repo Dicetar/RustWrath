@@ -1564,6 +1564,8 @@ pub(crate) struct Model {
     pub(crate) chat_bubbles: super::chat_bubble::ChatBubbles,
     /// The world-state readout's rows, gated and resolved by the app.
     pub(crate) worldstate: super::worldstate::WorldStateUiState,
+    /// The achievement catalog and the server's earned/criteria/tracker state.
+    pub(crate) achievements: super::achievements::AchievementState,
     /// The host's event queue, fired at the start of the next tick ahead of its `OnUpdate` pass
     /// (`UiScript::tick`). Host producers only: the app's setters (the world map's, the
     /// world-state rows, a dropped mail attachment), `UiScript::queue_event`, and an engine path
@@ -2251,6 +2253,7 @@ impl Model {
             nameplates: super::nameplate::NamePlates::default(),
             chat_bubbles: super::chat_bubble::ChatBubbles::default(),
             worldstate: super::worldstate::WorldStateUiState::default(),
+            achievements: Default::default(),
             pending_events: Vec::new(),
             verb_events: None,
             firing_events: 0,

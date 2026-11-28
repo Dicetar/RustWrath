@@ -1,6 +1,7 @@
 //! Rust-driven tests of the Lua host, one module per subject; the shared `script()` fixture lives
 //! in [`common`].
 
+mod achievements;
 mod addon_argument_abi;
 mod addon_index_space;
 mod adopt;

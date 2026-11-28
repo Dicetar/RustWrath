@@ -157,6 +157,9 @@ fn stock_vm(root: &Path, registry: &[benilla_ui::script::AddOnInfo]) -> Result<U
     if let Some(scalers) = combat_rating_scalers() {
         script.set_combat_rating_scalers(scalers);
     }
+    if let Some(achievements) = achievement_catalog() {
+        script.set_achievement_catalog(achievements);
+    }
     let _ = crate::ui_script::load_default_ui(&script);
     Ok(script)
 }
@@ -1413,6 +1416,21 @@ fn combat_rating_scalers() -> Option<Vec<f32>> {
 /// answers from the catalog owner instead. Name, rank, icon, power type, cast time and range come
 /// straight from the DBCs; cost needs the seated player's stats, which the harness does not own, so
 /// it stays unavailable. `None` with no install.
+fn achievement_catalog() -> Option<std::sync::Arc<benilla_ui::script::AchievementCatalog>> {
+    use std::sync::OnceLock;
+    static CATALOG: OnceLock<Option<std::sync::Arc<benilla_ui::script::AchievementCatalog>>> =
+        OnceLock::new();
+    CATALOG
+        .get_or_init(|| {
+            let data = benilla_formats::wow_data()?;
+            let mut chain = benilla_formats::open_chain(&data).ok()?;
+            let catalog = benilla_formats::load_achievement_catalog(&mut chain).ok()?;
+            // One projection per survey process, shared by every addon's VM.
+            Some(std::sync::Arc::new(crate::achievements::project(&catalog)))
+        })
+        .clone()
+}
+
 fn spell_info_catalog() -> Option<std::sync::Arc<HashMap<u32, SpellInfoView>>> {
     use std::sync::OnceLock;
     static CATALOG: OnceLock<Option<std::sync::Arc<HashMap<u32, SpellInfoView>>>> = OnceLock::new();

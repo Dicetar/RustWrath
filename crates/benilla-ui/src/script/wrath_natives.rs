@@ -348,14 +348,6 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, _unit: Option<String>| Ok(Value::Nil))?,
     )?;
 
-    // `HasCompletedAnyAchievement` (`MainMenuBarMicroButtons.lua:103`): the micro menu's
-    // achievement button asks whether the account has any; benilla has no achievements, so the
-    // answer is false and the button stays in its stock "none" state.
-    lua.globals().set(
-        "HasCompletedAnyAchievement",
-        lua.create_function(|_, ()| Ok(false))?,
-    )?;
-
     // `Sound_GameSystem_*` (`AudioOptionsPanels.lua:135`, `:167`): the client enumerates the Miles
     // output devices, and a stock install registers its one DirectSound output as the primary
     // driver (`Sound_OutputDriverName` defaults to "Primary Sound Driver"). benilla's single kira
@@ -723,19 +715,6 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 Ok((false, false))
             }
         })?,
-    )?;
-    // `GetTrackedAchievements()` (`AchievementInfo_Scripts.cpp:147`) pushes one id per tracked
-    // achievement and returns that count. `WatchFrame_DisplayTrackedAchievements` passes the
-    // result straight to `select("#", ...)`; with no tracker state here the reference's empty
-    // list is zero values, never a nil argument. `GetNumTrackedAchievements` is the same empty
-    // count.
-    lua.globals().set(
-        "GetTrackedAchievements",
-        lua.create_function(|_, _: mlua::MultiValue| Ok(mlua::MultiValue::new()))?,
-    )?;
-    lua.globals().set(
-        "GetNumTrackedAchievements",
-        lua.create_function(|_, _: mlua::MultiValue| Ok(0))?,
     )?;
     // `BNFeaturesEnabled` (`InterfaceOptionsPanels.lua:820`, `:857`, `:1610`): Battle.net features
     // come with a Battle.net account connection benilla does not have, and the stock panels take
@@ -1373,18 +1352,6 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, ()| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             Ok(model.stable.state.is_some())
-        })?,
-    )?;
-    lua.globals().set(
-        "CanShowAchievementUI",
-        lua.create_function(|lua, ()| {
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .record_unsupported_native_once(
-                    "CanShowAchievementUI",
-                    "achievement packets and Blizzard_AchievementUI host state are not wired",
-                );
-            Ok(false)
         })?,
     )?;
     // `GetCurrentArenaSeason` (`0x5A2A40`): `GetWorldState(3191)`, a miss 0.

@@ -61,6 +61,7 @@ pub(crate) use editbox::{
 };
 pub(crate) use messageframe::set_xml_insets as set_message_xml_insets;
 pub(crate) use tooltip::post_load as tooltip_post_load;
+mod achievements;
 pub(crate) mod addon;
 mod addon_enable;
 pub mod addon_gate;
@@ -71,6 +72,9 @@ mod wrath_aura;
 mod wrath_spell;
 pub use wrath_aura::WrathAuraView;
 mod wrath_unit;
+pub use achievements::{
+    AchievementCatalog, AchievementCategoryView, AchievementCriteriaView, AchievementView,
+};
 pub use target::UiTarget;
 pub use wrath_spell::{SpellInfoView, UnitCastView};
 mod char_name;
@@ -753,6 +757,7 @@ fn open_state_for_target(vm: VmKind, target: UiTarget) -> mlua::Result<Lua> {
         static_constants::install(&lua)?;
         newproxy::install(&lua)?;
         wrath_natives::install(&lua)?;
+        achievements::install(&lua)?;
         animation::install(&lua)?;
         wrath_world::install(&lua)?;
         wrath_security::install(&lua)?;

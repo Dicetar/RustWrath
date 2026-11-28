@@ -157,6 +157,7 @@ impl PluginGroup for GamePlugins {
             .add(crate::area::AreaPlugin)
             .add(crate::area_poi::AreaPoiPlugin)
             .add(crate::world_state_ui::WorldStateUiPlugin)
+            .add(crate::achievements::AchievementsPlugin)
             .add(crate::area_trigger::AreaTriggerPlugin)
             .add(crate::ui_world_map::WorldMapUiPlugin)
             .add(crate::poi_marker::PoiMarkerPlugin)

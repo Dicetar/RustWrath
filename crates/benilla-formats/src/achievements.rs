@@ -148,6 +148,11 @@ impl AchievementCatalog {
             .map(|&index| &self.criteria[index])
     }
 
+    /// Every criteria row in file order.
+    pub fn criteria_rows(&self) -> impl Iterator<Item = &AchievementCriteria> + '_ {
+        self.criteria.iter()
+    }
+
     pub fn criteria(&self, id: u32) -> Option<&AchievementCriteria> {
         self.criteria_by_id
             .get(&id)
