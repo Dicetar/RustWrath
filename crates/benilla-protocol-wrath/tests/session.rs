@@ -695,6 +695,47 @@ fn near_teleport_updates_position_without_changing_world_scope() {
     );
 }
 
+/// `MSG_MOVE_TELEPORT_ACK` to the player (`Player::SendTeleportAckPacket`): the order keeps its
+/// counter and destination, so the driver moves the avatar there before it acknowledges, and an
+/// order for another guid owes nothing.
+#[test]
+fn a_teleport_order_carries_its_counter_and_destination() {
+    let mut s = SessionState::new();
+    s.start_session(PLAYER);
+    s.note_player_login();
+    s.reduce(
+        opcode::SMSG_LOGIN_VERIFY_WORLD,
+        &enc::verify_world(0, 1.0),
+        1_000,
+    )
+    .unwrap();
+    let order = |guid: u64, counter: u32| {
+        let mut p = enc::pack_guid(guid);
+        p.extend(counter.to_le_bytes());
+        p.extend(0u32.to_le_bytes()); // move flags: AzerothCore clears the moving bits first
+        p.extend(0u16.to_le_bytes()); // extra flags
+        p.extend(9u32.to_le_bytes()); // time
+        for v in [-8913.0f32, 554.5, 93.1, 3.9] {
+            p.extend(v.to_le_bytes());
+        }
+        p.extend(0u32.to_le_bytes()); // fall time
+        p
+    };
+    s.reduce(opcode::MSG_MOVE_TELEPORT_ACK, &order(PLAYER, 7), 1_100)
+        .unwrap();
+    s.reduce(opcode::MSG_MOVE_TELEPORT_ACK, &order(PLAYER + 1, 8), 1_150)
+        .unwrap();
+    let orders = s.take_teleport_orders();
+    assert_eq!(orders.len(), 1);
+    assert_eq!((orders[0].guid, orders[0].counter), (PLAYER, 7));
+    let p = orders[0].position.expect("destination");
+    assert_eq!((p.x, p.y, p.z, p.o), (-8913.0, 554.5, 93.1, 3.9));
+    assert!(
+        s.take_pending_teleport_acks().is_empty(),
+        "one drain empties it"
+    );
+}
+
 #[test]
 fn unknown_to_known_zero_target_is_a_revision_change() {
     let mut s = SessionState::new();

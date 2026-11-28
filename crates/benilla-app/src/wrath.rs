@@ -173,6 +173,12 @@ pub struct WrathOutbound {
     pub(crate) trace: Option<crate::quest_trace::Interaction>,
     /// Whether the carried trace scope is enforced across the async transport boundary.
     pub(crate) enforce_scope: bool,
+    /// The world a movement entry's pose was composed in (`WrathWorldView::world_generation`).
+    /// The session thread drops a move from a world it has left: it acknowledges a worldport as
+    /// soon as `SMSG_NEW_WORLD` is processed, before the app retires the outbox, and AzerothCore
+    /// applies any move after that acknowledgment to the new map (`MovementHandler.cpp:488` even
+    /// kills a player reported under its floor). `None` for every non-movement entry.
+    pub(crate) world_generation: Option<u64>,
 }
 
 /// A translated gameplay reply tagged with the source session and world scope. The app rejects
@@ -1226,6 +1232,9 @@ pub struct WrathEntity {
     pub create_spline: Option<benilla_protocol_wrath::updates::CreateSplineSnapshot>,
     /// The melee victim the last movement block carried (`HAS_TARGET`), read once at spawn.
     pub attack_target: Option<u64>,
+    /// A transport GameObject's path clock from its create (`UPDATEFLAG_TRANSPORT`), the anchor
+    /// the shared transport tick animates a boat, zeppelin or lift from; read once at spawn.
+    pub transport_progress: Option<u32>,
     pub generation: u32,
     /// The player's raw Wrath field window, needed where 1.12 and 3.3.5 pack different field
     /// indices (quest log, inventory, coinage), with the server's delivered mask. Only a player
@@ -7465,7 +7474,13 @@ fn wrath_tap_commands(
                 jump,
                 transport,
             );
-            admit_wrath_movement(&input, opcode, payload, trace.as_deref());
+            admit_wrath_movement(
+                &input,
+                opcode,
+                payload,
+                trace.as_deref(),
+                view.world_generation,
+            );
             continue;
         }
         let opening = matches!(
@@ -9391,6 +9406,20 @@ fn wrath_tap_commands(
                     fall_time,
                 ),
             )),
+            // The controller's answer to a near teleport, sent once the avatar stands at the
+            // destination: packed mover guid, the order counter, the client time
+            // (`HandleMoveTeleportAck`, `MovementHandler.cpp:278-282`, reads both words). It
+            // shares the outbox with the moves, so it lands behind every move queued before
+            // the snap, which the server still ignores, and ahead of every move after it.
+            ClientCommand::TeleportAck { guid, counter } => {
+                let mut ack = enc_pack_guid(guid);
+                ack.extend_from_slice(&counter.to_le_bytes());
+                ack.extend_from_slice(&now_ms.to_le_bytes());
+                Some((
+                    u32::from(benilla_protocol_wrath::opcode::MSG_MOVE_TELEPORT_ACK),
+                    ack,
+                ))
+            }
             ClientCommand::MoveTimeSkipped { guid, lag_ms } => Some((
                 u32::from(benilla_protocol_wrath::opcode::CMSG_MOVE_TIME_SKIPPED),
                 gameplay::move_time_skipped(guid, lag_ms),
@@ -9428,6 +9457,7 @@ fn wrath_tap_commands(
                         receipt: receipt.clone(),
                         trace: cmd_trace.clone(),
                         enforce_scope,
+                        world_generation: None,
                     });
                     if let Some(receipt) = receipt.as_ref() {
                         receipt.report(crate::net::CommandDelivery::OutboxAdmitted);
@@ -10021,6 +10051,7 @@ fn wrath_dispatch_events(world: &mut World) {
                             receipt: None,
                             trace: None,
                             enforce_scope: false,
+                            world_generation: None,
                         });
                     }
                 }
@@ -13263,6 +13294,9 @@ fn wrath_apply_world(world: &mut World) {
             rotation: Quat::from_rotation_y(p.o),
             ..default()
         });
+        let transport_seed = (kind == EntityKind::GameObject)
+            .then(|| wrath_transport_seed(remote, &fields))
+            .flatten();
         let mut existing = index.0.get(guid).copied();
         if let Some(entity) = existing {
             if world
@@ -13276,6 +13310,9 @@ fn wrath_apply_world(world: &mut World) {
         }
         match existing {
             Some(entity) => {
+                if let Some(seed) = transport_seed {
+                    arm_wrath_transport(world, entity, seed);
+                }
                 let old = world
                     .get::<ObjectStore>(entity)
                     .map(|store| store.0.clone());
@@ -13716,7 +13753,11 @@ fn wrath_apply_world(world: &mut World) {
                 } else if kind == EntityKind::Player {
                     entity.insert(Equipment::default());
                 }
-                index.0.insert(*guid, entity.id());
+                let id = entity.id();
+                index.0.insert(*guid, id);
+                if let Some(seed) = transport_seed {
+                    arm_wrath_transport(world, id, seed);
+                }
             }
         }
     }
@@ -14279,6 +14320,62 @@ fn wrath_apply_world(world: &mut World) {
     }
 }
 
+/// What a 12340 transport create hands the shared transport tick ([`crate::transport`]): the
+/// path clock anchor for boats, zeppelins and lifts, and for a lift (type 11) the seed that keys
+/// its `TransportAnimation.dbc` path by template entry. The tick then animates the deck locally,
+/// as the stock client does; AzerothCore sends no further pose for a transport
+/// (`StaticTransport::BuildUpdate` sends fields only, a `MotionTransport` none at all).
+struct WrathTransportSeed {
+    progress_ms: u32,
+    lift: Option<(u32, [f32; 3], f32, Option<[f32; 4]>)>,
+}
+
+/// The seed of one GameObject create, or `None` for an object that is no transport or whose
+/// create carried no clock. The lift's offsets rotate through `GAMEOBJECT_PARENTROTATION`, which
+/// AzerothCore uses as the path rotation (`StaticTransport::RelocateToProgress`,
+/// `Transport.cpp:930-936`) and the field map places in the 1.12 rotation words, and are based at
+/// the create's stationary position (`:939`).
+fn wrath_transport_seed(remote: &WrathEntity, fields: &ObjectFields) -> Option<WrathTransportSeed> {
+    let progress_ms = remote.transport_progress?;
+    let go_type = fields.gameobject_type_id();
+    if !matches!(go_type, 11 | 15) {
+        return None;
+    }
+    let lift = (go_type == 11)
+        .then(|| {
+            let entry = fields.object_entry()?;
+            let p = remote.position?;
+            Some((entry, [p.x, p.y, p.z], p.o, fields.gameobject_rotation()))
+        })
+        .flatten();
+    Some(WrathTransportSeed { progress_ms, lift })
+}
+
+/// Anchor a transport for [`crate::transport`]'s arm and tick. A digest re-delivers the same
+/// create clock until the next create, so only a new clock re-anchors: a recreate of a held object
+/// restarts its cycle, a repeated digest changes nothing.
+fn arm_wrath_transport(world: &mut World, entity: Entity, seed: WrathTransportSeed) {
+    if world
+        .get::<crate::transport::TransportAnchor>(entity)
+        .is_some_and(|anchor| anchor.progress_ms == seed.progress_ms)
+    {
+        return;
+    }
+    let mut e = world.entity_mut(entity);
+    e.insert(crate::transport::TransportAnchor {
+        progress_ms: seed.progress_ms,
+        at: Instant::now(),
+    });
+    if let Some((entry, base_pos, yaw, quat)) = seed.lift {
+        e.insert(crate::transport::ElevatorSeed {
+            entry,
+            base_pos,
+            yaw,
+            quat,
+        });
+    }
+}
+
 fn consume_wrath_position(
     world: &mut World,
     entity: Entity,
@@ -14437,6 +14534,7 @@ fn admit_wrath_movement(
     opcode: u32,
     payload: Vec<u8>,
     trace: Option<&crate::quest_trace::Source>,
+    world_generation: u64,
 ) {
     let Ok(mut queue) = input.0.lock() else {
         if let Some(trace) = trace {
@@ -14473,6 +14571,7 @@ fn admit_wrath_movement(
         receipt: None,
         trace: None,
         enforce_scope: false,
+        world_generation: Some(world_generation),
     });
 }
 
@@ -15545,6 +15644,16 @@ fn run_recorded_session(
                 .map(|mut queue| queue.drain(..).collect())
                 .unwrap_or_default();
             for command in pending {
+                // A move composed in a world this session has left carries the old map's pose:
+                // after the worldport acknowledgment the server would place us there on the new
+                // map. Motion is replaceable, so it is dropped, not answered.
+                if command.movement
+                    && command
+                        .world_generation
+                        .is_some_and(|generation| generation != session.world_generation())
+                {
+                    continue;
+                }
                 // Cancel handling for receipt-level scope.
                 if let Some(receipt) = command.receipt.as_ref() {
                     if receipt.enforce_scope && cancel.load(Ordering::SeqCst) {
@@ -16956,17 +17065,38 @@ fn run_recorded_session(
             )?;
             feed.push_event(WrathFeedEvent::from_session(event, session.epoch()));
         }
-        // Near teleport: acknowledge the server's order counter after landing (packed GUID +
-        // u32 flags + u32 time â€” both read and unused server-side).
-        for _counter in session.take_pending_teleport_acks() {
-            let mut ack = enc_pack_guid(guid);
-            ack.extend_from_slice(&0u32.to_le_bytes());
-            ack.extend_from_slice(&0u32.to_le_bytes());
-            recorder.send(
-                &mut world,
-                benilla_protocol_wrath::opcode::MSG_MOVE_TELEPORT_ACK as u32,
-                &ack,
-            )?;
+        // Near teleport: the order goes to the controller as the shared teleport edge, which snaps
+        // the avatar to the destination, holds gravity until the ground there streams in, and
+        // queues the acknowledgment behind the moves already sent (`wire_in::apply_server_moves`).
+        // AzerothCore ignores every move until the acknowledgment and then places us at the
+        // destination (`MovementHandler.cpp:301`, `:355`); an acknowledgment sent from here, before
+        // the avatar moved, let the next move from the old pose walk the server back, and the
+        // at-rest correction below never applied the pose while a movement key was held.
+        for order in session.take_teleport_orders() {
+            match order.position {
+                Some(p) if events_out.is_some() => push_session_event(
+                    &events_out,
+                    &session,
+                    SessionEvent::Teleport {
+                        guid: order.guid,
+                        counter: order.counter,
+                        position: [p.x, p.y, p.z],
+                        orientation: p.o,
+                    },
+                ),
+                // No controller to move, or no pose to move it to: acknowledge here, as an
+                // unacknowledged teleport freezes the mover server-side.
+                _ => {
+                    let mut ack = enc_pack_guid(guid);
+                    ack.extend_from_slice(&order.counter.to_le_bytes());
+                    ack.extend_from_slice(&wrath_client_ms().to_le_bytes());
+                    recorder.send(
+                        &mut world,
+                        benilla_protocol_wrath::opcode::MSG_MOVE_TELEPORT_ACK as u32,
+                        &ack,
+                    )?;
+                }
+            }
         }
         // Far transfer: the NEW_WORLD was processed; tear down, then acknowledge so the
         // server sends the new world's visibility traffic.
@@ -17190,6 +17320,7 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                     .as_ref()
                     .and_then(|m| m.create_spline.clone()),
                 attack_target: entry.movement.as_ref().and_then(|m| m.attack_target),
+                transport_progress: entry.movement.as_ref().and_then(|m| m.transport_progress),
                 generation: entry.generation,
                 player_fields: (entry.type_id == benilla_protocol_wrath::updates::type_id::PLAYER)
                     .then(|| {
@@ -17984,6 +18115,7 @@ mod tests {
             receipt: None,
             trace: None,
             enforce_scope: false,
+            world_generation: None,
         }])));
         world.insert_resource(WrathInput(Arc::clone(&outbox)));
 
@@ -18343,6 +18475,7 @@ mod command_tap_tests {
                 move_flags: None,
                 create_spline: None,
                 attack_target: None,
+                transport_progress: None,
                 generation: 1,
                 player_fields: None,
                 item_fields: None,
@@ -18579,6 +18712,118 @@ mod command_tap_tests {
         assert_eq!(body.len(), 30);
     }
 
+    /// The controller's near-teleport answer goes out in its place among the moves: behind the
+    /// one queued before the snap and ahead of the one after it, as packed guid, the order
+    /// counter and the client time (`HandleMoveTeleportAck`, `MovementHandler.cpp:278-282`).
+    #[test]
+    fn a_teleport_ack_keeps_its_place_among_the_moves() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let outbox: WrathOutbox = Arc::new(Mutex::new(VecDeque::new()));
+        let mut world = World::new();
+        world.insert_resource(NetCommandTap(Some(rx)));
+        world.insert_resource(WrathInput(Arc::clone(&outbox)));
+        world.insert_resource(view(0x22));
+        let heartbeat = || ClientCommand::Move {
+            kind: crate::net::MoveKind::Heartbeat,
+            flags: 0,
+            pos: [0.0; 3],
+            orientation: 0.0,
+            pitch: 0.0,
+            fall_time: 0,
+            jump: None,
+            transport: None,
+        };
+        tx.send(heartbeat()).unwrap();
+        tx.send(ClientCommand::TeleportAck {
+            guid: 1,
+            counter: 0x0102_0304,
+        })
+        .unwrap();
+        tx.send(heartbeat()).unwrap();
+
+        let _ = world.run_system_once(wrath_tap_commands);
+        let sent: Vec<_> = outbox.lock().unwrap().drain(..).collect();
+        let opcodes: Vec<u32> = sent.iter().map(|o| o.opcode).collect();
+        assert_eq!(opcodes, [0x0EE, 0x0C7, 0x0EE]);
+        let ack = &sent[1];
+        assert!(
+            !ack.movement,
+            "an acknowledgment is never displaced as motion"
+        );
+        assert_eq!(ack.payload[..6], [0x01, 0x01, 0x04, 0x03, 0x02, 0x01]);
+        assert_eq!(ack.payload.len(), 10, "and the client time");
+        // Each move names the world it was composed in, which the session thread drops once it
+        // has left that world; the acknowledgment is no move and names none.
+        let generation = world.resource::<WrathWorldView>().world_generation;
+        assert_eq!(sent[0].world_generation, Some(generation));
+        assert_eq!(sent[2].world_generation, Some(generation));
+        assert_eq!(ack.world_generation, None);
+    }
+
+    /// A 12340 transport create arms the shared tick: a lift gets its clock and its path seed
+    /// (entry, stationary base, `PARENTROTATION`), the digest re-delivering the same clock leaves
+    /// the anchor alone, a recreate's new clock re-anchors, and a non-transport gets nothing.
+    #[test]
+    fn a_wrath_transport_create_arms_the_shared_tick() {
+        let mut remote = view(0x22).entities[&0x22].clone();
+        remote.type_id = benilla_protocol_wrath::updates::type_id::GAMEOBJECT;
+        remote.position = Some(benilla_protocol_wrath::updates::PositionSnapshot {
+            x: 1595.0,
+            y: 240.0,
+            z: -52.0,
+            o: 1.5,
+        });
+        remote.transport_progress = Some(4_000);
+        let quat = [0.0f32, 0.0, 0.5, 0.866];
+        let lift_fields = |type_id: u32| {
+            ObjectFields::from_pairs(&[
+                (3, 20_655),
+                (10, quat[0].to_bits()),
+                (11, quat[1].to_bits()),
+                (12, quat[2].to_bits()),
+                (13, quat[3].to_bits()),
+                (21, type_id),
+            ])
+        };
+        assert!(wrath_transport_seed(&remote, &lift_fields(19)).is_none());
+        let seed = wrath_transport_seed(&remote, &lift_fields(11)).expect("a lift");
+        assert_eq!(seed.progress_ms, 4_000);
+        assert_eq!(
+            seed.lift,
+            Some((20_655, [1595.0, 240.0, -52.0], 1.5, Some(quat)))
+        );
+
+        let mut world = World::new();
+        let e = world.spawn_empty().id();
+        arm_wrath_transport(&mut world, e, seed);
+        let at = world
+            .get::<crate::transport::TransportAnchor>(e)
+            .unwrap()
+            .at;
+        assert!(world.get::<crate::transport::ElevatorSeed>(e).is_some());
+        world
+            .entity_mut(e)
+            .remove::<crate::transport::ElevatorSeed>();
+
+        let again = wrath_transport_seed(&remote, &lift_fields(11)).unwrap();
+        arm_wrath_transport(&mut world, e, again);
+        assert_eq!(
+            world
+                .get::<crate::transport::TransportAnchor>(e)
+                .unwrap()
+                .at,
+            at
+        );
+        assert!(world.get::<crate::transport::ElevatorSeed>(e).is_none());
+
+        remote.transport_progress = Some(9_000);
+        let recreated = wrath_transport_seed(&remote, &lift_fields(11)).unwrap();
+        arm_wrath_transport(&mut world, e, recreated);
+        let anchor = world.get::<crate::transport::TransportAnchor>(e).unwrap();
+        assert_eq!(anchor.progress_ms, 9_000);
+        assert!(world.get::<crate::transport::ElevatorSeed>(e).is_some());
+    }
+
     /// The opcode numbers are AzerothCore's `Opcodes.h`, written out so the table is checked
     /// against the server and not against the constants it is built from.
     #[test]
@@ -18621,6 +18866,7 @@ mod command_tap_tests {
             receipt: None,
             trace: None,
             enforce_scope: false,
+            world_generation: None,
         }
     }
 
@@ -18653,14 +18899,14 @@ mod command_tap_tests {
         fill_with_actions(&outbox);
         let input = WrathInput(Arc::clone(&outbox));
 
-        admit_wrath_movement(&input, op::MSG_MOVE_FALL_LAND, Vec::new(), None);
+        admit_wrath_movement(&input, op::MSG_MOVE_FALL_LAND, Vec::new(), None, 1);
         assert_eq!(
             moves(&outbox),
             [op::MSG_MOVE_JUMP, op::MSG_MOVE_FALL_LAND],
             "the pose report went first"
         );
 
-        admit_wrath_movement(&input, op::MSG_MOVE_START_FORWARD, Vec::new(), None);
+        admit_wrath_movement(&input, op::MSG_MOVE_START_FORWARD, Vec::new(), None, 1);
         assert_eq!(
             moves(&outbox),
             [op::MSG_MOVE_FALL_LAND, op::MSG_MOVE_START_FORWARD],
@@ -18669,7 +18915,7 @@ mod command_tap_tests {
 
         outbox.lock().unwrap().retain(|entry| !entry.movement);
         fill_with_actions(&outbox);
-        admit_wrath_movement(&input, op::MSG_MOVE_HEARTBEAT, Vec::new(), None);
+        admit_wrath_movement(&input, op::MSG_MOVE_HEARTBEAT, Vec::new(), None, 1);
         assert!(
             moves(&outbox).is_empty(),
             "a queue of actions refuses the move"
@@ -19348,6 +19594,7 @@ mod scoped_delivery_tests {
             receipt: Some(crate::net::CommandReceipt {
                 trace: None,
                 enforce_scope: true,
+                world_generation: None,
                 session_epoch,
                 world_generation,
                 npc: 0x22,

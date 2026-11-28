@@ -209,9 +209,22 @@ pub struct SessionState {
     /// The retained snapshot: produced, awaiting successful handoff, replaced by newer state.
     unsent: Option<SelfObservation>,
     pending_lifecycle: Vec<LifeEvent>,
-    /// Order counters from `MSG_MOVE_TELEPORT_ACK` (server→client) awaiting the client's
+    /// Orders from `MSG_MOVE_TELEPORT_ACK` (server→client) awaiting the client's
     /// acknowledgment packet (`Player.cpp:1375`: the counter increments per teleport).
-    pending_teleport_acks: Vec<u32>,
+    pending_teleport_acks: Vec<TeleportOrder>,
+}
+
+/// One near-teleport order for the controlled player (`Player::SendTeleportAckPacket`,
+/// `Player.cpp:1375`): the order counter the acknowledgment echoes and the destination pose the
+/// mover must take before it moves again. AzerothCore ignores every movement packet until the
+/// acknowledgment (`MovementHandler.cpp:355`), then places the player at the destination
+/// (`:301`), so a driver that acknowledges without moving its avatar walks the server back.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TeleportOrder {
+    pub guid: u64,
+    pub counter: u32,
+    /// The order's movement block position; `None` only for a block that carried none.
+    pub position: Option<PositionSnapshot>,
 }
 
 impl Default for SessionState {
@@ -454,10 +467,15 @@ impl SessionState {
                 let counter = r.u32().context("teleport-ack counter")?;
                 let snapshot = crate::updates::standalone_movement_block(&mut r)
                     .context("teleport-ack movement block")?;
+                let position = snapshot.position;
                 changed |= self.world.apply_movement(guid, snapshot);
                 events.push(ChangeEvent::Moved { guid });
                 if Some(guid) == self.player_guid {
-                    self.pending_teleport_acks.push(counter);
+                    self.pending_teleport_acks.push(TeleportOrder {
+                        guid,
+                        counter,
+                        position,
+                    });
                 }
             }
             opcode::MSG_MOVE_TELEPORT => {
@@ -593,6 +611,15 @@ impl SessionState {
     /// Drain order counters owed a `MSG_MOVE_TELEPORT_ACK` acknowledgment packet (client to
     /// server: packed player GUID, u32 flags, u32 time — both read and unused by the server).
     pub fn take_pending_teleport_acks(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.pending_teleport_acks)
+            .into_iter()
+            .map(|order| order.counter)
+            .collect()
+    }
+
+    /// Drain the same orders whole, for a driver that moves an avatar to the destination before
+    /// it acknowledges. One drain or the other: each empties the queue.
+    pub fn take_teleport_orders(&mut self) -> Vec<TeleportOrder> {
         std::mem::take(&mut self.pending_teleport_acks)
     }
 

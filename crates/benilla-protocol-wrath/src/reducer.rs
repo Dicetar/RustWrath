@@ -579,6 +579,7 @@ impl WorldState {
                     speeds: None,
                     create_spline: None,
                     attack_target: None,
+                    transport_progress: None,
                 });
                 true
             }

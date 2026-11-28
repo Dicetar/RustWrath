@@ -155,6 +155,11 @@ pub struct MovementSnapshot {
     /// while the unit has a victim); `None` when the flag is clear or the guid is zero. The
     /// 12340 client seeds its attack target from it at creation (`CCombat::SetClientInitData`).
     pub attack_target: Option<u64>,
+    /// A transport GameObject's path clock (`UPDATEFLAG_TRANSPORT`, `Object.cpp:459-465`): the
+    /// ms its path has run (`Transport::GetPathProgress`, kept modulo the period by the
+    /// client), the anchor from which a boat, zeppelin or lift is animated locally; `None`
+    /// when the block carried no transport flag. Only a create sends it.
+    pub transport_progress: Option<u32>,
 }
 
 impl MovementSnapshot {
@@ -185,6 +190,7 @@ pub fn movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
         speeds: None,
         create_spline: None,
         attack_target: None,
+        transport_progress: None,
     };
     if flags & update_flags::LIVING != 0 {
         // `Unit::BuildMovementPacket`
@@ -281,7 +287,7 @@ pub fn movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
         snap.attack_target = Some(r.packed_guid()?).filter(|&guid| guid != 0);
     }
     if flags & update_flags::TRANSPORT != 0 {
-        r.u32()?; // path progress
+        snap.transport_progress = Some(r.u32()?);
     }
     if flags & update_flags::VEHICLE != 0 {
         snap.vehicle_id = Some(r.u32()?);
@@ -322,6 +328,7 @@ pub fn standalone_movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
         speeds: None,
         create_spline: None,
         attack_target: None,
+        transport_progress: None,
     };
     let (x, y, z, o) = (r.f32()?, r.f32()?, r.f32()?, r.f32()?);
     snap.position = Some(PositionSnapshot { x, y, z, o });
@@ -443,5 +450,36 @@ mod tests {
             assert_eq!(snap.speeds, Some(speeds), "extra {extra:#x}");
             assert_eq!(snap.transport, Some((0x42, 2)));
         }
+    }
+
+    /// A transport GameObject's create, as `Transport::Create` flags it (`Transport.cpp:36`,
+    /// `:685`): the path clock is kept for the local animation, and every later field still
+    /// lines up.
+    #[test]
+    fn a_transport_create_keeps_its_path_clock() {
+        let flags = update_flags::TRANSPORT
+            | update_flags::LOWGUID
+            | update_flags::STATIONARY_POSITION
+            | update_flags::ROTATION;
+        let mut p = flags.to_le_bytes().to_vec();
+        for v in [1544.2f32, 240.8, -40.5, 1.57] {
+            p.extend(v.to_le_bytes());
+        }
+        p.extend(0x77u32.to_le_bytes()); // low guid
+        p.extend(123_456u32.to_le_bytes()); // path progress
+        p.extend(0x0123_4567_89ab_cdefi64.to_le_bytes()); // packed rotation
+        let mut r = Reader::new(&p);
+        let snap = movement_block(&mut r).unwrap();
+        assert!(r.done());
+        assert_eq!(snap.transport_progress, Some(123_456));
+        assert_eq!(snap.position.map(|p| p.x), Some(1544.2));
+
+        // Any other object's block carries no clock.
+        let mut p = update_flags::STATIONARY_POSITION.to_le_bytes().to_vec();
+        for v in [1.0f32, 2.0, 3.0, 0.0] {
+            p.extend(v.to_le_bytes());
+        }
+        let snap = movement_block(&mut Reader::new(&p)).unwrap();
+        assert_eq!(snap.transport_progress, None);
     }
 }
