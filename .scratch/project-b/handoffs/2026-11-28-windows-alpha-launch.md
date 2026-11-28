@@ -4,7 +4,7 @@ Status: ready to merge
 Owner: OpenCode / DeepSeek V4.1 Flash
 Branch: fix/windows-alpha-launch
 Issue: none
-Next: CI 46134760484 passed; the integrator can land; a second-machine launch remains owner/tester work
+Next: owner chooses the candidate build and assembles; second-machine launch remains owner/tester work
 
 Field: P0 Windows packaging and first launch (F17 / W1), manual distribution only.
 Scope: `Launch RustWrath.cmd`, `tools/launch-client.ps1`,
@@ -76,6 +76,11 @@ Release-set launches retain their existing release/selector/health fields.
   `reference`, `pass-span-lint`, `player-clippy`, `player-tests` and `live-code-check`
   all succeeded. The merge brought `benilla-app`/`benilla-ui` changes, whose tests ran. CI does
   not execute the PowerShell scripts; the static PowerShell 5.1 parse above is their only check.
+- Integration recheck at main `6bf627746`: the assembler's six copied paths and the launcher's
+  six-entry allowlist are the same set; `base.mpqlist` and `wm-hd.mpqlist` exist and are both
+  selectable through `-AssetProfile`; the documented `-WorldServer ''` invocation matches
+  `if ($WorldServer)` plus the client's empty-world -> `realm.address` path; no `crates/` file
+  changed in the branch-to-main diff. Both scripts parse under Windows PowerShell 5.1.
 
 ## Not established
 
@@ -95,6 +100,16 @@ Release-set launches retain their existing release/selector/health fields.
 - An assembled `release-manifest.json` is not self-authenticated: editing only its `version` or
   `format` is not refused. `package_manifest_sha256` in `launch.txt` records what actually ran;
   the release-set path has a selector hash, the assembled package does not.
+
+## Candidate build for the first distribution
+
+No package was assembled for this task. If the owner uses the shipped convenience,
+`tools/assemble-windows-release.ps1 -BuildRelease`, the first candidate would be
+`cargo build --release -p benilla --features hotpatch`. `hotpatch` enables `dev`, so that is a
+release-profile binary with dev/hotpatch instrumentation, not the `--no-default-features` player
+build. This behavior is preserved by the integration. Before distributing, the owner must
+deliberately accept that build or pass an independently built `-Binary`; record the chosen
+binary's SHA-256 and the `launch.txt` `mode`/`binary_sha256` in the distribution note.
 
 ## Coordination
 
