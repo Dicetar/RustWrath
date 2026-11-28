@@ -19594,7 +19594,6 @@ mod scoped_delivery_tests {
             receipt: Some(crate::net::CommandReceipt {
                 trace: None,
                 enforce_scope: true,
-                world_generation: None,
                 session_epoch,
                 world_generation,
                 npc: 0x22,
@@ -19603,6 +19602,7 @@ mod scoped_delivery_tests {
             }),
             trace: None,
             enforce_scope: true,
+            world_generation: None,
         });
         receiver
     }
