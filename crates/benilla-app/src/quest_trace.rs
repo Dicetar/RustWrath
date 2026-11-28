@@ -102,6 +102,14 @@ pub(crate) enum Stage {
         item_id: u32,
         count: u32,
     },
+    /// A quest-log objective item's held count as the inventory projection reads it
+    /// (`count_of_in_player`, the number `GetQuestLogLeaderBoard` shows), recorded when it
+    /// changes. `ItemPushResult` is the server's statement that it stored the item; this is the
+    /// item having reached the bags the objective line reads.
+    QuestItemHeld {
+        item_id: u32,
+        count: u32,
+    },
     ServerQuestInvalid {
         reason: u32,
     },
@@ -468,6 +476,7 @@ pub(crate) fn evidence_class_for_stage(stage: &Stage) -> EvidenceClass {
         | Stage::PlayerXpChanged { .. }
         | Stage::PlayerMoneyChanged { .. }
         | Stage::RewardItemPushed { .. }
+        | Stage::QuestItemHeld { .. }
         | Stage::ServerQuestInvalid { .. }
         | Stage::ServerQuestLogFull
         | Stage::ServerQuestFailed { .. }
@@ -1864,6 +1873,7 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
         | Stage::PlayerXpChanged { .. }
         | Stage::PlayerMoneyChanged { .. }
         | Stage::RewardItemPushed { .. }
+        | Stage::QuestItemHeld { .. }
         | Stage::ServerQuestInvalid { .. }
         | Stage::ServerQuestLogFull
         | Stage::ServerQuestFailed { .. }
@@ -5704,6 +5714,31 @@ impl History {
     /// Evidence summary for one written loot/equip/buy/sell action. `exact` is reserved for a
     /// carried item/slot identity (or an authoritative refusal carrying the item); a bare
     /// time-window match is heuristic.
+    /// The active player's item push answering one written loot action, as a suffix. The first
+    /// evidence a loot finds is its row's removal, which lands with the push in the same tick, so
+    /// without this the server's own word that it stored the item never reached the summary.
+    fn loot_push_evidence(&self, action: &Event) -> Option<String> {
+        let (_, push) = self.entries.iter().find(|(_, later)| {
+            action.subject.scope.is_some()
+                && later.subject.scope == action.subject.scope
+                && later.elapsed_ms >= action.elapsed_ms
+                && later.elapsed_ms.saturating_sub(action.elapsed_ms) <= 30_000
+                && matches!(later.stage, Stage::ItemPushResult { .. })
+                && loot_vendor_evidence_matches_action(&action.subject, later)
+        })?;
+        let Stage::ItemPushResult { item_id, count } = push.stage else {
+            return None;
+        };
+        let confidence = if self.eligible_loot_vendor_writes(push, Operation::Loot) > 1 {
+            "ambiguous"
+        } else if action.subject.item == Some(item_id) {
+            "item match"
+        } else {
+            "heuristic"
+        };
+        Some(format!("; item {item_id} x{count} pushed ({confidence})"))
+    }
+
     fn loot_vendor_action_evidence(&self, action: &Event, evidence: &Event) -> Option<String> {
         let (label, mut exact) = loot_vendor_evidence_label(&evidence.stage)?;
         // An item push says the item arrived; it does not prove the loot row was removed.
@@ -6201,8 +6236,18 @@ impl History {
                 String::new()
             };
             let cast_evidence = self.cast_native_summary(event).unwrap_or_default();
+            // A loot's first evidence is usually its row's removal; name the push as well. An
+            // action whose first evidence was the push itself already says so.
+            let push_evidence = if event.subject.operation == Operation::Loot
+                && matches!(event.stage, Stage::Delivery(CommandDelivery::Written))
+                && !server_evidence.starts_with("; item push observed")
+            {
+                self.loot_push_evidence(event).unwrap_or_default()
+            } else {
+                String::new()
+            };
             output.push(format!(
-                "Action {id} {:?} (npc {:?}, quest {:?}, item {:?}, count {:?}, slot {:?}): {status}{reason}{server_evidence}{cast_evidence}{suffix}",
+                "Action {id} {:?} (npc {:?}, quest {:?}, item {:?}, count {:?}, slot {:?}): {status}{reason}{server_evidence}{push_evidence}{cast_evidence}{suffix}",
                 event.subject.operation,
                 event.subject.npc_alias,
                 event.subject.quest,
@@ -7206,6 +7251,19 @@ impl History {
                     })
                     .count() as u32;
                 let items_observed = items_pushed >= reward_items;
+                // The reward the player chose, when the turn-in recorded it: its own push, not
+                // just any push in the window, is the evidence that the right item arrived.
+                let chosen = event.subject.item;
+                let chosen_pushed = chosen.map(|chosen| {
+                    self.entries.iter().any(|(_, other)| {
+                        in_delta_window(other)
+                            && matches!(
+                                other.stage,
+                                Stage::RewardItemPushed { item_id, count }
+                                    if item_id == chosen && count > 0
+                            )
+                    })
+                });
 
                 let mut missing = Vec::new();
                 if !slot_removed {
@@ -7220,6 +7278,9 @@ impl History {
                 if !items_observed {
                     missing.push("reward item push");
                 }
+                if chosen_pushed == Some(false) {
+                    missing.push("chosen reward item push");
+                }
 
                 let action_part = match candidates.as_slice() {
                     [id] => format!("after action {id} (possible match)"),
@@ -7227,8 +7288,11 @@ impl History {
                     many => format!("{} matching ChooseReward writes (ambiguous)", many.len()),
                 };
                 let delta_part = if missing.is_empty() {
+                    let chosen_part = chosen
+                        .map(|item| format!(", chosen reward {item} pushed"))
+                        .unwrap_or_default();
                     format!(
-                        "turn-in deltas verified (slot removed, xp={xp}, money={money}, items={items_pushed}/{reward_items})"
+                        "turn-in deltas verified (slot removed, xp={xp}, money={money}, items={items_pushed}/{reward_items}{chosen_part})"
                     )
                 } else {
                     format!(
@@ -9476,6 +9540,64 @@ mod tests {
                 "once slot removal, XP, money, and item push arrive, turn-in is verified: {turn_ins:?}"
             );
         }
+    }
+
+    /// The chosen reward's own push is the evidence, not any push in the window: quest 6 with
+    /// Tapered Pants (6076) chosen and a different item pushed is not a verified turn-in.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn q04_turn_in_requires_the_chosen_rewards_own_push() {
+        let (source, mut history) = new_pair();
+        let scope = Some((2, 1));
+        let npc = 0xF130_0000_0000_0088;
+
+        let choose = source.begin_with_npc(scope, Some(6), Some(npc), Operation::ChooseReward);
+        choose.record(Stage::Delivery(CommandDelivery::Written));
+        source.observe_with_subject(
+            scope,
+            Some(6),
+            Some(npc),
+            Some(6076),
+            None,
+            None,
+            Stage::QuestCompletePacket {
+                xp: 0,
+                money: 0,
+                reward_items: 1,
+            },
+        );
+        source.observe(scope, Some(6), Stage::QuestSlotRemoved);
+        source.observe(
+            scope,
+            None,
+            Stage::RewardItemPushed {
+                item_id: 60,
+                count: 1,
+            },
+        );
+        drain_all(&mut history);
+        let turn_ins = history.turn_in_correlations();
+        assert!(
+            turn_ins.iter().any(|line| line.contains("Quest 6 turn-in")
+                && line.contains("missing: chosen reward item push")),
+            "another item's push must not verify the chosen reward: {turn_ins:?}"
+        );
+
+        source.observe(
+            scope,
+            None,
+            Stage::RewardItemPushed {
+                item_id: 6076,
+                count: 1,
+            },
+        );
+        drain_all(&mut history);
+        let turn_ins = history.turn_in_correlations();
+        assert!(
+            turn_ins.iter().any(|line| line.contains("Quest 6 turn-in")
+                && line.contains("chosen reward 6076 pushed")),
+            "the chosen reward's push verifies the turn-in: {turn_ins:?}"
+        );
     }
 
     /// AUTO-05: one cast is one chain. The candidate ring keeps only the most recent writes, while

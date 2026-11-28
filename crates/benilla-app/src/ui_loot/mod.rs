@@ -456,6 +456,19 @@ impl LootState {
         self.pending_master_candidates = candidates;
     }
 
+    /// The open window's untaken row at a wire slot, `(item, count)`. `SMSG_LOOT_REMOVED` names
+    /// only the slot; the recorder reads the row here, before the removal clears it.
+    pub(crate) fn row_at(&self, wire_slot: u8) -> Option<(u32, u32)> {
+        let w = &self.window;
+        if w.source.is_none() || w.taken.contains(&wire_slot) {
+            return None;
+        }
+        w.items
+            .iter()
+            .find(|it| it.slot == wire_slot)
+            .map(|it| (it.item_id, it.count))
+    }
+
     /// `ClearLootRow` (`0x4c1f00`): the row with the wire slot becomes a gap, whether or not a
     /// window is open; whether one did.
     pub(crate) fn remove_slot(&mut self, wire_slot: u8) -> bool {

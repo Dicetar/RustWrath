@@ -9818,19 +9818,26 @@ fn wrath_dispatch_events(world: &mut World) {
                         None,
                         Stage::LootErrorObserved { reason: *error },
                     ),
-                    SessionEvent::LootRemoved { slot } => trace.observe_with_subject(
-                        scope,
-                        None,
-                        None,
-                        None,
-                        None,
-                        Some(u32::from(*slot)),
-                        Stage::LootSlotRemoved {
-                            slot: u32::from(*slot),
-                            item_id: None,
-                            count: None,
-                        },
-                    ),
+                    SessionEvent::LootRemoved { slot } => {
+                        // The removal names the slot alone. The loot handlers run after this
+                        // drain, so the open window still holds the row it clears.
+                        let row = world
+                            .get_resource::<crate::ui_loot::LootState>()
+                            .and_then(|loot| loot.row_at(*slot));
+                        trace.observe_with_subject(
+                            scope,
+                            None,
+                            None,
+                            row.map(|(item, _)| item),
+                            row.map(|(_, count)| count),
+                            Some(u32::from(*slot)),
+                            Stage::LootSlotRemoved {
+                                slot: u32::from(*slot),
+                                item_id: row.map(|(item, _)| item),
+                                count: row.map(|(_, count)| count),
+                            },
+                        );
+                    }
                     SessionEvent::LootMoneyNotify { amount } => trace.observe_with_subject(
                         scope,
                         None,
@@ -9859,28 +9866,38 @@ fn wrath_dispatch_events(world: &mut World) {
                         Stage::LootReleasedObserved,
                     ),
                     SessionEvent::ItemPushResult(push) => {
-                        // Keep the quest reward semantics for the quest turn-in correlator, and
-                        // record the explicit non-quest item-push domain as well.
-                        trace.observe_with_subject(
-                            scope,
-                            None,
-                            None,
-                            Some(push.item_entry),
-                            Some(push.count),
-                            None,
-                            Stage::ItemPushResult {
-                                item_id: push.item_entry,
-                                count: push.count,
-                            },
-                        );
-                        trace.observe(
-                            scope,
-                            None,
-                            Stage::RewardItemPushed {
-                                item_id: push.item_entry,
-                                count: push.count,
-                            },
-                        );
+                        // A group broadcasts its members' pushes (`Player::SendNewItem`), so only
+                        // the active player's is evidence for this client's loot or turn-in.
+                        let ours = world
+                            .get_resource::<WrathWorldView>()
+                            .is_some_and(|view| view.player_guid == push.player_guid);
+                        if ours {
+                            trace.observe_with_subject(
+                                scope,
+                                None,
+                                None,
+                                Some(push.item_entry),
+                                Some(push.count),
+                                None,
+                                Stage::ItemPushResult {
+                                    item_id: push.item_entry,
+                                    count: push.count,
+                                },
+                            );
+                        }
+                        // A quest reward is pushed as received from the NPC (`RewardQuest`'s
+                        // `SendNewItem(.., true, ..)`); a looted item is not, so a loot inside the
+                        // turn-in window is never counted as the reward.
+                        if ours && push.from_npc {
+                            trace.observe(
+                                scope,
+                                None,
+                                Stage::RewardItemPushed {
+                                    item_id: push.item_entry,
+                                    count: push.count,
+                                },
+                            );
+                        }
                     }
                     SessionEvent::InventoryFailure { reason, .. } => trace.observe_with_subject(
                         scope,

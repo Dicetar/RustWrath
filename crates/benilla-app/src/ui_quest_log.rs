@@ -1291,6 +1291,27 @@ pub(crate) fn feed_quest_log(
                 })
                 .collect();
             if held != memo.held {
+                // What reached the bags, distinct from the push that announced it: the recorder
+                // otherwise sees the loot row go and the server's push, never the held count.
+                if let Some(trace) = &reads.quest_trace {
+                    let scope = reads
+                        .wrath_view
+                        .as_ref()
+                        .map(|v| (v.session_epoch, v.world_generation));
+                    for (&item_id, &count) in &held {
+                        if memo.held.get(&item_id) != Some(&count) {
+                            trace.observe_with_subject(
+                                scope,
+                                None,
+                                None,
+                                Some(item_id),
+                                Some(count),
+                                None,
+                                crate::quest_trace::Stage::QuestItemHeld { item_id, count },
+                            );
+                        }
+                    }
+                }
                 script.set_quest_item_counts(held.clone());
                 memo.held = held;
             }

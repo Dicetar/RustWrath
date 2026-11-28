@@ -118,10 +118,15 @@ fn on_complete(
                 .filter(|&&(item_id, count)| item_id != 0 && count != 0)
                 .count() as u32
                 + u32::from(quest.chosen_reward != 0);
-            trace.observe_with_npc(
+            // The chosen item rides as the subject, read before `quest_complete` clears the
+            // latch, so the turn-in line can name the reward the player picked.
+            trace.observe_with_subject(
                 scope,
                 Some(c.quest_id),
                 quest.npc,
+                (quest.chosen_reward != 0).then_some(quest.chosen_reward),
+                None,
+                None,
                 crate::quest_trace::Stage::QuestCompletePacket {
                     xp: c.xp,
                     money: c.money,
