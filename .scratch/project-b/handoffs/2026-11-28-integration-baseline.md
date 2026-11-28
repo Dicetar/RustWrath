@@ -33,4 +33,23 @@ single push's CI run is the first compile.
 | `fix/wrath-mirror-info`, `wrath/night-2026-11-27`, `integrate/night-2026-11-27`, `wrath/achievements-2026-11-28`, `fix/release-recovery-guardrails`, `worktree-abilities-casting-actionbars-modules` | already present | ancestors of main |
 | `fix/release-recovery-guardrails` worktree | no code | only an untracked `Status: in progress` note from 2026-11-15; main has the release-set recovery from `c91514217` |
 | `.claude/worktrees/abilities-casting-actionbars-modules` | superseded | uncommitted 144-slot recount in `ui_action/recount.rs`; main has its own 144-slot `action_slots` from `a6a5877c2` |
-| `fix/rustwrath-p0-session-entry-reconnect`, `fix/windows-alpha-launch` | active | created 2026-11-28 from `aa8f4a9c7`; left alone |
+| `fix/rustwrath-p0-session-entry-reconnect` | reviewed, no merge needed | see below |
+| `fix/windows-alpha-launch` | active | created 2026-11-28 from `aa8f4a9c7`; left alone |
+
+## P0 session-entry review carried forward
+
+ClaudeJr's source review of `fix/rustwrath-p0-session-entry-reconnect` ran at `aa8f4a9c7` and
+reported no code changes. Confirmed: the branch tip is `aa8f4a9c7`, with no commits beyond it or
+`origin/main`, no remote branch, no tracked, untracked or ignored changes in its worktree, and a
+reflog holding only its creation. No merge is needed.
+
+`aa8f4a9c7..e67bd8d6a` changes only `benilla-app/src/screenshot.rs`, the failed-dispel counters
+in `benilla-app/src/ui_script/wrath_combat_log_feed.rs` (debug-only, `Phase::InWorld` only, no
+reset path), `benilla-ui`'s `debugstack` label and their notes. None touch login, realm or roster
+selection, session-worker admission, logout, terminal-event ordering or world-state reset, so the
+source review carries forward to `e67bd8d6a` unchanged. Runtime acceptance of the session-entry
+and reconnect flow is still pending (owner-driven launch).
+
+The worktree `D:/Projects/wow/worktrees/fix-rustwrath-p0-session-entry-reconnect`
+(`refs/heads/fix/rustwrath-p0-session-entry-reconnect` @ `aa8f4a9c7`, clean) is a cleanup
+candidate pending the owner's approval.
